@@ -4,20 +4,10 @@ import pytest
 from features.interview.agents import build_graph, InterviewState
 
 
-def test_build_graph():
-    """그래프가 정상적으로 빌드되는지 확인"""
-    graph = build_graph()
-    assert graph is not None
-
-
-def test_graph_execution_mock():
-    """Mock 상태로 그래프 실행 테스트 - 무한 루프 확인"""
-    from langgraph.errors import GraphRecursionError
-
-    graph = build_graph()
-
-    # Mock 초기 상태
-    initial_state: InterviewState = {
+@pytest.fixture
+def initial_state() -> InterviewState:
+    """테스트용 InterviewState 초기화 fixture"""
+    return {
         "user_id": "test_user",
         "session_id": "test_session",
         "messages": [],
@@ -35,6 +25,19 @@ def test_graph_execution_mock():
         "completion_percentage": 0.0,
     }
 
+
+def test_build_graph():
+    """그래프가 정상적으로 빌드되는지 확인"""
+    graph = build_graph()
+    assert graph is not None
+
+
+def test_graph_execution_mock(initial_state):
+    """Mock 상태로 그래프 실행 테스트 - 무한 루프 확인"""
+    from langgraph.errors import GraphRecursionError
+
+    graph = build_graph()
+
     # 그래프 실행 시 무한 루프로 인해 GraphRecursionError 발생 확인
     # 현재 노드 로직이 구현되지 않아 supervisor <-> interviewer 무한 반복
     with pytest.raises(GraphRecursionError) as exc_info:
@@ -44,59 +47,24 @@ def test_graph_execution_mock():
     assert "Recursion limit" in str(exc_info.value)
 
 
-def test_supervisor_routing():
+def test_supervisor_routing(initial_state):
     """Supervisor가 기본적으로 interviewer로 라우팅하는지 확인"""
     from features.interview.agents.nodes import supervisor
 
-    state: InterviewState = {
-        "user_id": "test",
-        "session_id": "test",
-        "messages": [],
-        "current_stage": 1,
-        "fixed_q_count": 0,
-        "generated_q_count": 0,
-        "collected_data": {},
-        "mentioned_insights": [],
-        "retrieved_insights": [],
-        "uploaded_files": [],
-        "file_context": [],
-        "next_node": "supervisor",
-        "stage_complete": False,
-        "all_complete": False,
-        "completion_percentage": 0.0,
-    }
-
-    result = supervisor.run(state)
+    result = supervisor.run(initial_state)
     assert result["next_node"] == "interviewer"
 
 
-def test_interviewer_routing():
+def test_interviewer_routing(initial_state):
     """Interviewer가 작업 후 supervisor로 복귀하는지 확인"""
     from features.interview.agents.nodes import interviewer
 
-    state: InterviewState = {
-        "user_id": "test",
-        "session_id": "test",
-        "messages": [],
-        "current_stage": 1,
-        "fixed_q_count": 0,
-        "generated_q_count": 0,
-        "collected_data": {},
-        "mentioned_insights": [],
-        "retrieved_insights": [],
-        "uploaded_files": [],
-        "file_context": [],
-        "next_node": "interviewer",
-        "stage_complete": False,
-        "all_complete": False,
-        "completion_percentage": 0.0,
-    }
-
+    state = {**initial_state, "next_node": "interviewer"}
     result = interviewer.run(state)
     assert result["next_node"] == "supervisor"
 
 
-def test_graph_with_end_condition():
+def test_graph_with_end_condition(initial_state):
     """종료 조건이 있을 때 그래프가 정상 종료되는지 확인"""
     # 그래프가 컴파일되기 전에 노드 함수를 모킹해야 하므로,
     # 직접 노드 로직을 수정하는 방식으로 테스트
@@ -119,24 +87,6 @@ def test_graph_with_end_condition():
 
         # 그래프 재빌드 (수정된 노드 함수 사용)
         graph = build_graph()
-
-        initial_state: InterviewState = {
-            "user_id": "test_user",
-            "session_id": "test_session",
-            "messages": [],
-            "current_stage": 1,
-            "fixed_q_count": 0,
-            "generated_q_count": 0,
-            "collected_data": {},
-            "mentioned_insights": [],
-            "retrieved_insights": [],
-            "uploaded_files": [],
-            "file_context": [],
-            "next_node": "supervisor",
-            "stage_complete": False,
-            "all_complete": False,
-            "completion_percentage": 0.0,
-        }
 
         # 그래프 실행 - 종료 조건이 있으므로 정상 종료되어야 함
         result = graph.invoke(initial_state)
