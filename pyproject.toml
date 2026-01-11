@@ -13,3 +13,12 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "uvicorn[standard]>=0.40.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = "."      # Python 경로 설정
+testpaths = ["tests"] # 테스트 탐색 디렉토리
