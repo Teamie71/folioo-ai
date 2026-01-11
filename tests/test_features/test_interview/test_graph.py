@@ -1,7 +1,8 @@
 """그래프 구조 테스트"""
 
 import pytest
-from features.interview.agents import build_graph, InterviewState
+
+from features.interview.agents import InterviewState, build_graph
 
 
 @pytest.fixture

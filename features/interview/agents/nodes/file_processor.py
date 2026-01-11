@@ -10,7 +10,7 @@ def run(state: InterviewState) -> InterviewState:
     TODO: 실제 파일 처리 로직은 후속 이슈에서 구현
     - 멀티모달 LLM 사용
     """
-    
+
     # 파일 처리 후 Supervisor 노드로 전환 (임시 값)
     return {
         **state,
