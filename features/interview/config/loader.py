@@ -19,11 +19,19 @@ class StageConfig(BaseModel):
     force_all_generated: bool
 
 
+class GlobalConfig(BaseModel):
+    """전역 설정 스키마"""
+
+    max_retries_per_question: int
+    enable_dynamic_followup: bool
+    context_window_size: int
+
+
 class StagesConfig(BaseModel):
     """전체 단계 설정 스키마"""
 
     stages: dict[int, StageConfig]
-    global_config: dict[str, object]
+    global_config: GlobalConfig
 
 
 @lru_cache(maxsize=1)
@@ -50,3 +58,8 @@ def load_stage_config(stage: Literal[1, 2, 3, 4]) -> StageConfig:
 def get_all_stages() -> dict[int, StageConfig]:
     """모든 단계의 설정 반환"""
     return _load_stages_yaml().stages
+
+
+def get_global_config() -> GlobalConfig:
+    """전역 설정 반환"""
+    return _load_stages_yaml().global_config
