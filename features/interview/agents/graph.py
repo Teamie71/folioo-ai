@@ -52,8 +52,10 @@ def build_graph():
     # 진입점 설정
     graph.set_entry_point("supervisor")
 
-    # 그래프 컴파일
-    return graph.compile()
+    # 그래프 컴파일 - interviewer 실행 후 사용자 입력 대기
+    return graph.compile(
+        interrupt_after=["interviewer"]  # 질문 생성 후 중단, 사용자 입력 대기
+    )
 
 
 # LangGraph Studio용 그래프 인스턴스
