@@ -1,0 +1,77 @@
+stages:
+    1:
+        name: "프로젝트 개요 및 구조화"
+        description: "프로젝트의 배경, 목표, 팀 구성 등 기본 맥락을 파악합니다."
+        fixed_questions:
+            - "반가워요! [경험명]의 경험 정리를 시작해볼게요. 가장 먼저 이 활동을 시작하게 된 계기가 궁금해요. 이 활동을 통해 중점적으로 해결해야 하는 과제가 있었나요? 언제부터 언제까지 활동했는지, 구체적인 진행 기간도 알려주세요."
+            - "혼자 진행했는지, 팀으로 진행한 활동인지도 궁금해요. 팀원은 몇 명이었고, 그 중에서 본인은 어떤 역할을 맡았나요? 공식적인 직책이 없어도 괜찮아요! 본인이 주로 맡았던 포지션을 알려주세요."
+            - "좋아요. 이 프로젝트의 타깃이 되는 고객이나 대상이 있었나요? 누가 봐주거나 이용했으면 좋겠다고 생각했나요?"
+        required_fields:
+            project_background:
+                description: "이 활동을 시작하게 된 이유"
+            problem_definition:
+                description: "프로젝트의 최종 목표 또는 해결하려던 미션"
+            message_or_concept:
+                description: "(창작물의 경우) 결과물을 통해 전달하고자 한 핵심 주제"
+            project_duration:
+                description: "프로젝트 진행 기간 (YYYY.MM.DD ~ YYYY.MM.DD)"
+            team_composition:
+                description: "전체 참여 인원 수와 본인의 포지션"
+            target_audience:
+                description: "결과물 또는 활동의 예상 사용자, 수혜자 또는 구체적인 페르소나"
+        max_generated_questions: 2
+        force_all_generated: false
+
+    2:
+        name: "구체적 실행 과정"
+        description: "수행한 핵심 업무와 사용한 기술 및 도구를 상세히 수집합니다."
+        fixed_questions:
+            - "이제 본격적으로 어떤 일을 하셨는지 들어보고 싶어요. 진행 과정에서 가장 공들여서 했던 핵심 업무 3~4가지를 꼽는다면 무엇인가요? 구체적으로 어떤 업무들을 했는지 이야기해 주세요."
+            - "그 업무들을 해내기 위해 어떤 도구들을 사용했나요? 디자인툴, 협업툴, 기술 스택, 방법론 등 사용한 기술을 모두 자랑해 주세요!"
+        required_fields:
+            work_categories:
+                description: "2개 이상의 업무 카테고리 (리스트)"
+        max_generated_questions: 3
+        force_all_generated: true
+
+    3:
+        name: "문제 해결과 논리"
+        description: "직면한 문제와 해결 과정, 의사결정의 논리를 탐색합니다."
+        fixed_questions:
+            - "프로젝트를 하다 보면 꼭 예상치 못한 문제를 만나게 되죠. 진행하면서 가장 식은땀 났던 순간이나 어려웠던 점은 무엇이었나요? 당시 상황을 생생하게 들려주세요."
+            - "오, 쉽지 않은 상황이었겠네요. 그 문제를 해결하기 위해 구체적으로 어떤 행동을 했고, 어떻게 대처했는지 궁금해요."
+            - "제일 중요한 궁금증이 생겼어요! 여러 방법이 있었을 텐데, 왜 하필 그 방법으로 해결하려고 했나요? 그때 머릿속으로 했던 고민이나 판단의 이유를 알려주세요."
+        required_fields:
+            problem_episodes:
+                description: "2개 이상의 에피소드 (리스트)"
+        max_generated_questions: 3
+        force_all_generated: true
+
+    4:
+        name: "성과 및 회고"
+        description: "프로젝트의 결과와 개인적 성장, 향후 계획을 정리합니다."
+        fixed_questions:
+            - "활동을 위해 정말 열심히 노력하셨던 게 느껴지는데, 최종 결과는 어땠나요? 혹시 수상이나 등수 같은 수치적인 성과도 있었나요? 아니면 주변 사람들의 기억에 남는 피드백이 있었다면 그것도 알려주세요."
+            - "뿌듯하셨겠어요. 개인적인 성장도 궁금하네요. 이 경험을 하기 전의 나와 지금의 나, 비교해 보면 어떤 점이 달라진 것 같나요? 가장 크게 성장했다고 느끼는 점이나, 업무를 대하는 태도에서 배운 점이 있다면 들려주세요."
+            - "개인적으로도 많은 성장이 있었군요. 만약 이 프로젝트를 다시 한다면, '이것만큼은 더 잘해보고 싶다' 하는 아쉬움이나, 향후 계획이 있나요? 앞으로 더 공부하고 싶은 내용이나 분야가 있다면 그것도 알려주세요."
+        required_fields:
+            final_deliverable:
+                description: "프로젝트의 최종 상태 (완성, 런칭, 제출, 수상 여부 등)"
+            quantitative_results:
+                description: "수치로 증명 가능한 결과 (등수, 달성률, 참여자 수, 다운로드 수 등)"
+            qualitative_results:
+                description: "타인의 평가, 피드백 인용, 체감 반응 등 비수치적 결과"
+            personal_growth:
+                description: "경험 전후 달라진 직무 역량 및 태도"
+            insights_gained:
+                description: "대상, 관계 또는 해당 업무나 산업에 대해 새롭게 얻은 관점"
+            future_plans:
+                description: "아쉬웠던 점을 보완하기 위한 구체적인 개선 방향 또는 학습 계획"
+        max_generated_questions: 2
+        force_all_generated: false
+
+# 전역 설정 (임시)
+global_config:
+    max_retries_per_question: 2 # 질문당 최대 재시도 횟수
+    enable_dynamic_followup: true # 동적 후속 질문 활성화
+    context_window_size: 5 # 컨텍스트로 참조할 이전 답변 개수
