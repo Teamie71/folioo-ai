@@ -15,7 +15,7 @@ def run(state: InterviewState) -> InterviewState:
     - 완료율 계산
     - 단계 전환 로직
     """
-    
+
     # 분석 후 Supervisor 노드로 전환 (임시 값)
     return {
         **state,
