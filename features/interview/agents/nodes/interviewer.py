@@ -16,6 +16,7 @@ def run(state: InterviewState) -> InterviewState:
     고정 질문 또는 생성 질문 수행
     - stages.yaml에서 고정 질문 로드
     - LLM 기반 추가 질문 생성
+    - 사용자 답변에 대한 공감/반응 추가
 
     TODO: 실제 질문 생성 로직은 후속 이슈에서 구현
     - YAML 설정 로드
@@ -24,6 +25,9 @@ def run(state: InterviewState) -> InterviewState:
     """
 
     stage_config = load_stage_config(state["current_stage"])
+
+    # 이전 답변에 대한 공감 메시지 생성
+    acknowledgment = _generate_acknowledgment(state)
 
     # 고정 질문이 남아있는지 확인
     fixed_questions = stage_config.fixed_questions
@@ -35,9 +39,11 @@ def run(state: InterviewState) -> InterviewState:
             question=fixed_questions[fixed_q_count],
             stage_config=stage_config,
         )
+        # 공감 + 질문 결합
+        full_message = _combine_message(acknowledgment, question)
         return {
             **state,
-            "messages": [AIMessage(content=question)],
+            "messages": [AIMessage(content=full_message)],
             "fixed_q_count": fixed_q_count + 1,
             "next_node": "supervisor",
         }
@@ -50,9 +56,11 @@ def run(state: InterviewState) -> InterviewState:
     if generated_q_count < max_generated and (force_all or _has_missing_fields(state)):
         # LLM으로 동적 질문 생성
         question = _generate_followup_question(state, stage_config)
+        # 공감 + 질문 결합
+        full_message = _combine_message(acknowledgment, question)
         return {
             **state,
-            "messages": [AIMessage(content=question)],
+            "messages": [AIMessage(content=full_message)],
             "generated_q_count": generated_q_count + 1,
             "next_node": "supervisor",
         }
@@ -121,3 +129,59 @@ def _format_conversation(messages: list) -> str:
         elif isinstance(msg, AIMessage):
             lines.append(f"AI: {msg.content}")
     return "\n".join(lines)
+
+
+def _generate_acknowledgment(state: InterviewState) -> str:
+    """사용자의 마지막 답변에 대한 공감/반응 메시지 생성"""
+    messages = state.get("messages", [])
+
+    # 첫 질문이거나 사용자 답변이 없으면 공감 메시지 없음
+    if not messages or state["fixed_q_count"] == 0:
+        return ""
+
+    # 마지막 사용자 메시지 찾기
+    last_user_message = None
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            last_user_message = msg.content
+            break
+
+    if not last_user_message:
+        return ""
+
+    # LLM으로 공감 메시지 생성
+    llm = get_llm(temperature=0.7)
+
+    prompt = """당신은 친근하고 공감적인 인터뷰어입니다.
+사용자의 답변에 대해 짧고 자연스러운 공감/반응을 생성하세요.
+
+요구사항:
+- 1-2문장으로 간결하게
+- 사용자 답변의 핵심을 인정하고 공감
+- 지나치게 형식적이거나 과장되지 않게
+- 다음 질문으로 자연스럽게 이어질 수 있도록
+
+예시:
+- "아, 3년차 백엔드 개발자시군요! 좋습니다."
+- "재미있는 프로젝트네요. 더 자세히 알고 싶어요."
+- "그렇군요. 그 경험이 중요하게 작용했겠네요."
+"""
+
+    messages_for_llm = [
+        {"role": "system", "content": prompt},
+        {
+            "role": "user",
+            "content": f"사용자 답변: {last_user_message}\n\n공감 메시지를 생성하세요.",
+        },
+    ]
+
+    response = llm.invoke(messages_for_llm)
+    return response.content.strip()
+
+
+def _combine_message(acknowledgment: str, question: str) -> str:
+    """공감 메시지와 질문을 자연스럽게 결합"""
+    if not acknowledgment:
+        return question
+
+    return f"{acknowledgment}\n\n{question}"
