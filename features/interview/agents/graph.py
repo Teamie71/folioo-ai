@@ -54,3 +54,7 @@ def build_graph():
 
     # 그래프 컴파일
     return graph.compile()
+
+
+# LangGraph Studio용 그래프 인스턴스
+graph = build_graph()

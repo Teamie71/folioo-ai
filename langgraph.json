@@ -1,0 +1,7 @@
+{
+    "dependencies": ["."],
+    "graphs": {
+        "interview-agent": "features.interview.agents.graph:graph"
+    },
+    "env": ".env"
+}
