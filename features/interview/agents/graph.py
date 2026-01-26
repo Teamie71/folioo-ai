@@ -2,7 +2,7 @@
 
 from langgraph.graph import END, StateGraph
 
-from .nodes import analyst, file_processor, interviewer, retriever, supervisor
+from .nodes import analyst, file_processor, question_generator, retriever, supervisor
 from .state import InterviewState
 
 
@@ -27,7 +27,7 @@ def build_graph():
     graph.add_node("supervisor", supervisor.run)
     graph.add_node("file_processor", file_processor.run)
     graph.add_node("retriever", retriever.run)
-    graph.add_node("interviewer", interviewer.run)
+    graph.add_node("interviewer", question_generator.run)
     graph.add_node("analyst", analyst.run)
 
     # Supervisor -> 다른 노드들 (조건부 엣지)
