@@ -2,19 +2,21 @@
 
 from langgraph.graph import END, StateGraph
 
-from .nodes import analyst, file_processor, question_generator, retriever, supervisor
+from .nodes import analyst, file_processor, question_generator, retriever, router
 from .state import InterviewState
 
 
 def build_graph():
     """
-    멀티 에이전트 그래프 구성
+    멀티 에이전트 그래프 구성 (단일 멀티턴 구조)
 
     흐름:
-    1. Supervisor가 라우팅 결정
-    2. 조건에 따라 적절한 노드로 분기
-    3. 각 노드는 작업 후 Supervisor로 복귀
-    4. all_complete가 True가 되면 END로 종료
+    [첫 턴]
+    Router (초기 감지) → QuestionGenerator → END
+    [이후 턴 - 파일 있음]
+    Router → FileProcessor → Retriever → Analyst → QuestionGenerator → END
+    [이후 턴 - 파일 없음]
+    Router → Retriever → Analyst → QuestionGenerator → END
 
     Returns:
         CompiledStateGraph: 컴파일된 그래프
@@ -24,38 +26,37 @@ def build_graph():
     graph = StateGraph(InterviewState)
 
     # 노드 추가
-    graph.add_node("supervisor", supervisor.run)
+    graph.add_node("router", router.run)
     graph.add_node("file_processor", file_processor.run)
     graph.add_node("retriever", retriever.run)
-    graph.add_node("interviewer", question_generator.run)
+    graph.add_node("question_generator", question_generator.run)
     graph.add_node("analyst", analyst.run)
 
-    # Supervisor -> 다른 노드들 (조건부 엣지)
+    # Router -> 조건부 분기
     graph.add_conditional_edges(
-        "supervisor",
+        "router",
         lambda state: state["next_node"],
         {
-            "file_processor": "file_processor",
-            "retriever": "retriever",
-            "interviewer": "interviewer",
-            "analyst": "analyst",
-            "end": END,
+            "question_generator": "question_generator",  # 첫 턴
+            "file_processor": "file_processor",  # 파일 있음
+            "retriever": "retriever",  # 파일 없음
         },
     )
 
-    # 모든 노드 -> Supervisor (복귀 엣지)
-    graph.add_edge("file_processor", "supervisor")
-    graph.add_edge("retriever", "supervisor")
-    graph.add_edge("interviewer", "supervisor")
-    graph.add_edge("analyst", "supervisor")
+    # FileProcessor -> Retriever
+    graph.add_edge("file_processor", "retriever")
+    # Retriever -> Analyst
+    graph.add_edge("retriever", "analyst")
+    # Analyst -> QuestionGenerator
+    graph.add_edge("analyst", "question_generator")
+    # QuestionGenerator -> END
+    graph.add_edge("question_generator", END)
 
     # 진입점 설정
-    graph.set_entry_point("supervisor")
+    graph.set_entry_point("router")
 
-    # 그래프 컴파일 - interviewer 실행 후 사용자 입력 대기
-    return graph.compile(
-        interrupt_after=["interviewer"]  # 질문 생성 후 중단, 사용자 입력 대기
-    )
+    # 그래프 컴파일 (매번 완전 실행)
+    return graph.compile()
 
 
 # LangGraph Studio용 그래프 인스턴스
