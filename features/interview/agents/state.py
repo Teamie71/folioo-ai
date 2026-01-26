@@ -32,7 +32,9 @@ class InterviewState(TypedDict):
     file_context: list[str]  # 파일에서 추출된 텍스트들
 
     # 라우팅
-    next_node: Literal["supervisor", "file_processor", "interviewer", "analyst", "retriever", "end"]
+    next_node: Literal[
+        "router", "file_processor", "retriever", "analyst", "question_generator", "end"
+    ]
 
     # 완료 상태
     stage_complete: bool  # 단계 완료 여부

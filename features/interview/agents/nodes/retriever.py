@@ -12,11 +12,12 @@ def run(state: InterviewState) -> InterviewState:
     TODO: 실제 검색 로직은 후속 이슈에서 구현
     - ChromaDB 연동
     - 임베딩 및 유사도 검색
+    - @ 멘션 파싱
     """
 
-    # 검색 후 Supervisor 노드로 전환 (임시 값)
+    # 검색 후 Analyst 노드로 전환 (임시 값)
     return {
         **state,
         "retrieved_insights": [],
-        "next_node": "supervisor",
+        "next_node": "analyst",
     }

@@ -58,10 +58,10 @@ def test_supervisor_routing(initial_state):
 
 def test_interviewer_routing(initial_state):
     """Interviewer가 작업 후 supervisor로 복귀하는지 확인"""
-    from features.interview.agents.nodes import interviewer
+    from features.interview.agents.nodes import question_generator
 
     state = {**initial_state, "next_node": "interviewer"}
-    result = interviewer.run(state)
+    result = question_generator.run(state)
     assert result["next_node"] == "supervisor"
 
 
