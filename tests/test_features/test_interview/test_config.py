@@ -21,7 +21,7 @@ def test_load_stage_config_stage_1():
     assert "problem_definition" in config.required_fields
     assert "project_duration" in config.required_fields
     assert config.max_generated_questions == 2
-    assert config.force_all_generated is False
+    assert config.force_all_generated_questions is False
 
 
 def test_load_all_stages():
@@ -58,4 +58,4 @@ def test_all_stages_have_required_fields(stage):
     assert len(config.fixed_questions) >= 1
     assert len(config.required_fields) >= 1
     assert config.max_generated_questions >= 1
-    assert isinstance(config.force_all_generated, bool)
+    assert isinstance(config.force_all_generated_questions, bool)
