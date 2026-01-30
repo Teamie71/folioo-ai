@@ -32,7 +32,6 @@ class FileAttachment(TypedDict):
 class StageProgress(TypedDict):
     """현재 단계의 진행 상황"""
 
-    stage_number: Literal[1, 2, 3, 4]
     fixed_q_used: int  # 사용자가 답변 완료한 고정 질문 수
     fixed_q_total: int  # 전체 고정 질문 수 (stages.yaml에서 로드)
     generated_q_used: int  # 사용자가 답변 완료한 생성 질문 수
@@ -48,7 +47,7 @@ class CollectedField(TypedDict):
     description: str  # 필드 설명 (stages.yaml에서)
     value: str | list | None  # 수집된 값 (리스트 타입 필드 지원)
     completeness: float  # 0.0 ~ 1.0 (Analyst가 LLM으로 판단한 완성도)
-    last_updated_turn: int  # 마지막으로 업데이트된 턴 번호
+    # last_updated_turn: int  # 마지막으로 업데이트된 턴 번호
 
 
 # 메인 State 정의
@@ -63,7 +62,7 @@ class InterviewState(TypedDict):
     user_id: str  # 사용자 고유 ID
     session_id: str  # 세션 고유 ID
     experience_name: str  # 사용자가 정리하려는 경험/프로젝트명 (세션 생성 시 입력)
-    turn_number: int  # 현재 턴 번호 (1부터 시작, Router가 매 턴마다 증가시킴)
+    # turn_number: int  # 현재 턴 번호 (1부터 시작, Router가 매 턴마다 증가시킴)
 
     # ===== 대화 기록 (LangGraph 메시지 리듀서 사용) =====
     messages: Annotated[list, add_messages]
@@ -75,8 +74,8 @@ class InterviewState(TypedDict):
     stage_progress: StageProgress  # 현재 단계의 진행 상황
 
     # ===== 질문 관리 =====
-    last_question: str | None  # 마지막으로 생성된 질문 (QuestionGenerator가 생성)
-    is_first_turn: bool  # 첫 턴 여부 (Router가 판단)
+    # last_question: str | None  # 마지막으로 생성된 질문 (QuestionGenerator가 생성)
+    # is_first_turn: bool  # 첫 턴 여부 (Router가 판단)
 
     # ===== 수집된 포트폴리오 정보 =====
     collected_data: dict[str, dict[str, CollectedField]]
