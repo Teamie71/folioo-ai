@@ -134,3 +134,56 @@ class InterviewState(TypedDict):
     # 결제하여 추가 대화 모드로 진입했는지 여부
     # all_stages_complete=True 이후 사용자가 결제하면 True로 설정
     # state 구조는 동일하게 유지 (단계 구조 재사용 안 함)
+
+
+def get_initial_interview_state(
+    user_id: str,
+    session_id: str,
+    experience_name: str,
+) -> InterviewState:
+    """
+    새 세션 시작 시 초기 state 생성
+    API 레이어가 첫 호출 시 이 함수를 사용하여 state 초기화
+    """
+
+    from features.interview.config.loader import load_stage_config
+
+    stage_1_config = load_stage_config(1)
+
+    return {
+        # 세션 정보
+        "user_id": user_id,
+        "session_id": session_id,
+        "experience_name": experience_name,
+        # 대화 기록
+        "messages": [],
+        # 단계 관리
+        "current_stage": 1,
+        "stage_progress": {
+            "fixed_q_used": 0,
+            "fixed_q_total": len(stage_1_config["fixed_questions"]),
+            "generated_q_used": 0,
+            "generated_q_max": stage_1_config["max_generated_questions"],
+            "force_all_generated_q": stage_1_config.get("force_all_generated_questions", False),
+            "is_complete": False,
+        },
+        # 질문 관리
+        # "last_question": None,
+        # "is_first_turn": True,
+        # 수집 데이터
+        "collected_data": {f"stage_{i}": {} for i in range(1, 5)},
+        # 인사이트
+        "mentioned_insight_ids": [],
+        "retrieved_insights": [],
+        # 파일 업로드
+        "uploaded_files": [],
+        "current_turn_files": [],
+        "file_contexts": [],
+        # 라우팅
+        "next_node": "question_generator",
+        # 완료 상태
+        "all_stages_complete": False,
+        "overall_completion_percentage": 0.0,
+        # 결제 후 추가 대화
+        "is_extended_mode": False,
+    }
