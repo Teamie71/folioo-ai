@@ -161,10 +161,10 @@ def get_initial_interview_state(
         "current_stage": 1,
         "stage_progress": {
             "fixed_q_used": 0,
-            "fixed_q_total": len(stage_1_config["fixed_questions"]),
+            "fixed_q_total": len(stage_1_config.fixed_questions),
             "generated_q_used": 0,
-            "generated_q_max": stage_1_config["max_generated_questions"],
-            "force_all_generated_q": stage_1_config.get("force_all_generated_questions", False),
+            "generated_q_max": stage_1_config.max_generated_questions,
+            "force_all_generated_q": stage_1_config.force_all_generated_questions,
             "is_complete": False,
         },
         # 질문 관리
