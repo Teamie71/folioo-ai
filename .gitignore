@@ -13,3 +13,5 @@ wheels/
 .langgraph_api/
 .pytest_cache/
 .ruff_cache/
+
+PROJECT_INFO.md
