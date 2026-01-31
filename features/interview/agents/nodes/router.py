@@ -15,9 +15,9 @@ def run(state: InterviewState) -> InterviewState:
     - 조건부 라우팅
     """
 
-    # 초기 상태 확인 (messages가 비어있거나 시스템 메시지만 있는 경우)
+    # 초기 상태 확인 (messages가 비어있는지 여부로 판단)
     messages = state.get("messages", [])
-    is_first_turn = len(messages) <= 1
+    is_first_turn = len(messages) == 0
 
     if is_first_turn:
         # 첫 턴: 바로 초기 질문 생성
