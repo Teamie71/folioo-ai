@@ -30,7 +30,7 @@ FIRST_TURN_TEMPLATE = """
 어떤 문제를 해결하고 싶으셨나요? 또한 언제부터 언제까지 진행하셨는지도 알려주세요!"
 """
 
-first_turn_prompt = ChatPromptTemplate.from_messages(
+first_turn_prompt = ChatPromptTemplate.from_messages([
     ("system", FIRST_TURN_TEMPLATE),
     ("human", "위 지침에 따라 첫 질문을 생성해주세요.")
-)
+])
