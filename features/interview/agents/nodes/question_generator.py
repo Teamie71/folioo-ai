@@ -22,6 +22,8 @@ def run(state: InterviewState) -> InterviewState:
     is_first_turn = len(state["messages"])==0
     if is_first_turn:
         # 3. 첫 고정 질문 내용 가져오기
+        if not stage_config.fixed_questions:
+            raise ValueError(f"Stage {state['current_stage']}에 고정 질문이 설정되지 않았습니다.")
         fixed_question_raw = stage_config.fixed_questions[0]
         
         # 4. 플레이스홀더 치환
@@ -34,12 +36,18 @@ def run(state: InterviewState) -> InterviewState:
         # LangChain LCEL 체인 사용
         chain = first_turn_prompt | llm
         
-        response = chain.invoke({
-            "experience_name": state["experience_name"],
-            "fixed_question_content": fixed_question_content
-        })
-        
-        question = response.content
+        try:
+            response = chain.invoke({
+                "experience_name": state["experience_name"],
+                "fixed_question_content": fixed_question_content
+            })
+            question = response.content
+        except Exception as e:
+            # LLM 호출 실패 시 고정 질문을 fallback으로 사용
+            print(f"LLM 호출 실패: {e}")
+            question = fixed_question_content
+            # 상태에 에러 기록 (선택적)
+            state = {**state, "llm_error": str(e)}
         
         # 6. 진행 상황 업데이트
         updated_progress = {
