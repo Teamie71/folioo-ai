@@ -16,7 +16,7 @@ class StageConfig(BaseModel):
     fixed_questions: list[str]
     required_fields: dict[str, dict[str, str]]
     max_generated_questions: int
-    force_all_generated: bool
+    force_all_generated_questions: bool
 
 
 class GlobalConfig(BaseModel):

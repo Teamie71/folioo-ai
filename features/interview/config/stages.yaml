@@ -20,7 +20,7 @@ stages:
             target_audience:
                 description: "결과물 또는 활동의 예상 사용자, 수혜자 또는 구체적인 페르소나"
         max_generated_questions: 2
-        force_all_generated: false
+        force_all_generated_questions: false
 
     2:
         name: "구체적 실행 과정"
@@ -32,7 +32,7 @@ stages:
             work_categories:
                 description: "2개 이상의 업무 카테고리 (리스트)"
         max_generated_questions: 3
-        force_all_generated: true
+        force_all_generated_questions: true
 
     3:
         name: "문제 해결과 논리"
@@ -45,7 +45,7 @@ stages:
             problem_episodes:
                 description: "2개 이상의 에피소드 (리스트)"
         max_generated_questions: 3
-        force_all_generated: true
+        force_all_generated_questions: true
 
     4:
         name: "성과 및 회고"
@@ -68,7 +68,7 @@ stages:
             future_plans:
                 description: "아쉬웠던 점을 보완하기 위한 구체적인 개선 방향 또는 학습 계획"
         max_generated_questions: 2
-        force_all_generated: false
+        force_all_generated_questions: false
 
 # 전역 설정 (임시)
 global_config:
