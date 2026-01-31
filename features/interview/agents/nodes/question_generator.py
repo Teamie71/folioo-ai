@@ -1,10 +1,13 @@
 """QuestionGenerator 노드 - 인터뷰 질문 생성"""
+import logging
 from langchain_core.messages import AIMessage
 from common.llm.client import get_llm
 from features.interview.config.loader import load_stage_config
 
 from ..prompts.question_generator import first_turn_prompt
 from ..state import InterviewState
+
+logger = logging.getLogger(__name__)
 
 
 def run(state: InterviewState) -> InterviewState:
@@ -42,12 +45,14 @@ def run(state: InterviewState) -> InterviewState:
                 "fixed_question_content": fixed_question_content
             })
             question = response.content
-        except Exception as e:
+        except (ConnectionError, TimeoutError, ValueError) as e:
             # LLM 호출 실패 시 고정 질문을 fallback으로 사용
-            print(f"LLM 호출 실패: {e}")
+            logger.error(f"LLM 호출 실패: {e}")
             question = fixed_question_content
-            # 상태에 에러 기록 (선택적)
-            state = {**state, "llm_error": str(e)}
+            # 상태에 에러 기록하여 반환
+            llm_error = str(e)
+        else:
+            llm_error = None
         
         # 6. 진행 상황 업데이트
         updated_progress = {
@@ -55,13 +60,17 @@ def run(state: InterviewState) -> InterviewState:
             "fixed_q_used": 1,
         }
         
-        # 7. AI 메시지 추가
-        return {
+        # 7. AI 메시지 추가 및 에러 기록
+        result_state = {
             **state,
             "messages": [AIMessage(content=question)],
             "stage_progress": updated_progress,
             "next_node": "end"
         }
+        if llm_error:
+            result_state["llm_error"] = llm_error
+        
+        return result_state
     else:
         # TODO: 후속 질문 생성 로직 (다른 이슈에서 구현)
         raise NotImplementedError("후속 질문 생성은 아직 구현되지 않았습니다.")
