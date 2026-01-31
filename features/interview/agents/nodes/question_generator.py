@@ -39,20 +39,19 @@ def run(state: InterviewState) -> InterviewState:
         # LangChain LCEL 체인 사용
         chain = first_turn_prompt | llm
         
+        llm_error = None
         try:
             response = chain.invoke({
                 "experience_name": state["experience_name"],
                 "fixed_question_content": fixed_question_content
             })
             question = response.content
-        except (ConnectionError, TimeoutError, ValueError) as e:
+        except (ConnectionError, TimeoutError) as e:
             # LLM 호출 실패 시 고정 질문을 fallback으로 사용
             logger.error(f"LLM 호출 실패: {e}")
             question = fixed_question_content
             # 상태에 에러 기록하여 반환
             llm_error = str(e)
-        else:
-            llm_error = None
         
         # 6. 진행 상황 업데이트
         updated_progress = {
