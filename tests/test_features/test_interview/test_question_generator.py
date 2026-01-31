@@ -37,7 +37,7 @@ def test_first_turn_question_generation(first_turn_state):
     assert len(question_content) > 0
 
     # 검증 3: 경험명이 질문에 포함되어 있는지 확인
-    assert "AI 챗봇 개발 프로젝트" in question_content
+    assert "AI 에이전트 개발 프로젝트" in question_content
 
     # 검증 4: stage_progress가 업데이트되었는지 확인
     assert "stage_progress" in result
@@ -60,7 +60,7 @@ def test_first_turn_uses_fixed_question_content(first_turn_state):
 
     # 플레이스홀더가 치환되었는지 확인 (원본에는 [경험명]이 있지만 결과에는 실제 경험명이 들어가야 함)
     assert "[경험명]" not in question_content
-    assert "AI 챗봇 개발 프로젝트" in question_content
+    assert "AI 에이전트 개발 프로젝트" in question_content
 
 
 def test_non_first_turn_raises_not_implemented(first_turn_state):

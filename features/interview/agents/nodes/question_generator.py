@@ -49,6 +49,7 @@ def run(state: InterviewState) -> InterviewState:
         
         # 7. AI 메시지 추가
         return {
+            **state,
             "messages": [AIMessage(content=question)],
             "stage_progress": updated_progress,
             "next_node": "end"
