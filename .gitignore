@@ -15,3 +15,9 @@ wheels/
 .ruff_cache/
 
 PROJECT_INFO.md
+
+# Checkpointer 데이터 (SQLite)
+.data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
