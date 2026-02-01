@@ -301,7 +301,6 @@ def run(state: InterviewState) -> InterviewState:
         question, llm_error = _generate_contextual_fixed_question(
             state=state,
             fixed_question_content=fixed_question_raw,
-            stage_config=stage_config,
         )
 
         updated_progress = {
