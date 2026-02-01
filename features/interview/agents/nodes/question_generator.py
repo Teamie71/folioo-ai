@@ -154,14 +154,12 @@ def _generate_first_turn_question(
 def _generate_contextual_fixed_question(
     state: InterviewState,
     fixed_question_content: str,
-    stage_config: StageConfig,
 ) -> tuple[str, str | None]:
     """
     대화 맥락을 반영한 후속 고정 질문 생성
 
     Args:
         state: 현재 상태
-        stage_config: 단계 설정
         fixed_question_content: 고정 질문 내용
 
     Returns:
