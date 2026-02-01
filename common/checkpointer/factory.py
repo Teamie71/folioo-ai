@@ -44,4 +44,8 @@ def reset_checkpointer() -> None:
     테스트 간 격리를 위해 사용
     """
     global _checkpointer
+    if _checkpointer is not None:
+        close_method = getattr(_checkpointer, "close", None)
+        if callable(close_method):
+            close_method()
     _checkpointer = None
