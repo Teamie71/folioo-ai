@@ -1,14 +1,19 @@
 """LangGraph 에이전트 그래프 정의"""
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 
 from .nodes import analyst, file_processor, question_generator, retriever, router
 from .state import InterviewState
 
 
-def build_graph():
+def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     """
     멀티 에이전트 그래프 구성 (단일 멀티턴 구조)
+
+    Args:
+        checkpointer: 상태 영속화를 위한 checkpointer (선택)
+                      None이면 stateless로 동작 (LangGraph Studio 호환)
 
     흐름:
     [첫 턴]
@@ -55,9 +60,9 @@ def build_graph():
     # 진입점 설정
     graph.set_entry_point("router")
 
-    # 그래프 컴파일 (매번 완전 실행)
-    return graph.compile()
+    # 그래프 컴파일 (checkpointer 연결)
+    return graph.compile(checkpointer=checkpointer)
 
 
-# LangGraph Studio용 그래프 인스턴스
+# LangGraph Studio용 그래프 인스턴스 (checkpointer 없이)
 graph = build_graph()
