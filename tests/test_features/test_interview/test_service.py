@@ -51,7 +51,11 @@ class DummyGraph:
 
 
 def _build_service(monkeypatch, dummy_graph):
-    monkeypatch.setattr(interview_service, "build_graph", lambda checkpointer=None: dummy_graph)
+    monkeypatch.setattr(
+        interview_service,
+        "build_graph",
+        lambda _checkpointer=None, **_kwargs: dummy_graph,
+    )
     monkeypatch.setattr(interview_service, "get_checkpointer", lambda: object())
     return interview_service.InterviewService()
 
@@ -160,7 +164,11 @@ def test_get_session_state_returns_values(monkeypatch):
 def test_singleton_get_and_reset(monkeypatch):
     """싱글톤 생성 및 초기화 테스트"""
     dummy_graph = DummyGraph()
-    monkeypatch.setattr(interview_service, "build_graph", lambda checkpointer=None: dummy_graph)
+    monkeypatch.setattr(
+        interview_service,
+        "build_graph",
+        lambda _checkpointer=None, **_kwargs: dummy_graph,
+    )
     monkeypatch.setattr(interview_service, "get_checkpointer", lambda: object())
 
     interview_service.reset_interview_service()
