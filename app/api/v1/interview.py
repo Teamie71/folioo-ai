@@ -51,7 +51,7 @@ async def create_session(request: CreateSessionRequest) -> CreateSessionResponse
         session_id=result["session_id"],
         first_question=result["first_question"],
         current_stage=result["current_stage"],
-        stage_progress=StageProgressSchema(**result["stage_progess"]),
+        stage_progress=StageProgressSchema(**result["stage_progress"]),
     )
 
 

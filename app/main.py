@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as api_router
+from common.checkpointer.factory import setup_checkpointer
 
 
 @asynccontextmanager
@@ -16,9 +17,10 @@ async def lifespan(app: FastAPI):
     - 시작 시: 리소스 초기화
     - 종료 시: 리소스 정리
     """
-    # 시작 시 실행
-    yield
-    # 종료 시 실행
+    # 시작 시: Checkpointer 실행
+    with setup_checkpointer():
+        yield
+    # 종료 시: Checkpointer 자동 정리
 
 
 def create_app() -> FastAPI:
