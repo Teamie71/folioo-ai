@@ -3,7 +3,6 @@
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
-from requests.api import get
 
 from app.schemas.interview import (
     ChatRequest,
