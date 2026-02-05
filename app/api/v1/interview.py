@@ -92,7 +92,7 @@ async def chat(session_id: str, request: ChatRequest) -> ChatResponse:
 
 
 @router.get(
-    "/session/{session_id}/state",
+    "/sessions/{session_id}/state",
     summary="세션 상태 조회",
     description="현재 세션의 전체 상태를 조회합니다.",
 )
@@ -108,7 +108,7 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
     state = service.get_session_state(session_id)
 
     if state is None:
-        raise HTTPExeption(
+        raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"세션을 찾을 수 없습니다: {session_id}",
         )
