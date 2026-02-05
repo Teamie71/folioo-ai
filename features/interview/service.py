@@ -39,7 +39,7 @@ class InterviewService:
         """Checkpointer가 연결된 그래프 초기화"""
         self._graph = build_graph(checkpointer=get_checkpointer())
 
-    def create_session(
+    async def create_session(
         self,
         user_id: str,
         session_id: str,
@@ -73,8 +73,8 @@ class InterviewService:
             experience_name=experience_name,
         )
 
-        # 그래프 실행 (첫 질문 생성)
-        result = self._graph.invoke(
+        # 그래프 비동기 실행 (첫 질문 생성)
+        result = await self._graph.ainvoke(
             initial_state,
             config={"configurable": {"thread_id": session_id}},
         )
@@ -86,7 +86,7 @@ class InterviewService:
             "stage_progress": result["stage_progress"],
         }
 
-    def process_message(
+    async def process_message(
         self,
         session_id: str,
         message: str,
@@ -113,7 +113,7 @@ class InterviewService:
         """
 
         # 세션 존재 확인
-        current_state = self.get_session_state(session_id)
+        current_state = await self.get_session_state(session_id)
         if current_state is None:
             raise ValueError(f"세션을 찾을 수 없습니다: {session_id}")
 
@@ -126,8 +126,8 @@ class InterviewService:
         if file_ids:
             input_state["current_turn_files"] = file_ids
 
-        # 그래프 실행 (Checkpointer가 이전 상태 자동 로드)
-        result = self._graph.invoke(
+        # 그래프 비동기 실행 (Checkpointer가 이전 상태 자동 로드)
+        result = await self._graph.ainvoke(
             input_state,
             config={"configurable": {"thread_id": session_id}},
         )
@@ -140,7 +140,7 @@ class InterviewService:
             "all_complete": result["all_stages_complete"],
         }
 
-    def get_session_state(self, session_id: str) -> InterviewState | None:
+    async def get_session_state(self, session_id: str) -> InterviewState | None:
         """
         현재 세션 상태 조회
 
@@ -151,7 +151,9 @@ class InterviewService:
             InterviewState | None: 세션 상태 (없으면 None)
         """
 
-        state_snapshot = self._graph.get_state(config={"configurable": {"thread_id": session_id}})
+        state_snapshot = await self._graph.aget_state(
+            config={"configurable": {"thread_id": session_id}}
+        )
 
         if state_snapshot is None or not state_snapshot.values:
             return None
@@ -182,7 +184,7 @@ class InterviewService:
                 - {"event": "error", "data": {...}}
         """
         # 1. 세션 존재 확인
-        current_state = self.get_session_state(session_id)
+        current_state = await self.get_session_state(session_id)
         if current_state is None:
             yield {
                 "event": "error",
@@ -237,7 +239,7 @@ class InterviewService:
                             ),
                         }
             # 4. 스트리밍 완료 후 최종 상태 조회 -> message_complete 전송
-            final_state = self.get_session_state(session_id)
+            final_state = await self.get_session_state(session_id)
             if final_state:
                 # accumulated_text가 없는 경우 (단계 완료 등) 최종 메시지에서 가져옴
                 ai_response = accumulated_text

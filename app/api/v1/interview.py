@@ -45,7 +45,7 @@ async def create_session(request: CreateSessionRequest) -> CreateSessionResponse
     session_id = str(uuid4())
 
     try:
-        result = service.create_session(
+        result = await service.create_session(
             user_id=request.user_id,
             session_id=session_id,
             experience_name=request.experience_name,
@@ -77,7 +77,7 @@ async def chat(session_id: str, request: ChatRequest) -> ChatResponse:
     service = get_interview_service()
 
     try:
-        result = service.process_message(
+        result = await service.process_message(
             session_id=session_id,
             message=request.message,
             file_ids=request.file_ids,
@@ -111,7 +111,7 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
     """
 
     service = get_interview_service()
-    state = service.get_session_state(session_id)
+    state = await service.get_session_state(session_id)
 
     if state is None:
         raise HTTPException(
