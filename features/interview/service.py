@@ -20,8 +20,6 @@ _service: "InterviewService | None" = None
 
 # SSE 이벤트에서 토큰을 캡쳐할 노드명
 _STREAMING_TARGET_NODE = "question_generator"
-# ping 전송 간격 (초)
-_PING_INTERVAL_SECONDS = 10
 
 
 class InterviewService:
