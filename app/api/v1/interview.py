@@ -1,8 +1,12 @@
 """인터뷰 API 라우터"""
 
+import asyncio
+import json
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
+from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from app.schemas.interview import (
     ChatRequest,
@@ -17,6 +21,9 @@ from app.schemas.interview import (
 from features.interview import get_interview_service
 
 router = APIRouter(prefix="/interview", tags=["interview"])
+
+# ping 전송 간격 (초)
+_PING_INTERVAL_SECONDS = 10
 
 
 @router.post(
@@ -38,7 +45,7 @@ async def create_session(request: CreateSessionRequest) -> CreateSessionResponse
     session_id = str(uuid4())
 
     try:
-        result = service.create_session(
+        result = await service.create_session(
             user_id=request.user_id,
             session_id=session_id,
             experience_name=request.experience_name,
@@ -70,7 +77,7 @@ async def chat(session_id: str, request: ChatRequest) -> ChatResponse:
     service = get_interview_service()
 
     try:
-        result = service.process_message(
+        result = await service.process_message(
             session_id=session_id,
             message=request.message,
             file_ids=request.file_ids,
@@ -104,7 +111,7 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
     """
 
     service = get_interview_service()
-    state = service.get_session_state(session_id)
+    state = await service.get_session_state(session_id)
 
     if state is None:
         raise HTTPException(
@@ -142,4 +149,76 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
         is_extended_mode=state["is_extended_mode"],
         collected_data=collected_data,
         messages=messages,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/chat/stream",
+    summary="메시지 전송 (SSE 스트리밍)",
+    description="사용자 메시지를 전송하고 AI 응답을 SSE 스트리밍으로 받습니다.",
+    responses={
+        200: {
+            "description": "SSE 스트림",
+            "content": {"text/event-stream": {}},
+        },
+    },
+)
+async def chat_stream(session_id: str, request: ChatRequest):
+    """
+    사용자 메시지 처리 및 AI 응답 SSE 스트리밍
+
+    이벤트 타입:
+    - content_block_delta: LLM 토큰 스트리밍
+    - message_complete: 최종 결과 (전체 응답 + 진행 상황)
+    - error: 에러 발생
+    - ping: 연결 유지 (10초 간격)
+    """
+
+    service = get_interview_service()
+
+    async def event_generator():
+        """SSE 이벤트를 생성하는 비동기 제너레이터 (ping 인터리빙 포함)"""
+        stream = service.process_message_stream(
+            session_id=session_id,
+            message=request.message,
+            file_ids=request.file_ids,
+        )
+
+        # aiter를 명시적으로 만들어 timeout 기반 ping 인터리빙 구현
+        aiter = stream.__aiter__()
+        stream_finished = False
+
+        while not stream_finished:
+            try:
+                # ping_interval 내에 이벤트가 오면 즉시 전달
+                event_data = await asyncio.wait_for(
+                    aiter.__anext__(),
+                    timeout=_PING_INTERVAL_SECONDS,
+                )
+                yield ServerSentEvent(
+                    event=event_data["event"],
+                    data=event_data["data"],
+                )
+            except TimeoutError:
+                # 타임아웃 -> ping 이벤트 전송
+                yield ServerSentEvent(
+                    event="ping",
+                    data=json.dumps(
+                        {
+                            "type": "ping",
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            except StopAsyncIteration:
+                # 스트림 종료
+                stream_finished = True
+
+    return EventSourceResponse(
+        event_generator(),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Nginx 프록시 버퍼링 비활성화
+        },
     )

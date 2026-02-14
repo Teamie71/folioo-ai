@@ -17,8 +17,8 @@ async def lifespan(app: FastAPI):
     - 시작 시: 리소스 초기화
     - 종료 시: 리소스 정리
     """
-    # 시작 시: Checkpointer 실행
-    with setup_checkpointer():
+    # 시작 시: 비동기 Checkpointer 초기화
+    async with setup_checkpointer():
         yield
     # 종료 시: Checkpointer 자동 정리
 
