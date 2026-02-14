@@ -185,14 +185,14 @@ async def chat_stream(session_id: str, request: ChatRequest):
         )
 
         # aiter를 명시적으로 만들어 timeout 기반 ping 인터리빙 구현
-        aiter = stream.__aiter__()
+        stream_iter = aiter(stream)
         stream_finished = False
 
         while not stream_finished:
             try:
                 # ping_interval 내에 이벤트가 오면 즉시 전달
                 event_data = await asyncio.wait_for(
-                    aiter.__anext__(),
+                    anext(stream_iter),
                     timeout=_PING_INTERVAL_SECONDS,
                 )
                 yield ServerSentEvent(

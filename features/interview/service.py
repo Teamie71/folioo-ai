@@ -20,8 +20,6 @@ _service: "InterviewService | None" = None
 
 # SSE 이벤트에서 토큰을 캡쳐할 노드명
 _STREAMING_TARGET_NODE = "question_generator"
-# ping 전송 간격 (초)
-_PING_INTERVAL_SECONDS = 10
 
 
 class InterviewService:
@@ -257,6 +255,21 @@ class InterviewService:
                                 "stage_progress": final_state["stage_progress"],
                                 "overall_completion": final_state["overall_completion_percentage"],
                                 "all_complete": final_state["all_stages_complete"],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            else:
+                logger.error(f"세션 상태를 찾을 수 없습니다: {session_id}")
+                yield {
+                    "event": "error",
+                    "data": json.dumps(
+                        {
+                            "type": "error",
+                            "error": {
+                                "code": "final_state_missing",
+                                "message": f"최종 상태를 조회할 수 없습니다: {session_id}",
                             },
                         },
                         ensure_ascii=False,
