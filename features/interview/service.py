@@ -262,6 +262,21 @@ class InterviewService:
                         ensure_ascii=False,
                     ),
                 }
+            else:
+                logger.error(f"세션 상태를 찾을 수 없습니다: {session_id}")
+                yield {
+                    "event": "error",
+                    "data": json.dumps(
+                        {
+                            "type": "error",
+                            "error": {
+                                "code": "final_state_missing",
+                                "message": f"최종 상태를 조회할 수 없습니다: {session_id}",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
 
         except Exception as e:
             logger.exception(f"SSE 스트리밍 중 예외 발생: {e}")
