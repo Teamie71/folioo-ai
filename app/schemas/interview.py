@@ -57,6 +57,9 @@ class ChatRequest(BaseModel):
 
     message: str = Field(..., min_length=1, description="사용자 메시지")
     file_ids: list[str] | None = Field(None, description="업로드된 파일 ID 목록")
+    mentioned_insight_ids: list[str] | None = Field(
+        None, description="@ 멘션으로 참조한 인사이트 로그 ID 목록"
+    )
 
 
 class ChatResponse(BaseModel):

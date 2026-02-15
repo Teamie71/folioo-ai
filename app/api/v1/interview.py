@@ -81,6 +81,7 @@ async def chat(session_id: str, request: ChatRequest) -> ChatResponse:
             session_id=session_id,
             message=request.message,
             file_ids=request.file_ids,
+            mentioned_insight_ids=request.mentioned_insight_ids,
         )
     except ValueError as e:
         raise HTTPException(
@@ -182,6 +183,7 @@ async def chat_stream(session_id: str, request: ChatRequest):
             session_id=session_id,
             message=request.message,
             file_ids=request.file_ids,
+            mentioned_insight_ids=request.mentioned_insight_ids,
         )
 
         # aiter를 명시적으로 만들어 timeout 기반 ping 인터리빙 구현
