@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from common.sse import SSEDeltaType, SSEErrorCode, SSEEventType
+
 
 # ===== 공통 타입 =====
 class StageProgressSchema(BaseModel):
@@ -102,14 +104,14 @@ class ErrorResponse(BaseModel):
 class SSETextDelta(BaseModel):
     """토큰 델타 내용"""
 
-    type: str = Field(default="text_delta", description="델타 타입")
+    type: str = Field(default=SSEDeltaType.TEXT_DELTA, description="델타 타입")
     text: str = Field(..., description="스트리밍된 텍스트 조각")
 
 
 class SSEContentBlockDelta(BaseModel):
     """LLM 토큰 스트리밍 이벤트"""
 
-    type: str = Field(default="content_block_delta", description="이벤트 타입")
+    type: str = Field(default=SSEEventType.CONTENT_BLOCK_DELTA, description="이벤트 타입")
     delta: SSETextDelta = Field(..., description="텍스트 델타")
 
 
@@ -126,26 +128,30 @@ class SSEMessagePayload(BaseModel):
 class SSEMessageComplete(BaseModel):
     """전체 처리 완료 이벤트"""
 
-    type: str = Field(default="message_complete", description="이벤트 타입")
+    type: str = Field(default=SSEEventType.MESSAGE_COMPLETE, description="이벤트 타입")
     message: SSEMessagePayload = Field(..., description="완료 메시지")
 
 
 class SSEErrorDetail(BaseModel):
     """에러 상세 정보"""
 
-    code: str = Field(..., description="에러 코드 (session_not_found, llm_error, internal_error)")
+    code: str = Field(
+        ...,
+        description=f"에러 코드 ({SSEErrorCode.SESSION_NOT_FOUND}, "
+        f"{SSEErrorCode.LLM_ERROR}, internal_error)",
+    )
     message: str = Field(..., description="에러 메시지")
 
 
 class SSEError(BaseModel):
     """에러 이벤트"""
 
-    type: str = Field(default="error", description="이벤트 타입")
+    type: str = Field(default=SSEEventType.ERROR, description="이벤트 타입")
     error: SSEErrorDetail = Field(..., description="에러 상세")
 
 
 class SSEPing(BaseModel):
     """하트비트 이벤트"""
 
-    type: str = Field(default="ping", description="이벤트 타입")
+    type: str = Field(default=SSEEventType.PING, description="이벤트 타입")
     timestamp: datetime = Field(..., description="전송 시각 (ISO 8601)")

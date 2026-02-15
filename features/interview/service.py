@@ -7,6 +7,13 @@ from collections.abc import AsyncGenerator
 from langchain_core.messages import HumanMessage
 
 from common.checkpointer.factory import get_checkpointer
+from common.sse import (
+    STREAMING_TARGET_NODES,
+    LangGraphEventType,
+    SSEDeltaType,
+    SSEErrorCode,
+    SSEEventType,
+)
 from features.interview.agents.graph import build_graph
 from features.interview.agents.state import (
     InterviewState,
@@ -17,9 +24,6 @@ logger = logging.getLogger(__name__)
 
 # 모듈 레벨 싱글톤
 _service: "InterviewService | None" = None
-
-# SSE 이벤트에서 토큰을 캡쳐할 노드명
-_STREAMING_TARGET_NODE = "question_generator"
 
 
 class InterviewService:
@@ -192,12 +196,12 @@ class InterviewService:
         current_state = await self.get_session_state(session_id)
         if current_state is None:
             yield {
-                "event": "error",
+                "event": SSEEventType.ERROR,
                 "data": json.dumps(
                     {
-                        "type": "error",
+                        "type": SSEEventType.ERROR,
                         "error": {
-                            "code": "session_not_found",
+                            "code": SSEErrorCode.SESSION_NOT_FOUND,
                             "message": f"세션을 찾을 수 없습니다: {session_id}",
                         },
                     },
@@ -224,20 +228,23 @@ class InterviewService:
                 metadata = event.get("metadata", {})
                 node_name = metadata.get("langgraph_node")
 
-                # question_generator 노드의 LLM 토큰 스트리밍 이벤트만 처리
-                if event_type == "on_chat_model_stream" and node_name == _STREAMING_TARGET_NODE:
+                # 스트리밍 대상 노드의 LLM 토큰 스트리밍 이벤트만 처리
+                if (
+                    event_type == LangGraphEventType.ON_CHAT_MODEL_STREAM
+                    and node_name in STREAMING_TARGET_NODES
+                ):
                     chunk = event["data"].get("chunk")
                     if chunk and hasattr(chunk, "content") and chunk.content:
                         token_text = chunk.content
                         accumulated_text += token_text
 
                         yield {
-                            "event": "content_block_delta",
+                            "event": SSEEventType.CONTENT_BLOCK_DELTA,
                             "data": json.dumps(
                                 {
-                                    "type": "content_block_delta",
+                                    "type": SSEEventType.CONTENT_BLOCK_DELTA,
                                     "delta": {
-                                        "type": "text_delta",
+                                        "type": SSEDeltaType.TEXT_DELTA,
                                         "text": token_text,
                                     },
                                 },
@@ -253,10 +260,10 @@ class InterviewService:
                     ai_response = final_state["messages"][-1].content
 
                 yield {
-                    "event": "message_complete",
+                    "event": SSEEventType.MESSAGE_COMPLETE,
                     "data": json.dumps(
                         {
-                            "type": "message_complete",
+                            "type": SSEEventType.MESSAGE_COMPLETE,
                             "message": {
                                 "ai_response": ai_response,
                                 "current_stage": final_state["current_stage"],
@@ -271,12 +278,12 @@ class InterviewService:
             else:
                 logger.error(f"세션 상태를 찾을 수 없습니다: {session_id}")
                 yield {
-                    "event": "error",
+                    "event": SSEEventType.ERROR,
                     "data": json.dumps(
                         {
-                            "type": "error",
+                            "type": SSEEventType.ERROR,
                             "error": {
-                                "code": "final_state_missing",
+                                "code": SSEErrorCode.FINAL_STATE_MISSING,
                                 "message": f"최종 상태를 조회할 수 없습니다: {session_id}",
                             },
                         },
@@ -287,12 +294,12 @@ class InterviewService:
         except Exception as e:
             logger.exception(f"SSE 스트리밍 중 예외 발생: {e}")
             yield {
-                "event": "error",
+                "event": SSEEventType.ERROR,
                 "data": json.dumps(
                     {
-                        "type": "error",
+                        "type": SSEEventType.ERROR,
                         "error": {
-                            "code": "llm_error",
+                            "code": SSEErrorCode.LLM_ERROR,
                             "message": f"처리 중 오류가 발생했습니다: {str(e)}",
                         },
                     },

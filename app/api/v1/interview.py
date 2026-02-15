@@ -18,6 +18,7 @@ from app.schemas.interview import (
     SessionStateResponse,
     StageProgressSchema,
 )
+from common.sse import SSEEventType
 from features.interview import get_interview_service
 
 router = APIRouter(prefix="/interview", tags=["interview"])
@@ -204,10 +205,10 @@ async def chat_stream(session_id: str, request: ChatRequest):
             except TimeoutError:
                 # 타임아웃 -> ping 이벤트 전송
                 yield ServerSentEvent(
-                    event="ping",
+                    event=SSEEventType.PING,
                     data=json.dumps(
                         {
-                            "type": "ping",
+                            "type": SSEEventType.PING,
                             "timestamp": datetime.now(UTC).isoformat(),
                         },
                         ensure_ascii=False,
