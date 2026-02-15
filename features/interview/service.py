@@ -207,10 +207,9 @@ class InterviewService:
             return
 
         # 2. 입력 상태 구성
-        mentioned_insight_ids = []
         input_state: dict = {
             "messages": [HumanMessage(content=message)],
-            "mentioned_insight_ids": mentioned_insight_ids,
+            "mentioned_insight_ids": mentioned_insight_ids or [],
         }
         if file_ids:
             input_state["current_turn_files"] = file_ids
