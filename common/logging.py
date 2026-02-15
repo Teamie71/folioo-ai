@@ -138,7 +138,7 @@ def setup_logging(level: int = logging.INFO) -> None:
     if hasattr(sys.stderr, "isatty") and sys.stderr.isatty():
         formatter = ColorFormatter()
     else:
-        formatter = ColorFormatter()  # CI/Docker에서도 색상 출력 (대부분 지원)
+        formatter = PlainFormatter()  # 비-TTY 환경에서는 컬러 없이 출력
 
     handler.setFormatter(formatter)
     root_logger.addHandler(handler)
@@ -158,7 +158,7 @@ def setup_logging(level: int = logging.INFO) -> None:
     logging.getLogger("asyncpg").setLevel(logging.WARNING)
 
     # 마커 설정 (중복 호출 방지)
-    root_logger._folioo_configured = True  # noqa: SLF001
+    root_logger._folioo_configured = True
 
     # 초기화 완료 로그
     app_logger = logging.getLogger("folioo-ai")

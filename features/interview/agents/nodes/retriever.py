@@ -88,7 +88,15 @@ async def run(state: InterviewState) -> InterviewState:
 
     # 1. 유사도 검색
     similar_insights: list[InsightLog] = []
-    last_message = state["messages"][-1].content
+    messages = state.get("messages") or []
+    if not messages:
+        logger.warning("메시지가 비어있어 인사이트 검색을 건너뜁니다.")
+        return {
+            **state,
+            "retrieved_insights": [],
+            "next_node": "analyst",
+        }
+    last_message = messages[-1].content
 
     try:
         similar_insights = await store.search_similar(
