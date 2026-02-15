@@ -7,6 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as api_router
 from common.checkpointer.factory import setup_checkpointer
+from common.logging import setup_logging
+
+# ===== 로깅 초기화 (uvicorn보다 먼저 설정) =====
+setup_logging()
 
 
 @asynccontextmanager

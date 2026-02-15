@@ -98,9 +98,20 @@ async def run(state: InterviewState) -> InterviewState:
             threshold=_DEFAULT_THRESHOLD,
         )
         logger.info(
-            f"유사 인사이트 {len(similar_insights)}건 검색됨 "
-            f"(user_id={state['user_id']}, top_k={_DEFAULT_TOP_K})"
+            "🔎 유사 인사이트 %d건 검색됨 (user_id=%s, top_k=%d, threshold=%.2f)",
+            len(similar_insights),
+            state["user_id"],
+            _DEFAULT_TOP_K,
+            _DEFAULT_THRESHOLD,
         )
+        # 각 인사이트의 유사도 수치 로그
+        for insight in similar_insights:
+            logger.info(
+                "  📌 score=%.4f | id=%s | title='%s'",
+                insight.get("similarity_score", 0.0),
+                insight["id"],
+                insight["title"][:40],
+            )
     except Exception:
         logger.exception("인사이트 유사도 검색 중 오류 발생")
 
@@ -123,9 +134,10 @@ async def run(state: InterviewState) -> InterviewState:
     all_insights = _merge_and_deduplicate(similar_insights, mentioned_insights)
 
     logger.info(
-        f"인사이트 병합 완료: 유사={len(similar_insights)}, "
-        f"멘션={len(mentioned_insights)} "
-        f"→ 최종={len(all_insights)}"
+        "✅ 인사이트 병합 완료: 유사=%d, 멘션=%d → 최종=%d",
+        len(similar_insights),
+        len(mentioned_insights),
+        len(all_insights),
     )
 
     # 검색 후 Analyst 노드로 전환

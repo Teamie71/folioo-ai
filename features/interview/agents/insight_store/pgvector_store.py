@@ -175,7 +175,30 @@ class PgVectorInsightStore:
             }
             for row in rows
         ]
+
+        # 검색 결과 요약 로그
+        query_preview = query[:50].replace("\n", " ")
         logger.info(
-            f"유사 인사이트 검색: query='{query[:30]}...', user={user_id}, found={len(results)}"
+            "🔍 유사 인사이트 검색 완료: query='%s%s', user=%s, threshold=%.2f, top_k=%d, found=%d",
+            query_preview,
+            "..." if len(query) > 50 else "",
+            user_id,
+            threshold,
+            top_k,
+            len(results),
         )
+
+        # 각 결과의 유사도 수치 상세 로그
+        if results:
+            for i, r in enumerate(results, 1):
+                logger.info(
+                    "  📊 [%d] score=%.4f | id=%s | title='%s'",
+                    i,
+                    r["similarity_score"],
+                    r["id"],
+                    r["title"][:40],
+                )
+        else:
+            logger.info("  ⚠️ 임계값(%.2f) 이상의 유사 인사이트 없음", threshold)
+
         return results
