@@ -233,14 +233,14 @@ class PgVectorInsightStore:
             "similarity_score": None,
         }
 
-        async def clear(self) -> None:
-            """저장소 초기화 (테스트용)"""
+    async def clear(self) -> None:
+        """저장소 초기화 (테스트용)"""
 
-            async with self._pool.acquire() as conn:
-                await conn.execute("DELETE FROM insight_logs")
+        async with self._pool.acquire() as conn:
+            await conn.execute("DELETE FROM insight_logs")
 
-        async def count(self) -> int:
-            """저장된 인사이트 수"""
+    async def count(self) -> int:
+        """저장된 인사이트 수"""
 
-            async with self._pool.acquire() as conn:
-                return await conn.fetchval("SELECT COUNT(*) FROM insight_logs")
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval("SELECT COUNT(*) FROM insight_logs")

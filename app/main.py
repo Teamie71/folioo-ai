@@ -58,6 +58,8 @@ async def lifespan(app: FastAPI):
             logger.info("InsightStore(pgvector) 초기화 완료")
         except Exception:
             logger.exception("InsightStore 초기화 실패 — 인사이트 검색 비활성화")
+            if pool is not None:
+                await pool.close()
             pool = None
     else:
         logger.warning(

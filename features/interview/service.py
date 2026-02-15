@@ -126,9 +126,8 @@ class InterviewService:
         if file_ids:
             input_state["current_turn_files"] = file_ids
 
-        # @ 멘션된 인사이트 ID가 있으면 추가
-        if mentioned_insight_ids:
-            input_state["mentioned_insight_ids"] = mentioned_insight_ids
+        # @ 멘션된 인사이트 ID (매 턴 초기화 필요)
+        input_state["mentioned_insight_ids"] = mentioned_insight_ids or []
 
         # 그래프 비동기 실행 (Checkpointer가 이전 상태 자동 로드)
         result = await self._graph.ainvoke(
@@ -210,12 +209,10 @@ class InterviewService:
         # 2. 입력 상태 구성
         input_state: dict = {
             "messages": [HumanMessage(content=message)],
+            "mentioned_insight_ids": mentioned_insight_ids or [],
         }
         if file_ids:
             input_state["current_turn_files"] = file_ids
-
-        if mentioned_insight_ids:
-            input_state["mentioned_insight_ids"] = mentioned_insight_ids
 
         config = {"configurable": {"thread_id": session_id}}
         accumulated_text = ""
