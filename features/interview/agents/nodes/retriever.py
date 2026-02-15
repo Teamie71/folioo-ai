@@ -64,7 +64,7 @@ def _merge_and_deduplicate(*insight_lists: list[InsightLog]) -> list[InsightLog]
     return list(seen.values())
 
 
-def run(state: InterviewState) -> InterviewState:
+async def run(state: InterviewState) -> InterviewState:
     """
     인사이트 로그 벡터 검색
 
