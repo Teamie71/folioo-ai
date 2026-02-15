@@ -97,11 +97,12 @@ class InterviewState(TypedDict):
     # Retriever가 사용자 메시지를 파싱하여 추출
 
     retrieved_insights: list[InsightLog]
-    # 세션 내내 누적된 인사이트 로그 목록 (중복 제거)
+    # 해당 턴에서 검색/멘션된 인사이트 로그 목록 (매 턴 갱신, 누적하지 않음)
     # Retriever가 다음을 수행:
-    #   1. 현재 턴 사용자 답변으로 자동 유사도 검색
+    #   1. 현재 턴 사용자 메시지로 유사도 검색 (pgvector → 향후 API)
     #   2. @멘션된 인사이트 강제 포함
-    #   3. 유사도 임계값 넘은 것만 추가 (설정 파일에서 임계값 로드)
+    #   3. 병합 & 중복 제거 후 해당 턴의 결과만 반환
+    # 이전 턴의 인사이트는 messages 히스토리를 통해 자연스럽게 context에 포함됨
 
     # ===== 파일 업로드 =====
     uploaded_files: list[FileAttachment]

@@ -89,6 +89,7 @@ class InterviewService:
         session_id: str,
         message: str,
         file_ids: list[str] | None = None,
+        mentioned_insight_ids: list[str] | None = None,
     ) -> dict:
         """
         사용자 메시지 처리 및 AI 응답 생성
@@ -97,6 +98,7 @@ class InterviewService:
             session_id: 세션 ID
             message: 사용자 메시지
             file_ids: 현재 턴에서 업로드된 파일 ID 목록 (선택)
+            mentioned_insight_ids: @ 멘션으로 참조한 인사이트 로그 ID 목록 (선택)
 
         Returns:
             dict: 처리 결과
@@ -123,6 +125,9 @@ class InterviewService:
         # 파일 ID가 있으면 추가
         if file_ids:
             input_state["current_turn_files"] = file_ids
+
+        # @ 멘션된 인사이트 ID (매 턴 초기화 필요)
+        input_state["mentioned_insight_ids"] = mentioned_insight_ids or []
 
         # 그래프 비동기 실행 (Checkpointer가 이전 상태 자동 로드)
         result = await self._graph.ainvoke(
@@ -163,6 +168,7 @@ class InterviewService:
         session_id: str,
         message: str,
         file_ids: list[str] | None = None,
+        mentioned_insight_ids: list[str] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """
         사용자 메시지 처리 및 AI 응답 SSE 스트리밍
@@ -174,6 +180,7 @@ class InterviewService:
             session_id: 세션 ID
             message: 사용자 메시지
             file_ids: 현재 턴에서 업로드된 파일 ID 목록 (선택)
+            mentioned_insight_ids: @ 멘션으로 참조한 인사이트 로그 ID 목록 (선택)
 
         Yields:
             dict: SSE 이벤트 데이터
@@ -202,6 +209,7 @@ class InterviewService:
         # 2. 입력 상태 구성
         input_state: dict = {
             "messages": [HumanMessage(content=message)],
+            "mentioned_insight_ids": mentioned_insight_ids or [],
         }
         if file_ids:
             input_state["current_turn_files"] = file_ids
