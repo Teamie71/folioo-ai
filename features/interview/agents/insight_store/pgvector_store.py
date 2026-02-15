@@ -202,3 +202,45 @@ class PgVectorInsightStore:
             logger.info("  ⚠️ 임계값(%.2f) 이상의 유사 인사이트 없음", threshold)
 
         return results
+
+    async def get_by_id(self, insight_id: str) -> InsightLog | None:
+        """
+        인사이트 단건 조회
+
+        Args:
+            insight_id: 인사이트 로그 ID
+
+        Returns:
+            인사이트 로그 데이터, 없으면 None
+        """
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, title, activity_name, category, content "
+                "FROM insight_logs WHERE id = $1",
+                insight_id,
+            )
+
+        if row is None:
+            return None
+
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "activity_name": row["activity_name"],
+            "category": row["category"],
+            "content": row["content"],
+            "similarity_score": None,
+        }
+
+        async def clear(self) -> None:
+            """저장소 초기화 (테스트용)"""
+
+            async with self._pool.acquire() as conn:
+                await conn.execute("DELETE FROM insight_logs")
+
+        async def count(self) -> int:
+            """저장된 인사이트 수"""
+
+            async with self._pool.acquire() as conn:
+                return await conn.fetchval("SELECT COUNT(*) FROM insight_logs")
