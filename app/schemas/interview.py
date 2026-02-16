@@ -138,7 +138,7 @@ class SSEErrorDetail(BaseModel):
     code: str = Field(
         ...,
         description=f"에러 코드 ({SSEErrorCode.SESSION_NOT_FOUND}, "
-        f"{SSEErrorCode.LLM_ERROR}, internal_error)",
+        f"{SSEErrorCode.FINAL_STATE_MISSING}, {SSEErrorCode.LLM_ERROR})",
     )
     message: str = Field(..., description="에러 메시지")
 
