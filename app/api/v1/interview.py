@@ -27,6 +27,39 @@ router = APIRouter(prefix="/interview", tags=["interview"])
 _PING_INTERVAL_SECONDS = 10
 
 
+async def _interleave_ping_events(stream):
+    """SSE 스트림에 ping 이벤트를 인터리빙"""
+    stream_iter = aiter(stream)
+    stream_finished = False
+
+    while not stream_finished:
+        try:
+            # ping_interval 내에 이벤트가 오면 즉시 전달
+            event_data = await asyncio.wait_for(
+                anext(stream_iter),
+                timeout=_PING_INTERVAL_SECONDS,
+            )
+            yield ServerSentEvent(
+                event=event_data["event"],
+                data=event_data["data"],
+            )
+        except TimeoutError:
+            # 타임아웃 -> ping 이벤트 전송
+            yield ServerSentEvent(
+                event=SSEEventType.PING,
+                data=json.dumps(
+                    {
+                        "type": SSEEventType.PING,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        except StopAsyncIteration:
+            # 스트림 종료
+            stream_finished = True
+
+
 @router.post(
     "/sessions",
     response_model=CreateSessionResponse,
@@ -59,6 +92,38 @@ async def create_session(request: CreateSessionRequest) -> CreateSessionResponse
         first_question=result["first_question"],
         current_stage=result["current_stage"],
         stage_progress=StageProgressSchema(**result["stage_progress"]),
+    )
+
+
+@router.post(
+    "/sessions/stream",
+    status_code=status.HTTP_201_CREATED,
+    summary="인터뷰 세션 생성 (SSE 스트리밍)",
+    description="새로운 인터뷰 세션을 생성하고 첫 AI 질문을 SSE 스트리밍으로 반환합니다.",
+    responses={
+        201: {
+            "description": "SSE 스트림",
+            "content": {"text/event-stream": {}},
+        },
+    },
+)
+async def create_session_stream(request: CreateSessionRequest):
+    """새 인터뷰 세션 생성 및 첫 질문 SSE 스트리밍"""
+    service = get_interview_service()
+    session_id = str(uuid4())
+
+    stream = service.create_session_stream(
+        user_id=request.user_id,
+        session_id=session_id,
+        experience_name=request.experience_name,
+    )
+
+    return EventSourceResponse(
+        _interleave_ping_events(stream),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Nginx 프록시 버퍼링 비활성화
+        },
     )
 
 
@@ -179,44 +244,15 @@ async def chat_stream(session_id: str, request: ChatRequest):
     service = get_interview_service()
 
     async def event_generator():
-        """SSE 이벤트를 생성하는 비동기 제너레이터 (ping 인터리빙 포함)"""
+        """SSE 이벤트를 생성하는 비동기 제너레이터"""
         stream = service.process_message_stream(
             session_id=session_id,
             message=request.message,
             file_ids=request.file_ids,
             mentioned_insight_ids=request.mentioned_insight_ids,
         )
-
-        # aiter를 명시적으로 만들어 timeout 기반 ping 인터리빙 구현
-        stream_iter = aiter(stream)
-        stream_finished = False
-
-        while not stream_finished:
-            try:
-                # ping_interval 내에 이벤트가 오면 즉시 전달
-                event_data = await asyncio.wait_for(
-                    anext(stream_iter),
-                    timeout=_PING_INTERVAL_SECONDS,
-                )
-                yield ServerSentEvent(
-                    event=event_data["event"],
-                    data=event_data["data"],
-                )
-            except TimeoutError:
-                # 타임아웃 -> ping 이벤트 전송
-                yield ServerSentEvent(
-                    event=SSEEventType.PING,
-                    data=json.dumps(
-                        {
-                            "type": SSEEventType.PING,
-                            "timestamp": datetime.now(UTC).isoformat(),
-                        },
-                        ensure_ascii=False,
-                    ),
-                )
-            except StopAsyncIteration:
-                # 스트림 종료
-                stream_finished = True
+        async for event in _interleave_ping_events(stream):
+            yield event
 
     return EventSourceResponse(
         event_generator(),
