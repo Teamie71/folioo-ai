@@ -108,6 +108,7 @@ class InterviewService:
         if not user_id or not session_id or not experience_name:
             raise ValueError("user_id, session_id, experience_name은 필수입니다.")
 
+        # 1. 초기 입력 상태 생성
         initial_state = get_initial_interview_state(
             user_id=user_id,
             session_id=session_id,
@@ -116,12 +117,16 @@ class InterviewService:
         config = {"configurable": {"thread_id": session_id}}
         accumulated_text = ""
 
+        # 2. 스트리밍 진행
         try:
-            async for event in self._graph.astream_events(initial_state, config=config, version="v2"):
+            async for event in self._graph.astream_events(
+                initial_state, config=config, version="v2"
+            ):
                 event_type = event.get("event")
                 metadata = event.get("metadata", {})
                 node_name = metadata.get("langgraph_node")
 
+                # 3. 스트리밍 대상 노드의 LLM 토큰 스트리밍 이벤트만 처리
                 if (
                     event_type == LangGraphEventType.ON_CHAT_MODEL_STREAM
                     and node_name in STREAMING_TARGET_NODES
@@ -145,6 +150,7 @@ class InterviewService:
                             ),
                         }
 
+            # 4. 스트리밍 완료 후 최종 상태에서 첫 질문 추출
             final_state = await self.get_session_state(session_id)
             if final_state:
                 first_question = accumulated_text
