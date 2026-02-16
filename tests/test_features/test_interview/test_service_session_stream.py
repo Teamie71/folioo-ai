@@ -162,10 +162,12 @@ async def test_process_message_stream_yields_retriever_result(monkeypatch):
         )
     ]
 
+    assert len(events) > 0
     retriever_event = events[0]
     assert retriever_event["event"] == SSEEventType.RETRIEVER_RESULT
     retriever_payload = json.loads(retriever_event["data"])
     assert retriever_payload["type"] == SSEEventType.RETRIEVER_RESULT
+    assert len(retriever_payload["insights"]) == 2
     assert retriever_payload["insights"][0] == {
         "id": "insight-1",
         "title": "문제 해결 경험",
