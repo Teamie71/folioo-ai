@@ -17,6 +17,7 @@ wheels/
 PROJECT_INFO.md
 opencode.json
 .for_local/
+.agent/
 
 # Checkpointer 데이터 (SQLite)
 .data/

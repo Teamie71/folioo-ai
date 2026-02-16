@@ -88,6 +88,123 @@ class InterviewService:
             "stage_progress": result["stage_progress"],
         }
 
+    async def create_session_stream(
+        self,
+        user_id: str,
+        session_id: str,
+        experience_name: str,
+    ) -> AsyncGenerator[dict, None]:
+        """
+        새 인터뷰 세션 생성 및 첫 AI 질문 SSE 스트리밍
+
+        Args:
+            user_id: 사용자 ID
+            session_id: 세션 ID (UUID, 호출자가 생성)
+            experience_name: 정리할 경험/프로젝트 이름
+
+        Yields:
+            dict: SSE 이벤트 데이터
+        """
+        if not user_id or not session_id or not experience_name:
+            raise ValueError("user_id, session_id, experience_name은 필수입니다.")
+
+        # 1. 초기 입력 상태 생성
+        initial_state = get_initial_interview_state(
+            user_id=user_id,
+            session_id=session_id,
+            experience_name=experience_name,
+        )
+        config = {"configurable": {"thread_id": session_id}}
+        accumulated_text = ""
+
+        # 2. 스트리밍 진행
+        try:
+            async for event in self._graph.astream_events(
+                initial_state, config=config, version="v2"
+            ):
+                event_type = event.get("event")
+                metadata = event.get("metadata", {})
+                node_name = metadata.get("langgraph_node")
+
+                # 3. 스트리밍 대상 노드의 LLM 토큰 스트리밍 이벤트만 처리
+                if (
+                    event_type == LangGraphEventType.ON_CHAT_MODEL_STREAM
+                    and node_name in STREAMING_TARGET_NODES
+                ):
+                    chunk = event["data"].get("chunk")
+                    if chunk and hasattr(chunk, "content") and chunk.content:
+                        token_text = chunk.content
+                        accumulated_text += token_text
+
+                        yield {
+                            "event": SSEEventType.CONTENT_BLOCK_DELTA,
+                            "data": json.dumps(
+                                {
+                                    "type": SSEEventType.CONTENT_BLOCK_DELTA,
+                                    "delta": {
+                                        "type": SSEDeltaType.TEXT_DELTA,
+                                        "text": token_text,
+                                    },
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+
+            # 4. 스트리밍 완료 후 최종 상태에서 첫 질문 추출
+            final_state = await self.get_session_state(session_id)
+            if final_state:
+                first_question = accumulated_text
+                messages = final_state.get("messages", [])
+                if not first_question and messages:
+                    first_question = messages[-1].content
+
+                yield {
+                    "event": SSEEventType.MESSAGE_COMPLETE,
+                    "data": json.dumps(
+                        {
+                            "type": SSEEventType.MESSAGE_COMPLETE,
+                            "message": {
+                                "session_id": session_id,
+                                "first_question": first_question,
+                                "current_stage": final_state["current_stage"],
+                                "stage_progress": final_state["stage_progress"],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            else:
+                logger.error(f"세션 상태를 찾을 수 없습니다: {session_id}")
+                yield {
+                    "event": SSEEventType.ERROR,
+                    "data": json.dumps(
+                        {
+                            "type": SSEEventType.ERROR,
+                            "error": {
+                                "code": SSEErrorCode.FINAL_STATE_MISSING,
+                                "message": f"최종 상태를 조회할 수 없습니다: {session_id}",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+
+        except Exception as e:
+            logger.exception(f"SSE 스트리밍 중 예외 발생: {e}")
+            yield {
+                "event": SSEEventType.ERROR,
+                "data": json.dumps(
+                    {
+                        "type": SSEEventType.ERROR,
+                        "error": {
+                            "code": SSEErrorCode.LLM_ERROR,
+                            "message": f"처리 중 오류가 발생했습니다: {str(e)}",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+
     async def process_message(
         self,
         session_id: str,

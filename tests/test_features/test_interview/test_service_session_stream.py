@@ -1,0 +1,100 @@
+"""첫 질문 스트리밍 관련 테스트"""
+
+import json
+
+import pytest
+from langchain_core.messages import AIMessage
+
+from app.api.v1.interview import router
+from common.sse import LangGraphEventType, SSEEventType
+from features.interview.service import InterviewService
+
+
+class DummyStateSnapshot:
+    """그래프 상태 스냅샷 더미"""
+
+    def __init__(self, values):
+        self.values = values
+
+
+class DummyChunk:
+    """스트리밍 청크 더미"""
+
+    def __init__(self, content: str):
+        self.content = content
+
+
+class DummyGraph:
+    """스트리밍 테스트용 그래프 더미"""
+
+    def __init__(self):
+        self.stream_events = []
+        self.state_snapshot = None
+        self.astream_calls = []
+        self.aget_state_calls = []
+
+    async def astream_events(self, state, config=None, version=None):
+        self.astream_calls.append({"state": state, "config": config, "version": version})
+        for event in self.stream_events:
+            yield event
+
+    async def aget_state(self, config=None):
+        self.aget_state_calls.append(config)
+        return self.state_snapshot
+
+
+@pytest.mark.anyio
+async def test_create_session_stream_yields_delta_and_complete(monkeypatch):
+    """첫 질문 생성 시 토큰과 완료 이벤트를 순서대로 전송하는지 테스트"""
+    dummy_graph = DummyGraph()
+    dummy_graph.stream_events = [
+        {
+            "event": LangGraphEventType.ON_CHAT_MODEL_STREAM,
+            "metadata": {"langgraph_node": "question_generator"},
+            "data": {"chunk": DummyChunk("첫 질문")},
+        }
+    ]
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "messages": [AIMessage(content="첫 질문")],
+            "current_stage": 1,
+            "stage_progress": {
+                "fixed_q_used": 0,
+                "fixed_q_total": 1,
+                "generated_q_used": 0,
+                "generated_q_max": 0,
+                "force_all_generated_q": False,
+                "is_complete": False,
+            },
+        }
+    )
+
+    monkeypatch.setattr("features.interview.service.build_graph", lambda checkpointer=None: dummy_graph)
+    monkeypatch.setattr("features.interview.service.get_checkpointer", lambda: object())
+    service = InterviewService()
+
+    events = [
+        event
+        async for event in service.create_session_stream(
+            user_id="user-1",
+            session_id="session-1",
+            experience_name="프로젝트",
+        )
+    ]
+
+    assert events[0]["event"] == SSEEventType.CONTENT_BLOCK_DELTA
+    delta_payload = json.loads(events[0]["data"])
+    assert delta_payload["delta"]["text"] == "첫 질문"
+
+    assert events[1]["event"] == SSEEventType.MESSAGE_COMPLETE
+    complete_payload = json.loads(events[1]["data"])
+    assert complete_payload["message"]["session_id"] == "session-1"
+    assert complete_payload["message"]["first_question"] == "첫 질문"
+    assert complete_payload["message"]["current_stage"] == 1
+
+
+def test_create_session_stream_route_exists():
+    """첫 질문 스트리밍 라우트가 등록되어 있는지 테스트"""
+    assert any(
+        route.path == "/interview/sessions/stream" and "POST" in route.methods for route in router.routes
+    )
