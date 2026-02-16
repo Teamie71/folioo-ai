@@ -120,6 +120,7 @@ async def create_session_stream(request: CreateSessionRequest):
 
     return EventSourceResponse(
         _interleave_ping_events(stream),
+        status_code=status.HTTP_201_CREATED,
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",  # Nginx 프록시 버퍼링 비활성화
