@@ -148,8 +148,9 @@ class InterviewService:
             final_state = await self.get_session_state(session_id)
             if final_state:
                 first_question = accumulated_text
-                if not first_question and final_state["messages"]:
-                    first_question = final_state["messages"][-1].content
+                messages = final_state.get("messages", [])
+                if not first_question and messages:
+                    first_question = messages[-1].content
 
                 yield {
                     "event": SSEEventType.MESSAGE_COMPLETE,
