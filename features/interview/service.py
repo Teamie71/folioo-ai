@@ -368,6 +368,20 @@ class InterviewService:
                 metadata = event.get("metadata", {})
                 node_name = metadata.get("langgraph_node")
 
+                # retriever 노드 시작 시 상태 메시지 스트리밍
+                if event_type == LangGraphEventType.ON_CHAIN_START and node_name == "retriever":
+                    yield {
+                        "event": SSEEventType.RETRIEVER_STATUS,
+                        "data": json.dumps(
+                            {
+                                "type": SSEEventType.RETRIEVER_STATUS,
+                                "message": "대화 내용을 바탕으로 유사도가 높은 인사이트 로그를 읽었어요.",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+
+                # retriever 노드 완료 시 검색 결과 스트리밍
                 if event_type == LangGraphEventType.ON_CHAIN_END and node_name == "retriever":
                     output = event.get("data", {}).get("output")
                     yield {
