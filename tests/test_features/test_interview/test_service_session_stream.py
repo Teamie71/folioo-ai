@@ -98,3 +98,82 @@ def test_create_session_stream_route_exists():
     assert any(
         route.path == "/interview/sessions/stream" and "POST" in route.methods for route in router.routes
     )
+
+
+@pytest.mark.anyio
+async def test_process_message_stream_yields_retriever_result(monkeypatch):
+    """Retriever 종료 이벤트에서 retriever_result를 전송하는지 테스트"""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "messages": [AIMessage(content="최종 응답")],
+            "current_stage": 1,
+            "stage_progress": {
+                "fixed_q_used": 0,
+                "fixed_q_total": 1,
+                "generated_q_used": 0,
+                "generated_q_max": 0,
+                "force_all_generated_q": False,
+                "is_complete": False,
+            },
+            "overall_completion_percentage": 25.0,
+            "all_stages_complete": False,
+        }
+    )
+    dummy_graph.stream_events = [
+        {
+            "event": LangGraphEventType.ON_CHAIN_END,
+            "metadata": {"langgraph_node": "retriever"},
+            "data": {
+                "output": {
+                    "retrieved_insights": [
+                        {
+                            "id": "insight-1",
+                            "title": "문제 해결 경험",
+                            "category": "문제해결",
+                            "similarity_score": 0.91,
+                        },
+                        {
+                            "id": "insight-2",
+                            "title": "멘션 인사이트",
+                            "category": "기타",
+                            "similarity_score": None,
+                        },
+                    ]
+                }
+            },
+        },
+        {
+            "event": LangGraphEventType.ON_CHAT_MODEL_STREAM,
+            "metadata": {"langgraph_node": "question_generator"},
+            "data": {"chunk": DummyChunk("토큰")},
+        },
+    ]
+
+    monkeypatch.setattr("features.interview.service.build_graph", lambda checkpointer=None: dummy_graph)
+    monkeypatch.setattr("features.interview.service.get_checkpointer", lambda: object())
+    service = InterviewService()
+
+    events = [
+        event
+        async for event in service.process_message_stream(
+            session_id="session-1",
+            message="사용자 답변",
+        )
+    ]
+
+    assert len(events) > 0
+    retriever_event = events[0]
+    assert retriever_event["event"] == SSEEventType.RETRIEVER_RESULT
+    retriever_payload = json.loads(retriever_event["data"])
+    assert retriever_payload["type"] == SSEEventType.RETRIEVER_RESULT
+    assert len(retriever_payload["insights"]) == 2
+    assert retriever_payload["insights"][0] == {
+        "id": "insight-1",
+        "title": "문제 해결 경험",
+        "category": "문제해결",
+        "content": "",
+        "similarity": 0.91,
+        "source": "search",
+    }
+    assert retriever_payload["insights"][1]["source"] == "mention"

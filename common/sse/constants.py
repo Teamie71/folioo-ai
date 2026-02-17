@@ -7,6 +7,8 @@ class SSEEventType(StrEnum):
     """SSE 이벤트 타입 (event 필드에 사용)"""
 
     CONTENT_BLOCK_DELTA = "content_block_delta"
+    RETRIEVER_STATUS = "retriever_status"
+    RETRIEVER_RESULT = "retriever_result"
     MESSAGE_COMPLETE = "message_complete"
     ERROR = "error"
     PING = "ping"
@@ -30,6 +32,8 @@ class LangGraphEventType(StrEnum):
     """LangGraph astream_events에서 사용하는 이벤트 타입"""
 
     ON_CHAT_MODEL_STREAM = "on_chat_model_stream"
+    ON_CHAIN_START = "on_chain_start"
+    ON_CHAIN_END = "on_chain_end"
 
 
 # 스트리밍 대상 노드 (다중 노드 지원)

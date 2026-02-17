@@ -115,6 +115,24 @@ class SSEContentBlockDelta(BaseModel):
     delta: SSETextDelta = Field(..., description="텍스트 델타")
 
 
+class SSERetrieverInsight(BaseModel):
+    """Retriever 검색 인사이트 항목"""
+
+    id: str = Field(..., description="인사이트 ID")
+    title: str = Field(..., description="인사이트 제목")
+    category: str = Field(..., description="인사이트 카테고리")
+    content: str = Field(..., description="인사이트 본문 내용")
+    similarity: float | None = Field(None, description="유사도 점수")
+    source: str = Field(..., description="검색 소스 (search 또는 mention)")
+
+
+class SSERetrieverResult(BaseModel):
+    """Retriever 검색 결과 이벤트"""
+
+    type: str = Field(default=SSEEventType.RETRIEVER_RESULT, description="이벤트 타입")
+    insights: list[SSERetrieverInsight] = Field(default_factory=list, description="검색된 인사이트 목록")
+
+
 class SSEMessagePayload(BaseModel):
     """최종 완료 메시지 내용"""
 
