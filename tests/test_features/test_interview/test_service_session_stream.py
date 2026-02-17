@@ -172,6 +172,7 @@ async def test_process_message_stream_yields_retriever_result(monkeypatch):
         "id": "insight-1",
         "title": "문제 해결 경험",
         "category": "문제해결",
+        "content": "",
         "similarity": 0.91,
         "source": "search",
     }
