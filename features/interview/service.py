@@ -299,6 +299,7 @@ class InterviewService:
                     "id": insight.get("id"),
                     "title": insight.get("title"),
                     "category": insight.get("category"),
+                    "content": insight.get("content", ""),
                     "similarity": similarity,
                     "source": "search" if similarity is not None else "mention",
                 }
