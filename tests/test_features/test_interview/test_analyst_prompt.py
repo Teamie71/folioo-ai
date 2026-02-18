@@ -4,7 +4,7 @@ import pytest
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
-from features.interview.agents.prompts.analyst import (
+from features.interview.agents.prompts import (
     AnalystFieldResult,
     AnalystResponse,
     analyst_prompt,

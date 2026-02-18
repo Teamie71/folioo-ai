@@ -11,7 +11,7 @@ from features.interview.config.loader import (
     load_stage_config,
 )
 
-from ..prompts.question_generator import (
+from ..prompts import (
     contextual_fixed_question_prompt,
     first_turn_prompt,
     generated_question_prompt,
