@@ -245,11 +245,14 @@ def _calculate_overall_completion_percentage(
                 "all_collected_data": all_collected_data,
             }
         )
-        match = re.search(r"\d+(?:\.\d+)?", str(response.content))
+        response_text = str(response.content).strip()
+        match = re.fullmatch(r"\d+(?:\.\d+)?", response_text)
         if not match:
             raise ValueError("전체 완료율 숫자 파싱에 실패했습니다.")
         score = float(match.group())
-        return max(0.0, min(100.0, score)), None
+        if not 0.0 <= score <= 100.0:
+            raise ValueError(f"전체 완료율 범위 초과: {score}")
+        return score, None
     except Exception as e:
         logger.exception("전체 완료율 계산 실패")
         return 0.0, str(e)
