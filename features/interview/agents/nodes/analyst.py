@@ -4,13 +4,13 @@ import copy
 import logging
 
 from common.llm.client import get_llm
-from features.interview.agents.nodes.utils import _get_conversation_context
 from features.interview.agents.prompts.analyst import AnalystResponse, analyst_prompt
 from features.interview.config.loader import get_global_config, load_stage_config
 
 from ..state import CollectedField, InsightLog, InterviewState
+from .utils import _get_conversation_context
 
-logger = logging
+logger = logging.getLogger(__name__)
 
 
 def run(state: InterviewState) -> InterviewState:
@@ -21,15 +21,7 @@ def run(state: InterviewState) -> InterviewState:
     - 기존 데이터보다 completeness가 높은 경우에만 갱신
     - LLM 호출 실패 시 기존 데이터 유지
 
-
-    수집된 정보 통합 분석
-    - FileProcessor 결과 통합
-    - Retriever 결과 통합
-    - 대화 컨텍스트에서 정보 추출
-    - 단계 완료 여부 판단
-
     TODO: 실제 분석 로직은 후속 이슈에서 구현
-    - LLM 기반 정보 추출 및 통합
     - 완료율 계산
     - 단계 전환 로직
     """
