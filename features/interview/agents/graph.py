@@ -52,8 +52,15 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_edge("file_processor", "retriever")
     # Retriever -> Analyst
     graph.add_edge("retriever", "analyst")
-    # Analyst -> QuestionGenerator
-    graph.add_edge("analyst", "question_generator")
+    # Analyst -> 조건부 분기 (단계 진행 또는 인터뷰 종료)
+    graph.add_conditional_edges(
+        "analyst",
+        lambda state: state["next_node"],
+        {
+            "question_generator": "question_generator",
+            "end": END,
+        },
+    )
     # QuestionGenerator -> END
     graph.add_edge("question_generator", END)
 
