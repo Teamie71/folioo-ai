@@ -21,9 +21,9 @@ def run(state: InterviewState) -> InterviewState:
     - 기존 데이터보다 completeness가 높은 경우에만 갱신
     - LLM 호출 실패 시 기존 데이터 유지
 
-    TODO: 실제 분석 로직은 후속 이슈에서 구현
-    - 완료율 계산
-    - 단계 전환 로직
+    TODO: 후속 이슈에서 구현
+    - 전체 완료율(overall_completion_percentage) 계산
+    - 단계 전환 로직 (all_stages_complete 포함)
     """
 
     current_stage = state["current_stage"]
@@ -100,7 +100,7 @@ def run(state: InterviewState) -> InterviewState:
 
     except Exception as e:
         logger.exception("Analyst LLM 호출 실패")
-        updated_collected_data = state["collected_data"]
+        updated_collected_data = copy.deepcopy(state["collected_data"])
         llm_error = str(e)
 
     # 5. 상태 반환 (변경 필드)
