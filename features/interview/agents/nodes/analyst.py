@@ -81,7 +81,7 @@ def run(state: InterviewState) -> InterviewState:
                 # 기존 데이터 없음 → 신규 추가
                 stage_collected[field_name] = CollectedField(
                     field_name=field_name,
-                    description=stage_config.required_fields[field_name]["description"],
+                    description=stage_config.required_fields[field_name].get("description", ""),
                     value=field_result.value,
                     completeness=field_result.completeness,
                 )
@@ -124,7 +124,7 @@ def _format_required_fields(required_fields: dict[str, dict[str, str]]) -> str:
     """
     lines = []
     for field_name, field_info in required_fields.items():
-        lines.append(f"- {field_name}: {field_info['description']}")
+        lines.append(f"- {field_name}: {field_info.get('description', '')}")
     return "\n".join(lines)
 
 
