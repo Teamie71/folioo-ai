@@ -79,6 +79,10 @@ class PortfolioService:
                     "session_id 중복 감지 (동시 요청), 기존 레코드 재사용: %s", session_id
                 )
                 row = await self._repository.get_by_session_id(session_id)
+                if row is None:
+                    raise RuntimeError(
+                        f"session_id 충돌 후 기존 레코드를 찾을 수 없습니다: {session_id}"
+                    )
                 return str(row["id"])
             await self._repository.update_status(portfolio_id, PortfolioStatus.GENERATING.value)
 
