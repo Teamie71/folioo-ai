@@ -78,7 +78,10 @@ def test_run_moves_to_next_stage_when_complete(monkeypatch):
     assert result["stage_progress"]["fixed_q_total"] == len(stage_2_config.fixed_questions)
     assert result["stage_progress"]["generated_q_used"] == 0
     assert result["stage_progress"]["generated_q_max"] == stage_2_config.max_generated_questions
-    assert result["stage_progress"]["force_all_generated_q"] == stage_2_config.force_all_generated_questions
+    assert (
+        result["stage_progress"]["force_all_generated_q"]
+        == stage_2_config.force_all_generated_questions
+    )
     assert result["stage_progress"]["is_complete"] is False
     assert result["collected_data"]["stage_1"]["project_background"]["value"] == "프로젝트 배경"
 
@@ -88,8 +91,8 @@ def test_run_marks_all_complete_at_stage_4(monkeypatch):
     response = AnalystResponse(
         fields=[
             AnalystFieldResult(
-                field_name="portfolio_outcome",
-                value="성과 설명",
+                field_name="final_deliverable",
+                value="서비스 런칭 완료",
                 completeness=0.9,
                 reasoning="충분히 설명됨",
             )
@@ -120,3 +123,4 @@ def test_run_marks_all_complete_at_stage_4(monkeypatch):
     assert result["all_stages_complete"] is True
     assert result["overall_completion_percentage"] == 88.5
     assert result["next_node"] == "end"
+    assert result["collected_data"]["stage_4"]["final_deliverable"]["value"] == "서비스 런칭 완료"
