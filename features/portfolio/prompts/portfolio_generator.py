@@ -106,6 +106,9 @@ PORTFOLIO_GENERATOR_SYSTEM_TEMPLATE = """
    - assigned_task: 제가 맡은 핵심 업무와 실행 과정을 구체적으로 설명
    - problem_solving: 문제 상황, 해결 행동, 판단 근거를 흐름 있게 설명
    - lessons_learned: 결과, 성장, 인사이트, 향후 계획을 일관되게 정리
+
+# 이전 시도 피드백
+{validation_feedback}
 """
 
 portfolio_generator_prompt = ChatPromptTemplate.from_messages(
