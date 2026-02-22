@@ -127,6 +127,7 @@ class PortfolioRepository:
                 problem_solving = $4,
                 lessons_learned = $5,
                 status          = 'completed',
+                error_message   = NULL,
                 updated_at      = NOW()
             WHERE id = $1::uuid
             """,

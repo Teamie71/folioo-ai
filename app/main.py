@@ -26,7 +26,9 @@ async def lifespan(app: FastAPI):
     import os
 
     from common.db.connection import close_pool, create_pool
-    from features.interview.agents.insight_store.pgvector_store import PgVectorInsightStore
+    from features.interview.agents.insight_store.pgvector_store import (
+        PgVectorInsightStore,
+    )
     from features.interview.agents.insight_store.seed_data import (
         SEED_INSIGHTS,
         SEED_USER_ID,
@@ -43,8 +45,14 @@ async def lifespan(app: FastAPI):
     if db_url:
         try:
             pool = await create_pool()
+        except Exception:
+            logger.exception("DB 커넥션 풀 생성 실패 - InsightStore 및 포트폴리오 DB 비활성화")
+    else:
+        logger.warning("DATABASE_URL이 설정되지 않음 - InsightStore 및 포트폴리오 DB 비활성화")
 
-            # PgVectorInsightStore 초기화 + 테이블 생성
+    # ===== InsightStore 초기화 (임시 pgvector) =====
+    if pool is not None:
+        try:
             insight_store = PgVectorInsightStore(pool=pool)
             await insight_store.setup_table()
 
@@ -52,21 +60,19 @@ async def lifespan(app: FastAPI):
             for insight in SEED_INSIGHTS:
                 await insight_store.add_insight(insight, user_id=SEED_USER_ID)
 
-            # 글로벌 싱글톤 등록
             init_insight_store(insight_store)
             logger.info("InsightStore(pgvector) 초기화 완료")
+        except Exception:
+            logger.exception("InsightStore 초기화 실패 - 인사이트 검색 비활성화")
 
-            # Portfolio DB 테이블 생성
+    # ===== 포트폴리오 DB 초기화 =====
+    if pool is not None:
+        try:
             portfolio_repo = PortfolioRepository(pool)
             await portfolio_repo.setup_table()
             logger.info("포트폴리오 DB 초기화 완료")
         except Exception:
-            logger.exception("DB 초기화 실패")
-            if pool is not None:
-                await close_pool()
-            pool = None
-    else:
-        logger.warning("DATABASE_URL이 설정되지 않음 — InsightStore 및 포트폴리오 DB 비활성화")
+            logger.exception("포트폴리오 DB 초기화 실패")
 
     # ===== Checkpointer 초기화 =====
     async with setup_checkpointer():

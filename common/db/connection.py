@@ -22,6 +22,15 @@ async def create_pool() -> asyncpg.Pool:
     """
     global _pool
 
+    # 이미 유효한 풀이 있으면 재사용 (멱등성 보장)
+    if _pool is not None and not _pool._closed:
+        return _pool
+
+    # 닫힌 풀이 남아 있으면 정리
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
+
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         raise ValueError("DATABASE_URL 환경변수가 설정되지 않았습니다.")
