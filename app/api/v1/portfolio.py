@@ -16,6 +16,22 @@ from features.portfolio.service import get_portfolio_service
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
+def _to_portfolio_result_response(result) -> PortfolioResultResponse:
+    """서비스 결과를 API 응답 스키마로 변환"""
+    return PortfolioResultResponse(
+        portfolio_id=result.portfolio_id,
+        session_id=result.session_id,
+        user_id=result.user_id,
+        experience_name=result.experience_name,
+        status=result.status,
+        contribution_rate=result.contribution_rate,
+        detail_info=result.output.detail_info,
+        assigned_task=result.output.assigned_task,
+        problem_solving=result.output.problem_solving,
+        lessons_learned=result.output.lessons_learned,
+    )
+
+
 @router.post(
     "/generate",
     response_model=GeneratePortfolioResponse,
@@ -33,11 +49,7 @@ async def generate_portfolio(
     """포트폴리오 생성을 시작합니다."""
     service = get_portfolio_service()
 
-    existing = await service._repository.get_by_session_id(request.session_id)
-    if existing and existing["status"] in {
-        PortfolioStatus.GENERATING.value,
-        PortfolioStatus.COMPLETED.value,
-    }:
+    if await service.has_generating_or_completed(request.session_id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"이미 생성 중이거나 완료된 포트폴리오가 존재합니다: {request.session_id}",
@@ -92,18 +104,7 @@ async def get_portfolio_result(portfolio_id: str) -> PortfolioResultResponse:
             detail=f"포트폴리오를 찾을 수 없습니다: {portfolio_id}",
         )
 
-    return PortfolioResultResponse(
-        portfolio_id=result.portfolio_id,
-        session_id=result.session_id,
-        user_id=result.user_id,
-        experience_name=result.experience_name,
-        status=result.status,
-        contribution_rate=result.contribution_rate,
-        detail_info=result.output.detail_info,
-        assigned_task=result.output.assigned_task,
-        problem_solving=result.output.problem_solving,
-        lessons_learned=result.output.lessons_learned,
-    )
+    return _to_portfolio_result_response(result)
 
 
 @router.patch(
@@ -118,13 +119,14 @@ async def update_contribution_rate(
 ) -> dict[str, str]:
     """포트폴리오 기여도를 수정합니다."""
     service = get_portfolio_service()
-    try:
-        await service.get_status(portfolio_id)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    if not await service.exists(portfolio_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"포트폴리오를 찾을 수 없습니다: {portfolio_id}",
+        )
 
     await service.update_contribution_rate(portfolio_id, request.contribution_rate)
-    return {"message": "ok"}
+    return {"message": "기여도가 수정되었습니다."}
 
 
 @router.get(
@@ -143,15 +145,4 @@ async def get_portfolio_by_session(session_id: str) -> PortfolioResultResponse:
             detail=f"포트폴리오를 찾을 수 없습니다: {session_id}",
         )
 
-    return PortfolioResultResponse(
-        portfolio_id=result.portfolio_id,
-        session_id=result.session_id,
-        user_id=result.user_id,
-        experience_name=result.experience_name,
-        status=result.status,
-        contribution_rate=result.contribution_rate,
-        detail_info=result.output.detail_info,
-        assigned_task=result.output.assigned_task,
-        problem_solving=result.output.problem_solving,
-        lessons_learned=result.output.lessons_learned,
-    )
+    return _to_portfolio_result_response(result)

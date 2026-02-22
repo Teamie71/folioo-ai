@@ -32,6 +32,15 @@ class DummyPortfolioService:
         self._status_error = status_error
         self.updated_rate: tuple[str, int] | None = None
 
+    async def has_generating_or_completed(self, _session_id: str) -> bool:
+        row = await self._repository.get_by_session_id(_session_id)
+        return bool(
+            row and row["status"] in {PortfolioStatus.GENERATING.value, PortfolioStatus.COMPLETED.value}
+        )
+
+    async def exists(self, _portfolio_id: str) -> bool:
+        return self._result is not None
+
     async def start_generation(self, session_id: str, user_id: str, background_tasks) -> str:
         if self._start_generation_error is not None:
             raise self._start_generation_error
