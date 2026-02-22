@@ -129,9 +129,11 @@ def run(state: InterviewState) -> InterviewState:
                 "llm_error": llm_error,
             }
 
-        overall_completion_percentage, completion_llm_error = _calculate_overall_completion_percentage(
-            state["experience_name"],
-            updated_collected_data,
+        overall_completion_percentage, completion_llm_error = (
+            _calculate_overall_completion_percentage(
+                state["experience_name"],
+                updated_collected_data,
+            )
         )
         merged_llm_error = llm_error
         if completion_llm_error:
@@ -234,9 +236,9 @@ def _calculate_overall_completion_percentage(
     collected_data: dict[str, dict[str, CollectedField]],
 ) -> tuple[float, str | None]:
     """4단계 완료 시 전체 완료율을 LLM으로 계산"""
-    all_collected_data = json.dumps(collected_data, ensure_ascii=False, indent=2)
-
     try:
+        all_collected_data = json.dumps(collected_data, ensure_ascii=False, indent=2, default=str)
+
         llm = get_llm(temperature=0.3)
         chain = overall_completion_prompt | llm
         response = chain.invoke(

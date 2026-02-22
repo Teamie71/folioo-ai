@@ -45,7 +45,7 @@ class CollectedField(TypedDict):
 
     field_name: str  # required_fields의 키 이름
     description: str  # 필드 설명 (stages.yaml에서)
-    value: str | list | None  # 수집된 값 (리스트 타입 필드 지원)
+    value: str | list[str] | None  # 수집된 값 (리스트 타입 필드 지원)
     completeness: float  # 0.0 ~ 1.0 (Analyst가 LLM으로 판단한 완성도)
     # last_updated_turn: int  # 마지막으로 업데이트된 턴 번호
 
