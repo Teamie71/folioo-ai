@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
     """
     애플리케이션 생명주기 관리
 
-    - 시작 시: 리소스 초기화 (Checkpointer, InsightStore)
+    - 시작 시: 리소스 초기화 (Checkpointer, InsightStore, 포트폴리오 DB)
     - 종료 시: 리소스 정리
     """
 
@@ -27,12 +27,15 @@ async def lifespan(app: FastAPI):
 
     import asyncpg
 
+    from common.db.connection import close_pool as close_portfolio_pool
+    from common.db.connection import create_pool as create_portfolio_pool
     from features.interview.agents.insight_store.pgvector_store import PgVectorInsightStore
     from features.interview.agents.insight_store.seed_data import (
         SEED_INSIGHTS,
         SEED_USER_ID,
     )
     from features.interview.agents.nodes.retriever import init_insight_store
+    from features.portfolio.repository import PortfolioRepository
 
     logger = logging.getLogger(__name__)
 
@@ -67,6 +70,22 @@ async def lifespan(app: FastAPI):
             "(Retriever 노드는 빈 인사이트를 반환합니다)"
         )
 
+    # ===== 포트폴리오 DB 초기화 =====
+    portfolio_pool = None
+    portfolio_db_url = os.getenv("PORTFOLIO_DB_URL")
+
+    if portfolio_db_url:
+        try:
+            portfolio_pool = await create_portfolio_pool()
+            repo = PortfolioRepository(portfolio_pool)
+            await repo.setup_table()
+            logger.info("포트폴리오 DB 초기화 완료")
+        except Exception:
+            logger.exception("포트폴리오 DB 초기화 실패 — 포트폴리오 DB 비활성화")
+            portfolio_pool = None
+    else:
+        logger.warning("PORTFOLIO_DB_URL이 설정되지 않음 — 포트폴리오 DB 비활성화")
+
     # ===== Checkpointer 초기화 =====
     async with setup_checkpointer():
         yield
@@ -75,6 +94,10 @@ async def lifespan(app: FastAPI):
     if pool:
         await pool.close()
         logger.info("InsightStore 커넥션 풀 정리 완료")
+
+    if portfolio_pool:
+        await close_portfolio_pool()
+        logger.info("포트폴리오 DB 커넥션 풀 정리 완료")
 
 
 def create_app() -> FastAPI:
