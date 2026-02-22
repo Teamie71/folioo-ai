@@ -119,4 +119,4 @@ portfolio_generator_prompt = ChatPromptTemplate.from_messages(
             "위 지침에 따라 4개 섹션의 포트폴리오 서술문을 작성해주세요.",
         ),
     ]
-)
+).partial(validation_feedback="없음")
