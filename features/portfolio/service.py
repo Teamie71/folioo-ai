@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+import asyncpg
 from fastapi import BackgroundTasks
 
 from common.db import get_pool
@@ -66,11 +67,19 @@ class PortfolioService:
             portfolio_id = str(existing["id"])
             await self._repository.update_status(portfolio_id, PortfolioStatus.GENERATING.value)
         else:
-            portfolio_id = await self._repository.create(
-                session_id=session_id,
-                user_id=user_id,
-                experience_name=experience_name,
-            )
+            try:
+                portfolio_id = await self._repository.create(
+                    session_id=session_id,
+                    user_id=user_id,
+                    experience_name=experience_name,
+                )
+            except asyncpg.UniqueViolationError:
+                # 동시 요청으로 인한 중복 생성 — 먼저 생성된 레코드 재사용
+                logger.warning(
+                    "session_id 중복 감지 (동시 요청), 기존 레코드 재사용: %s", session_id
+                )
+                row = await self._repository.get_by_session_id(session_id)
+                return str(row["id"])
             await self._repository.update_status(portfolio_id, PortfolioStatus.GENERATING.value)
 
         if background_tasks is not None:
