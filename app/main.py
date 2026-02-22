@@ -25,10 +25,7 @@ async def lifespan(app: FastAPI):
     import logging
     import os
 
-    import asyncpg
-
-    from common.db.connection import close_pool as close_portfolio_pool
-    from common.db.connection import create_pool as create_portfolio_pool
+    from common.db.connection import close_pool, create_pool
     from features.interview.agents.insight_store.pgvector_store import PgVectorInsightStore
     from features.interview.agents.insight_store.seed_data import (
         SEED_INSIGHTS,
@@ -39,14 +36,13 @@ async def lifespan(app: FastAPI):
 
     logger = logging.getLogger(__name__)
 
-    # ===== InsightStore 초기화 (임시 pgvector) =====
+    # ===== 공유 DB 커넥션 풀 초기화 (InsightStore + Portfolio 공용) =====
     pool = None
-    db_url = os.getenv("INSIGHT_DB_URL")
+    db_url = os.getenv("DATABASE_URL")
 
     if db_url:
         try:
-            # PostgreSQL 커넥션 풀 생성
-            pool = await asyncpg.create_pool(db_url)
+            pool = await create_pool()
 
             # PgVectorInsightStore 초기화 + 테이블 생성
             insight_store = PgVectorInsightStore(pool=pool)
@@ -59,32 +55,18 @@ async def lifespan(app: FastAPI):
             # 글로벌 싱글톤 등록
             init_insight_store(insight_store)
             logger.info("InsightStore(pgvector) 초기화 완료")
-        except Exception:
-            logger.exception("InsightStore 초기화 실패 — 인사이트 검색 비활성화")
-            if pool is not None:
-                await pool.close()
-            pool = None
-    else:
-        logger.warning(
-            "INSIGHT_DB_URL이 설정되지 않음 — InsightStore 비활성화 "
-            "(Retriever 노드는 빈 인사이트를 반환합니다)"
-        )
 
-    # ===== 포트폴리오 DB 초기화 =====
-    portfolio_pool = None
-    portfolio_db_url = os.getenv("PORTFOLIO_DB_URL")
-
-    if portfolio_db_url:
-        try:
-            portfolio_pool = await create_portfolio_pool()
-            repo = PortfolioRepository(portfolio_pool)
-            await repo.setup_table()
+            # Portfolio DB 테이블 생성
+            portfolio_repo = PortfolioRepository(pool)
+            await portfolio_repo.setup_table()
             logger.info("포트폴리오 DB 초기화 완료")
         except Exception:
-            logger.exception("포트폴리오 DB 초기화 실패 — 포트폴리오 DB 비활성화")
-            portfolio_pool = None
+            logger.exception("DB 초기화 실패")
+            if pool is not None:
+                await close_pool()
+            pool = None
     else:
-        logger.warning("PORTFOLIO_DB_URL이 설정되지 않음 — 포트폴리오 DB 비활성화")
+        logger.warning("DATABASE_URL이 설정되지 않음 — InsightStore 및 포트폴리오 DB 비활성화")
 
     # ===== Checkpointer 초기화 =====
     async with setup_checkpointer():
@@ -92,12 +74,8 @@ async def lifespan(app: FastAPI):
 
     # ===== 종료 시: 커넥션 풀 정리 =====
     if pool:
-        await pool.close()
-        logger.info("InsightStore 커넥션 풀 정리 완료")
-
-    if portfolio_pool:
-        await close_portfolio_pool()
-        logger.info("포트폴리오 DB 커넥션 풀 정리 완료")
+        await close_pool()
+        logger.info("DB 커넥션 풀 정리 완료")
 
 
 def create_app() -> FastAPI:
