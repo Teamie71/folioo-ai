@@ -94,7 +94,7 @@ class PortfolioService:
             output = self._generator.generate(collected_data, experience_name)
             await self._repository.update_result(portfolio_id, output)
         except Exception as exc:
-            logger.exception("포트폴리오 생성 실패: %s", portfolio_id)
+            logger.exception("포트폴리오 생성 실패 (portfolio_id: %s): %s", portfolio_id, exc)
             try:
                 await self._repository.update_status(
                     portfolio_id,
@@ -115,7 +115,8 @@ class PortfolioService:
             PortfolioStatus.NOT_STARTED: "포트폴리오 생성을 준비하고 있습니다.",
             PortfolioStatus.GENERATING: "포트폴리오를 생성하고 있습니다.",
             PortfolioStatus.COMPLETED: "포트폴리오 생성이 완료되었습니다.",
-            PortfolioStatus.FAILED: row.get("error_message") or "포트폴리오 생성에 실패했습니다.",
+            PortfolioStatus.FAILED: row.get("error_message")
+            or "포트폴리오 생성에 실패했습니다. 잠시 후 다시 시도하거나 관리자에게 문의해주세요.",
         }[status]
 
         return PortfolioStatusResponse(status=status, progress_message=progress_message)

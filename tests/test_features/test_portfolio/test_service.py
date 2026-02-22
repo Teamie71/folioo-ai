@@ -61,13 +61,19 @@ class DummyRepo:
 
 class DummyGenerator:
     def __init__(self, output: PortfolioOutput | None = None, exc: Exception | None = None):
-        self.output = output
+        default_output = PortfolioOutput(
+            detail_info="상세",
+            assigned_task="담당",
+            problem_solving="해결",
+            lessons_learned="배운점",
+        )
+        self.output = output or default_output
         self.exc = exc
 
     def generate(self, _collected_data: dict, _experience_name: str) -> PortfolioOutput:
         if self.exc is not None:
             raise self.exc
-        return self.output  # type: ignore[return-value]
+        return self.output
 
 
 @pytest.mark.asyncio
