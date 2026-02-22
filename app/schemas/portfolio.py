@@ -37,7 +37,7 @@ class PortfolioResultResponse(BaseModel):
     user_id: str = Field(..., description="사용자 ID")
     experience_name: str = Field(..., description="경험/프로젝트명")
     status: PortfolioStatus = Field(..., description="생성 상태")
-    contribution_rate: int | None = Field(None, description="기여도 (0-100%)")
+    contribution_rate: int | None = Field(None, ge=0, le=100, description="기여도 (0-100%)")
     detail_info: str = Field(..., description="상세정보")
     assigned_task: str = Field(..., description="담당업무")
     problem_solving: str = Field(..., description="문제해결")
