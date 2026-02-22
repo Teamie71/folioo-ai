@@ -1,10 +1,16 @@
 """Analyst 노드 - 대화 분석 및 정보 추출"""
 
 import copy
+import json
 import logging
+import re
 
 from common.llm.client import get_llm
-from features.interview.agents.prompts.analyst import AnalystResponse, analyst_prompt
+from features.interview.agents.prompts.analyst import (
+    AnalystResponse,
+    analyst_prompt,
+    overall_completion_prompt,
+)
 from features.interview.config.loader import get_global_config, load_stage_config
 
 from ..state import CollectedField, InsightLog, InterviewState
@@ -21,9 +27,7 @@ def run(state: InterviewState) -> InterviewState:
     - 기존 데이터보다 completeness가 높은 경우에만 갱신
     - LLM 호출 실패 시 기존 데이터 유지
 
-    TODO: 후속 이슈에서 구현
-    - 전체 완료율(overall_completion_percentage) 계산
-    - 단계 전환 로직 (all_stages_complete 포함)
+    TODO: 마무리 멘트가 필요하면 end 대신 question_generator로 라우팅하도록 수정
     """
 
     current_stage = state["current_stage"]
@@ -103,7 +107,50 @@ def run(state: InterviewState) -> InterviewState:
         updated_collected_data = copy.deepcopy(state["collected_data"])
         llm_error = str(e)
 
-    # 5. 상태 반환 (변경 필드)
+    # 5. 단계 완료 여부에 따른 라우팅
+    progress = state["stage_progress"]
+    if progress["is_complete"]:
+        if current_stage < 4:
+            next_stage = current_stage + 1
+            next_stage_config = load_stage_config(next_stage)
+            return {
+                **state,
+                "current_stage": next_stage,
+                "stage_progress": {
+                    "fixed_q_used": 0,
+                    "fixed_q_total": len(next_stage_config.fixed_questions),
+                    "generated_q_used": 0,
+                    "generated_q_max": next_stage_config.max_generated_questions,
+                    "force_all_generated_q": next_stage_config.force_all_generated_questions,
+                    "is_complete": False,
+                },
+                "collected_data": updated_collected_data,
+                "next_node": "question_generator",
+                "llm_error": llm_error,
+            }
+
+        overall_completion_percentage, completion_llm_error = (
+            _calculate_overall_completion_percentage(
+                state["experience_name"],
+                updated_collected_data,
+            )
+        )
+        merged_llm_error = llm_error
+        if completion_llm_error:
+            merged_llm_error = (
+                f"{llm_error} | {completion_llm_error}" if llm_error else completion_llm_error
+            )
+
+        return {
+            **state,
+            "collected_data": updated_collected_data,
+            "all_stages_complete": True,
+            "overall_completion_percentage": overall_completion_percentage,
+            "next_node": "end",  # TODO: 마무리 멘트가 필요하면 question_generator로 변경
+            "llm_error": merged_llm_error,
+        }
+
+    # 6. 상태 반환 (변경 필드)
     return {
         **state,
         "collected_data": updated_collected_data,
@@ -182,3 +229,32 @@ def _format_file_contexts(file_contexts: list[str]) -> str:
         return "첨부 파일 없음"
 
     return "\n---\n".join(file_contexts)
+
+
+def _calculate_overall_completion_percentage(
+    experience_name: str,
+    collected_data: dict[str, dict[str, CollectedField]],
+) -> tuple[float, str | None]:
+    """4단계 완료 시 전체 완료율을 LLM으로 계산"""
+    try:
+        all_collected_data = json.dumps(collected_data, ensure_ascii=False, indent=2, default=str)
+
+        llm = get_llm(temperature=0.3)
+        chain = overall_completion_prompt | llm
+        response = chain.invoke(
+            {
+                "experience_name": experience_name,
+                "all_collected_data": all_collected_data,
+            }
+        )
+        response_text = str(response.content).strip()
+        match = re.fullmatch(r"\d+(?:\.\d+)?", response_text)
+        if not match:
+            raise ValueError("전체 완료율 숫자 파싱에 실패했습니다.")
+        score = float(match.group())
+        if not 0.0 <= score <= 100.0:
+            raise ValueError(f"전체 완료율 범위 초과: {score}")
+        return score, None
+    except Exception as e:
+        logger.exception("전체 완료율 계산 실패")
+        return 0.0, str(e)
