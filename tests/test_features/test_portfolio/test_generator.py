@@ -51,7 +51,7 @@ def _invalid_output() -> PortfolioOutput:
     )
 
 
-def test_generate_retries_with_validation_feedback(monkeypatch: pytest.MonkeyPatch):
+def test_generate_retry_with_validation_feedback(monkeypatch: pytest.MonkeyPatch):
     """검증 실패 시 피드백을 포함해 재시도한다."""
     from features.portfolio import generator
 
@@ -67,7 +67,7 @@ def test_generate_retries_with_validation_feedback(monkeypatch: pytest.MonkeyPat
     assert chain.calls[1]["validation_feedback"].startswith("이전 출력 보완 필요:")
 
 
-def test_generate_retries_after_llm_exception(monkeypatch: pytest.MonkeyPatch):
+def test_generate_retry_after_llm_exception(monkeypatch: pytest.MonkeyPatch):
     """LLM 예외 발생 후 재시도에 성공한다."""
     from features.portfolio import generator
 
