@@ -9,6 +9,13 @@ from .interview import (
     SessionStateResponse,
     StageProgressSchema,
 )
+from .portfolio import (
+    GeneratePortfolioRequest,
+    GeneratePortfolioResponse,
+    PortfolioResultResponse,
+    PortfolioStatusResponse,
+    UpdateContributionRateRequest,
+)
 
 __all__ = [
     "CreateSessionRequest",
@@ -18,4 +25,9 @@ __all__ = [
     "SessionStateResponse",
     "StageProgressSchema",
     "ErrorResponse",
+    "GeneratePortfolioRequest",
+    "GeneratePortfolioResponse",
+    "PortfolioResultResponse",
+    "PortfolioStatusResponse",
+    "UpdateContributionRateRequest",
 ]
