@@ -41,7 +41,7 @@ _STAGE_FIELD_GUIDES: dict[str, tuple[str, list[tuple[str, str]]]] = {
 
 
 def _format_field_value(value: str | list[str] | None, completeness: float | None) -> str:
-    if value is None or completeness == 0.0:
+    if value is None or completeness in (None, 0.0):
         return "수집되지 않음"
 
     if isinstance(value, list):
@@ -74,7 +74,7 @@ def format_collected_data_for_prompt(collected_data: dict) -> str:
             completeness = field_data.get("completeness")
             formatted_value = _format_field_value(value=value, completeness=completeness)
             lines.append(f"- {field_name} ({description}):")
-            lines.append(formatted_value)
+            lines.append(f"  {formatted_value.replace('\n', '\n  ')}")
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -117,4 +117,3 @@ portfolio_generator_prompt = ChatPromptTemplate.from_messages(
         ),
     ]
 )
-
