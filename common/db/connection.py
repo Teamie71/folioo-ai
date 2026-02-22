@@ -23,7 +23,7 @@ async def create_pool() -> asyncpg.Pool:
     global _pool
 
     # 이미 유효한 풀이 있으면 재사용 (멱등성 보장)
-    if _pool is not None and not _pool._closed:
+    if _pool is not None and not _pool.is_closing():
         return _pool
 
     # 닫힌 풀이 남아 있으면 정리
