@@ -2,16 +2,19 @@
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from fastapi import BackgroundTasks
 
-from app.schemas.portfolio import PortfolioStatusResponse
 from common.db import get_pool
 from features.interview import get_interview_service
 
 from .generator import PortfolioGenerator
 from .repository import PortfolioRepository
 from .schemas import PortfolioOutput, PortfolioResult, PortfolioStatus
+
+if TYPE_CHECKING:
+    from app.schemas.portfolio import PortfolioStatusResponse
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,7 @@ class PortfolioService:
         self._repository = repository or PortfolioRepository(get_pool())
         self._generator = generator or PortfolioGenerator()
         self._interview_service = interview_service or get_interview_service()
+        self._inprocess_tasks: set[asyncio.Task] = set()
 
     async def start_generation(
         self,
@@ -77,9 +81,11 @@ class PortfolioService:
                 experience_name,
             )
         else:
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._generate_portfolio_background(portfolio_id, collected_data, experience_name)
             )
+            self._inprocess_tasks.add(task)
+            task.add_done_callback(self._inprocess_tasks.discard)
 
         return portfolio_id
 
@@ -91,7 +97,11 @@ class PortfolioService:
     ) -> None:
         """Background Task: 포트폴리오 생성 및 상태 업데이트"""
         try:
-            output = self._generator.generate(collected_data, experience_name)
+            output = await asyncio.to_thread(
+                self._generator.generate,
+                collected_data,
+                experience_name,
+            )
             await self._repository.update_result(portfolio_id, output)
         except Exception as exc:
             logger.exception("포트폴리오 생성 실패 (portfolio_id: %s): %s", portfolio_id, exc)
@@ -104,8 +114,10 @@ class PortfolioService:
             except Exception:
                 logger.exception("포트폴리오 실패 상태 업데이트 실패: %s", portfolio_id)
 
-    async def get_status(self, portfolio_id: str) -> PortfolioStatusResponse:
+    async def get_status(self, portfolio_id: str) -> "PortfolioStatusResponse":
         """포트폴리오 생성 상태 조회"""
+        from app.schemas.portfolio import PortfolioStatusResponse
+
         row = await self._repository.get_by_id(portfolio_id)
         if row is None:
             raise ValueError(f"포트폴리오를 찾을 수 없습니다: {portfolio_id}")
