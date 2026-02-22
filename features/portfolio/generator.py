@@ -7,7 +7,10 @@ import yaml
 
 from common.llm.client import get_llm
 
-from .prompts import format_collected_data_for_prompt, portfolio_generator_prompt
+from .prompts.portfolio_generator import (
+    format_collected_data_for_prompt,
+    portfolio_generator_prompt,
+)
 from .schemas import PortfolioOutput
 
 _MAX_ATTEMPTS = 3
@@ -27,14 +30,13 @@ class PortfolioGenerator:
 
     def generate(self, collected_data: dict, experience_name: str) -> PortfolioOutput:
         """수집 데이터를 바탕으로 포트폴리오 텍스트 생성"""
-        validation_feedback = "없음"
+        # validation_feedback = "없음"
         last_failure_reason: str | None = None
 
         for _ in range(_MAX_ATTEMPTS):
             prompt_variables = {
                 "experience_name": experience_name,
-                "formatted_collected_data": format_collected_data_for_prompt(collected_data),
-                "validation_feedback": validation_feedback,
+                "collected_data_text": format_collected_data_for_prompt(collected_data),
             }
 
             try:
@@ -44,7 +46,7 @@ class PortfolioGenerator:
                 output: PortfolioOutput = chain.invoke(prompt_variables)
             except Exception as exc:
                 last_failure_reason = f"LLM 호출/파싱 실패: {exc}"
-                validation_feedback = last_failure_reason
+                # validation_feedback = last_failure_reason
                 continue
 
             if self._validate_output(output):
@@ -52,7 +54,7 @@ class PortfolioGenerator:
 
             validation_errors = self._get_validation_errors(output)
             last_failure_reason = "; ".join(validation_errors)
-            validation_feedback = f"이전 출력 보완 필요: {last_failure_reason}"
+            # validation_feedback = f"이전 출력 보완 필요: {last_failure_reason}"
 
         raise PortfolioGenerationError(
             "포트폴리오 생성에 실패했습니다. "
