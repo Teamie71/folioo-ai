@@ -1,6 +1,6 @@
 """포트폴리오 핵심 스키마 정의"""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -42,4 +42,4 @@ class PortfolioResult(BaseModel):
     status: PortfolioStatus = Field(default=PortfolioStatus.NOT_STARTED, description="생성 상태")
     contribution_rate: int | None = Field(None, ge=0, le=100, description="기여도 (0-100%)")
     output: PortfolioOutput | None = Field(None, description="LLM이 생성한 포트폴리오 내용")
-    created_at: datetime = Field(default_factory=datetime.now, description="생성 시각")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), description="생성 시각")
