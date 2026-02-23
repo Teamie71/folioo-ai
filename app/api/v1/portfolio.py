@@ -1,5 +1,7 @@
 """포트폴리오 API 라우터"""
 
+import uuid as _uuid
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 
 from app.schemas.interview import ErrorResponse
@@ -14,6 +16,17 @@ from features.portfolio.schemas import PortfolioStatus
 from features.portfolio.service import get_portfolio_service
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
+
+
+def _validate_portfolio_id(portfolio_id: str) -> None:
+    """portfolio_id가 유효한 UUID 형식인지 검증한다."""
+    try:
+        _uuid.UUID(portfolio_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"포트폴리오를 찾을 수 없습니다: {portfolio_id}",
+        ) from e
 
 
 def _to_portfolio_result_response(result) -> PortfolioResultResponse:
@@ -81,6 +94,7 @@ async def generate_portfolio(
 )
 async def get_portfolio_status(portfolio_id: str) -> PortfolioStatusResponse:
     """포트폴리오 생성 상태를 조회합니다."""
+    _validate_portfolio_id(portfolio_id)
     service = get_portfolio_service()
     try:
         return await service.get_status(portfolio_id)
@@ -96,6 +110,7 @@ async def get_portfolio_status(portfolio_id: str) -> PortfolioStatusResponse:
 )
 async def get_portfolio_result(portfolio_id: str) -> PortfolioResultResponse:
     """포트폴리오 결과를 조회합니다."""
+    _validate_portfolio_id(portfolio_id)
     service = get_portfolio_service()
     result = await service.get_result(portfolio_id)
     if result is None or result.output is None:
@@ -118,6 +133,7 @@ async def update_contribution_rate(
     request: UpdateContributionRateRequest,
 ) -> dict[str, str]:
     """포트폴리오 기여도를 수정합니다."""
+    _validate_portfolio_id(portfolio_id)
     service = get_portfolio_service()
     if not await service.exists(portfolio_id):
         raise HTTPException(

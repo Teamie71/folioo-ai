@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 from app.api.v1 import portfolio as portfolio_api
 from features.portfolio.schemas import PortfolioOutput, PortfolioResult, PortfolioStatus
 
+PORTFOLIO_UUID = "11111111-1111-1111-1111-111111111111"
+
 
 class DummyRepo:
     def __init__(self, row: dict | None = None):
@@ -34,9 +36,8 @@ class DummyPortfolioService:
 
     async def has_generating_or_completed(self, _session_id: str) -> bool:
         row = await self._repository.get_by_session_id(_session_id)
-        return bool(
-            row and row["status"] in {PortfolioStatus.GENERATING.value, PortfolioStatus.COMPLETED.value}
-        )
+        generating_statuses = {PortfolioStatus.GENERATING.value, PortfolioStatus.COMPLETED.value}
+        return bool(row and row["status"] in generating_statuses)
 
     async def exists(self, _portfolio_id: str) -> bool:
         return self._result is not None
@@ -88,7 +89,9 @@ def test_generate_portfolio_returns_409_for_existing(monkeypatch):
     """동일 세션 생성 중/완료 상태면 409를 반환한다."""
     client = _create_client(
         monkeypatch,
-        DummyPortfolioService(repo_row={"id": "existing", "status": PortfolioStatus.GENERATING.value}),
+        DummyPortfolioService(
+            repo_row={"id": "existing", "status": PortfolioStatus.GENERATING.value}
+        ),
     )
 
     response = client.post(
@@ -104,7 +107,9 @@ def test_generate_portfolio_returns_400_for_incomplete_interview(monkeypatch):
     client = _create_client(
         monkeypatch,
         DummyPortfolioService(
-            start_generation_error=ValueError("인터뷰가 완료되지 않아 포트폴리오를 생성할 수 없습니다.")
+            start_generation_error=ValueError(
+                "인터뷰가 완료되지 않아 포트폴리오를 생성할 수 없습니다."
+            )
         ),
     )
 
@@ -120,7 +125,7 @@ def test_get_portfolio_result_returns_404_when_missing(monkeypatch):
     """포트폴리오 결과가 없으면 404를 반환한다."""
     client = _create_client(monkeypatch, DummyPortfolioService(result=None))
 
-    response = client.get("/api/v1/portfolio/portfolio-1")
+    response = client.get(f"/api/v1/portfolio/{PORTFOLIO_UUID}")
 
     assert response.status_code == 404
 
@@ -146,9 +151,65 @@ def test_update_contribution_rate_returns_200(monkeypatch):
     client = _create_client(monkeypatch, service)
 
     response = client.patch(
-        "/api/v1/portfolio/portfolio-1/contribution-rate",
+        f"/api/v1/portfolio/{PORTFOLIO_UUID}/contribution-rate",
         json={"contribution_rate": 35},
     )
 
     assert response.status_code == 200
-    assert service.updated_rate == ("portfolio-1", 35)
+    assert service.updated_rate == (PORTFOLIO_UUID, 35)
+
+
+def test_get_portfolio_status_returns_200(monkeypatch):
+    """포트폴리오 상태 조회 성공 시 200을 반환한다."""
+    client = _create_client(monkeypatch, DummyPortfolioService())
+
+    response = client.get(f"/api/v1/portfolio/{PORTFOLIO_UUID}/status")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == PortfolioStatus.GENERATING.value
+
+
+def test_get_portfolio_status_returns_404(monkeypatch):
+    """포트폴리오가 없으면 status 엔드포인트는 404를 반환한다."""
+    client = _create_client(
+        monkeypatch,
+        DummyPortfolioService(status_error=ValueError("포트폴리오를 찾을 수 없습니다")),
+    )
+
+    response = client.get(f"/api/v1/portfolio/{PORTFOLIO_UUID}/status")
+
+    assert response.status_code == 404
+
+
+def test_get_session_returns_200(monkeypatch):
+    """세션 ID로 포트폴리오 조회 성공 시 200을 반환한다."""
+    result = PortfolioResult(
+        portfolio_id=PORTFOLIO_UUID,
+        session_id="session-1",
+        user_id="user-1",
+        experience_name="경험",
+        status=PortfolioStatus.COMPLETED,
+        contribution_rate=50,
+        output=PortfolioOutput(
+            detail_info="상세",
+            assigned_task="담당",
+            problem_solving="해결",
+            lessons_learned="배운점",
+        ),
+        created_at=datetime.now(UTC),
+    )
+    client = _create_client(monkeypatch, DummyPortfolioService(result=result))
+
+    response = client.get("/api/v1/portfolio/session/session-1")
+
+    assert response.status_code == 200
+    assert response.json()["portfolio_id"] == PORTFOLIO_UUID
+
+
+def test_get_session_returns_404(monkeypatch):
+    """포트폴리오가 없으면 세션 조회 엔드포인트는 404를 반환한다."""
+    client = _create_client(monkeypatch, DummyPortfolioService(result=None))
+
+    response = client.get("/api/v1/portfolio/session/session-1")
+
+    assert response.status_code == 404
