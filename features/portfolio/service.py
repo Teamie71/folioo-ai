@@ -160,6 +160,18 @@ class PortfolioService:
             return None
         return self._to_result(row)
 
+    async def has_generating_or_completed(self, session_id: str) -> bool:
+        """세션에 생성 중/완료 상태의 포트폴리오가 있는지 확인"""
+        row = await self._repository.get_by_session_id(session_id)
+        if row is None:
+            return False
+        return row["status"] in {PortfolioStatus.GENERATING.value, PortfolioStatus.COMPLETED.value}
+
+    async def exists(self, portfolio_id: str) -> bool:
+        """포트폴리오 존재 여부 확인"""
+        row = await self._repository.get_by_id(portfolio_id)
+        return row is not None
+
     async def update_contribution_rate(self, portfolio_id: str, rate: int) -> None:
         """포트폴리오 기여도 수정"""
         if not 0 <= rate <= 100:
