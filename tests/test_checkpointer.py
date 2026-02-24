@@ -50,8 +50,11 @@ async def test_reset_checkpointer_returns_new_instance(tmp_path, monkeypatch):
 
     async with setup_checkpointer():
         first = get_checkpointer()
+        reset_checkpointer()
 
-    reset_checkpointer()
+        with pytest.raises(RuntimeError):
+            get_checkpointer()
+
     async with setup_checkpointer():
         second = get_checkpointer()
 
