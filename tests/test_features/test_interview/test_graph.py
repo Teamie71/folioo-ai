@@ -1,30 +1,20 @@
 """그래프 구조 테스트"""
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from features.interview.agents import InterviewState, build_graph
+from features.interview.agents.state import get_initial_interview_state
 
 
 @pytest.fixture
 def initial_state() -> InterviewState:
     """테스트용 InterviewState 초기화 fixture"""
-    return {
-        "user_id": "test_user",
-        "session_id": "test_session",
-        "messages": [],
-        "current_stage": 1,
-        "fixed_q_count": 0,
-        "generated_q_count": 0,
-        "collected_data": {},
-        "mentioned_insights": [],
-        "retrieved_insights": [],
-        "uploaded_files": [],
-        "file_context": [],
-        "next_node": "supervisor",
-        "stage_complete": False,
-        "all_complete": False,
-        "completion_percentage": 0.0,
-    }
+    return get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
 
 
 def test_build_graph():
@@ -33,70 +23,59 @@ def test_build_graph():
     assert graph is not None
 
 
-def test_graph_execution_mock(initial_state):
+def test_graph_execution_mock(initial_state, monkeypatch):
     """Mock 상태로 그래프 실행 테스트 - 무한 루프 확인"""
-    from langgraph.errors import GraphRecursionError
+    from features.interview.agents.nodes import question_generator
+
+    monkeypatch.setattr(
+        question_generator,
+        "run",
+        lambda state: {
+            **state,
+            "messages": [AIMessage(content="첫 질문")],
+            "next_node": "end",
+        },
+    )
 
     graph = build_graph()
-
-    # 그래프 실행 시 무한 루프로 인해 GraphRecursionError 발생 확인
-    # 현재 노드 로직이 구현되지 않아 supervisor <-> interviewer 무한 반복
-    with pytest.raises(GraphRecursionError) as exc_info:
-        graph.invoke(initial_state, config={"recursion_limit": 3})
-
-    # 에러 메시지에 recursion limit이 포함되어 있는지 확인
-    assert "Recursion limit" in str(exc_info.value)
+    result = graph.invoke(initial_state)
+    assert result["next_node"] == "end"
+    assert result["messages"][-1].content == "첫 질문"
 
 
 def test_supervisor_routing(initial_state):
-    """Supervisor가 기본적으로 interviewer로 라우팅하는지 확인"""
-    from features.interview.agents.nodes import supervisor
+    """Router가 첫 턴에 question_generator로 라우팅하는지 확인"""
+    from features.interview.agents.nodes import router
 
-    result = supervisor.run(initial_state)
-    assert result["next_node"] == "interviewer"
+    result = router.run(initial_state)
+    assert result["next_node"] == "question_generator"
 
 
 def test_interviewer_routing(initial_state):
-    """Interviewer가 작업 후 supervisor로 복귀하는지 확인"""
+    """Router가 후속 턴에 retriever로 라우팅하는지 확인"""
+    from features.interview.agents.nodes import router
+
+    state = {**initial_state, "messages": [AIMessage(content="이전 질문")]}
+    result = router.run(state)
+    assert result["next_node"] == "retriever"
+
+
+def test_graph_with_end_condition(initial_state, monkeypatch):
+    """종료 조건이 있을 때 그래프가 정상 종료되는지 확인"""
     from features.interview.agents.nodes import question_generator
 
-    state = {**initial_state, "next_node": "interviewer"}
-    result = question_generator.run(state)
-    assert result["next_node"] == "supervisor"
-
-
-def test_graph_with_end_condition(initial_state):
-    """종료 조건이 있을 때 그래프가 정상 종료되는지 확인"""
-    # 그래프가 컴파일되기 전에 노드 함수를 모킹해야 하므로,
-    # 직접 노드 로직을 수정하는 방식으로 테스트
-    from features.interview.agents import nodes
-
-    # 원본 함수 백업
-    original_supervisor = nodes.supervisor.run
-
-    try:
-        # supervisor가 즉시 종료하도록 수정
-        def mock_supervisor(state: InterviewState) -> InterviewState:
-            return {
-                **state,
-                "next_node": "end",
-                "all_complete": True,
-                "completion_percentage": 100.0,
-            }
-
-        nodes.supervisor.run = mock_supervisor
-
-        # 그래프 재빌드 (수정된 노드 함수 사용)
-        graph = build_graph()
-
-        # 그래프 실행 - 종료 조건이 있으므로 정상 종료되어야 함
-        result = graph.invoke(initial_state)
-
-        # 검증
-        assert result is not None
-        assert result["all_complete"] is True
-        assert result["completion_percentage"] == 100.0
-
-    finally:
-        # 원본 함수 복원
-        nodes.supervisor.run = original_supervisor
+    monkeypatch.setattr(
+        question_generator,
+        "run",
+        lambda state: {
+            **state,
+            "all_stages_complete": True,
+            "overall_completion_percentage": 100.0,
+            "next_node": "end",
+        },
+    )
+    graph = build_graph()
+    result = graph.invoke(initial_state)
+    assert result is not None
+    assert result["all_stages_complete"] is True
+    assert result["overall_completion_percentage"] == 100.0

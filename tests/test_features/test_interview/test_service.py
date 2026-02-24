@@ -41,11 +41,11 @@ class DummyGraph:
         self.state_snapshot = None
         self.last_get_state_config = None
 
-    def invoke(self, state, config=None):
+    async def ainvoke(self, state, config=None):
         self.invocations.append({"state": state, "config": config})
         return self.invoke_result
 
-    def get_state(self, config=None):
+    async def aget_state(self, config=None):
         self.last_get_state_config = config
         return self.state_snapshot
 
@@ -60,16 +60,18 @@ def _build_service(monkeypatch, dummy_graph):
     return interview_service.InterviewService()
 
 
-def test_create_session_validation_error(monkeypatch):
+@pytest.mark.asyncio
+async def test_create_session_validation_error(monkeypatch):
     """필수 파라미터 누락 시 예외 발생 테스트"""
     dummy_graph = DummyGraph()
     service = _build_service(monkeypatch, dummy_graph)
 
     with pytest.raises(ValueError, match="필수"):
-        service.create_session(user_id="", session_id="sid", experience_name="exp")
+        await service.create_session(user_id="", session_id="sid", experience_name="exp")
 
 
-def test_create_session_returns_expected_payload(monkeypatch):
+@pytest.mark.asyncio
+async def test_create_session_returns_expected_payload(monkeypatch):
     """세션 생성 결과 포맷 테스트"""
     dummy_graph = DummyGraph()
     dummy_graph.invoke_result = {
@@ -80,7 +82,7 @@ def test_create_session_returns_expected_payload(monkeypatch):
 
     service = _build_service(monkeypatch, dummy_graph)
 
-    result = service.create_session(
+    result = await service.create_session(
         user_id="user_1",
         session_id="session_1",
         experience_name="프로젝트 A",
@@ -99,17 +101,19 @@ def test_create_session_returns_expected_payload(monkeypatch):
     assert invocation["state"]["experience_name"] == "프로젝트 A"
 
 
-def test_process_message_session_not_found(monkeypatch):
+@pytest.mark.asyncio
+async def test_process_message_session_not_found(monkeypatch):
     """세션이 없을 때 예외 발생 테스트"""
     dummy_graph = DummyGraph()
     dummy_graph.state_snapshot = None
     service = _build_service(monkeypatch, dummy_graph)
 
     with pytest.raises(ValueError, match="세션을 찾을 수 없습니다"):
-        service.process_message(session_id="missing", message="안녕하세요")
+        await service.process_message(session_id="missing", message="안녕하세요")
 
 
-def test_process_message_with_files(monkeypatch):
+@pytest.mark.asyncio
+async def test_process_message_with_files(monkeypatch):
     """파일 ID 포함 메시지 처리 테스트"""
     dummy_graph = DummyGraph()
     dummy_graph.state_snapshot = DummyStateSnapshot(values={"session_id": "session_1"})
@@ -123,7 +127,7 @@ def test_process_message_with_files(monkeypatch):
 
     service = _build_service(monkeypatch, dummy_graph)
 
-    result = service.process_message(
+    result = await service.process_message(
         session_id="session_1",
         message="답변입니다.",
         file_ids=["file_1", "file_2"],
@@ -142,23 +146,25 @@ def test_process_message_with_files(monkeypatch):
     assert invocation["state"]["current_turn_files"] == ["file_1", "file_2"]
 
 
-def test_get_session_state_returns_none_on_empty_snapshot(monkeypatch):
+@pytest.mark.asyncio
+async def test_get_session_state_returns_none_on_empty_snapshot(monkeypatch):
     """스냅샷이 없거나 비어있을 때 None 반환 테스트"""
     dummy_graph = DummyGraph()
     dummy_graph.state_snapshot = DummyStateSnapshot(values={})
     service = _build_service(monkeypatch, dummy_graph)
 
-    assert service.get_session_state("session_1") is None
+    assert await service.get_session_state("session_1") is None
 
 
-def test_get_session_state_returns_values(monkeypatch):
+@pytest.mark.asyncio
+async def test_get_session_state_returns_values(monkeypatch):
     """스냅샷 값 반환 테스트"""
     dummy_graph = DummyGraph()
     expected_state = {"session_id": "session_1", "current_stage": 1}
     dummy_graph.state_snapshot = DummyStateSnapshot(values=expected_state)
     service = _build_service(monkeypatch, dummy_graph)
 
-    assert service.get_session_state("session_1") == expected_state
+    assert await service.get_session_state("session_1") == expected_state
 
 
 def test_singleton_get_and_reset(monkeypatch):
