@@ -39,7 +39,7 @@ def test_first_turn_question_generation(first_turn_state, monkeypatch):
     monkeypatch.setattr(
         question_generator,
         "get_llm",
-        lambda _temperature=0.7: _mock_llm_return("첫 질문입니다."),
+        lambda temperature=0.7: _mock_llm_return("첫 질문입니다."),
     )
 
     # 실행
@@ -70,7 +70,7 @@ def test_first_turn_uses_fixed_question_content(first_turn_state, monkeypatch):
     monkeypatch.setattr(
         question_generator,
         "get_llm",
-        lambda _temperature=0.7: _mock_llm_raise(),
+        lambda temperature=0.7: _mock_llm_raise(),
     )
 
     # 실행
@@ -93,7 +93,7 @@ def test_followup_fixed_question_generation(first_turn_state, monkeypatch):
     monkeypatch.setattr(
         question_generator,
         "get_llm",
-        lambda _temperature=0.7: _mock_llm_raise(),
+        lambda temperature=0.7: _mock_llm_raise(),
     )
 
     non_first_turn_state = {
@@ -166,7 +166,7 @@ def test_generated_question_fallback_on_llm_error(first_turn_state, monkeypatch)
     monkeypatch.setattr(
         question_generator,
         "get_llm",
-        lambda _temperature=0.7: _mock_llm_raise(),
+        lambda temperature=0.7: _mock_llm_raise(),
     )
 
     state = {
