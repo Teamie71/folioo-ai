@@ -45,7 +45,7 @@ async def _interleave_ping_events(stream):
                     event_data = next_event_task.result()
                 except asyncio.CancelledError:
                     raise
-                except Exception as e:
+                except Exception:
                     logger.exception("업스트림 SSE 스트림 처리 중 예외 발생")
                     yield ServerSentEvent(
                         event=SSEEventType.ERROR,
@@ -54,7 +54,7 @@ async def _interleave_ping_events(stream):
                                 "type": SSEEventType.ERROR,
                                 "error": {
                                     "code": SSEErrorCode.STREAM_EVENT_ERROR,
-                                    "message": f"SSE 스트림 처리 중 오류가 발생했습니다: {str(e)}",
+                                    "message": "SSE 스트림 처리 중 오류가 발생했습니다.",
                                 },
                             },
                             ensure_ascii=False,
