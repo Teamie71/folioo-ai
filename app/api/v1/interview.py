@@ -71,7 +71,15 @@ async def _interleave_ping_events(stream):
                     or "event" not in event_data
                     or "data" not in event_data
                 ):
-                    logger.error("잘못된 SSE 이벤트 포맷: %r", event_data)
+                    is_dict = isinstance(event_data, dict)
+                    invalid_event_meta = {
+                        "is_dict": is_dict,
+                        "type": event_data.get("type") if is_dict else None,
+                        "id": event_data.get("id") if is_dict else None,
+                        "keys": list(event_data.keys()) if is_dict else None,
+                        "payload_redacted": True,
+                    }
+                    logger.error("잘못된 SSE 이벤트 페이로드: %s", invalid_event_meta)
                     yield ServerSentEvent(
                         event=SSEEventType.ERROR,
                         data=json.dumps(
