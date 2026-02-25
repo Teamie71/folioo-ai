@@ -26,6 +26,8 @@ class SSEErrorCode(StrEnum):
     SESSION_NOT_FOUND = "session_not_found"
     FINAL_STATE_MISSING = "final_state_missing"
     LLM_ERROR = "llm_error"
+    STREAM_EVENT_ERROR = "stream_event_error"
+    INVALID_STREAM_EVENT = "invalid_stream_event"
 
 
 class LangGraphEventType(StrEnum):

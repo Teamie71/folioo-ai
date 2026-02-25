@@ -130,7 +130,9 @@ class SSERetrieverResult(BaseModel):
     """Retriever 검색 결과 이벤트"""
 
     type: str = Field(default=SSEEventType.RETRIEVER_RESULT, description="이벤트 타입")
-    insights: list[SSERetrieverInsight] = Field(default_factory=list, description="검색된 인사이트 목록")
+    insights: list[SSERetrieverInsight] = Field(
+        default_factory=list, description="검색된 인사이트 목록"
+    )
 
 
 class SSEMessagePayload(BaseModel):
@@ -156,7 +158,8 @@ class SSEErrorDetail(BaseModel):
     code: str = Field(
         ...,
         description=f"에러 코드 ({SSEErrorCode.SESSION_NOT_FOUND}, "
-        f"{SSEErrorCode.FINAL_STATE_MISSING}, {SSEErrorCode.LLM_ERROR})",
+        f"{SSEErrorCode.FINAL_STATE_MISSING}, {SSEErrorCode.LLM_ERROR}, "
+        f"{SSEErrorCode.STREAM_EVENT_ERROR}, {SSEErrorCode.INVALID_STREAM_EVENT})",
     )
     message: str = Field(..., description="에러 메시지")
 
