@@ -195,6 +195,7 @@ async def create_session_stream(request: CreateSessionRequest):
         status_code=status.HTTP_201_CREATED,
         headers={
             "Cache-Control": "no-cache",
+            "X-Session-Id": session_id,
             "X-Accel-Buffering": "no",  # Nginx 프록시 버퍼링 비활성화
         },
     )
