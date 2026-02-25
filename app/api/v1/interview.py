@@ -94,8 +94,15 @@ async def _interleave_ping_events(stream):
                         ),
                     )
                     if callable(stream_iter_aclose):
-                        await stream_iter_aclose()
-                        stream_iter_closed = True
+                        try:
+                            await stream_iter_aclose()
+                        except Exception:
+                            logger.warning(
+                                "잘못된 SSE 이벤트 종료 처리 중 upstream 스트림 정리 실패",
+                                exc_info=True,
+                            )
+                        finally:
+                            stream_iter_closed = True
                     break
 
                 yield ServerSentEvent(
