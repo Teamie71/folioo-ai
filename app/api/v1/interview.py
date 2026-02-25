@@ -34,6 +34,8 @@ _STREAM_END = object()
 async def _interleave_ping_events(stream):
     """SSE 스트림에 ping 이벤트를 인터리빙"""
     stream_iter = aiter(stream)
+    stream_iter_aclose = getattr(stream_iter, "aclose", None)
+    stream_iter_closed = False
     next_event_task = asyncio.create_task(anext(stream_iter, _STREAM_END))
 
     try:
@@ -83,6 +85,9 @@ async def _interleave_ping_events(stream):
                             ensure_ascii=False,
                         ),
                     )
+                    if callable(stream_iter_aclose):
+                        await stream_iter_aclose()
+                        stream_iter_closed = True
                     break
 
                 yield ServerSentEvent(
@@ -107,6 +112,9 @@ async def _interleave_ping_events(stream):
             next_event_task.cancel()
             with suppress(asyncio.CancelledError):
                 await next_event_task
+        if not stream_iter_closed and callable(stream_iter_aclose):
+            with suppress(Exception):
+                await stream_iter_aclose()
 
 
 @router.post(
