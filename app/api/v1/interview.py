@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -25,39 +26,45 @@ router = APIRouter(prefix="/interview", tags=["interview"])
 
 # ping 전송 간격 (초)
 _PING_INTERVAL_SECONDS = 10
+_STREAM_END = object()
 
 
 async def _interleave_ping_events(stream):
     """SSE 스트림에 ping 이벤트를 인터리빙"""
     stream_iter = aiter(stream)
-    stream_finished = False
+    next_event_task = asyncio.create_task(anext(stream_iter, _STREAM_END))
 
-    while not stream_finished:
-        try:
-            # ping_interval 내에 이벤트가 오면 즉시 전달
-            event_data = await asyncio.wait_for(
-                anext(stream_iter),
-                timeout=_PING_INTERVAL_SECONDS,
-            )
-            yield ServerSentEvent(
-                event=event_data["event"],
-                data=event_data["data"],
-            )
-        except TimeoutError:
-            # 타임아웃 -> ping 이벤트 전송
-            yield ServerSentEvent(
-                event=SSEEventType.PING,
-                data=json.dumps(
-                    {
-                        "type": SSEEventType.PING,
-                        "timestamp": datetime.now(UTC).isoformat(),
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-        except StopAsyncIteration:
-            # 스트림 종료
-            stream_finished = True
+    try:
+        while True:
+            done, _ = await asyncio.wait({next_event_task}, timeout=_PING_INTERVAL_SECONDS)
+
+            if done:
+                event_data = next_event_task.result()
+                if event_data is _STREAM_END:
+                    break
+
+                yield ServerSentEvent(
+                    event=event_data["event"],
+                    data=event_data["data"],
+                )
+                next_event_task = asyncio.create_task(anext(stream_iter, _STREAM_END))
+            else:
+                # 타임아웃 -> ping 이벤트 전송 (next_event_task는 유지)
+                yield ServerSentEvent(
+                    event=SSEEventType.PING,
+                    data=json.dumps(
+                        {
+                            "type": SSEEventType.PING,
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+    finally:
+        if not next_event_task.done():
+            next_event_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await next_event_task
 
 
 @router.post(
