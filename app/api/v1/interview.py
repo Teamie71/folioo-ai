@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -19,10 +20,11 @@ from app.schemas.interview import (
     SessionStateResponse,
     StageProgressSchema,
 )
-from common.sse import SSEEventType
+from common.sse import SSEErrorCode, SSEEventType
 from features.interview import get_interview_service
 
 router = APIRouter(prefix="/interview", tags=["interview"])
+logger = logging.getLogger(__name__)
 
 # ping 전송 간격 (초)
 _PING_INTERVAL_SECONDS = 10
@@ -39,8 +41,48 @@ async def _interleave_ping_events(stream):
             done, _ = await asyncio.wait({next_event_task}, timeout=_PING_INTERVAL_SECONDS)
 
             if done:
-                event_data = next_event_task.result()
+                try:
+                    event_data = next_event_task.result()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.exception("업스트림 SSE 스트림 처리 중 예외 발생")
+                    yield ServerSentEvent(
+                        event=SSEEventType.ERROR,
+                        data=json.dumps(
+                            {
+                                "type": SSEEventType.ERROR,
+                                "error": {
+                                    "code": SSEErrorCode.STREAM_EVENT_ERROR,
+                                    "message": f"SSE 스트림 처리 중 오류가 발생했습니다: {str(e)}",
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                    break
+
                 if event_data is _STREAM_END:
+                    break
+                if (
+                    not isinstance(event_data, dict)
+                    or "event" not in event_data
+                    or "data" not in event_data
+                ):
+                    logger.error("잘못된 SSE 이벤트 포맷: %r", event_data)
+                    yield ServerSentEvent(
+                        event=SSEEventType.ERROR,
+                        data=json.dumps(
+                            {
+                                "type": SSEEventType.ERROR,
+                                "error": {
+                                    "code": SSEErrorCode.INVALID_STREAM_EVENT,
+                                    "message": "SSE 이벤트 포맷이 올바르지 않습니다.",
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
                     break
 
                 yield ServerSentEvent(
