@@ -44,7 +44,7 @@ class CorrectionResultResponse(BaseModel):
 class UpdateCompanyInsightRequest(BaseModel):
     """기업 분석 수정 요청"""
 
-    company_insight: str = Field(..., min_length=1, description="수정할 기업 분석 내용")
+    company_insight: str = Field(..., min_length=1, description="수정된 기업 분석 내용")
 
 
 # ===== 강조 포인트 수정 =====
