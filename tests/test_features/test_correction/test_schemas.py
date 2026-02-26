@@ -1,5 +1,7 @@
 """첨삭 스키마 테스트"""
 
+import pytest
+
 from app.schemas.correction import (
     CorrectionResultResponse,
     CreateCorrectionRequest,
@@ -23,7 +25,40 @@ def test_correction_output_schema():
                             "comment": "좋습니다.",
                         }
                     ],
-                }
+                },
+                {
+                    "field_name": "contributions",
+                    "lines": [
+                        {
+                            "line_number": 1,
+                            "original_text": "원문",
+                            "type": "keep",
+                            "comment": "좋습니다.",
+                        }
+                    ],
+                },
+                {
+                    "field_name": "achievements",
+                    "lines": [
+                        {
+                            "line_number": 1,
+                            "original_text": "원문",
+                            "type": "keep",
+                            "comment": "좋습니다.",
+                        }
+                    ],
+                },
+                {
+                    "field_name": "insights",
+                    "lines": [
+                        {
+                            "line_number": 1,
+                            "original_text": "원문",
+                            "type": "keep",
+                            "comment": "좋습니다.",
+                        }
+                    ],
+                },
             ],
             "overall_summary": "요약",
         }
@@ -32,6 +67,107 @@ def test_correction_output_schema():
     assert output.fields[0].field_name == "description"
     assert output.fields[0].lines[0].type == "keep"
     assert output.overall_summary == "요약"
+
+
+def test_correction_output_schema_rejects_missing_section():
+    """필수 섹션 누락 시 ValidationError 발생 테스트"""
+    with pytest.raises(ValueError):
+        CorrectionOutput.model_validate(
+            {
+                "fields": [
+                    {
+                        "field_name": "description",
+                        "lines": [
+                            {
+                                "line_number": 1,
+                                "original_text": "원문",
+                                "type": "keep",
+                                "comment": "좋습니다.",
+                            }
+                        ],
+                    },
+                    {
+                        "field_name": "contributions",
+                        "lines": [
+                            {
+                                "line_number": 1,
+                                "original_text": "원문",
+                                "type": "keep",
+                                "comment": "좋습니다.",
+                            }
+                        ],
+                    },
+                    {
+                        "field_name": "achievements",
+                        "lines": [
+                            {
+                                "line_number": 1,
+                                "original_text": "원문",
+                                "type": "keep",
+                                "comment": "좋습니다.",
+                            }
+                        ],
+                    },
+                ],
+                "overall_summary": "요약",
+            }
+        )
+
+
+def test_correction_output_schema_rejects_duplicated_section():
+    """필수 섹션 중복 시 ValidationError 발생 테스트"""
+    with pytest.raises(ValueError):
+        CorrectionOutput.model_validate(
+            {
+                "fields": [
+                    {
+                        "field_name": "description",
+                        "lines": [
+                            {
+                                "line_number": 1,
+                                "original_text": "원문",
+                                "type": "keep",
+                                "comment": "좋습니다.",
+                            }
+                        ],
+                    },
+                    {
+                        "field_name": "description",
+                        "lines": [
+                            {
+                                "line_number": 2,
+                                "original_text": "원문2",
+                                "type": "keep",
+                                "comment": "좋습니다.",
+                            }
+                        ],
+                    },
+                    {
+                        "field_name": "achievements",
+                        "lines": [
+                            {
+                                "line_number": 1,
+                                "original_text": "원문",
+                                "type": "keep",
+                                "comment": "좋습니다.",
+                            }
+                        ],
+                    },
+                    {
+                        "field_name": "insights",
+                        "lines": [
+                            {
+                                "line_number": 1,
+                                "original_text": "원문",
+                                "type": "keep",
+                                "comment": "좋습니다.",
+                            }
+                        ],
+                    },
+                ],
+                "overall_summary": "요약",
+            }
+        )
 
 
 def test_create_correction_request_schema():
