@@ -51,7 +51,7 @@ class UpdateCompanyInsightRequest(BaseModel):
 class UpdateEmphasisPointsRequest(BaseModel):
     """강조 포인트 수정 요청"""
 
-    emphasis_points: list[str] = Field(..., description="강조 포인트 목록")
+    emphasis_points: str = Field(..., min_length=1, description="수정된 강조 포인트 내용")
 
 
 class CompanyInsightResponse(BaseModel):

@@ -62,6 +62,6 @@ def test_correction_result_response_schema():
 
 def test_update_emphasis_points_request_schema():
     """UpdateEmphasisPointsRequest 스키마 생성 테스트"""
-    request = UpdateEmphasisPointsRequest(emphasis_points=["핵심 역량", "성과 지표"])
+    request = UpdateEmphasisPointsRequest(emphasis_points="핵심 역량과 성과 지표를 강조")
 
-    assert request.emphasis_points == ["핵심 역량", "성과 지표"]
+    assert request.emphasis_points == "핵심 역량과 성과 지표를 강조"
