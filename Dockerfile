@@ -26,4 +26,4 @@ COPY --from=builder /app/.venv .venv/
 # 애플리케이션 코드 복사
 COPY . .
 
-CMD ["/app/.venv/bin/fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
