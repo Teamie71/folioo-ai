@@ -26,7 +26,10 @@ async def lifespan(app: FastAPI):
     import os
 
     from common.db.connection import close_pool, create_pool
-    from features.correction.repository import init_correction_repository
+    from features.correction.repository import (
+        init_correction_repository,
+        reset_correction_repository,
+    )
     from features.interview.agents.insight_store.pgvector_store import (
         PgVectorInsightStore,
     )
@@ -82,6 +85,7 @@ async def lifespan(app: FastAPI):
             await correction_repo.setup_table()
             logger.info("첨삭 DB 초기화 완료")
         except Exception:
+            reset_correction_repository()
             logger.exception("첨삭 DB 초기화 실패")
 
     # ===== Checkpointer 초기화 =====

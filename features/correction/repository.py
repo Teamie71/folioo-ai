@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 _repo: "CorrectionRepository | None" = None
 
+_CREATE_PGCRYPTO_EXTENSION_SQL = "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+
 _CREATE_CORRECTIONS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS corrections (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -63,6 +65,7 @@ class CorrectionRepository:
         """corrections, rag_data 테이블이 없으면 생성"""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
+                await conn.execute(_CREATE_PGCRYPTO_EXTENSION_SQL)
                 await conn.execute(_CREATE_CORRECTIONS_TABLE_SQL)
                 await conn.execute(_CREATE_RAG_DATA_TABLE_SQL)
 
@@ -136,16 +139,19 @@ class CorrectionRepository:
             correction_id: 첨삭 ID
             status: 변경할 상태
         """
-        await self._pool.execute(
+        row = await self._pool.fetchrow(
             """
             UPDATE corrections
             SET status = $2,
                 updated_at = NOW()
             WHERE id = $1::uuid
+            RETURNING id
             """,
             correction_id,
             status,
         )
+        if row is None:
+            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
 
     async def update_result(self, correction_id: str, result: dict) -> None:
         """
@@ -155,17 +161,20 @@ class CorrectionRepository:
             correction_id: 첨삭 ID
             result: 첨삭 결과(JSON 직렬화 가능한 dict)
         """
-        await self._pool.execute(
+        row = await self._pool.fetchrow(
             """
             UPDATE corrections
             SET result = $2::jsonb,
                 status = 'done',
                 updated_at = NOW()
             WHERE id = $1::uuid
+            RETURNING id
             """,
             correction_id,
             json.dumps(result, ensure_ascii=False),
         )
+        if row is None:
+            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
 
     async def update_company_insight(self, correction_id: str, company_insight: str) -> None:
         """
@@ -175,16 +184,19 @@ class CorrectionRepository:
             correction_id: 첨삭 ID
             company_insight: 기업 분석/인사이트 텍스트
         """
-        await self._pool.execute(
+        row = await self._pool.fetchrow(
             """
             UPDATE corrections
             SET company_insight = $2,
                 updated_at = NOW()
             WHERE id = $1::uuid
+            RETURNING id
             """,
             correction_id,
             company_insight,
         )
+        if row is None:
+            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
 
     async def update_emphasis_points(self, correction_id: str, emphasis_points: str) -> None:
         """
@@ -194,16 +206,19 @@ class CorrectionRepository:
             correction_id: 첨삭 ID
             emphasis_points: 강조 포인트 텍스트
         """
-        await self._pool.execute(
+        row = await self._pool.fetchrow(
             """
             UPDATE corrections
             SET emphasis_points = $2,
                 updated_at = NOW()
             WHERE id = $1::uuid
+            RETURNING id
             """,
             correction_id,
             emphasis_points,
         )
+        if row is None:
+            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
 
     async def delete(self, correction_id: str) -> None:
         """
@@ -212,10 +227,12 @@ class CorrectionRepository:
         Args:
             correction_id: 첨삭 ID
         """
-        await self._pool.execute(
-            "DELETE FROM corrections WHERE id = $1::uuid",
+        row = await self._pool.fetchrow(
+            "DELETE FROM corrections WHERE id = $1::uuid RETURNING id",
             correction_id,
         )
+        if row is None:
+            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
 
     async def save_rag_data(
         self,

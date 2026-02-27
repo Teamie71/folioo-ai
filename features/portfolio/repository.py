@@ -8,6 +8,8 @@ from .schemas import PortfolioOutput
 
 logger = logging.getLogger(__name__)
 
+_CREATE_PGCRYPTO_EXTENSION_SQL = "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS portfolios (
     id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -40,7 +42,11 @@ class PortfolioRepository:
 
     async def setup_table(self) -> None:
         """portfolios 테이블이 없으면 생성"""
-        await self._pool.execute(_CREATE_TABLE_SQL)
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(_CREATE_PGCRYPTO_EXTENSION_SQL)
+                await conn.execute(_CREATE_TABLE_SQL)
+
         logger.info("portfolios 테이블 준비 완료")
 
     async def create(

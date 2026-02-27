@@ -10,8 +10,8 @@ from .schemas import CorrectionOutput, CorrectionStatus
 
 __all__ = [
     "CorrectionOutput",
-    "CorrectionStatus",
     "CorrectionRepository",
+    "CorrectionStatus",
     "get_correction_repository",
     "init_correction_repository",
     "reset_correction_repository",
