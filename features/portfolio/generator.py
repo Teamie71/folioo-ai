@@ -14,7 +14,7 @@ from .prompts.portfolio_generator import (
 from .schemas import PortfolioOutput
 
 _MAX_ATTEMPTS = 3
-_SECTION_FIELDS = ("detail_info", "assigned_task", "problem_solving", "lessons_learned")
+_SECTION_FIELDS = ("description", "contributions", "achievements", "insights")
 _BULLET_PATTERN = re.compile(r"(?m)^\s*[-*•]\s+")
 
 

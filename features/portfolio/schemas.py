@@ -13,10 +13,10 @@ class PortfolioOutput(BaseModel):
     LLM의 .with_structured_output() 호출에 직접 사용됩니다.
     """
 
-    detail_info: str = Field(..., description="상세정보, 서술형 문단")
-    assigned_task: str = Field(..., description="담당업무, 서술형 문단")
-    problem_solving: str = Field(..., description="문제해결, 서술형 문단")
-    lessons_learned: str = Field(..., description="배운 점, 서술형 문단")
+    description: str = Field(..., description="상세정보, 서술형 문단")
+    contributions: str = Field(..., description="담당업무, 서술형 문단")
+    achievements: str = Field(..., description="문제해결, 서술형 문단")
+    insights: str = Field(..., description="배운 점, 서술형 문단")
 
 
 class PortfolioStatus(str, Enum):

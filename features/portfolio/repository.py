@@ -15,10 +15,10 @@ CREATE TABLE IF NOT EXISTS portfolios (
     user_id           VARCHAR     NOT NULL,
     experience_name   VARCHAR     NOT NULL,
     status            VARCHAR     NOT NULL DEFAULT 'not_started',
-    detail_info       TEXT,
-    assigned_task     TEXT,
-    problem_solving   TEXT,
-    lessons_learned   TEXT,
+    description       TEXT,
+    contributions     TEXT,
+    achievements      TEXT,
+    insights          TEXT,
     contribution_rate INTEGER     DEFAULT 0,
     error_message     TEXT,
     created_at        TIMESTAMPTZ DEFAULT NOW(),
@@ -122,20 +122,20 @@ class PortfolioRepository:
         await self._pool.execute(
             """
             UPDATE portfolios
-            SET detail_info     = $2,
-                assigned_task   = $3,
-                problem_solving = $4,
-                lessons_learned = $5,
-                status          = 'completed',
-                error_message   = NULL,
-                updated_at      = NOW()
+            SET description   = $2,
+                contributions = $3,
+                achievements  = $4,
+                insights      = $5,
+                status        = 'completed',
+                error_message = NULL,
+                updated_at    = NOW()
             WHERE id = $1::uuid
             """,
             portfolio_id,
-            output.detail_info,
-            output.assigned_task,
-            output.problem_solving,
-            output.lessons_learned,
+            output.description,
+            output.contributions,
+            output.achievements,
+            output.insights,
         )
 
     async def update_status(

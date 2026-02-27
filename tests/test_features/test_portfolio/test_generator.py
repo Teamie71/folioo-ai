@@ -35,19 +35,19 @@ class DummyLLM:
 def _valid_output() -> PortfolioOutput:
     text = "포트폴리오 문단 " * 20
     return PortfolioOutput(
-        detail_info=text,
-        assigned_task=text,
-        problem_solving=text,
-        lessons_learned=text,
+        description=text,
+        contributions=text,
+        achievements=text,
+        insights=text,
     )
 
 
 def _invalid_output() -> PortfolioOutput:
     return PortfolioOutput(
-        detail_info="짧음",
-        assigned_task="- 항목1\n- 항목2",
-        problem_solving="",
-        lessons_learned="짧음",
+        description="짧음",
+        contributions="- 항목1\n- 항목2",
+        achievements="",
+        insights="짧음",
     )
 
 

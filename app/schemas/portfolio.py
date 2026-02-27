@@ -38,10 +38,10 @@ class PortfolioResultResponse(BaseModel):
     experience_name: str = Field(..., description="경험/프로젝트명")
     status: PortfolioStatus = Field(..., description="생성 상태")
     contribution_rate: int | None = Field(None, ge=0, le=100, description="기여도 (0-100%)")
-    detail_info: str = Field(..., description="상세정보")
-    assigned_task: str = Field(..., description="담당업무")
-    problem_solving: str = Field(..., description="문제해결")
-    lessons_learned: str = Field(..., description="배운 점")
+    description: str = Field(..., description="상세정보")
+    contributions: str = Field(..., description="담당업무")
+    achievements: str = Field(..., description="문제해결")
+    insights: str = Field(..., description="배운 점")
 
 
 # ===== 기여도 수정 =====

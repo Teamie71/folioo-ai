@@ -42,7 +42,9 @@ class DummyRepo:
         }
         return "new-id"
 
-    async def update_status(self, portfolio_id: str, status: str, error_message: str | None = None) -> None:
+    async def update_status(
+        self, portfolio_id: str, status: str, error_message: str | None = None
+    ) -> None:
         self.updated_status = {
             "portfolio_id": portfolio_id,
             "status": status,
@@ -62,10 +64,10 @@ class DummyRepo:
 class DummyGenerator:
     def __init__(self, output: PortfolioOutput | None = None, exc: Exception | None = None):
         default_output = PortfolioOutput(
-            detail_info="상세",
-            assigned_task="담당",
-            problem_solving="해결",
-            lessons_learned="배운점",
+            description="상세",
+            contributions="담당",
+            achievements="해결",
+            insights="배운점",
         )
         self.output = output or default_output
         self.exc = exc
@@ -77,7 +79,9 @@ class DummyGenerator:
 
 
 @pytest.mark.asyncio
-async def test_start_generation_creates_and_schedules_background_task(monkeypatch: pytest.MonkeyPatch):
+async def test_start_generation_creates_and_schedules_background_task(
+    monkeypatch: pytest.MonkeyPatch,
+):
     """완료된 세션이면 generating 레코드를 만들고 background task를 등록한다."""
     state = {
         "all_stages_complete": True,
@@ -112,7 +116,12 @@ async def test_start_generation_creates_and_schedules_background_task(monkeypatc
 @pytest.mark.asyncio
 async def test_start_generation_returns_existing_id_for_duplicate_session():
     """동일 세션의 generating/completed 포트폴리오가 있으면 기존 ID를 반환한다."""
-    state = {"all_stages_complete": True, "collected_data": {}, "experience_name": "x", "user_id": "u"}
+    state = {
+        "all_stages_complete": True,
+        "collected_data": {},
+        "experience_name": "x",
+        "user_id": "u",
+    }
     repo = DummyRepo(row={"id": "existing-id", "status": PortfolioStatus.GENERATING.value})
     service = PortfolioService(
         repository=repo,
@@ -120,7 +129,9 @@ async def test_start_generation_returns_existing_id_for_duplicate_session():
         interview_service=DummyInterviewService(state),
     )
 
-    portfolio_id = await service.start_generation("session-1", "u", background_tasks=DummyBackgroundTasks())
+    portfolio_id = await service.start_generation(
+        "session-1", "u", background_tasks=DummyBackgroundTasks()
+    )
 
     assert portfolio_id == "existing-id"
     assert repo.created_args is None
@@ -156,10 +167,10 @@ async def test_get_status_and_get_result_for_completed_row():
         "experience_name": "exp",
         "status": PortfolioStatus.COMPLETED.value,
         "contribution_rate": 55,
-        "detail_info": "상세",
-        "assigned_task": "담당",
-        "problem_solving": "해결",
-        "lessons_learned": "배운점",
+        "description": "상세",
+        "contributions": "담당",
+        "achievements": "해결",
+        "insights": "배운점",
         "created_at": datetime.now(UTC),
         "error_message": None,
     }
@@ -175,4 +186,4 @@ async def test_get_status_and_get_result_for_completed_row():
     assert status.status == PortfolioStatus.COMPLETED
     assert result is not None
     assert result.output is not None
-    assert result.output.problem_solving == "해결"
+    assert result.output.achievements == "해결"
