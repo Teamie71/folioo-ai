@@ -12,6 +12,8 @@ from features.correction.schemas import CorrectionOutput
 
 
 class DummyChain:
+    """미리 정의한 응답을 순차 반환하는 체인 모킹 객체."""
+
     def __init__(self, responses: list):
         self._responses = responses
         self.calls: list[dict] = []
@@ -25,6 +27,8 @@ class DummyChain:
 
 
 class DummyPrompt:
+    """`|` 연산 시 DummyChain을 반환하는 프롬프트 모킹 객체."""
+
     def __init__(self, chain: DummyChain):
         self._chain = chain
 
@@ -33,6 +37,8 @@ class DummyPrompt:
 
 
 class DummyLLM:
+    """structured output 래퍼를 대체하는 LLM 모킹 객체."""
+
     def with_structured_output(self, _: type[CorrectionOutput]) -> object:
         return object()
 
