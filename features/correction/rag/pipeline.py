@@ -1,5 +1,8 @@
 """첨삭용 RAG 파이프라인"""
 
+import json
+import re
+
 from common.llm.client import get_llm
 
 
@@ -27,13 +30,20 @@ class RAGPipeline:
             job_title=job_title,
         )
 
-    def _extract_keywords(self, company_name: str, job_title: str, job_description: str) -> list[str]:
-        """LLM으로 검색 키워드 3~5개 추출"""
+    def _extract_keywords(
+        self, company_name: str, job_title: str, job_description: str
+    ) -> list[str]:
+        """LLM으로 검색 키워드 4개 추출"""
         response = self._llm.invoke(
-            "다음 정보를 기반으로 웹 검색용 핵심 키워드 3~5개를 한 줄에 하나씩 작성하세요.\n"
-            f"- 기업명: {company_name}\n"
-            f"- 직무: {job_title}\n"
-            f"- JD: {job_description}\n"
+            "당신은 채용 공고 기반 기업 분석 리서처입니다.\n"
+            "아래 입력을 분석해 웹 검색용 키워드 4개를 생성하세요.\n"
+            "각 키워드는 서로 다른 관점을 커버해야 합니다: 조직문화/인재상, 사업전략/비전, 시장/경쟁, 직무/역량.\n"
+            "반드시 JSON만 출력하세요.\n"
+            "출력 형식:\n"
+            '{"search_keywords": ["keyword1", "keyword2", "keyword3", "keyword4"]}\n\n'
+            f"기업명: {company_name}\n"
+            f"직무명: {job_title}\n"
+            f"JD: {job_description}\n"
         )
         content = getattr(response, "content", response)
         text = str(content).strip()
@@ -42,19 +52,23 @@ class RAGPipeline:
             return [f"{company_name} {job_title}"]
 
         keywords: list[str] = []
-        for line in text.splitlines():
-            cleaned = line.strip().lstrip("- ").lstrip("* ").strip()
-            if not cleaned:
-                continue
-            for part in cleaned.split(","):
-                keyword = part.strip().lstrip("0123456789. ").strip()
-                if keyword and keyword not in keywords:
-                    keywords.append(keyword)
+
+        json_text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
+        try:
+            data = json.loads(json_text)
+            parsed = data.get("search_keywords", []) if isinstance(data, dict) else []
+            if isinstance(parsed, list):
+                for item in parsed:
+                    keyword = str(item).strip()
+                    if keyword and keyword not in keywords:
+                        keywords.append(keyword)
+        except json.JSONDecodeError:
+            return [f"{company_name} {job_title}"]
 
         if not keywords:
             return [f"{company_name} {job_title}"]
 
-        return keywords[:5]
+        return keywords[:4]
 
     def _search(self, query: str) -> list[dict]:
         """웹 검색 (스텁) — 실제 API 연동 시 교체"""
