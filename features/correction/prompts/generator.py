@@ -19,9 +19,11 @@ CORRECTION_GENERATOR_SYSTEM_TEMPLATE = """
 # 출력 규칙
 - 반드시 CorrectionOutput 스키마를 준수하세요.
 - field_name은 description, contributions, achievements, insights를 각각 정확히 1회 포함하세요.
-- line_number는 각 필드 원문 라인 범위를 벗어나지 않게 작성하세요.
+- line_number는 각 필드의 번호가 매겨진 줄 범위를 벗어나지 않게 작성하세요.
 - type은 reduce, keep, emphasize 중 하나만 사용하세요.
-- comment와 overall_summary는 비어있지 않게 작성하세요.
+- overall_summary는 비어있지 않게 작성하세요.
+- keep 라인의 comment는 null 허용입니다.
+- reduce/emphasize 라인의 comment는 비어있지 않게 작성하세요.
 
 # 이전 시도 피드백
 {validation_feedback}

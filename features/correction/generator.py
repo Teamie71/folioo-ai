@@ -1,17 +1,23 @@
 """첨삭 결과 생성기"""
 
+import re
 from pathlib import Path
 
 import yaml
 
 from common.llm.client import get_llm
 
+from .prompts.correction_prompt import format_portfolio_for_correction
 from .prompts.generator import correction_generator_prompt
 from .schemas import REQUIRED_CORRECTION_FIELDS, CorrectionOutput
 
 _generator: "CorrectionGenerator | None" = None
 _DEFAULT_MAX_RETRIES = 2
 _ALLOWED_TYPES = {"reduce", "keep", "emphasize"}
+_FIELD_HEADER_PATTERN = re.compile(
+    r"^\[[^\]]+ - (?P<field_name>description|contributions|achievements|insights)\]$"
+)
+_NUMBERED_LINE_PATTERN = re.compile(r"^\d+\.\s+")
 
 
 class CorrectionGenerationError(Exception):
@@ -58,6 +64,8 @@ class CorrectionGenerator:
         validation_feedback = "없음"
         last_output: CorrectionOutput | None = None
         last_error_message: str | None = None
+        portfolio_data_text = _format_portfolio_data_for_prompt(portfolio_data)
+        field_line_counts = _get_field_line_counts_from_formatted_text(portfolio_data_text)
 
         for _ in range(self._max_retries + 1):
             prompt_variables = {
@@ -65,7 +73,7 @@ class CorrectionGenerator:
                 "job_title": job_title,
                 "job_description": job_description,
                 "company_insight": company_insight,
-                "portfolio_data_text": _format_portfolio_data_for_prompt(portfolio_data),
+                "portfolio_data_text": portfolio_data_text,
                 "emphasis_points": emphasis_points,
                 "validation_feedback": validation_feedback,
             }
@@ -79,7 +87,7 @@ class CorrectionGenerator:
                 continue
 
             last_output = output
-            validation_errors = self._validate(output=output, portfolio_data=portfolio_data)
+            validation_errors = self._validate(output=output, field_line_counts=field_line_counts)
             if not validation_errors:
                 return output
 
@@ -94,18 +102,30 @@ class CorrectionGenerator:
             f"최대 시도({self._max_retries + 1}회) 후 중단: {last_error_message or '알 수 없는 오류'}"
         )
 
-    def _validate(self, output: CorrectionOutput, portfolio_data: dict) -> list[str]:
+    def _validate(
+        self,
+        output: CorrectionOutput,
+        portfolio_data: dict | None = None,
+        field_line_counts: dict[str, int] | None = None,
+    ) -> list[str]:
         """
         첨삭 출력이 비즈니스 규칙을 만족하는지 검증
 
         Args:
             output: LLM이 생성한 첨삭 결과
-            portfolio_data: 원본 포트폴리오 데이터
+            portfolio_data: 원본 포트폴리오 데이터 (line count를 내부 계산할 때 사용)
+            field_line_counts: 이미 계산된 필드별 번호 라인 수 (선택)
 
         Returns:
             list[str]: 검증 실패 사유 목록 (빈 리스트면 검증 통과)
         """
         errors: list[str] = []
+        if field_line_counts is None:
+            if portfolio_data is None:
+                raise ValueError(
+                    "portfolio_data 또는 field_line_counts 중 하나는 반드시 필요합니다."
+                )
+            field_line_counts = _get_field_line_counts(portfolio_data)
 
         field_map = {field.field_name: field for field in output.fields}
         missing_fields = [name for name in REQUIRED_CORRECTION_FIELDS if name not in field_map]
@@ -120,12 +140,22 @@ class CorrectionGenerator:
             if field is None:
                 continue
 
-            line_count = _get_line_count(portfolio_data, field_name)
+            line_count = field_line_counts.get(field_name, 0)
             for line in field.lines:
                 if line.type not in _ALLOWED_TYPES:
                     errors.append(f"{field_name}의 type 값이 유효하지 않습니다: {line.type}")
-                if not line.comment.strip():
-                    errors.append(f"{field_name}의 {line.line_number}번 라인 comment가 비어 있습니다.")
+
+                if line.type == "keep":
+                    if line.comment is not None and not line.comment.strip():
+                        errors.append(
+                            f"{field_name}의 {line.line_number}번 라인 comment가 비어 있습니다."
+                        )
+                else:
+                    if line.comment is None or not line.comment.strip():
+                        errors.append(
+                            f"{field_name}의 {line.line_number}번 라인 comment가 비어 있습니다."
+                        )
+
                 if line.line_number < 1 or line.line_number > line_count:
                     errors.append(
                         f"{field_name}의 line_number {line.line_number}가 원본 라인 수({line_count})를 벗어났습니다."
@@ -146,62 +176,89 @@ def _load_max_retries() -> int:
         return _DEFAULT_MAX_RETRIES
 
 
-def _get_line_count(portfolio_data: dict, field_name: str) -> int:
+def _get_field_line_counts(portfolio_data: dict) -> dict[str, int]:
+    """필드별 번호 매김 대상 라인 수를 계산"""
+    formatted_text = _format_portfolio_data_for_prompt(portfolio_data)
+    return _get_field_line_counts_from_formatted_text(formatted_text)
+
+
+def _get_field_line_counts_from_formatted_text(formatted_text: str) -> dict[str, int]:
+    """포맷팅된 텍스트에서 필드별 번호 라인 수를 추출"""
+    line_counts = {field_name: 0 for field_name in REQUIRED_CORRECTION_FIELDS}
+    current_field_name: str | None = None
+
+    for raw_line in formatted_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        header_match = _FIELD_HEADER_PATTERN.match(line)
+        if header_match is not None:
+            current_field_name = header_match.group("field_name")
+            continue
+
+        if current_field_name is None:
+            continue
+
+        if _NUMBERED_LINE_PATTERN.match(line) is not None:
+            line_counts[current_field_name] += 1
+
+    return line_counts
+
+
+def _coerce_field_value_to_text(value: object) -> str:
     """
-    필드별 원본 라인 수 계산 (최소 1라인 보장)
+    포트폴리오 필드 값을 문자열로 정규화
 
     Args:
-        portfolio_data: 원본 포트폴리오 데이터
-        field_name: 라인 수를 구할 필드명
+        value: 문자열 또는 dict(lines/text/content/value) 또는 리스트 값
 
-        Returns:
-        int: 문자열 또는 dict(lines/text/content/value) 기반 라인 수(항상 1 이상)
+    Returns:
+        str: 줄바꿈을 유지한 문자열 텍스트
     """
-    source = portfolio_data.get(field_name)
-    if isinstance(source, str):
-        return max(len(source.splitlines()), 1)
+    if isinstance(value, str):
+        return value
 
-    if isinstance(source, dict):
-        if isinstance(source.get("lines"), list):
-            return max(len(source["lines"]), 1)
+    if isinstance(value, list):
+        return "\n".join(str(item) for item in value if item is not None)
+
+    if isinstance(value, dict):
+        if isinstance(value.get("lines"), list):
+            return "\n".join(str(line) for line in value["lines"])
 
         for key in ("text", "content", "value"):
-            value = source.get(key)
-            if isinstance(value, str):
-                return max(len(value.splitlines()), 1)
+            candidate = value.get(key)
+            if candidate is not None:
+                return str(candidate)
 
-    return 1
+        return ""
+
+    if value is None:
+        return ""
+
+    return str(value)
 
 
 def _format_portfolio_data_for_prompt(portfolio_data: dict) -> str:
     """
-    포트폴리오 입력을 프롬프트용 섹션 텍스트로 변환
+    포트폴리오 입력을 첨삭 프롬프트용 텍스트로 변환
 
     Args:
         portfolio_data: 필드별 문자열 또는 dict(lines/text/content/value) 형태 데이터
 
     Returns:
-        str: [field] 헤더와 본문을 포함한 멀티라인 문자열
-            예) [description]\\n...\\n\\n[contributions]\\n...
+        str: format_portfolio_for_correction() 규칙을 따른 멀티라인 문자열
     """
-    lines: list[str] = []
+    if not isinstance(portfolio_data, dict):
+        raise TypeError("portfolio_data는 dict 타입이어야 합니다.")
 
+    normalized_portfolio: dict[str, str] = {}
     for field_name in REQUIRED_CORRECTION_FIELDS:
-        value = portfolio_data.get(field_name, "")
+        normalized_portfolio[field_name] = _coerce_field_value_to_text(
+            portfolio_data.get(field_name)
+        )
 
-        if isinstance(value, dict):
-            if isinstance(value.get("lines"), list):
-                text = "\n".join(str(line) for line in value["lines"])
-            else:
-                text = str(value.get("text") or value.get("content") or value.get("value") or "")
-        else:
-            text = str(value)
-
-        lines.append(f"[{field_name}]")
-        lines.append(text.strip() or "(내용 없음)")
-        lines.append("")
-
-    return "\n".join(lines).strip()
+    return format_portfolio_for_correction(normalized_portfolio)
 
 
 def get_correction_generator() -> CorrectionGenerator:

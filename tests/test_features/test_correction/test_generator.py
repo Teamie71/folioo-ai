@@ -43,7 +43,7 @@ class DummyLLM:
         return object()
 
 
-def _output(line_number: int = 1, comment: str = "좋습니다.") -> CorrectionOutput:
+def _output(line_number: int = 1, comment: str | None = "좋습니다.") -> CorrectionOutput:
     return CorrectionOutput.model_validate(
         {
             "fields": [
@@ -114,10 +114,10 @@ def test_generate_retry_with_validation_feedback(monkeypatch: pytest.MonkeyPatch
         job_description="채용 공고",
         company_insight="인사이트",
         portfolio_data={
-            "description": "한 줄",
-            "contributions": "한 줄",
-            "achievements": "한 줄",
-            "insights": "한 줄",
+            "description": "- 한 줄",
+            "contributions": "- 한 줄",
+            "achievements": "- 한 줄",
+            "insights": "- 한 줄",
         },
         emphasis_points="강조 포인트",
     )
@@ -142,10 +142,10 @@ def test_generate_returns_last_output_when_retries_exhausted(monkeypatch: pytest
         job_description="채용 공고",
         company_insight="인사이트",
         portfolio_data={
-            "description": "한 줄",
-            "contributions": "한 줄",
-            "achievements": "한 줄",
-            "insights": "한 줄",
+            "description": "- 한 줄",
+            "contributions": "- 한 줄",
+            "achievements": "- 한 줄",
+            "insights": "- 한 줄",
         },
         emphasis_points="강조 포인트",
     )
@@ -168,10 +168,10 @@ def test_generate_raises_error_when_llm_fails_without_output(monkeypatch: pytest
             job_description="채용 공고",
             company_insight="인사이트",
             portfolio_data={
-                "description": "한 줄",
-                "contributions": "한 줄",
-                "achievements": "한 줄",
-                "insights": "한 줄",
+                "description": "- 한 줄",
+                "contributions": "- 한 줄",
+                "achievements": "- 한 줄",
+                "insights": "- 한 줄",
             },
             emphasis_points="강조 포인트",
         )
@@ -188,15 +188,60 @@ def test_validate_detects_empty_summary_and_comment(monkeypatch: pytest.MonkeyPa
     errors = CorrectionGenerator(max_retries=0)._validate(
         output,
         portfolio_data={
-            "description": "한 줄",
-            "contributions": "한 줄",
-            "achievements": "한 줄",
-            "insights": "한 줄",
+            "description": "- 한 줄",
+            "contributions": "- 한 줄",
+            "achievements": "- 한 줄",
+            "insights": "- 한 줄",
         },
     )
 
     assert "overall_summary가 비어 있습니다." in errors
     assert "description의 1번 라인 comment가 비어 있습니다." in errors
+
+
+def test_validate_allows_null_comment_for_keep(monkeypatch: pytest.MonkeyPatch):
+    """keep 타입은 comment가 null이어도 검증을 통과한다."""
+    from features.correction import generator
+
+    monkeypatch.setattr(generator, "get_llm", lambda temperature=0.2: DummyLLM())
+    output = _output(comment=None)
+
+    errors = CorrectionGenerator(max_retries=0)._validate(
+        output,
+        portfolio_data={
+            "description": "- 한 줄",
+            "contributions": "- 한 줄",
+            "achievements": "- 한 줄",
+            "insights": "- 한 줄",
+        },
+    )
+
+    assert "description의 1번 라인 comment가 비어 있습니다." not in errors
+
+
+def test_validate_counts_only_numbered_lines_with_subheaders(monkeypatch: pytest.MonkeyPatch):
+    """소구분 헤더를 제외한 번호 라인 수 기준으로 line_number를 검증한다."""
+    from features.correction import generator
+
+    monkeypatch.setattr(generator, "get_llm", lambda temperature=0.2: DummyLLM())
+    validator = CorrectionGenerator(max_retries=0)
+    portfolio_data = {
+        "description": (
+            "**1) 리소스 부족**\n"
+            "- **상황:** 실시간 채팅 서버 구축 불가\n"
+            "- **전략:** MVP 스펙으로 전환\n"
+            "- **근거:** 핵심 가치 집중"
+        ),
+        "contributions": "- 한 줄",
+        "achievements": "- 한 줄",
+        "insights": "- 한 줄",
+    }
+
+    valid_errors = validator._validate(_output(line_number=3), portfolio_data=portfolio_data)
+    invalid_errors = validator._validate(_output(line_number=4), portfolio_data=portfolio_data)
+
+    assert "description의 line_number 3가 원본 라인 수(3)를 벗어났습니다." not in valid_errors
+    assert "description의 line_number 4가 원본 라인 수(3)를 벗어났습니다." in invalid_errors
 
 
 def test_correction_generator_singleton(monkeypatch: pytest.MonkeyPatch):
