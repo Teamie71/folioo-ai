@@ -11,7 +11,7 @@ REQUIRED_CORRECTION_FIELDS = ("description", "contributions", "achievements", "i
 class CorrectionLine(BaseModel):
     """라인별 첨삭 결과"""
 
-    line_number: int = Field(..., description="라인 번호")
+    line_number: int = Field(..., ge=1, description="라인 번호")
     original_text: str = Field(..., description="원문 텍스트")
     type: Literal["reduce", "keep", "emphasize"] = Field(..., description="첨삭 타입")
     comment: str = Field(..., description="첨삭 코멘트")
