@@ -1,5 +1,6 @@
 """첨삭 프롬프트 테스트"""
 
+import pytest
 from langchain_core.prompts import ChatPromptTemplate
 
 from features.correction.prompts import format_portfolio_for_correction, get_correction_prompt
@@ -84,3 +85,15 @@ def test_format_portfolio_for_correction_numbers_only_bullet_lines():
 
     assert "[배운 점 - insights]" in formatted
     assert "1. **성장한 부분:** 우선순위 조율 역량 강화" in formatted
+
+
+def test_format_portfolio_for_correction_raises_type_error_for_invalid_portfolio():
+    """portfolio가 dict 타입이 아닐 때 TypeError를 발생시키는지 테스트"""
+    with pytest.raises(TypeError, match="portfolio는 dict 타입이어야 합니다"):
+        format_portfolio_for_correction("invalid")  # type: ignore
+
+    with pytest.raises(TypeError, match="portfolio는 dict 타입이어야 합니다"):
+        format_portfolio_for_correction(["invalid"])  # type: ignore
+
+    with pytest.raises(TypeError, match="portfolio는 dict 타입이어야 합니다"):
+        format_portfolio_for_correction(123)  # type: ignore

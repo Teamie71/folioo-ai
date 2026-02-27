@@ -129,7 +129,7 @@ def format_portfolio_for_correction(portfolio: dict) -> str:
         필드별로 줄 번호가 부여된 LLM 입력 문자열
     """
     if not isinstance(portfolio, dict):
-        raise ValueError("portfolio는 dict 타입이어야 합니다.")
+        raise TypeError("portfolio는 dict 타입이어야 합니다.")
 
     output_lines: list[str] = []
 
