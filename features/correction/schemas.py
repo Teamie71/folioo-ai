@@ -14,7 +14,7 @@ class CorrectionLine(BaseModel):
     line_number: int = Field(..., ge=1, description="라인 번호")
     original_text: str = Field(..., description="원문 텍스트")
     type: Literal["reduce", "keep", "emphasize"] = Field(..., description="첨삭 타입")
-    comment: str = Field(..., description="첨삭 코멘트")
+    comment: str | None = Field(..., description="첨삭 코멘트 (keep인 경우 null 허용)")
 
 
 class CorrectionField(BaseModel):

@@ -201,3 +201,60 @@ def test_update_emphasis_points_request_schema():
     request = UpdateEmphasisPointsRequest(emphasis_points="핵심 역량과 성과 지표를 강조")
 
     assert request.emphasis_points == "핵심 역량과 성과 지표를 강조"
+
+
+def test_correction_line_comment_allows_null_for_keep():
+    """keep 타입의 comment는 null 허용 테스트"""
+    output = CorrectionOutput.model_validate(
+        {
+            "fields": [
+                {
+                    "field_name": "description",
+                    "lines": [
+                        {
+                            "line_number": 1,
+                            "original_text": "원문",
+                            "type": "keep",
+                            "comment": None,
+                        }
+                    ],
+                },
+                {
+                    "field_name": "contributions",
+                    "lines": [
+                        {
+                            "line_number": 1,
+                            "original_text": "원문",
+                            "type": "keep",
+                            "comment": None,
+                        }
+                    ],
+                },
+                {
+                    "field_name": "achievements",
+                    "lines": [
+                        {
+                            "line_number": 1,
+                            "original_text": "원문",
+                            "type": "keep",
+                            "comment": None,
+                        }
+                    ],
+                },
+                {
+                    "field_name": "insights",
+                    "lines": [
+                        {
+                            "line_number": 1,
+                            "original_text": "원문",
+                            "type": "keep",
+                            "comment": None,
+                        }
+                    ],
+                },
+            ],
+            "overall_summary": "요약",
+        }
+    )
+
+    assert output.fields[0].lines[0].comment is None

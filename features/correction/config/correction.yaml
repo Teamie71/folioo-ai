@@ -1,0 +1,12 @@
+# 첨삭 생성 설정
+
+# LLM 호출 설정
+llm:
+    model: "openai/gpt-oss-120b"
+    temperature: 0.7
+
+# 출력 검증 규칙
+validation:
+    min_lines_per_field: 1
+    max_retries: 2
+    allow_null_comment_for_keep: true
