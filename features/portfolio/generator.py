@@ -1,6 +1,4 @@
 """포트폴리오 생성기"""
-
-import re
 from pathlib import Path
 
 import yaml
@@ -15,7 +13,6 @@ from .schemas import PortfolioOutput
 
 _MAX_ATTEMPTS = 3
 _SECTION_FIELDS = ("description", "contributions", "achievements", "insights")
-_BULLET_PATTERN = re.compile(r"(?m)^\s*[-*•]\s+")
 
 
 class PortfolioGenerationError(Exception):
@@ -71,20 +68,10 @@ class PortfolioGenerator:
 
         for field_name in _SECTION_FIELDS:
             text = getattr(output, field_name, "").strip()
-            min_length = self._section_rules.get(field_name, {}).get("min_length", 0)
+            required = self._section_rules.get(field_name, {}).get("required", True)
 
-            if not text:
+            if required and text in {"", "0"}:
                 errors.append(f"{field_name} 섹션이 비어 있습니다.")
-                continue
-
-            if len(text) < min_length:
-                errors.append(
-                    f"{field_name} 섹션 길이가 최소 길이({min_length})보다 짧습니다. (현재: {len(text)})"
-                )
-
-            bullet_count = len(_BULLET_PATTERN.findall(text))
-            if bullet_count >= 2:
-                errors.append(f"{field_name} 섹션이 불릿 포인트 중심 형식입니다.")
 
         return errors
 

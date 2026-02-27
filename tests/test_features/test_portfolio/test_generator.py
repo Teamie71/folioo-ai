@@ -44,10 +44,10 @@ def _valid_output() -> PortfolioOutput:
 
 def _invalid_output() -> PortfolioOutput:
     return PortfolioOutput(
-        description="짧음",
-        contributions="- 항목1\n- 항목2",
+        description="0",
+        contributions="개요식 텍스트",
         achievements="",
-        insights="짧음",
+        insights="개요식 텍스트",
     )
 
 

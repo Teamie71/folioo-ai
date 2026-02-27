@@ -82,7 +82,7 @@ def format_collected_data_for_prompt(collected_data: dict) -> str:
 
 PORTFOLIO_GENERATOR_SYSTEM_TEMPLATE = """
 # 역할
-당신은 사용자의 인터뷰 수집 데이터를 바탕으로 포트폴리오 서술문을 작성하는 전문가입니다.
+당신은 사용자의 인터뷰 수집 데이터를 바탕으로 포트폴리오 개요식을 작성하는 전문가입니다.
 
 # 상황
 사용자가 "{experience_name}" 경험을 정리하고 있습니다.
@@ -97,15 +97,21 @@ PORTFOLIO_GENERATOR_SYSTEM_TEMPLATE = """
 - insights: stage_4의 final_deliverable, quantitative_results, qualitative_results, personal_growth, insights_gained, future_plans를 바탕으로 작성
 
 # 출력 지침
-1. 결과는 마크다운 불릿이 아닌 자연스러운 문장과 문단으로 작성하세요.
-2. 1인칭 시점("저는", "제가")으로 작성하세요.
-3. 각 섹션(description, contributions, achievements, insights)은 최소 2~3문장 이상으로 작성하세요.
-4. 수집되지 않은 필드가 있더라도, 수집된 정보만 활용해 최대한 자연스럽고 완성도 있게 작성하세요.
-5. 각 섹션은 다음 목적을 충족해야 합니다.
-   - description: 경험의 배경/목표/기간/팀 맥락을 명확히 전달
-   - contributions: 제가 맡은 핵심 업무와 실행 과정을 구체적으로 설명
-   - achievements: 문제 상황, 해결 행동, 판단 근거를 흐름 있게 설명
-   - insights: 결과, 성장, 인사이트, 향후 계획을 일관되게 정리
+1. 공통적으로 개요식 텍스트로 작성하세요.
+2. 전문적이고 건조한 톤을 유지하고 감정적 형용사는 사용하지 마세요.
+3. 마크다운은 텍스트 강조가 필요할 때 **굵게**만 사용하세요.
+4. description, contributions, achievements는 명사 종결로 작성하세요.
+5. insights는 예외적으로 "~다" 종결로 작성하세요.
+6. 수집되지 않은 필드가 있더라도 수집된 정보만 사용해 내용을 구성하세요.
+7. 섹션별 형식과 예시는 아래를 따르세요.
+   - description(상세정보): 배경/목표/기간/팀 구성 중심 개요식
+     예시: 서비스 이탈률 개선 필요성 기반 프로젝트 기획, 3개월 단위 실행, 5인 팀 내 백엔드 담당
+   - contributions(담당업무): 본인 역할/수행 업무/사용 기술 중심 개요식
+     예시: 결제 API 요구사항 분석 및 설계 주도, 트랜잭션 처리 로직 구현, FastAPI·PostgreSQL 기반 운영
+   - achievements(문제해결): 문제 상황/해결 접근/의사결정 근거 중심 개요식
+     예시: 피크 시간대 지연 발생, 비동기 큐 구조 도입으로 병목 완화, 지표 비교 기반 아키텍처 전환 결정
+   - insights(배운 점): 결과/성장/향후 계획을 "~다" 종결로 정리
+     예시: 병목 구간을 수치로 검증하는 습관이 중요하다는 점을 배웠다. 다음 프로젝트에서는 초기부터 관측 지표를 설계하겠다.
 
 # 이전 시도 피드백
 {validation_feedback}
@@ -116,7 +122,7 @@ portfolio_generator_prompt = ChatPromptTemplate.from_messages(
         ("system", PORTFOLIO_GENERATOR_SYSTEM_TEMPLATE),
         (
             "human",
-            "위 지침에 따라 4개 섹션의 포트폴리오 서술문을 작성해주세요.",
+            "위 지침에 따라 4개 섹션의 포트폴리오 개요식을 작성해주세요.",
         ),
     ]
 ).partial(validation_feedback="없음")
