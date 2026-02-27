@@ -38,10 +38,10 @@ def _to_portfolio_result_response(result) -> PortfolioResultResponse:
         experience_name=result.experience_name,
         status=result.status,
         contribution_rate=result.contribution_rate,
-        detail_info=result.output.detail_info,
-        assigned_task=result.output.assigned_task,
-        problem_solving=result.output.problem_solving,
-        lessons_learned=result.output.lessons_learned,
+        description=result.output.description,
+        contributions=result.output.contributions,
+        achievements=result.output.achievements,
+        insights=result.output.insights,
     )
 
 

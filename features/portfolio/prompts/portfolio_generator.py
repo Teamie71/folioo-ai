@@ -91,21 +91,21 @@ PORTFOLIO_GENERATOR_SYSTEM_TEMPLATE = """
 {collected_data_text}
 
 # 섹션별 매핑 가이드
-- detail_info: stage_1의 project_background, problem_definition, message_or_concept, project_duration, team_composition, target_audience를 바탕으로 작성
-- assigned_task: stage_2의 work_categories를 바탕으로 작성
-- problem_solving: stage_3의 problem_episodes를 바탕으로 작성
-- lessons_learned: stage_4의 final_deliverable, quantitative_results, qualitative_results, personal_growth, insights_gained, future_plans를 바탕으로 작성
+- description: stage_1의 project_background, problem_definition, message_or_concept, project_duration, team_composition, target_audience를 바탕으로 작성
+- contributions: stage_2의 work_categories를 바탕으로 작성
+- achievements: stage_3의 problem_episodes를 바탕으로 작성
+- insights: stage_4의 final_deliverable, quantitative_results, qualitative_results, personal_growth, insights_gained, future_plans를 바탕으로 작성
 
 # 출력 지침
 1. 결과는 마크다운 불릿이 아닌 자연스러운 문장과 문단으로 작성하세요.
 2. 1인칭 시점("저는", "제가")으로 작성하세요.
-3. 각 섹션(detail_info, assigned_task, problem_solving, lessons_learned)은 최소 2~3문장 이상으로 작성하세요.
+3. 각 섹션(description, contributions, achievements, insights)은 최소 2~3문장 이상으로 작성하세요.
 4. 수집되지 않은 필드가 있더라도, 수집된 정보만 활용해 최대한 자연스럽고 완성도 있게 작성하세요.
 5. 각 섹션은 다음 목적을 충족해야 합니다.
-   - detail_info: 경험의 배경/목표/기간/팀 맥락을 명확히 전달
-   - assigned_task: 제가 맡은 핵심 업무와 실행 과정을 구체적으로 설명
-   - problem_solving: 문제 상황, 해결 행동, 판단 근거를 흐름 있게 설명
-   - lessons_learned: 결과, 성장, 인사이트, 향후 계획을 일관되게 정리
+   - description: 경험의 배경/목표/기간/팀 맥락을 명확히 전달
+   - contributions: 제가 맡은 핵심 업무와 실행 과정을 구체적으로 설명
+   - achievements: 문제 상황, 해결 행동, 판단 근거를 흐름 있게 설명
+   - insights: 결과, 성장, 인사이트, 향후 계획을 일관되게 정리
 
 # 이전 시도 피드백
 {validation_feedback}

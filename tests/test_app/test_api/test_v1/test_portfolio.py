@@ -140,10 +140,10 @@ def test_update_contribution_rate_returns_200(monkeypatch):
         status=PortfolioStatus.COMPLETED,
         contribution_rate=10,
         output=PortfolioOutput(
-            detail_info="상세",
-            assigned_task="담당",
-            problem_solving="해결",
-            lessons_learned="배운점",
+            description="상세",
+            contributions="담당",
+            achievements="해결",
+            insights="배운점",
         ),
         created_at=datetime.now(UTC),
     )
@@ -191,10 +191,10 @@ def test_get_session_returns_200(monkeypatch):
         status=PortfolioStatus.COMPLETED,
         contribution_rate=50,
         output=PortfolioOutput(
-            detail_info="상세",
-            assigned_task="담당",
-            problem_solving="해결",
-            lessons_learned="배운점",
+            description="상세",
+            contributions="담당",
+            achievements="해결",
+            insights="배운점",
         ),
         created_at=datetime.now(UTC),
     )

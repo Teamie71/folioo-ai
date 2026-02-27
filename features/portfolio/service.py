@@ -183,13 +183,13 @@ class PortfolioService:
         output: PortfolioOutput | None = None
         if all(
             row.get(key) is not None
-            for key in ["detail_info", "assigned_task", "problem_solving", "lessons_learned"]
+            for key in ["description", "contributions", "achievements", "insights"]
         ):
             output = PortfolioOutput(
-                detail_info=row["detail_info"],
-                assigned_task=row["assigned_task"],
-                problem_solving=row["problem_solving"],
-                lessons_learned=row["lessons_learned"],
+                description=row["description"],
+                contributions=row["contributions"],
+                achievements=row["achievements"],
+                insights=row["insights"],
             )
 
         return PortfolioResult(

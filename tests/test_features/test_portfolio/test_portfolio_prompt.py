@@ -72,7 +72,6 @@ def test_portfolio_prompt_formatting_contains_guidelines():
 
     assert len(messages) == 2
     assert "결제 전환율 개선 프로젝트" in messages[0].content
-    assert "detail_info" in messages[0].content
+    assert "description" in messages[0].content
     assert "1인칭" in messages[0].content
     assert "최소 2~3문장" in messages[0].content
-
