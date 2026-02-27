@@ -13,6 +13,8 @@ from .schemas import PortfolioOutput
 
 _MAX_ATTEMPTS = 3
 _SECTION_FIELDS = ("description", "contributions", "achievements", "insights")
+# min_length 제약 제거 후 LLM이 반환하는 플레이스홀더("0")와 빈 문자열을 빈 응답으로 간주한다.
+_EMPTY_TEXT_VALUES = {"", "0"}
 
 
 class PortfolioGenerationError(Exception):
@@ -70,7 +72,7 @@ class PortfolioGenerator:
             text = getattr(output, field_name, "").strip()
             required = self._section_rules.get(field_name, {}).get("required", True)
 
-            if required and text in {"", "0"}:
+            if required and text in _EMPTY_TEXT_VALUES:
                 errors.append(f"{field_name} 섹션이 비어 있습니다.")
 
         return errors

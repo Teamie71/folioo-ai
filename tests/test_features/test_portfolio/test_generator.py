@@ -43,6 +43,7 @@ def _valid_output() -> PortfolioOutput:
 
 
 def _invalid_output() -> PortfolioOutput:
+    """빈 텍스트 검증("" 및 "0")에 실패하는 출력."""
     return PortfolioOutput(
         description="0",
         contributions="개요식 텍스트",
@@ -94,3 +95,17 @@ def test_generate_raises_error_after_all_retries(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(PortfolioGenerationError):
         PortfolioGenerator().generate(collected_data={}, experience_name="테스트 경험")
+
+
+def test_validation_treats_zero_as_empty():
+    """문자열 "0"을 빈 텍스트로 검증하는지 확인한다."""
+    output = PortfolioOutput(
+        description="0",
+        contributions="개요식 텍스트",
+        achievements="개요식 텍스트",
+        insights="개요식 텍스트",
+    )
+
+    errors = PortfolioGenerator()._get_validation_errors(output)
+
+    assert "description 섹션이 비어 있습니다." in errors
