@@ -1,5 +1,14 @@
 """API 스키마 패키지"""
 
+from .correction import (
+    CompanyInsightResponse,
+    CorrectionResultResponse,
+    CorrectionStatusResponse,
+    CreateCorrectionRequest,
+    CreateCorrectionResponse,
+    UpdateCompanyInsightRequest,
+    UpdateEmphasisPointsRequest,
+)
 from .interview import (
     ChatRequest,
     ChatResponse,
@@ -25,6 +34,13 @@ __all__ = [
     "SessionStateResponse",
     "StageProgressSchema",
     "ErrorResponse",
+    "CreateCorrectionRequest",
+    "CreateCorrectionResponse",
+    "CorrectionStatusResponse",
+    "CorrectionResultResponse",
+    "UpdateCompanyInsightRequest",
+    "UpdateEmphasisPointsRequest",
+    "CompanyInsightResponse",
     "GeneratePortfolioRequest",
     "GeneratePortfolioResponse",
     "PortfolioResultResponse",
