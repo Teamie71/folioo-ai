@@ -83,10 +83,11 @@ class RAGPipeline:
         job_title: str,
     ) -> str:
         """검색 결과를 요약해 첨삭용 기업 인사이트 텍스트 생성"""
+        serialized_search_results = json.dumps(search_results, ensure_ascii=False)
         response = self._llm.invoke(
             f"기업명: {company_name}\n"
             f"직무: {job_title}\n"
-            f"검색 결과: {search_results}\n\n"
+            f"검색 결과: {serialized_search_results}\n\n"
             "위 내용을 바탕으로 기업 문화, 인재상, 직무 특성을 간결하게 요약해 주세요."
         )
         content = getattr(response, "content", response)
