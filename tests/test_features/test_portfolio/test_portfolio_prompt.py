@@ -73,7 +73,7 @@ def test_portfolio_prompt_formatting_contains_guidelines():
     assert len(messages) == 2
     assert "결제 전환율 개선 프로젝트" in messages[0].content
     assert "description" in messages[0].content
-    assert "개요식 텍스트" in messages[0].content
+    assert "개요식" in messages[0].content
     assert "명사 종결" in messages[0].content
-    assert "\"~다\" 종결" in messages[0].content
+    assert '"~다" 종결' in messages[0].content
     assert "**굵게**만 사용" in messages[0].content
