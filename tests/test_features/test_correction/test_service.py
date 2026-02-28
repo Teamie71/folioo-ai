@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sys
+import time
 import types
 
 import pytest
@@ -282,6 +284,77 @@ async def test_run_rag_success_saves_company_insight_and_rag_data():
 
 
 @pytest.mark.asyncio
+async def test_run_rag_does_not_block_event_loop():
+    """_run_rag의 LLM 호출은 이벤트 루프를 블로킹하지 않는다."""
+
+    class SlowRagPipeline(DummyRagPipeline):
+        def run(self, company_name: str, job_title: str, job_description: str) -> str:
+            time.sleep(0.4)
+            return super().run(company_name, job_title, job_description)
+
+    repository = DummyRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "status": CorrectionStatus.DOING_RAG.value,
+    }
+    service = CorrectionService(repository, DummyGenerator(), SlowRagPipeline())
+
+    rag_task = asyncio.create_task(service._run_rag("c-1"))
+    await asyncio.sleep(0.01)
+
+    start = time.perf_counter()
+    status = await service.get_status("c-1")
+    elapsed = time.perf_counter() - start
+
+    assert status == CorrectionStatus.DOING_RAG
+    assert elapsed < 0.3
+
+    await rag_task
+    assert repository.rows["c-1"]["status"] == CorrectionStatus.COMPANY_INSIGHT.value
+
+
+@pytest.mark.asyncio
+async def test_run_rag_keyword_extraction_does_not_block_event_loop():
+    """_run_rag의 키워드 추출 단계도 이벤트 루프를 블로킹하지 않는다."""
+
+    class SlowKeywordRagPipeline(DummyRagPipeline):
+        def run(self, company_name: str, job_title: str, job_description: str) -> str:
+            return super().run(company_name, job_title, job_description)
+
+        def _extract_keywords(
+            self, company_name: str, job_title: str, job_description: str
+        ) -> list[str]:
+            time.sleep(0.4)
+            return super()._extract_keywords(company_name, job_title, job_description)
+
+    repository = DummyRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "status": CorrectionStatus.DOING_RAG.value,
+    }
+    service = CorrectionService(repository, DummyGenerator(), SlowKeywordRagPipeline())
+
+    rag_task = asyncio.create_task(service._run_rag("c-1"))
+
+    start = time.perf_counter()
+    await asyncio.sleep(0.05)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 0.3
+
+    await rag_task
+    assert repository.rows["c-1"]["status"] == CorrectionStatus.COMPANY_INSIGHT.value
+
+
+@pytest.mark.asyncio
 async def test_run_rag_failure_updates_failed_status():
     """_run_rag 실패 시 status를 failed로 변경한다."""
     repository = DummyRepository()
@@ -371,6 +444,63 @@ async def test_run_generation_success_calls_generator_and_saves_result(
         "correction_id": "c-1",
         "status": CorrectionStatus.DONE.value,
     }
+
+
+@pytest.mark.asyncio
+async def test_run_generation_does_not_block_event_loop(monkeypatch: pytest.MonkeyPatch):
+    """_run_generation의 LLM 호출은 이벤트 루프를 블로킹하지 않는다."""
+
+    class SlowGenerator(DummyGenerator):
+        def generate(
+            self,
+            company_name: str,
+            job_title: str,
+            job_description: str,
+            company_insight: str,
+            portfolio_output: dict,
+            emphasis_points: str,
+        ) -> dict:
+            time.sleep(0.4)
+            return super().generate(
+                company_name,
+                job_title,
+                job_description,
+                company_insight,
+                portfolio_output,
+                emphasis_points,
+            )
+
+    repository = DummyRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "company_insight": "인사이트",
+        "emphasis_points": "강조",
+        "status": CorrectionStatus.GENERATING.value,
+    }
+    service = CorrectionService(repository, SlowGenerator(), DummyRagPipeline())
+
+    dummy_portfolio_module = types.ModuleType("features.portfolio")
+    dummy_portfolio_module.get_portfolio_service = lambda: DummyPortfolioService(
+        DummyPortfolioResult(DummyPortfolioOutput())
+    )
+    monkeypatch.setitem(sys.modules, "features.portfolio", dummy_portfolio_module)
+
+    generation_task = asyncio.create_task(service._run_generation("c-1"))
+    await asyncio.sleep(0.01)
+
+    start = time.perf_counter()
+    status = await service.get_status("c-1")
+    elapsed = time.perf_counter() - start
+
+    assert status == CorrectionStatus.GENERATING
+    assert elapsed < 0.3
+
+    await generation_task
+    assert repository.rows["c-1"]["status"] == CorrectionStatus.DONE.value
 
 
 @pytest.mark.asyncio
