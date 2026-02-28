@@ -154,12 +154,11 @@ class CorrectionGenerator:
                     errors.append(f"{field_name}의 type 값이 유효하지 않습니다: {line.type}")
 
                 if line.type == "keep":
-                    if line.comment is None:
-                        if not self._allow_null_comment_for_keep:
-                            errors.append(
-                                f"{field_name}의 {line.line_number}번 라인 comment가 비어 있습니다."
-                            )
-                    elif not line.comment.strip():
+                    if line.comment is None and not self._allow_null_comment_for_keep:
+                        errors.append(
+                            f"{field_name}의 {line.line_number}번 라인 comment가 비어 있습니다."
+                        )
+                    elif line.comment is not None and not line.comment.strip():
                         errors.append(
                             f"{field_name}의 {line.line_number}번 라인 comment가 비어 있습니다."
                         )

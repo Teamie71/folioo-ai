@@ -59,7 +59,7 @@ def test_portfolio_prompt_is_chat_prompt_template():
 
 def test_portfolio_prompt_has_required_input_variables():
     """필수 입력 변수가 포함되어 있는지 테스트"""
-    expected_vars = {"experience_name", "collected_data_text"}
+    expected_vars = {"experience_name", "collected_data_text", "section_mapping_guide"}
     assert expected_vars == set(portfolio_generator_prompt.input_variables)
 
 
@@ -68,6 +68,7 @@ def test_portfolio_prompt_formatting_contains_guidelines():
     messages = portfolio_generator_prompt.format_messages(
         experience_name="결제 전환율 개선 프로젝트",
         collected_data_text="stage_1 ~ stage_4 데이터",
+        section_mapping_guide="- description: stage_1 데이터를 중심으로 작성",
     )
 
     assert len(messages) == 2

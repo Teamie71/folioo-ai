@@ -2,6 +2,7 @@
 
 import pytest
 
+from features.correction.config.loader import CorrectionConfig, CorrectionValidationConfig
 from features.correction.generator import (
     CorrectionGenerationError,
     CorrectionGenerator,
@@ -242,6 +243,119 @@ def test_validate_counts_only_numbered_lines_with_subheaders(monkeypatch: pytest
 
     assert "description의 line_number 3가 원본 라인 수(3)를 벗어났습니다." not in valid_errors
     assert "description의 line_number 4가 원본 라인 수(3)를 벗어났습니다." in invalid_errors
+
+
+def test_correction_yaml_max_retries_has_priority(monkeypatch: pytest.MonkeyPatch):
+    """max_retries는 correction.yaml(validation) 값을 우선 사용한다."""
+    from features.correction import generator
+
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    config = CorrectionConfig.model_validate(
+        {
+            "llm": {"model": "test-model", "temperature": 0.3},
+            "validation": {"max_retries": 5},
+        }
+    )
+    monkeypatch.setattr(
+        generator,
+        "get_correction_validation_config",
+        lambda: config.validation,
+    )
+    monkeypatch.setattr(generator, "get_correction_llm_config", lambda: config.llm)
+
+    instance = generator.CorrectionGenerator()
+
+    assert instance._max_retries == 5
+
+
+def test_generator_yaml_fallback_is_used_when_correction_missing(monkeypatch: pytest.MonkeyPatch):
+    """max_retries를 arg로 전달하면 config 설정값을 무시한다."""
+    from features.correction import generator
+
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    config = CorrectionConfig.model_validate(
+        {
+            "llm": {"model": "test-model", "temperature": 0.3},
+            "validation": {"max_retries": 2},
+        }
+    )
+    monkeypatch.setattr(
+        generator,
+        "get_correction_validation_config",
+        lambda: config.validation,
+    )
+    monkeypatch.setattr(generator, "get_correction_llm_config", lambda: config.llm)
+
+    instance = generator.CorrectionGenerator(max_retries=4)
+
+    assert instance._max_retries == 4
+
+
+def test_validate_respects_min_lines_per_field(monkeypatch: pytest.MonkeyPatch):
+    """min_lines_per_field 설정을 검증 로직에 반영한다."""
+    from features.correction import generator
+
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(
+        generator,
+        "get_correction_validation_config",
+        lambda: CorrectionValidationConfig(min_lines_per_field=2, max_retries=1),
+    )
+    validator = generator.CorrectionGenerator()
+    output = _output(line_number=1)
+
+    errors = validator._validate(
+        output,
+        portfolio_data={
+            "description": "- 한 줄",
+            "contributions": "- 한 줄",
+            "achievements": "- 한 줄",
+            "insights": "- 한 줄",
+        },
+    )
+
+    assert "description 필드는 최소 2개 라인이 필요합니다." in errors
+
+
+def test_validate_respects_allow_null_comment_for_keep(monkeypatch: pytest.MonkeyPatch):
+    """allow_null_comment_for_keep=false면 keep null comment를 실패 처리한다."""
+    from features.correction import generator
+
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(
+        generator,
+        "get_correction_validation_config",
+        lambda: CorrectionValidationConfig(
+            min_lines_per_field=1,
+            max_retries=1,
+            allow_null_comment_for_keep=False,
+        ),
+    )
+    validator = generator.CorrectionGenerator()
+    output = _output(comment=None)
+
+    errors = validator._validate(
+        output,
+        portfolio_data={
+            "description": "- 한 줄",
+            "contributions": "- 한 줄",
+            "achievements": "- 한 줄",
+            "insights": "- 한 줄",
+        },
+    )
+
+    assert "description의 1번 라인 comment가 비어 있습니다." in errors
+
+
+def test_invalid_correction_yaml_type_raises_korean_error(monkeypatch: pytest.MonkeyPatch):
+    """첨삭 YAML 루트 타입 오류 시 한국어 예외를 반환한다."""
+    from features.correction.config import loader
+
+    monkeypatch.setattr(loader.yaml, "safe_load", lambda _: [123])
+    loader.load_correction_config.cache_clear()
+
+    with pytest.raises(ValueError, match="첨삭 설정 파일 형식이 올바르지 않습니다"):
+        loader.load_correction_config()
 
 
 def test_correction_generator_singleton(monkeypatch: pytest.MonkeyPatch):
