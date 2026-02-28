@@ -127,7 +127,7 @@ async def get_correction_status(correction_id: str) -> CorrectionStatusResponse:
         status_value = await service.get_status(correction_id)
         return CorrectionStatusResponse(status=status_value, progress_message=None)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception:
@@ -163,7 +163,7 @@ async def start_rag(correction_id: str, background_tasks: BackgroundTasks) -> di
         await service.start_rag(correction_id, background_tasks)
         return {"message": "RAG 실행을 시작했습니다."}
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception:
@@ -243,7 +243,7 @@ async def update_company_insight(
         await service.update_company_insight(correction_id, request.company_insight)
         return {"message": "기업 분석이 수정되었습니다."}
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception:
@@ -282,7 +282,7 @@ async def update_emphasis_points(
         await service.update_emphasis_points(correction_id, request.emphasis_points)
         return {"message": "강조 포인트가 수정되었습니다."}
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception:
@@ -321,7 +321,7 @@ async def start_generation(
         await service.start_generation(correction_id, background_tasks)
         return {"message": "첨삭 생성을 시작했습니다."}
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception:
@@ -345,7 +345,7 @@ async def delete_correction(correction_id: str) -> Response:
         await service.delete_correction(correction_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception:
