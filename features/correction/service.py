@@ -68,8 +68,7 @@ class CorrectionService:
             job_title = correction["job_title"]
             job_description = correction["job_description"]
 
-            company_insight = await asyncio.to_thread(
-                self._rag_pipeline.run,
+            company_insight = await self._rag_pipeline.run(
                 company_name,
                 job_title,
                 job_description,
@@ -86,8 +85,7 @@ class CorrectionService:
                     job_description=job_description,
                 )
                 search_query = keywords[0] if keywords else f"{company_name} {job_title}"
-                search_results = await asyncio.to_thread(
-                    self._rag_pipeline._search,
+                search_results = await self._rag_pipeline._search(
                     query=search_query,
                 )
                 await self._repository.save_rag_data(

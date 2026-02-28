@@ -151,7 +151,7 @@ class DummyRagPipeline:
         self.raise_error = raise_error
         self.run_calls: list[dict] = []
 
-    def run(self, company_name: str, job_title: str, job_description: str) -> str:
+    async def run(self, company_name: str, job_title: str, job_description: str) -> str:
         self.run_calls.append(
             {
                 "company_name": company_name,
@@ -168,7 +168,7 @@ class DummyRagPipeline:
     ) -> list[str]:
         return [f"{company_name} {job_title}"]
 
-    def _search(self, query: str) -> list[dict]:
+    async def _search(self, query: str) -> list[dict]:
         return [{"query": query, "title": "검색 결과"}]
 
 
@@ -288,9 +288,9 @@ async def test_run_rag_does_not_block_event_loop():
     """_run_rag의 LLM 호출은 이벤트 루프를 블로킹하지 않는다."""
 
     class SlowRagPipeline(DummyRagPipeline):
-        def run(self, company_name: str, job_title: str, job_description: str) -> str:
-            time.sleep(0.4)
-            return super().run(company_name, job_title, job_description)
+        async def run(self, company_name: str, job_title: str, job_description: str) -> str:
+            await asyncio.sleep(0.4)
+            return await super().run(company_name, job_title, job_description)
 
     repository = DummyRepository()
     repository.rows["c-1"] = {
@@ -322,8 +322,8 @@ async def test_run_rag_keyword_extraction_does_not_block_event_loop():
     """_run_rag의 키워드 추출 단계도 이벤트 루프를 블로킹하지 않는다."""
 
     class SlowKeywordRagPipeline(DummyRagPipeline):
-        def run(self, company_name: str, job_title: str, job_description: str) -> str:
-            return super().run(company_name, job_title, job_description)
+        async def run(self, company_name: str, job_title: str, job_description: str) -> str:
+            return await super().run(company_name, job_title, job_description)
 
         def _extract_keywords(
             self, company_name: str, job_title: str, job_description: str

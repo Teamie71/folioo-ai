@@ -54,15 +54,16 @@ def test_extract_keywords_parses_json_output(monkeypatch):
     ]
 
 
-def test_search_returns_tavily_results(monkeypatch):
+@pytest.mark.asyncio
+async def test_search_returns_tavily_results(monkeypatch):
     """검색은 Tavily 응답을 title/content/url 형식으로 정규화한다."""
     from features.correction.rag import pipeline
 
-    class _DummyTavilyClient:
+    class _DummyAsyncTavilyClient:
         def __init__(self, api_key: str) -> None:
             self.api_key = api_key
 
-        def search(self, query: str, max_results: int) -> dict:
+        async def search(self, query: str, max_results: int) -> dict:
             assert query == "테스트 쿼리"
             assert max_results == 5
             return {
@@ -73,18 +74,19 @@ def test_search_returns_tavily_results(monkeypatch):
 
     dummy_llm = _DummyLLM(["dummy"])
     monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
-    monkeypatch.setattr(pipeline, "TavilyClient", _DummyTavilyClient)
+    monkeypatch.setattr(pipeline, "AsyncTavilyClient", _DummyAsyncTavilyClient)
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
 
     rag_pipeline = RAGPipeline()
-    results = rag_pipeline._search("테스트 쿼리")
+    results = await rag_pipeline._search("테스트 쿼리")
 
     assert results == [
         {"title": "테스트 제목", "content": "테스트 본문", "url": "https://example.com"}
     ]
 
 
-def test_run_returns_generated_insight(monkeypatch):
+@pytest.mark.asyncio
+async def test_run_returns_generated_insight(monkeypatch):
     """run은 키워드 추출/검색/인사이트 생성을 순서대로 수행한다."""
     from features.correction.rag import pipeline
 
@@ -100,11 +102,11 @@ def test_run_returns_generated_insight(monkeypatch):
         ]
     )
 
-    class _DummyTavilyClient:
+    class _DummyAsyncTavilyClient:
         def __init__(self, api_key: str) -> None:
             self.api_key = api_key
 
-        def search(self, query: str, max_results: int) -> dict:
+        async def search(self, query: str, max_results: int) -> dict:
             assert max_results == 5
             return {
                 "results": [
@@ -117,39 +119,41 @@ def test_run_returns_generated_insight(monkeypatch):
             }
 
     monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
-    monkeypatch.setattr(pipeline, "TavilyClient", _DummyTavilyClient)
+    monkeypatch.setattr(pipeline, "AsyncTavilyClient", _DummyAsyncTavilyClient)
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     rag_pipeline = RAGPipeline()
 
-    insight = rag_pipeline.run("네이버", "백엔드", "JD")
+    insight = await rag_pipeline.run("네이버", "백엔드", "JD")
 
     assert insight == insight_generation_response
     assert "검색 결과" in dummy_llm.prompts[1]
 
 
-def test_search_raises_when_tavily_api_key_missing(monkeypatch):
+@pytest.mark.asyncio
+async def test_search_raises_when_tavily_api_key_missing(monkeypatch):
     """Tavily API 키가 없으면 예외를 발생시킨다."""
     from features.correction.rag import pipeline
 
-    class _DummyTavilyClient:
+    class _DummyAsyncTavilyClient:
         def __init__(self, api_key: str) -> None:  # pragma: no cover
             self.api_key = api_key
 
-        def search(self, query: str, max_results: int) -> dict:  # pragma: no cover
+        async def search(self, query: str, max_results: int) -> dict:  # pragma: no cover
             return {"results": []}
 
     dummy_llm = _DummyLLM(["dummy"])
     monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
-    monkeypatch.setattr(pipeline, "TavilyClient", _DummyTavilyClient)
+    monkeypatch.setattr(pipeline, "AsyncTavilyClient", _DummyAsyncTavilyClient)
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
 
     rag_pipeline = RAGPipeline()
 
     with pytest.raises(ValueError, match="TAVILY_API_KEY"):
-        rag_pipeline._search("테스트 쿼리")
+        await rag_pipeline._search("테스트 쿼리")
 
 
-def test_run_applies_rag_config_values(monkeypatch):
+@pytest.mark.asyncio
+async def test_run_applies_rag_config_values(monkeypatch):
     """RAG 설정값에 따라 키워드 수와 키워드당 검색 개수를 적용한다."""
     from features.correction.rag import pipeline
 
@@ -168,11 +172,11 @@ def test_run_applies_rag_config_values(monkeypatch):
 
     calls: list[tuple[str, int]] = []
 
-    class _DummyTavilyClient:
+    class _DummyAsyncTavilyClient:
         def __init__(self, api_key: str) -> None:
             self.api_key = api_key
 
-        def search(self, query: str, max_results: int) -> dict:
+        async def search(self, query: str, max_results: int) -> dict:
             calls.append((query, max_results))
             return {
                 "results": [
@@ -184,11 +188,13 @@ def test_run_applies_rag_config_values(monkeypatch):
                 ]
             }
 
-    monkeypatch.setattr(pipeline, "TavilyClient", _DummyTavilyClient)
+    monkeypatch.setattr(pipeline, "AsyncTavilyClient", _DummyAsyncTavilyClient)
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
 
     rag_pipeline = RAGPipeline()
-    insight = rag_pipeline.run("네이버", "백엔드", "JD")
+    insight = await rag_pipeline.run("네이버", "백엔드", "JD")
 
     assert insight == "생성된 인사이트"
-    assert calls == [("키워드1", 3), ("키워드2", 3)]
+    assert len(calls) == 2
+    assert all(max_results == 3 for _, max_results in calls)
+    assert {query for query, _ in calls} == {"키워드1", "키워드2"}

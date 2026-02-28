@@ -1,10 +1,11 @@
 """첨삭용 RAG 파이프라인"""
 
+import asyncio
 import json
 import os
 import re
 
-from tavily import TavilyClient
+from tavily import AsyncTavilyClient
 
 from common.llm.client import get_llm
 from features.correction.config import get_correction_rag_config
@@ -20,7 +21,7 @@ class RAGPipeline:
         self._max_results_per_keyword = rag_config.max_results_per_keyword
         self._llm = get_llm()
 
-    def run(self, company_name: str, job_title: str, job_description: str) -> str:
+    async def run(self, company_name: str, job_title: str, job_description: str) -> str:
         """기업/직무/JD 기반 기업 인사이트 텍스트 생성"""
         keywords = self._extract_keywords(
             company_name=company_name,
@@ -28,9 +29,8 @@ class RAGPipeline:
             job_description=job_description,
         )
 
-        search_results: list[dict] = []
-        for keyword in keywords:
-            search_results.extend(self._search(query=keyword))
+        results = await asyncio.gather(*(self._search(query=keyword) for keyword in keywords))
+        search_results: list[dict] = [item for sublist in results for item in sublist]
 
         return self._generate_insight(
             search_results=search_results,
@@ -78,13 +78,13 @@ class RAGPipeline:
 
         return keywords[: self._keyword_count]
 
-    def _search(self, query: str) -> list[dict]:
+    async def _search(self, query: str) -> list[dict]:
         """웹 검색 — Tavily API 호출"""
         api_key = os.getenv("TAVILY_API_KEY")
         if not api_key:
             raise ValueError("TAVILY_API_KEY 환경변수가 설정되지 않았습니다.")
 
-        response = TavilyClient(api_key=api_key).search(
+        response = await AsyncTavilyClient(api_key=api_key).search(
             query=query,
             max_results=self._max_results_per_keyword,
         )
