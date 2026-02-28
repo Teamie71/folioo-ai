@@ -1,5 +1,6 @@
 """첨삭 서비스 오케스트레이션"""
 
+import asyncio
 import logging
 
 from fastapi import BackgroundTasks
@@ -67,19 +68,28 @@ class CorrectionService:
             job_title = correction["job_title"]
             job_description = correction["job_description"]
 
-            company_insight = self._rag_pipeline.run(company_name, job_title, job_description)
+            company_insight = await asyncio.to_thread(
+                self._rag_pipeline.run,
+                company_name,
+                job_title,
+                job_description,
+            )
             await self._repository.update_company_insight(correction_id, company_insight)
 
             if hasattr(self._rag_pipeline, "_extract_keywords") and hasattr(
                 self._rag_pipeline, "_search"
             ):
-                keywords = self._rag_pipeline._extract_keywords(
+                keywords = await asyncio.to_thread(
+                    self._rag_pipeline._extract_keywords,
                     company_name=company_name,
                     job_title=job_title,
                     job_description=job_description,
                 )
                 search_query = keywords[0] if keywords else f"{company_name} {job_title}"
-                search_results = self._rag_pipeline._search(query=search_query)
+                search_results = await asyncio.to_thread(
+                    self._rag_pipeline._search,
+                    query=search_query,
+                )
                 await self._repository.save_rag_data(
                     correction_id,
                     search_query,
@@ -125,7 +135,8 @@ class CorrectionService:
             else:
                 raise ValueError("포트폴리오 출력 형식이 올바르지 않습니다.")
 
-            result = self._generator.generate(
+            result = await asyncio.to_thread(
+                self._generator.generate,
                 correction["company_name"],
                 correction["job_title"],
                 correction["job_description"],
