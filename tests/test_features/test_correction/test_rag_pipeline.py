@@ -1,5 +1,7 @@
 """RAG 파이프라인 테스트"""
 
+import pytest
+
 from features.correction.rag.pipeline import RAGPipeline
 
 
@@ -134,8 +136,6 @@ def test_search_raises_when_tavily_api_key_missing(monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
 
     rag_pipeline = RAGPipeline()
-
-    import pytest
 
     with pytest.raises(ValueError, match="TAVILY_API_KEY"):
         rag_pipeline._search("테스트 쿼리")

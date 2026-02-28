@@ -86,10 +86,13 @@ class RAGPipeline:
         for item in results:
             if not isinstance(item, dict):
                 continue
+            content = item.get("content")
+            if not content:
+                content = item.get("raw_content")
             normalized_results.append(
                 {
                     "title": str(item.get("title") or ""),
-                    "content": str(item.get("content") or item.get("raw_content") or ""),
+                    "content": str(content or ""),
                     "url": str(item.get("url") or ""),
                 }
             )
