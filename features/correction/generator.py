@@ -1,18 +1,15 @@
 """첨삭 결과 생성기"""
 
 import re
-from pathlib import Path
-
-import yaml
 
 from common.llm.client import get_llm
 
+from .config import get_correction_llm_config, get_correction_validation_config
 from .prompts.correction_prompt import format_portfolio_for_correction
 from .prompts.generator import correction_generator_prompt
 from .schemas import REQUIRED_CORRECTION_FIELDS, CorrectionOutput
 
 _generator: "CorrectionGenerator | None" = None
-_DEFAULT_MAX_RETRIES = 2
 _ALLOWED_TYPES = {"reduce", "keep", "emphasize"}
 _FIELD_HEADER_PATTERN = re.compile(
     r"^\[[^\]]+ - (?P<field_name>description|contributions|achievements|insights)\]$"
@@ -28,9 +25,15 @@ class CorrectionGenerator:
     """LLM 기반 첨삭 결과 생성기"""
 
     def __init__(self, max_retries: int | None = None) -> None:
-        configured_retries = _load_max_retries()
+        validation_config = get_correction_validation_config()
+        llm_config = get_correction_llm_config()
+
+        configured_retries = validation_config.max_retries
         self._max_retries = max_retries if max_retries is not None else configured_retries
-        llm = get_llm(temperature=0.2)
+        self._min_lines_per_field = validation_config.min_lines_per_field
+        self._allow_null_comment_for_keep = validation_config.allow_null_comment_for_keep
+
+        llm = get_llm(model=llm_config.model, temperature=llm_config.temperature)
         self._structured_llm = llm.with_structured_output(CorrectionOutput)
 
     def generate(
@@ -140,13 +143,23 @@ class CorrectionGenerator:
             if field is None:
                 continue
 
+            if len(field.lines) < self._min_lines_per_field:
+                errors.append(
+                    f"{field_name} 필드는 최소 {self._min_lines_per_field}개 라인이 필요합니다."
+                )
+
             line_count = field_line_counts.get(field_name, 0)
             for line in field.lines:
                 if line.type not in _ALLOWED_TYPES:
                     errors.append(f"{field_name}의 type 값이 유효하지 않습니다: {line.type}")
 
                 if line.type == "keep":
-                    if line.comment is not None and not line.comment.strip():
+                    if line.comment is None:
+                        if not self._allow_null_comment_for_keep:
+                            errors.append(
+                                f"{field_name}의 {line.line_number}번 라인 comment가 비어 있습니다."
+                            )
+                    elif not line.comment.strip():
                         errors.append(
                             f"{field_name}의 {line.line_number}번 라인 comment가 비어 있습니다."
                         )
@@ -162,18 +175,6 @@ class CorrectionGenerator:
                     )
 
         return errors
-
-
-def _load_max_retries() -> int:
-    config_path = Path(__file__).resolve().parent / "config" / "generator.yaml"
-
-    try:
-        with config_path.open(encoding="utf-8") as file:
-            config = yaml.safe_load(file) or {}
-        value = config.get("generator", {}).get("max_retries", _DEFAULT_MAX_RETRIES)
-        return int(value)
-    except Exception:
-        return _DEFAULT_MAX_RETRIES
 
 
 def _get_field_line_counts(portfolio_data: dict) -> dict[str, int]:

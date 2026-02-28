@@ -1,5 +1,7 @@
 """RAG 파이프라인 테스트"""
 
+from types import SimpleNamespace
+
 import pytest
 
 from features.correction.rag.pipeline import RAGPipeline
@@ -60,8 +62,9 @@ def test_search_returns_tavily_results(monkeypatch):
         def __init__(self, api_key: str) -> None:
             self.api_key = api_key
 
-        def search(self, query: str) -> dict:
+        def search(self, query: str, max_results: int) -> dict:
             assert query == "테스트 쿼리"
+            assert max_results == 5
             return {
                 "results": [
                     {"title": "테스트 제목", "content": "테스트 본문", "url": "https://example.com"}
@@ -101,10 +104,15 @@ def test_run_returns_generated_insight(monkeypatch):
         def __init__(self, api_key: str) -> None:
             self.api_key = api_key
 
-        def search(self, query: str) -> dict:
+        def search(self, query: str, max_results: int) -> dict:
+            assert max_results == 5
             return {
                 "results": [
-                    {"title": f"검색 결과: {query}", "content": "본문", "url": "https://example.com"}
+                    {
+                        "title": f"검색 결과: {query}",
+                        "content": "본문",
+                        "url": "https://example.com",
+                    }
                 ]
             }
 
@@ -127,7 +135,7 @@ def test_search_raises_when_tavily_api_key_missing(monkeypatch):
         def __init__(self, api_key: str) -> None:  # pragma: no cover
             self.api_key = api_key
 
-        def search(self, query: str) -> dict:  # pragma: no cover
+        def search(self, query: str, max_results: int) -> dict:  # pragma: no cover
             return {"results": []}
 
     dummy_llm = _DummyLLM(["dummy"])
@@ -139,3 +147,48 @@ def test_search_raises_when_tavily_api_key_missing(monkeypatch):
 
     with pytest.raises(ValueError, match="TAVILY_API_KEY"):
         rag_pipeline._search("테스트 쿼리")
+
+
+def test_run_applies_rag_config_values(monkeypatch):
+    """RAG 설정값에 따라 키워드 수와 키워드당 검색 개수를 적용한다."""
+    from features.correction.rag import pipeline
+
+    dummy_llm = _DummyLLM(
+        [
+            '{"search_keywords": ["키워드1", "키워드2", "키워드3"]}',
+            "생성된 인사이트",
+        ]
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "get_correction_rag_config",
+        lambda: SimpleNamespace(keyword_count=2, max_results_per_keyword=3),
+    )
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+
+    calls: list[tuple[str, int]] = []
+
+    class _DummyTavilyClient:
+        def __init__(self, api_key: str) -> None:
+            self.api_key = api_key
+
+        def search(self, query: str, max_results: int) -> dict:
+            calls.append((query, max_results))
+            return {
+                "results": [
+                    {
+                        "title": f"검색 결과: {query}",
+                        "content": "본문",
+                        "url": "https://example.com",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(pipeline, "TavilyClient", _DummyTavilyClient)
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+
+    rag_pipeline = RAGPipeline()
+    insight = rag_pipeline.run("네이버", "백엔드", "JD")
+
+    assert insight == "생성된 인사이트"
+    assert calls == [("키워드1", 3), ("키워드2", 3)]
