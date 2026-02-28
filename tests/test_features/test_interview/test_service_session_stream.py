@@ -69,7 +69,9 @@ async def test_create_session_stream_yields_delta_and_complete(monkeypatch):
         }
     )
 
-    monkeypatch.setattr("features.interview.service.build_graph", lambda checkpointer=None: dummy_graph)
+    monkeypatch.setattr(
+        "features.interview.service.build_graph", lambda checkpointer=None: dummy_graph
+    )
     monkeypatch.setattr("features.interview.service.get_checkpointer", lambda: object())
     service = InterviewService()
 
@@ -96,7 +98,8 @@ async def test_create_session_stream_yields_delta_and_complete(monkeypatch):
 def test_create_session_stream_route_exists():
     """첫 질문 스트리밍 라우트가 등록되어 있는지 테스트"""
     assert any(
-        route.path == "/interview/sessions/stream" and "POST" in route.methods for route in router.routes
+        route.path == "/interview/sessions/stream" and "POST" in route.methods
+        for route in router.routes
     )
 
 
@@ -150,7 +153,9 @@ async def test_process_message_stream_yields_retriever_result(monkeypatch):
         },
     ]
 
-    monkeypatch.setattr("features.interview.service.build_graph", lambda checkpointer=None: dummy_graph)
+    monkeypatch.setattr(
+        "features.interview.service.build_graph", lambda checkpointer=None: dummy_graph
+    )
     monkeypatch.setattr("features.interview.service.get_checkpointer", lambda: object())
     service = InterviewService()
 

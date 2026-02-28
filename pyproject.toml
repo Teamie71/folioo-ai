@@ -25,10 +25,12 @@ dependencies = [
 dev = [
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
     "ruff>=0.14.11",
 ]
 
 [tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
 pythonpath = "."      # Python 경로 설정
 testpaths = ["tests"] # 테스트 탐색 디렉토리
 

@@ -155,7 +155,7 @@ class CorrectionRepository:
 
     async def update_result(self, correction_id: str, result: dict) -> None:
         """
-        첨삭 결과 저장 + 상태 done으로 변경
+        첨삭 결과 저장
 
         Args:
             correction_id: 첨삭 ID
@@ -165,7 +165,6 @@ class CorrectionRepository:
             """
             UPDATE corrections
             SET result = $2::jsonb,
-                status = 'done',
                 updated_at = NOW()
             WHERE id = $1::uuid
             RETURNING id
