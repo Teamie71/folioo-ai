@@ -1,4 +1,5 @@
 """포트폴리오 생성기"""
+
 from pathlib import Path
 
 import yaml
