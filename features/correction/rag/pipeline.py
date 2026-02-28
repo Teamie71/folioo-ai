@@ -1,7 +1,10 @@
 """첨삭용 RAG 파이프라인"""
 
 import json
+import os
 import re
+
+from tavily import TavilyClient
 
 from common.llm.client import get_llm
 
@@ -71,10 +74,27 @@ class RAGPipeline:
         return keywords[:4]
 
     def _search(self, query: str) -> list[dict]:
-        """웹 검색 (스텁) — 실제 API 연동 시 교체"""
-        return [
-            {"title": f"Stub result for: {query}", "content": "...", "url": "https://example.com"},
-        ]
+        """웹 검색 — Tavily API 호출"""
+        api_key = os.getenv("TAVILY_API_KEY")
+        if not api_key:
+            raise ValueError("TAVILY_API_KEY 환경변수가 설정되지 않았습니다.")
+
+        response = TavilyClient(api_key=api_key).search(query=query)
+        results = response.get("results", []) if isinstance(response, dict) else []
+
+        normalized_results: list[dict] = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            normalized_results.append(
+                {
+                    "title": str(item.get("title") or ""),
+                    "content": str(item.get("content") or item.get("raw_content") or ""),
+                    "url": str(item.get("url") or ""),
+                }
+            )
+
+        return normalized_results
 
     def _generate_insight(
         self,
