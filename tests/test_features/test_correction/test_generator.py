@@ -2,6 +2,7 @@
 
 import pytest
 
+from features.correction.config.loader import CorrectionConfig, CorrectionValidationConfig
 from features.correction.generator import (
     CorrectionGenerationError,
     CorrectionGenerator,
@@ -249,17 +250,18 @@ def test_correction_yaml_max_retries_has_priority(monkeypatch: pytest.MonkeyPatc
     from features.correction import generator
 
     monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    config = CorrectionConfig.model_validate(
+        {
+            "llm": {"model": "test-model", "temperature": 0.3},
+            "validation": {"max_retries": 5},
+        }
+    )
     monkeypatch.setattr(
         generator,
-        "_load_correction_config",
-        lambda: generator.CorrectionConfig.model_validate(
-            {
-                "llm": {"model": "test-model", "temperature": 0.3},
-                "validation": {"max_retries": 5},
-            }
-        ),
+        "get_correction_validation_config",
+        lambda: config.validation,
     )
-    monkeypatch.setattr(generator, "_load_generator_fallback_max_retries", lambda: 1)
+    monkeypatch.setattr(generator, "get_correction_llm_config", lambda: config.llm)
 
     instance = generator.CorrectionGenerator()
 
@@ -267,23 +269,24 @@ def test_correction_yaml_max_retries_has_priority(monkeypatch: pytest.MonkeyPatc
 
 
 def test_generator_yaml_fallback_is_used_when_correction_missing(monkeypatch: pytest.MonkeyPatch):
-    """correction.yaml에 max_retries가 없으면 generator.yaml fallback을 사용한다."""
+    """max_retries를 arg로 전달하면 config 설정값을 무시한다."""
     from features.correction import generator
 
     monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    config = CorrectionConfig.model_validate(
+        {
+            "llm": {"model": "test-model", "temperature": 0.3},
+            "validation": {"max_retries": 2},
+        }
+    )
     monkeypatch.setattr(
         generator,
-        "_load_correction_config",
-        lambda: generator.CorrectionConfig.model_validate(
-            {
-                "llm": {"model": "test-model", "temperature": 0.3},
-                "validation": {"max_retries": None},
-            }
-        ),
+        "get_correction_validation_config",
+        lambda: config.validation,
     )
-    monkeypatch.setattr(generator, "_load_generator_fallback_max_retries", lambda: 4)
+    monkeypatch.setattr(generator, "get_correction_llm_config", lambda: config.llm)
 
-    instance = generator.CorrectionGenerator()
+    instance = generator.CorrectionGenerator(max_retries=4)
 
     assert instance._max_retries == 4
 
@@ -295,14 +298,8 @@ def test_validate_respects_min_lines_per_field(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
     monkeypatch.setattr(
         generator,
-        "_load_correction_settings",
-        lambda: {
-            "model": "test-model",
-            "temperature": 0.3,
-            "max_retries": 1,
-            "allow_null_comment_for_keep": True,
-            "min_lines_per_field": 2,
-        },
+        "get_correction_validation_config",
+        lambda: CorrectionValidationConfig(min_lines_per_field=2, max_retries=1),
     )
     validator = generator.CorrectionGenerator()
     output = _output(line_number=1)
@@ -317,7 +314,7 @@ def test_validate_respects_min_lines_per_field(monkeypatch: pytest.MonkeyPatch):
         },
     )
 
-    assert "description의 라인 수가 최소 기준(2)보다 적습니다." in errors
+    assert "description 필드는 최소 2개 라인이 필요합니다." in errors
 
 
 def test_validate_respects_allow_null_comment_for_keep(monkeypatch: pytest.MonkeyPatch):
@@ -327,14 +324,12 @@ def test_validate_respects_allow_null_comment_for_keep(monkeypatch: pytest.Monke
     monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
     monkeypatch.setattr(
         generator,
-        "_load_correction_settings",
-        lambda: {
-            "model": "test-model",
-            "temperature": 0.3,
-            "max_retries": 1,
-            "allow_null_comment_for_keep": False,
-            "min_lines_per_field": 1,
-        },
+        "get_correction_validation_config",
+        lambda: CorrectionValidationConfig(
+            min_lines_per_field=1,
+            max_retries=1,
+            allow_null_comment_for_keep=False,
+        ),
     )
     validator = generator.CorrectionGenerator()
     output = _output(comment=None)
@@ -354,12 +349,13 @@ def test_validate_respects_allow_null_comment_for_keep(monkeypatch: pytest.Monke
 
 def test_invalid_correction_yaml_type_raises_korean_error(monkeypatch: pytest.MonkeyPatch):
     """첨삭 YAML 루트 타입 오류 시 한국어 예외를 반환한다."""
-    from features.correction import generator
+    from features.correction.config import loader
 
-    monkeypatch.setattr(generator.yaml, "safe_load", lambda _: [])
+    monkeypatch.setattr(loader.yaml, "safe_load", lambda _: [123])
+    loader.load_correction_config.cache_clear()
 
     with pytest.raises(ValueError, match="첨삭 설정 파일 형식이 올바르지 않습니다"):
-        generator._load_correction_config()
+        loader.load_correction_config()
 
 
 def test_correction_generator_singleton(monkeypatch: pytest.MonkeyPatch):
