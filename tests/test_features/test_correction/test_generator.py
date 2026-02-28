@@ -106,7 +106,7 @@ def test_generate_retry_with_validation_feedback(monkeypatch: pytest.MonkeyPatch
 
     chain = DummyChain([invalid, valid])
     monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
-    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
 
     result = CorrectionGenerator(max_retries=2).generate(
         company_name="테스트 회사",
@@ -134,7 +134,7 @@ def test_generate_returns_last_output_when_retries_exhausted(monkeypatch: pytest
     invalid_last = _output(line_number=3)
     chain = DummyChain([invalid_last, invalid_last, invalid_last])
     monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
-    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
 
     result = CorrectionGenerator(max_retries=2).generate(
         company_name="테스트 회사",
@@ -159,7 +159,7 @@ def test_generate_raises_error_when_llm_fails_without_output(monkeypatch: pytest
 
     chain = DummyChain([RuntimeError("timeout"), RuntimeError("timeout")])
     monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
-    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
 
     with pytest.raises(CorrectionGenerationError):
         CorrectionGenerator(max_retries=1).generate(
@@ -181,7 +181,7 @@ def test_validate_detects_empty_summary_and_comment(monkeypatch: pytest.MonkeyPa
     """검증에서 빈 요약과 빈 코멘트를 잡아낸다."""
     from features.correction import generator
 
-    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
     output = _output(comment=" ")
     output.overall_summary = " "
 
@@ -203,7 +203,7 @@ def test_validate_allows_null_comment_for_keep(monkeypatch: pytest.MonkeyPatch):
     """keep 타입은 comment가 null이어도 검증을 통과한다."""
     from features.correction import generator
 
-    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
     output = _output(comment=None)
 
     errors = CorrectionGenerator(max_retries=0)._validate(
@@ -223,7 +223,7 @@ def test_validate_counts_only_numbered_lines_with_subheaders(monkeypatch: pytest
     """소구분 헤더를 제외한 번호 라인 수 기준으로 line_number를 검증한다."""
     from features.correction import generator
 
-    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
     validator = CorrectionGenerator(max_retries=0)
     portfolio_data = {
         "description": (
