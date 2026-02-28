@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 
@@ -22,14 +23,12 @@ def _install_dummy_langchain_openai():
 
 _install_dummy_langchain_openai()
 
-from features.correction import service as correction_service_module
-from features.correction.schemas import CorrectionStatus
-from features.correction.service import (
-    CorrectionService,
-    get_correction_service,
-    init_correction_service,
-    reset_correction_service,
-)
+correction_service_module = importlib.import_module("features.correction.service")
+CorrectionStatus = importlib.import_module("features.correction.schemas").CorrectionStatus
+CorrectionService = correction_service_module.CorrectionService
+get_correction_service = correction_service_module.get_correction_service
+init_correction_service = correction_service_module.init_correction_service
+reset_correction_service = correction_service_module.reset_correction_service
 
 
 class DummyRepository:
@@ -40,6 +39,7 @@ class DummyRepository:
         self.created_payload: dict | None = None
         self.saved_rag_data: list[dict] = []
         self.updated_result: dict | None = None
+        self.updated_statuses: list[dict] = []
 
     async def create(
         self,
@@ -75,23 +75,33 @@ class DummyRepository:
         return self.rows.get(correction_id)
 
     async def update_status(self, correction_id: str, status: str) -> None:
+        if correction_id not in self.rows:
+            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
         self.rows[correction_id]["status"] = status
+        self.updated_statuses.append({"correction_id": correction_id, "status": status})
 
     async def update_company_insight(self, correction_id: str, company_insight: str) -> None:
+        if correction_id not in self.rows:
+            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
         self.rows[correction_id]["company_insight"] = company_insight
 
     async def update_emphasis_points(self, correction_id: str, emphasis_points: str) -> None:
+        if correction_id not in self.rows:
+            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
         self.rows[correction_id]["emphasis_points"] = emphasis_points
 
     async def update_result(self, correction_id: str, result: dict) -> None:
+        if correction_id not in self.rows:
+            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
         self.updated_result = result
         self.rows[correction_id]["result"] = result
-        self.rows[correction_id]["status"] = CorrectionStatus.DONE.value
 
     async def delete(self, correction_id: str) -> None:
         self.rows.pop(correction_id, None)
 
-    async def save_rag_data(self, correction_id: str, search_query: str, search_results: dict) -> None:
+    async def save_rag_data(
+        self, correction_id: str, search_query: str, search_results: dict
+    ) -> None:
         self.saved_rag_data.append(
             {
                 "correction_id": correction_id,
@@ -151,7 +161,9 @@ class DummyRagPipeline:
             raise RuntimeError("RAG 실패")
         return "기업 인사이트"
 
-    def _extract_keywords(self, company_name: str, job_title: str, job_description: str) -> list[str]:
+    def _extract_keywords(
+        self, company_name: str, job_title: str, job_description: str
+    ) -> list[str]:
         return [f"{company_name} {job_title}"]
 
     def _search(self, query: str) -> list[dict]:
@@ -289,6 +301,17 @@ async def test_run_rag_failure_updates_failed_status():
 
 
 @pytest.mark.asyncio
+async def test_run_rag_missing_correction_does_not_raise():
+    """_run_rag는 없는 correction_id여도 예외를 전파하지 않는다."""
+    repository = DummyRepository()
+    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+
+    await service._run_rag("missing-id")
+
+    assert repository.updated_statuses == []
+
+
+@pytest.mark.asyncio
 async def test_start_generation_updates_status_and_registers_task():
     """start_generation은 generating으로 상태 변경 후 백그라운드 작업을 등록한다."""
     repository = DummyRepository()
@@ -314,7 +337,9 @@ async def test_start_generation_updates_status_and_registers_task():
 
 
 @pytest.mark.asyncio
-async def test_run_generation_success_calls_generator_and_saves_result(monkeypatch: pytest.MonkeyPatch):
+async def test_run_generation_success_calls_generator_and_saves_result(
+    monkeypatch: pytest.MonkeyPatch,
+):
     """_run_generation 성공 시 생성기 호출/결과 저장 후 done 상태가 된다."""
     repository = DummyRepository()
     repository.rows["c-1"] = {
@@ -342,6 +367,10 @@ async def test_run_generation_success_calls_generator_and_saves_result(monkeypat
     assert generator.calls[0]["portfolio_output"]["description"] == "설명"
     assert repository.updated_result == {"fields": [], "overall_summary": "완료"}
     assert repository.rows["c-1"]["status"] == CorrectionStatus.DONE.value
+    assert repository.updated_statuses[-1] == {
+        "correction_id": "c-1",
+        "status": CorrectionStatus.DONE.value,
+    }
 
 
 @pytest.mark.asyncio
@@ -365,6 +394,17 @@ async def test_run_generation_failure_updates_failed_status(monkeypatch: pytest.
     await service._run_generation("c-1")
 
     assert repository.rows["c-1"]["status"] == CorrectionStatus.FAILED.value
+
+
+@pytest.mark.asyncio
+async def test_run_generation_missing_correction_does_not_raise():
+    """_run_generation은 없는 correction_id여도 예외를 전파하지 않는다."""
+    repository = DummyRepository()
+    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+
+    await service._run_generation("missing-id")
+
+    assert repository.updated_statuses == []
 
 
 @pytest.mark.asyncio
@@ -406,7 +446,9 @@ def test_correction_service_singleton_get_init_reset(monkeypatch: pytest.MonkeyP
     repository_a = DummyRepository()
     generator_a = DummyGenerator()
 
-    monkeypatch.setattr(correction_service_module, "get_correction_repository", lambda: repository_a)
+    monkeypatch.setattr(
+        correction_service_module, "get_correction_repository", lambda: repository_a
+    )
     monkeypatch.setattr(correction_service_module, "get_correction_generator", lambda: generator_a)
     monkeypatch.setattr(correction_service_module, "RAGPipeline", DummyRagPipelineForSingleton)
 

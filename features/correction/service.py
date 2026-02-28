@@ -58,11 +58,11 @@ class CorrectionService:
 
     async def _run_rag(self, correction_id: str) -> None:
         """RAG 실행 후 기업 인사이트를 저장"""
-        correction = await self._repository.get_by_id(correction_id)
-        if correction is None:
-            raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
-
         try:
+            correction = await self._repository.get_by_id(correction_id)
+            if correction is None:
+                raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
+
             company_name = correction["company_name"]
             job_title = correction["job_title"]
             job_description = correction["job_description"]
@@ -70,7 +70,9 @@ class CorrectionService:
             company_insight = self._rag_pipeline.run(company_name, job_title, job_description)
             await self._repository.update_company_insight(correction_id, company_insight)
 
-            if hasattr(self._rag_pipeline, "_extract_keywords") and hasattr(self._rag_pipeline, "_search"):
+            if hasattr(self._rag_pipeline, "_extract_keywords") and hasattr(
+                self._rag_pipeline, "_search"
+            ):
                 keywords = self._rag_pipeline._extract_keywords(
                     company_name=company_name,
                     job_title=job_title,
@@ -84,10 +86,12 @@ class CorrectionService:
                     {"results": search_results},
                 )
 
-            await self._repository.update_status(correction_id, CorrectionStatus.COMPANY_INSIGHT.value)
+            await self._repository.update_status(
+                correction_id, CorrectionStatus.COMPANY_INSIGHT.value
+            )
         except Exception as exc:
             logger.exception("RAG 처리 실패 (correction_id: %s): %s", correction_id, exc)
-            await self._repository.update_status(correction_id, CorrectionStatus.FAILED.value)
+            await self._mark_failed(correction_id)
 
     async def start_generation(self, correction_id: str, background_tasks: BackgroundTasks) -> None:
         """첨삭 생성 단계를 시작하고 백그라운드 작업을 등록"""
@@ -103,11 +107,11 @@ class CorrectionService:
 
     async def _run_generation(self, correction_id: str) -> None:
         """첨삭 생성기를 호출하고 결과를 저장"""
-        correction = await self._repository.get_by_id(correction_id)
-        if correction is None:
-            raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
-
         try:
+            correction = await self._repository.get_by_id(correction_id)
+            if correction is None:
+                raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
+
             from features.portfolio import get_portfolio_service
 
             portfolio_result = await get_portfolio_service().get_result(correction["portfolio_id"])
@@ -136,9 +140,21 @@ class CorrectionService:
             else:
                 raise ValueError("첨삭 결과 형식이 올바르지 않습니다.")
             await self._repository.update_result(correction_id, result_dict)
+            await self._repository.update_status(correction_id, CorrectionStatus.DONE.value)
         except Exception as exc:
             logger.exception("첨삭 생성 실패 (correction_id: %s): %s", correction_id, exc)
+            await self._mark_failed(correction_id)
+
+    async def _mark_failed(self, correction_id: str) -> None:
+        """실패 상태 업데이트를 시도하고 실패 시 로깅"""
+        try:
             await self._repository.update_status(correction_id, CorrectionStatus.FAILED.value)
+        except Exception as exc:
+            logger.warning(
+                "실패 상태 업데이트를 건너뜁니다 (correction_id: %s): %s",
+                correction_id,
+                exc,
+            )
 
     async def get_correction(self, correction_id: str) -> dict | None:
         """첨삭 전체 데이터 조회"""

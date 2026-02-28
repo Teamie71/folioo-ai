@@ -86,3 +86,14 @@ async def test_update_and_delete_raise_when_correction_is_missing(method_name: s
         await method(*args)
 
     assert "RETURNING id" in pool.fetchrow_sqls[0]
+
+
+@pytest.mark.asyncio
+async def test_update_result_query_does_not_update_status():
+    """update_result 쿼리는 result 컬럼만 갱신한다."""
+    pool = _DummyFetchRowPool(responses=[{"id": "ok"}])
+    repo = CorrectionRepository(pool)  # type: ignore[arg-type]
+
+    await repo.update_result("existing-id", {"fields": []})
+
+    assert "status" not in pool.fetchrow_sqls[0].lower()
