@@ -40,6 +40,28 @@ _STAGE_FIELD_GUIDES: dict[str, tuple[str, list[tuple[str, str]]]] = {
 }
 
 
+def format_section_mapping_guide(section_mapping: dict[str, list[str]] | None = None) -> str:
+    """섹션 매핑 가이드를 프롬프트용 문자열로 변환"""
+    if not section_mapping:
+        return (
+            "- description: stage_1의 project_background, problem_definition, "
+            "message_or_concept, project_duration, team_composition, target_audience + "
+            "stage_2의 work_categories에서 기술/방법론/툴 추출 + "
+            "stage_4의 quantitative_results, qualitative_results를 바탕으로 작성\n"
+            "- contributions: stage_2의 work_categories를 바탕으로 작성\n"
+            "- achievements: stage_3의 problem_episodes를 바탕으로 작성\n"
+            "- insights: stage_4의 personal_growth, insights_gained, future_plans를 바탕으로 작성"
+        )
+
+    lines: list[str] = []
+    for section_name, stage_keys in section_mapping.items():
+        if not isinstance(stage_keys, list):
+            continue
+        joined_stage_keys = ", ".join(stage_keys)
+        lines.append(f"- {section_name}: {joined_stage_keys} 데이터를 중심으로 작성")
+    return "\n".join(lines)
+
+
 def _format_field_value(value: str | list[str] | None, completeness: float | None) -> str:
     if value is None or completeness in (None, 0.0):
         return "수집되지 않음"
@@ -91,10 +113,7 @@ PORTFOLIO_GENERATOR_SYSTEM_TEMPLATE = """
 {collected_data_text}
 
 # 섹션별 매핑 가이드
-- description: stage_1의 project_background, problem_definition, message_or_concept, project_duration, team_composition, target_audience + stage_2의 work_categories에서 기술/방법론/툴 추출 + stage_4의 quantitative_results, qualitative_results를 바탕으로 작성
-- contributions: stage_2의 work_categories를 바탕으로 작성
-- achievements: stage_3의 problem_episodes를 바탕으로 작성
-- insights: stage_4의 personal_growth, insights_gained, future_plans를 바탕으로 작성
+{section_mapping_guide}
 
 # 공통 출력 규칙
 1. 개요식, 명사 종결로 작성하세요. (예외: insights(배운 점)는 개요식, "~다" 종결)

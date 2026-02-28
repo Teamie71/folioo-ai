@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 
 class StageConfig(BaseModel):
@@ -39,10 +39,22 @@ def _load_stages_yaml() -> StagesConfig:
     """YAML 파일 로드 (캐싱)"""
     yaml_path = Path(__file__).parent / "stages.yaml"
 
-    with open(yaml_path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    try:
+        with open(yaml_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except OSError as exc:
+        raise ValueError(f"인터뷰 설정 파일을 읽을 수 없습니다: {exc}") from exc
 
-    return StagesConfig(**data)
+    if data is None:
+        data = {}
+
+    if not isinstance(data, dict):
+        raise ValueError("인터뷰 설정 파일 형식이 올바르지 않습니다. (YAML 객체 필요)")
+
+    try:
+        return StagesConfig(**data)
+    except ValidationError as exc:
+        raise ValueError(f"인터뷰 설정값 검증에 실패했습니다: {exc}") from exc
 
 
 def load_stage_config(stage: Literal[1, 2, 3, 4]) -> StageConfig:

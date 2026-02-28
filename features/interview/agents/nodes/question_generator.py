@@ -22,6 +22,24 @@ from .utils import _get_conversation_context
 logger = logging.getLogger(__name__)
 
 
+def _invoke_with_retry(
+    chain,
+    prompt_variables: dict[str, object],
+    max_retries_per_question: int,
+) -> str:
+    """질문 생성 LLM 호출 재시도"""
+    last_error: Exception | None = None
+    for _ in range(max_retries_per_question + 1):
+        try:
+            response = chain.invoke(prompt_variables)
+            return response.content
+        except Exception as exc:
+            last_error = exc
+    if last_error is None:
+        raise RuntimeError("질문 생성 호출에 실패했습니다.")
+    raise last_error
+
+
 def _get_incomplete_fields(
     state: InterviewState,
     stage_config: StageConfig,
@@ -104,18 +122,20 @@ def _generate_first_turn_question(
     fixed_question_content = fixed_question_raw.replace("[경험명]", state["experience_name"])
 
     # 3. LLM으로 자연스러운 질문 생성
+    global_config = get_global_config()
     llm = get_llm(temperature=0.7)
     chain = first_turn_prompt | llm
 
     llm_error = None
     try:
-        response = chain.invoke(
-            {
+        question = _invoke_with_retry(
+            chain=chain,
+            prompt_variables={
                 "experience_name": state["experience_name"],
                 "fixed_question_content": fixed_question_content,
-            }
+            },
+            max_retries_per_question=global_config.max_retries_per_question,
         )
-        question = response.content
     except Exception as e:
         # LLM 호출 실패 시 고정 질문을 fallback으로 사용
         # TODO: 고정 질문 그대로 사용 or 질문 생성 재시도 결정
@@ -151,15 +171,16 @@ def _generate_contextual_fixed_question(
     # 3. LLM 호출 및 fallback 처리
     llm_error = None
     try:
-        response = chain.invoke(
-            {
+        question = _invoke_with_retry(
+            chain=chain,
+            prompt_variables={
                 "experience_name": state["experience_name"],
                 "fixed_q_used": progress["fixed_q_used"],
                 "conversation_context": context,
                 "fixed_question_content": fixed_question_content,
-            }
+            },
+            max_retries_per_question=global_config.max_retries_per_question,
         )
-        question = response.content
     except Exception as e:
         logger.exception("LLM 호출 실패")
         question = fixed_question_content
@@ -194,16 +215,17 @@ def _generate_dynamic_question(
     chain = generated_question_prompt | llm
     llm_error = None
     try:
-        response = chain.invoke(
-            {
+        question = _invoke_with_retry(
+            chain=chain,
+            prompt_variables={
                 "experience_name": state["experience_name"],
                 "stage_name": stage_config.name,
                 "conversation_context": context,
                 "incomplete_fields": incomplete_fields_str,
                 "remaining_questions": remaining_questions,
-            }
+            },
+            max_retries_per_question=global_config.max_retries_per_question,
         )
-        question = response.content
     except Exception as e:
         logger.exception("LLM 호출 실패: 생성 질문")
         # fallback: 미수집 필드 중 첫 번째에 대한 기본 질문
@@ -284,6 +306,19 @@ def run(state: InterviewState) -> InterviewState:
 
     elif progress["generated_q_used"] < progress["generated_q_max"]:
         # ===== 생성 질문 생성 =====
+        global_config = get_global_config()
+        if not global_config.enable_dynamic_followup:
+            logger.info("동적 생성 질문 비활성화 설정으로 인해 단계를 완료 처리합니다.")
+            return {
+                **state,
+                "stage_progress": {
+                    **progress,
+                    "is_complete": True,
+                },
+                "next_node": "analyst",
+                "llm_error": None,
+            }
+
         # 생성 질문 건너뛰기 가능 여부 확인
         if _should_skip_generated_questions(state, stage_config):
             # 모든 필드 수집 완료 + 강제 소진 아님 -> 단계 완료

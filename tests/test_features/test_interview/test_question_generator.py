@@ -39,7 +39,7 @@ def test_first_turn_question_generation(first_turn_state, monkeypatch):
     monkeypatch.setattr(
         question_generator,
         "get_llm",
-        lambda temperature=0.7: _mock_llm_return("첫 질문입니다."),
+        lambda model=None, temperature=0.7: _mock_llm_return("첫 질문입니다."),
     )
 
     # 실행
@@ -70,7 +70,7 @@ def test_first_turn_uses_fixed_question_content(first_turn_state, monkeypatch):
     monkeypatch.setattr(
         question_generator,
         "get_llm",
-        lambda temperature=0.7: _mock_llm_raise(),
+        lambda model=None, temperature=0.7: _mock_llm_raise(),
     )
 
     # 실행
@@ -93,7 +93,7 @@ def test_followup_fixed_question_generation(first_turn_state, monkeypatch):
     monkeypatch.setattr(
         question_generator,
         "get_llm",
-        lambda temperature=0.7: _mock_llm_raise(),
+        lambda model=None, temperature=0.7: _mock_llm_raise(),
     )
 
     non_first_turn_state = {
@@ -166,7 +166,7 @@ def test_generated_question_fallback_on_llm_error(first_turn_state, monkeypatch)
     monkeypatch.setattr(
         question_generator,
         "get_llm",
-        lambda temperature=0.7: _mock_llm_raise(),
+        lambda model=None, temperature=0.7: _mock_llm_raise(),
     )
 
     state = {
@@ -186,3 +186,72 @@ def test_generated_question_fallback_on_llm_error(first_turn_state, monkeypatch)
 
     assert result["stage_progress"]["generated_q_used"] == 1
     assert "이 활동을 시작하게 된 이유" in result["messages"][0].content
+
+
+def test_first_turn_uses_retry_limit_from_global_config(first_turn_state, monkeypatch):
+    """global_config.max_retries_per_question 값만큼 재시도한다."""
+    calls = {"count": 0}
+
+    def _invoke(_):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise RuntimeError("일시 실패")
+        return AIMessage(content="재시도 성공 질문")
+
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: RunnableLambda(_invoke),
+    )
+    monkeypatch.setattr(
+        question_generator,
+        "get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_retries_per_question": 2,
+                "enable_dynamic_followup": True,
+                "context_window_size": 5,
+            },
+        )(),
+    )
+
+    result = question_generator.run(first_turn_state)
+
+    assert calls["count"] == 3
+    assert result["messages"][0].content == "재시도 성공 질문"
+
+
+def test_generated_question_disabled_by_global_config(first_turn_state, monkeypatch):
+    """enable_dynamic_followup이 false면 생성 질문 없이 단계를 완료 처리한다."""
+    state = {
+        **first_turn_state,
+        "messages": [
+            AIMessage(content="질문1"),
+            HumanMessage(content="답변1"),
+        ],
+        "stage_progress": {
+            **first_turn_state["stage_progress"],
+            "fixed_q_used": first_turn_state["stage_progress"]["fixed_q_total"],
+            "generated_q_used": 0,
+        },
+    }
+    monkeypatch.setattr(
+        question_generator,
+        "get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_retries_per_question": 1,
+                "enable_dynamic_followup": False,
+                "context_window_size": 5,
+            },
+        )(),
+    )
+
+    result = question_generator.run(state)
+
+    assert result["next_node"] == "analyst"
+    assert result["stage_progress"]["is_complete"] is True

@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 import yaml
+from pydantic import BaseModel, ValidationError
 
 from common.llm.client import get_llm
 
@@ -13,6 +14,10 @@ from .schemas import REQUIRED_CORRECTION_FIELDS, CorrectionOutput
 
 _generator: "CorrectionGenerator | None" = None
 _DEFAULT_MAX_RETRIES = 2
+_DEFAULT_MODEL = "openai/gpt-oss-120b"
+_DEFAULT_TEMPERATURE = 0.2
+_DEFAULT_MIN_LINES_PER_FIELD = 1
+_DEFAULT_ALLOW_NULL_COMMENT_FOR_KEEP = True
 _ALLOWED_TYPES = {"reduce", "keep", "emphasize"}
 _FIELD_HEADER_PATTERN = re.compile(
     r"^\[[^\]]+ - (?P<field_name>description|contributions|achievements|insights)\]$"
@@ -24,13 +29,41 @@ class CorrectionGenerationError(Exception):
     """첨삭 생성 실패 예외"""
 
 
+class CorrectionLlmConfig(BaseModel):
+    """첨삭 LLM 설정"""
+
+    model: str = _DEFAULT_MODEL
+    temperature: float = _DEFAULT_TEMPERATURE
+
+
+class CorrectionValidationConfig(BaseModel):
+    """첨삭 검증 설정"""
+
+    min_lines_per_field: int = _DEFAULT_MIN_LINES_PER_FIELD
+    max_retries: int | None = None
+    allow_null_comment_for_keep: bool = _DEFAULT_ALLOW_NULL_COMMENT_FOR_KEEP
+
+
+class CorrectionConfig(BaseModel):
+    """첨삭 설정"""
+
+    llm: CorrectionLlmConfig = CorrectionLlmConfig()
+    validation: CorrectionValidationConfig = CorrectionValidationConfig()
+
+
 class CorrectionGenerator:
     """LLM 기반 첨삭 결과 생성기"""
 
     def __init__(self, max_retries: int | None = None) -> None:
-        configured_retries = _load_max_retries()
+        settings = _load_correction_settings()
+        configured_retries = settings["max_retries"]
         self._max_retries = max_retries if max_retries is not None else configured_retries
-        llm = get_llm(temperature=0.2)
+        self._allow_null_comment_for_keep = settings["allow_null_comment_for_keep"]
+        self._min_lines_per_field = settings["min_lines_per_field"]
+        llm = get_llm(
+            model=settings["model"],
+            temperature=settings["temperature"],
+        )
         self._structured_llm = llm.with_structured_output(CorrectionOutput)
 
     def generate(
@@ -140,13 +173,22 @@ class CorrectionGenerator:
             if field is None:
                 continue
 
+            if len(field.lines) < self._min_lines_per_field:
+                errors.append(
+                    f"{field_name}의 라인 수가 최소 기준({self._min_lines_per_field})보다 적습니다."
+                )
+
             line_count = field_line_counts.get(field_name, 0)
             for line in field.lines:
                 if line.type not in _ALLOWED_TYPES:
                     errors.append(f"{field_name}의 type 값이 유효하지 않습니다: {line.type}")
 
                 if line.type == "keep":
-                    if line.comment is not None and not line.comment.strip():
+                    if line.comment is None and not self._allow_null_comment_for_keep:
+                        errors.append(
+                            f"{field_name}의 {line.line_number}번 라인 comment가 비어 있습니다."
+                        )
+                    elif line.comment is not None and not line.comment.strip():
                         errors.append(
                             f"{field_name}의 {line.line_number}번 라인 comment가 비어 있습니다."
                         )
@@ -164,16 +206,57 @@ class CorrectionGenerator:
         return errors
 
 
-def _load_max_retries() -> int:
+def _load_correction_config() -> CorrectionConfig:
+    config_path = Path(__file__).resolve().parent / "config" / "correction.yaml"
+
+    try:
+        with config_path.open(encoding="utf-8") as file:
+            config = yaml.safe_load(file)
+    except OSError as exc:
+        raise ValueError(f"첨삭 설정 파일을 읽을 수 없습니다: {exc}") from exc
+
+    if config is None:
+        config = {}
+
+    if not isinstance(config, dict):
+        raise ValueError("첨삭 설정 파일 형식이 올바르지 않습니다. (YAML 객체 필요)")
+
+    try:
+        return CorrectionConfig(**config)
+    except ValidationError as exc:
+        raise ValueError(f"첨삭 설정값 검증에 실패했습니다: {exc}") from exc
+
+
+def _load_generator_fallback_max_retries() -> int:
     config_path = Path(__file__).resolve().parent / "config" / "generator.yaml"
 
     try:
         with config_path.open(encoding="utf-8") as file:
             config = yaml.safe_load(file) or {}
-        value = config.get("generator", {}).get("max_retries", _DEFAULT_MAX_RETRIES)
-        return int(value)
     except Exception:
         return _DEFAULT_MAX_RETRIES
+
+    if not isinstance(config, dict):
+        return _DEFAULT_MAX_RETRIES
+
+    value = config.get("generator", {}).get("max_retries", _DEFAULT_MAX_RETRIES)
+    return int(value)
+
+
+def _load_correction_settings() -> dict[str, object]:
+    correction_config = _load_correction_config()
+    max_retries = correction_config.validation.max_retries
+
+    if max_retries is None:
+        max_retries = _load_generator_fallback_max_retries()
+
+    return {
+        "model": correction_config.llm.model,
+        "temperature": correction_config.llm.temperature,
+        "max_retries": int(max_retries),
+        "allow_null_comment_for_keep": correction_config.validation.allow_null_comment_for_keep,
+        "min_lines_per_field": correction_config.validation.min_lines_per_field,
+    }
 
 
 def _get_field_line_counts(portfolio_data: dict) -> dict[str, int]:

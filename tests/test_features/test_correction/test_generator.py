@@ -106,7 +106,7 @@ def test_generate_retry_with_validation_feedback(monkeypatch: pytest.MonkeyPatch
 
     chain = DummyChain([invalid, valid])
     monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
-    monkeypatch.setattr(generator, "get_llm", lambda temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
 
     result = CorrectionGenerator(max_retries=2).generate(
         company_name="테스트 회사",
@@ -134,7 +134,7 @@ def test_generate_returns_last_output_when_retries_exhausted(monkeypatch: pytest
     invalid_last = _output(line_number=3)
     chain = DummyChain([invalid_last, invalid_last, invalid_last])
     monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
-    monkeypatch.setattr(generator, "get_llm", lambda temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
 
     result = CorrectionGenerator(max_retries=2).generate(
         company_name="테스트 회사",
@@ -159,7 +159,7 @@ def test_generate_raises_error_when_llm_fails_without_output(monkeypatch: pytest
 
     chain = DummyChain([RuntimeError("timeout"), RuntimeError("timeout")])
     monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
-    monkeypatch.setattr(generator, "get_llm", lambda temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
 
     with pytest.raises(CorrectionGenerationError):
         CorrectionGenerator(max_retries=1).generate(
@@ -181,7 +181,7 @@ def test_validate_detects_empty_summary_and_comment(monkeypatch: pytest.MonkeyPa
     """검증에서 빈 요약과 빈 코멘트를 잡아낸다."""
     from features.correction import generator
 
-    monkeypatch.setattr(generator, "get_llm", lambda temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
     output = _output(comment=" ")
     output.overall_summary = " "
 
@@ -203,7 +203,7 @@ def test_validate_allows_null_comment_for_keep(monkeypatch: pytest.MonkeyPatch):
     """keep 타입은 comment가 null이어도 검증을 통과한다."""
     from features.correction import generator
 
-    monkeypatch.setattr(generator, "get_llm", lambda temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
     output = _output(comment=None)
 
     errors = CorrectionGenerator(max_retries=0)._validate(
@@ -223,7 +223,7 @@ def test_validate_counts_only_numbered_lines_with_subheaders(monkeypatch: pytest
     """소구분 헤더를 제외한 번호 라인 수 기준으로 line_number를 검증한다."""
     from features.correction import generator
 
-    monkeypatch.setattr(generator, "get_llm", lambda temperature=0.2: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
     validator = CorrectionGenerator(max_retries=0)
     portfolio_data = {
         "description": (
@@ -242,6 +242,124 @@ def test_validate_counts_only_numbered_lines_with_subheaders(monkeypatch: pytest
 
     assert "description의 line_number 3가 원본 라인 수(3)를 벗어났습니다." not in valid_errors
     assert "description의 line_number 4가 원본 라인 수(3)를 벗어났습니다." in invalid_errors
+
+
+def test_correction_yaml_max_retries_has_priority(monkeypatch: pytest.MonkeyPatch):
+    """max_retries는 correction.yaml(validation) 값을 우선 사용한다."""
+    from features.correction import generator
+
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(
+        generator,
+        "_load_correction_config",
+        lambda: generator.CorrectionConfig.model_validate(
+            {
+                "llm": {"model": "test-model", "temperature": 0.3},
+                "validation": {"max_retries": 5},
+            }
+        ),
+    )
+    monkeypatch.setattr(generator, "_load_generator_fallback_max_retries", lambda: 1)
+
+    instance = generator.CorrectionGenerator()
+
+    assert instance._max_retries == 5
+
+
+def test_generator_yaml_fallback_is_used_when_correction_missing(monkeypatch: pytest.MonkeyPatch):
+    """correction.yaml에 max_retries가 없으면 generator.yaml fallback을 사용한다."""
+    from features.correction import generator
+
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(
+        generator,
+        "_load_correction_config",
+        lambda: generator.CorrectionConfig.model_validate(
+            {
+                "llm": {"model": "test-model", "temperature": 0.3},
+                "validation": {"max_retries": None},
+            }
+        ),
+    )
+    monkeypatch.setattr(generator, "_load_generator_fallback_max_retries", lambda: 4)
+
+    instance = generator.CorrectionGenerator()
+
+    assert instance._max_retries == 4
+
+
+def test_validate_respects_min_lines_per_field(monkeypatch: pytest.MonkeyPatch):
+    """min_lines_per_field 설정을 검증 로직에 반영한다."""
+    from features.correction import generator
+
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(
+        generator,
+        "_load_correction_settings",
+        lambda: {
+            "model": "test-model",
+            "temperature": 0.3,
+            "max_retries": 1,
+            "allow_null_comment_for_keep": True,
+            "min_lines_per_field": 2,
+        },
+    )
+    validator = generator.CorrectionGenerator()
+    output = _output(line_number=1)
+
+    errors = validator._validate(
+        output,
+        portfolio_data={
+            "description": "- 한 줄",
+            "contributions": "- 한 줄",
+            "achievements": "- 한 줄",
+            "insights": "- 한 줄",
+        },
+    )
+
+    assert "description의 라인 수가 최소 기준(2)보다 적습니다." in errors
+
+
+def test_validate_respects_allow_null_comment_for_keep(monkeypatch: pytest.MonkeyPatch):
+    """allow_null_comment_for_keep=false면 keep null comment를 실패 처리한다."""
+    from features.correction import generator
+
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(
+        generator,
+        "_load_correction_settings",
+        lambda: {
+            "model": "test-model",
+            "temperature": 0.3,
+            "max_retries": 1,
+            "allow_null_comment_for_keep": False,
+            "min_lines_per_field": 1,
+        },
+    )
+    validator = generator.CorrectionGenerator()
+    output = _output(comment=None)
+
+    errors = validator._validate(
+        output,
+        portfolio_data={
+            "description": "- 한 줄",
+            "contributions": "- 한 줄",
+            "achievements": "- 한 줄",
+            "insights": "- 한 줄",
+        },
+    )
+
+    assert "description의 1번 라인 comment가 비어 있습니다." in errors
+
+
+def test_invalid_correction_yaml_type_raises_korean_error(monkeypatch: pytest.MonkeyPatch):
+    """첨삭 YAML 루트 타입 오류 시 한국어 예외를 반환한다."""
+    from features.correction import generator
+
+    monkeypatch.setattr(generator.yaml, "safe_load", lambda _: [])
+
+    with pytest.raises(ValueError, match="첨삭 설정 파일 형식이 올바르지 않습니다"):
+        generator._load_correction_config()
 
 
 def test_correction_generator_singleton(monkeypatch: pytest.MonkeyPatch):

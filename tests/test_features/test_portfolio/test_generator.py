@@ -58,7 +58,7 @@ def test_generate_retry_with_validation_feedback(monkeypatch: pytest.MonkeyPatch
 
     chain = DummyChain([_invalid_output(), _valid_output()])
     monkeypatch.setattr(generator, "portfolio_generator_prompt", DummyPrompt(chain))
-    monkeypatch.setattr(generator, "get_llm", lambda temperature=0.7: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.7: DummyLLM())
     monkeypatch.setattr(generator, "format_collected_data_for_prompt", lambda data: "formatted")
 
     result = PortfolioGenerator().generate(collected_data={}, experience_name="테스트 경험")
@@ -74,7 +74,7 @@ def test_generate_retry_after_llm_exception(monkeypatch: pytest.MonkeyPatch):
 
     chain = DummyChain([RuntimeError("timeout"), _valid_output()])
     monkeypatch.setattr(generator, "portfolio_generator_prompt", DummyPrompt(chain))
-    monkeypatch.setattr(generator, "get_llm", lambda temperature=0.7: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.7: DummyLLM())
     monkeypatch.setattr(generator, "format_collected_data_for_prompt", lambda data: "formatted")
 
     result = PortfolioGenerator().generate(collected_data={}, experience_name="테스트 경험")
@@ -90,7 +90,7 @@ def test_generate_raises_error_after_all_retries(monkeypatch: pytest.MonkeyPatch
 
     chain = DummyChain([_invalid_output(), _invalid_output(), _invalid_output()])
     monkeypatch.setattr(generator, "portfolio_generator_prompt", DummyPrompt(chain))
-    monkeypatch.setattr(generator, "get_llm", lambda temperature=0.7: DummyLLM())
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.7: DummyLLM())
     monkeypatch.setattr(generator, "format_collected_data_for_prompt", lambda data: "formatted")
 
     with pytest.raises(PortfolioGenerationError):
@@ -109,3 +109,47 @@ def test_validation_treats_zero_as_empty():
     errors = PortfolioGenerator()._get_validation_errors(output)
 
     assert "description 섹션이 비어 있습니다." in errors
+
+
+def test_generate_uses_llm_settings_and_section_mapping(monkeypatch: pytest.MonkeyPatch):
+    """설정의 LLM 파라미터/섹션 매핑 가이드를 반영한다."""
+    from features.portfolio import generator
+
+    chain = DummyChain([_valid_output()])
+    llm_calls: list[dict] = []
+
+    monkeypatch.setattr(generator, "portfolio_generator_prompt", DummyPrompt(chain))
+    monkeypatch.setattr(
+        generator,
+        "_load_portfolio_config",
+        lambda: generator.PortfolioConfig.model_validate(
+            {
+                "llm": {"model": "test-model", "temperature": 0.1, "max_retries": 1},
+                "sections": {"description": {"required": True}},
+                "section_mapping": {"description": ["stage_1", "stage_2"]},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: (
+            llm_calls.append({"model": model, "temperature": temperature}) or DummyLLM()
+        ),
+    )
+    monkeypatch.setattr(generator, "format_collected_data_for_prompt", lambda data: "formatted")
+
+    PortfolioGenerator().generate(collected_data={}, experience_name="테스트 경험")
+
+    assert llm_calls == [{"model": "test-model", "temperature": 0.1}]
+    assert "stage_1, stage_2" in chain.calls[0]["section_mapping_guide"]
+
+
+def test_invalid_portfolio_yaml_type_raises_korean_error(monkeypatch: pytest.MonkeyPatch):
+    """포트폴리오 YAML 루트 타입 오류 시 한국어 예외를 반환한다."""
+    from features.portfolio import generator
+
+    monkeypatch.setattr(generator.yaml, "safe_load", lambda _: [])
+
+    with pytest.raises(ValueError, match="포트폴리오 설정 파일 형식이 올바르지 않습니다"):
+        generator._load_portfolio_config()
