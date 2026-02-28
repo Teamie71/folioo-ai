@@ -1,15 +1,23 @@
 """첨삭용 RAG 파이프라인"""
 
 import json
+import os
 import re
 
+from tavily import TavilyClient
+
 from common.llm.client import get_llm
+from features.correction.config import get_correction_rag_config
 
 
 class RAGPipeline:
     """키워드 추출 → 검색(스텁) → 인사이트 생성 파이프라인"""
 
     def __init__(self) -> None:
+        rag_config = get_correction_rag_config()
+
+        self._keyword_count = rag_config.keyword_count
+        self._max_results_per_keyword = rag_config.max_results_per_keyword
         self._llm = get_llm()
 
     def run(self, company_name: str, job_title: str, job_description: str) -> str:
@@ -33,14 +41,14 @@ class RAGPipeline:
     def _extract_keywords(
         self, company_name: str, job_title: str, job_description: str
     ) -> list[str]:
-        """LLM으로 검색 키워드 4개 추출"""
+        """LLM으로 검색 키워드 추출"""
         response = self._llm.invoke(
             "당신은 채용 공고 기반 기업 분석 리서처입니다.\n"
-            "아래 입력을 분석해 웹 검색용 키워드 4개를 생성하세요.\n"
+            f"아래 입력을 분석해 웹 검색용 키워드 {self._keyword_count}개를 생성하세요.\n"
             "각 키워드는 서로 다른 관점을 커버해야 합니다: 조직문화/인재상, 사업전략/비전, 시장/경쟁, 직무/역량.\n"
             "반드시 JSON만 출력하세요.\n"
             "출력 형식:\n"
-            '{"search_keywords": ["keyword1", "keyword2", "keyword3", "keyword4"]}\n\n'
+            '{"search_keywords": ["keyword1", "keyword2", "..."]}\n\n'
             f"기업명: {company_name}\n"
             f"직무명: {job_title}\n"
             f"JD: {job_description}\n"
@@ -68,13 +76,36 @@ class RAGPipeline:
         if not keywords:
             return [f"{company_name} {job_title}"]
 
-        return keywords[:4]
+        return keywords[: self._keyword_count]
 
     def _search(self, query: str) -> list[dict]:
-        """웹 검색 (스텁) — 실제 API 연동 시 교체"""
-        return [
-            {"title": f"Stub result for: {query}", "content": "...", "url": "https://example.com"},
-        ]
+        """웹 검색 — Tavily API 호출"""
+        api_key = os.getenv("TAVILY_API_KEY")
+        if not api_key:
+            raise ValueError("TAVILY_API_KEY 환경변수가 설정되지 않았습니다.")
+
+        response = TavilyClient(api_key=api_key).search(
+            query=query,
+            max_results=self._max_results_per_keyword,
+        )
+        results = response.get("results", []) if isinstance(response, dict) else []
+
+        normalized_results: list[dict] = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if not content:
+                content = item.get("raw_content")
+            normalized_results.append(
+                {
+                    "title": str(item.get("title") or ""),
+                    "content": str(content or ""),
+                    "url": str(item.get("url") or ""),
+                }
+            )
+
+        return normalized_results
 
     def _generate_insight(
         self,
