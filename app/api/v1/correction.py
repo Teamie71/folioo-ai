@@ -1,5 +1,6 @@
 """첨삭 API 라우터"""
 
+import logging
 import uuid as _uuid
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, status
@@ -18,6 +19,7 @@ from features.correction.schemas import CorrectionStatus
 from features.correction.service import get_correction_service
 
 router = APIRouter(prefix="/corrections", tags=["correction"])
+logger = logging.getLogger(__name__)
 
 
 def _validate_correction_id(correction_id: str) -> None:
@@ -194,7 +196,15 @@ async def get_company_insight(correction_id: str) -> CompanyInsightResponse:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="기업 분석 결과를 조회할 수 있는 상태가 아닙니다.",
             )
-        return CompanyInsightResponse(company_insight=correction.get("company_insight") or "")
+        if correction.get("company_insight") is None:
+            logger.error(
+                "company_insight is None in company-insight response "
+                "(correction_id: %s, correction: %s)",
+                correction_id,
+                correction,
+            )
+            raise ValueError("company_insight 데이터가 비어 있습니다.")
+        return CompanyInsightResponse(company_insight=correction.get("company_insight"))
     except HTTPException:
         raise
     except Exception:

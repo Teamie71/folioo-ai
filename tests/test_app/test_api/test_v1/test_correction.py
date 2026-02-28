@@ -127,6 +127,29 @@ def test_get_company_insight_returns_409_when_not_ready(monkeypatch):
     assert response.status_code == 409
 
 
+def test_get_company_insight_returns_500_when_insight_is_none(monkeypatch, caplog):
+    """company_insight가 None이면 500을 반환하고 에러 로그를 남긴다."""
+    client = _create_client(
+        monkeypatch,
+        DummyCorrectionService(
+            correction={
+                "id": CORRECTION_UUID,
+                "status": CorrectionStatus.COMPANY_INSIGHT.value,
+                "company_insight": None,
+            }
+        ),
+    )
+
+    with caplog.at_level("ERROR", logger=correction_api.__name__):
+        response = client.get(f"/api/v1/corrections/{CORRECTION_UUID}/company-insight")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "내부 서버 오류가 발생했습니다."}
+    assert "company_insight is None in company-insight response" in caplog.text
+    assert CORRECTION_UUID in caplog.text
+    assert "'company_insight': None" in caplog.text
+
+
 def test_update_company_insight_returns_200(monkeypatch):
     """기업 분석 수정이 성공하면 200을 반환한다."""
     service = DummyCorrectionService(
