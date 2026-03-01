@@ -75,24 +75,21 @@ class CorrectionService:
             )
             await self._repository.update_company_insight(correction_id, company_insight)
 
-            if hasattr(self._rag_pipeline, "_extract_keywords") and hasattr(
-                self._rag_pipeline, "_search"
-            ):
-                keywords = await asyncio.to_thread(
-                    self._rag_pipeline._extract_keywords,
-                    company_name=company_name,
-                    job_title=job_title,
-                    job_description=job_description,
-                )
-                search_query = keywords[0] if keywords else f"{company_name} {job_title}"
-                search_results = await self._rag_pipeline._search(
-                    query=search_query,
-                )
-                await self._repository.save_rag_data(
-                    correction_id,
-                    search_query,
-                    {"results": search_results},
-                )
+            keywords = await asyncio.to_thread(
+                self._rag_pipeline._extract_keywords,
+                company_name=company_name,
+                job_title=job_title,
+                job_description=job_description,
+            )
+            search_query = keywords[0] if keywords else f"{company_name} {job_title}"
+            search_results = await self._rag_pipeline._search(
+                query=search_query,
+            )
+            await self._repository.save_rag_data(
+                correction_id,
+                search_query,
+                {"results": search_results},
+            )
 
             await self._repository.update_status(
                 correction_id, CorrectionStatus.COMPANY_INSIGHT.value
