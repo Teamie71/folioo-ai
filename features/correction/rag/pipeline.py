@@ -23,7 +23,8 @@ class RAGPipeline:
 
     async def run(self, company_name: str, job_title: str, job_description: str) -> str:
         """기업/직무/JD 기반 기업 인사이트 텍스트 생성"""
-        keywords = self._extract_keywords(
+        keywords = await asyncio.to_thread(
+            self._extract_keywords,
             company_name=company_name,
             job_title=job_title,
             job_description=job_description,
@@ -32,7 +33,8 @@ class RAGPipeline:
         results = await asyncio.gather(*(self._search(query=keyword) for keyword in keywords))
         search_results: list[dict] = [item for sublist in results for item in sublist]
 
-        return self._generate_insight(
+        return await asyncio.to_thread(
+            self._generate_insight,
             search_results=search_results,
             company_name=company_name,
             job_title=job_title,
