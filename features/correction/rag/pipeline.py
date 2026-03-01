@@ -20,6 +20,17 @@ class RAGPipeline:
         self._keyword_count = rag_config.keyword_count
         self._max_results_per_keyword = rag_config.max_results_per_keyword
         self._llm = get_llm()
+        self._tavily_client: AsyncTavilyClient | None = None
+
+    def _get_tavily_client(self) -> AsyncTavilyClient:
+        """Tavily 클라이언트를 lazy 초기화 후 재사용"""
+        if self._tavily_client is None:
+            api_key = os.getenv("TAVILY_API_KEY")
+            if not api_key:
+                raise ValueError("TAVILY_API_KEY 환경변수가 설정되지 않았습니다.")
+            self._tavily_client = AsyncTavilyClient(api_key=api_key)
+
+        return self._tavily_client
 
     async def run(self, company_name: str, job_title: str, job_description: str) -> str:
         """기업/직무/JD 기반 기업 인사이트 텍스트 생성"""
@@ -82,11 +93,7 @@ class RAGPipeline:
 
     async def _search(self, query: str) -> list[dict]:
         """웹 검색 — Tavily API 호출"""
-        api_key = os.getenv("TAVILY_API_KEY")
-        if not api_key:
-            raise ValueError("TAVILY_API_KEY 환경변수가 설정되지 않았습니다.")
-
-        response = await AsyncTavilyClient(api_key=api_key).search(
+        response = await self._get_tavily_client().search(
             query=query,
             max_results=self._max_results_per_keyword,
         )
