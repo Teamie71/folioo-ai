@@ -46,13 +46,16 @@ async def lifespan(app: FastAPI):
     pool = None
     db_url = os.getenv("DATABASE_URL")
 
-    if db_url:
-        try:
-            pool = await create_pool()
-        except Exception:
-            logger.exception("DB 커넥션 풀 생성 실패 - InsightStore/포트폴리오/첨삭 DB 비활성화")
-    else:
-        logger.warning("DATABASE_URL이 설정되지 않음 - InsightStore/포트폴리오/첨삭 DB 비활성화")
+    if not db_url:
+        raise RuntimeError(
+            "DATABASE_URL 환경변수가 설정되지 않았습니다. 애플리케이션을 시작할 수 없습니다."
+        )
+
+    try:
+        pool = await create_pool()
+    except Exception:
+        logger.exception("DB 커넥션 풀 생성 실패 - 애플리케이션 시작 중단")
+        raise
 
     # ===== InsightStore 초기화 (임시 pgvector) =====
     if pool is not None:
