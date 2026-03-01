@@ -40,10 +40,10 @@ def test_get_health_returns_connected_when_checkpointer_exists(monkeypatch):
 def test_get_health_returns_disconnected_when_checkpointer_missing(monkeypatch):
     """checkpointer가 없으면 disconnected 상태를 반환한다."""
 
-    def _raise_runtime_error():
+    def _simulate_checkpointer_error():
         raise RuntimeError("checkpointer not initialized")
 
-    monkeypatch.setattr(main, "get_checkpointer", _raise_runtime_error)
+    monkeypatch.setattr(main, "get_checkpointer", _simulate_checkpointer_error)
 
     health = main.get_health()
 

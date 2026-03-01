@@ -9,7 +9,7 @@ NestJS 백엔드가 FastAPI SSE 스트림을 프록시할 때, 아래 이벤트 
 | `error` | `{"type":"error","error":{"code":"...","message":"..."}}` | 에러 |
 | `ping` | `{"type":"ping","timestamp":"2026-02-06T..."}` | 연결 유지 (10초 간격) |
 
-Raw SSE 예시:
+SSE 원본 예시:
 
 ```text
 event: content_block_delta

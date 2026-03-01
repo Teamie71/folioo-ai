@@ -17,10 +17,15 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         expected_api_key = os.getenv("AI_SERVICE_API_KEY", "")
+        if not expected_api_key:
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"detail": "AI_SERVICE_API_KEY is not configured"},
+            )
+
         provided_api_key = request.headers.get("X-API-Key")
         is_valid = (
-            bool(expected_api_key)
-            and bool(provided_api_key)
+            bool(provided_api_key)
             and secrets.compare_digest(provided_api_key, expected_api_key)
         )
 
