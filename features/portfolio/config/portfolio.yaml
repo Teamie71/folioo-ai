@@ -17,7 +17,7 @@ sections:
 
 # LLM 호출 설정
 llm:
-    model: "openai/gpt-oss-120b"
+    model: "google/gemini-3.1-pro-preview"
     temperature: 0.7
     max_retries: 3
 
