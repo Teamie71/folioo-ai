@@ -36,6 +36,47 @@ def test_health_is_exempt_from_api_key(monkeypatch):
     assert response.json() == {"status": "ok"}
 
 
+def test_docs_route_is_exempt_from_api_key(monkeypatch):
+    """문서 경로는 API Key 없이 접근 가능하다."""
+    monkeypatch.delenv("AI_SERVICE_API_KEY", raising=False)
+    client = _create_client()
+
+    response = client.get("/docs")
+
+    assert response.status_code == 200
+
+
+def test_docs_oauth2_redirect_is_exempt_from_api_key(monkeypatch):
+    """문서 OAuth 리다이렉트 경로는 API Key 없이 접근 가능하다."""
+    monkeypatch.delenv("AI_SERVICE_API_KEY", raising=False)
+    client = _create_client()
+
+    response = client.get("/docs/oauth2-redirect")
+
+    assert response.status_code == 200
+
+
+def test_openapi_json_is_exempt_from_api_key(monkeypatch):
+    """OpenAPI 스키마 경로는 API Key 없이 접근 가능하다."""
+    monkeypatch.delenv("AI_SERVICE_API_KEY", raising=False)
+    client = _create_client()
+
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+
+
+def test_docs_prefix_route_is_not_exempt(monkeypatch):
+    """`/docs` 접두사만 일치하는 경로는 예외 처리하지 않는다."""
+    monkeypatch.setenv("AI_SERVICE_API_KEY", "shared-secret-key")
+    client = _create_client()
+
+    response = client.get("/docs-private")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized"}
+
+
 def test_protected_route_returns_401_without_api_key(monkeypatch):
     """보호 경로는 API Key 없으면 401을 반환한다."""
     monkeypatch.setenv("AI_SERVICE_API_KEY", "shared-secret-key")
