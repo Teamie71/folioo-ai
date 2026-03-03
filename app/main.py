@@ -19,9 +19,10 @@ APP_VERSION = "0.1.0"
 
 def _load_allowed_origins() -> list[str]:
     """환경변수 기반 CORS 허용 오리진 목록 반환"""
-    raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+    default_origin = "http://localhost:3000"
+    raw_origins = os.getenv("ALLOWED_ORIGINS", default_origin)
     parsed_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
-    return parsed_origins or ["http://localhost:3000"]
+    return parsed_origins or [default_origin]
 
 
 def _get_checkpointer_status() -> str:
