@@ -33,12 +33,21 @@ def _get_checkpointer_status() -> str:
         return "disconnected"
 
 
+def _get_api_key_status() -> str:
+    """서비스 간 API Key 설정 상태 문자열 반환"""
+    return "configured" if os.getenv("AI_SERVICE_API_KEY", "") else "missing"
+
+
 def get_health() -> dict[str, str]:
     """헬스체크 응답 생성"""
+    api_key_status = _get_api_key_status()
+    status = "ok" if api_key_status == "configured" else "unhealthy"
+
     return {
-        "status": "ok",
+        "status": status,
         "version": APP_VERSION,
         "checkpointer": _get_checkpointer_status(),
+        "api_key": api_key_status,
     }
 
 

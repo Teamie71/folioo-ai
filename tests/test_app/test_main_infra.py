@@ -28,6 +28,7 @@ def test_load_allowed_origins_uses_default(monkeypatch):
 
 def test_get_health_returns_connected_when_checkpointer_exists(monkeypatch):
     """checkpointer가 있으면 connected 상태를 반환한다."""
+    monkeypatch.setenv("AI_SERVICE_API_KEY", "shared-secret-key")
     monkeypatch.setattr(main, "get_checkpointer", lambda: object())
 
     health = main.get_health()
@@ -35,10 +36,12 @@ def test_get_health_returns_connected_when_checkpointer_exists(monkeypatch):
     assert health["status"] == "ok"
     assert health["version"] == "0.1.0"
     assert health["checkpointer"] == "connected"
+    assert health["api_key"] == "configured"
 
 
 def test_get_health_returns_disconnected_when_checkpointer_missing(monkeypatch):
     """checkpointer가 없으면 disconnected 상태를 반환한다."""
+    monkeypatch.setenv("AI_SERVICE_API_KEY", "shared-secret-key")
 
     def _simulate_checkpointer_error():
         raise RuntimeError("checkpointer not initialized")
@@ -47,4 +50,17 @@ def test_get_health_returns_disconnected_when_checkpointer_missing(monkeypatch):
 
     health = main.get_health()
 
+    assert health["status"] == "ok"
     assert health["checkpointer"] == "disconnected"
+    assert health["api_key"] == "configured"
+
+
+def test_get_health_returns_unhealthy_when_api_key_missing(monkeypatch):
+    """서비스 API Key 설정이 없으면 unhealthy 상태를 반환한다."""
+    monkeypatch.delenv("AI_SERVICE_API_KEY", raising=False)
+    monkeypatch.setattr(main, "get_checkpointer", lambda: object())
+
+    health = main.get_health()
+
+    assert health["status"] == "unhealthy"
+    assert health["api_key"] == "missing"
