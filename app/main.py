@@ -1,16 +1,55 @@
 """FastAPI 애플리케이션 설정"""
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as api_router
-from common.checkpointer.factory import setup_checkpointer
+from app.middleware.auth import ApiKeyAuthMiddleware
+from common.checkpointer.factory import get_checkpointer, setup_checkpointer
 from common.logging import setup_logging
 
 # ===== 로깅 초기화 (uvicorn보다 먼저 설정) =====
 setup_logging()
+
+APP_VERSION = "0.1.0"
+
+
+def _load_allowed_origins() -> list[str]:
+    """환경변수 기반 CORS 허용 오리진 목록 반환"""
+    default_origin = "http://localhost:3000"
+    raw_origins = os.getenv("ALLOWED_ORIGINS", default_origin)
+    parsed_origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+    return parsed_origins or [default_origin]
+
+
+def _get_checkpointer_status() -> str:
+    """Checkpointer 연결 상태 문자열 반환"""
+    try:
+        get_checkpointer()
+        return "connected"
+    except RuntimeError:
+        return "disconnected"
+
+
+def _get_api_key_status() -> str:
+    """서비스 간 API Key 설정 상태 문자열 반환"""
+    return "configured" if os.getenv("AI_SERVICE_API_KEY", "") else "missing"
+
+
+def get_health() -> dict[str, str]:
+    """헬스체크 응답 생성"""
+    api_key_status = _get_api_key_status()
+    status = "ok" if api_key_status == "configured" else "unhealthy"
+
+    return {
+        "status": status,
+        "version": APP_VERSION,
+        "checkpointer": _get_checkpointer_status(),
+        "api_key": api_key_status,
+    }
 
 
 @asynccontextmanager
@@ -23,7 +62,6 @@ async def lifespan(app: FastAPI):
     """
 
     import logging
-    import os
 
     from common.db.connection import close_pool, create_pool
     from features.correction.repository import (
@@ -107,18 +145,29 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Folioo AI",
         description="포트폴리오 정리를 도와주는 AI 인터뷰 에이전트 API",
-        version="0.1.0",
+        version=APP_VERSION,
         lifespan=lifespan,
     )
 
-    # CORS 설정
+    app.add_middleware(ApiKeyAuthMiddleware)
+    # CORS 미들웨어를 나중에 등록해 preflight(OPTIONS)를 우선 처리한다.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # TODO: 프로덕션에서는 특정 도메인만 허용
+        allow_origins=_load_allowed_origins(),
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.get(
+        "/health",
+        response_model=dict[str, str],
+        status_code=200,
+        summary="헬스체크",
+        description="서버 상태, 버전, checkpointer 연결 상태를 반환합니다.",
+    )
+    def health() -> dict[str, str]:
+        return get_health()
 
     # 라우터 등록
     app.include_router(api_router)
