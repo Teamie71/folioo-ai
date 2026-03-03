@@ -18,6 +18,10 @@ def _create_client() -> TestClient:
     async def protected():
         return {"ok": True}
 
+    @app.options("/api/v1/protected")
+    async def protected_options():
+        return {"ok": True}
+
     return TestClient(app)
 
 
@@ -60,6 +64,17 @@ def test_protected_route_allows_valid_api_key(monkeypatch):
     client = _create_client()
 
     response = client.get("/api/v1/protected", headers={"X-API-Key": "shared-secret-key"})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_options_request_is_exempt_from_api_key(monkeypatch):
+    """OPTIONS 프리플라이트 요청은 API Key 없이 접근 가능하다."""
+    monkeypatch.delenv("AI_SERVICE_API_KEY", raising=False)
+    client = _create_client()
+
+    response = client.options("/api/v1/protected")
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}

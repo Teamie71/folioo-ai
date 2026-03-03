@@ -139,7 +139,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS 설정
+    app.add_middleware(ApiKeyAuthMiddleware)
+    # CORS 미들웨어를 나중에 등록해 preflight(OPTIONS)를 우선 처리한다.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_load_allowed_origins(),
@@ -147,7 +148,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_middleware(ApiKeyAuthMiddleware)
 
     @app.get(
         "/health",

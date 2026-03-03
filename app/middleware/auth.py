@@ -13,6 +13,9 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         if path in {"/health", "/openapi.json"} or path.startswith("/docs"):
             return await call_next(request)
 
