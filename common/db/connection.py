@@ -35,7 +35,11 @@ async def create_pool() -> asyncpg.Pool:
     if not db_url:
         raise ValueError("DATABASE_URL 환경변수가 설정되지 않았습니다.")
 
-    _pool = await asyncpg.create_pool(db_url)
+    _pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+    )
     logger.info("DB 커넥션 풀 생성 완료")
     return _pool
 
