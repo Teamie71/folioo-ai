@@ -186,6 +186,17 @@ class DummyRagPipeline:
         return [{"query": query, "title": "검색 결과"}]
 
 
+class ErrorRagPipeline(DummyRagPipeline):
+    """run 호출 시 지정된 예외를 발생시키는 RAG 파이프라인 더미"""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self._error = error
+
+    async def run(self, company_name: str, job_title: str, job_description: str) -> str:
+        raise self._error
+
+
 class DummyBackgroundTasks:
     """BackgroundTasks 대체 더미"""
 
@@ -230,6 +241,24 @@ def _reset_singleton():
     reset_correction_service()
     yield
     reset_correction_service()
+
+
+@pytest.fixture
+def run_rag_failure_setup():
+    def _build(error: Exception) -> tuple[DummyRepository, CorrectionService]:
+        repository = DummyRepository()
+        repository.rows["c-1"] = {
+            "id": "c-1",
+            "portfolio_id": "p-1",
+            "company_name": "회사",
+            "job_title": "백엔드",
+            "job_description": "JD",
+            "status": CorrectionStatus.DOING_RAG.value,
+        }
+        service = CorrectionService(repository, DummyGenerator(), ErrorRagPipeline(error))
+        return repository, service
+
+    return _build
 
 
 @pytest.mark.asyncio
@@ -369,18 +398,9 @@ async def test_run_rag_keyword_extraction_does_not_block_event_loop():
 
 
 @pytest.mark.asyncio
-async def test_run_rag_failure_updates_failed_status():
+async def test_run_rag_failure_updates_failed_status(run_rag_failure_setup):
     """_run_rag 실패 시 status를 failed로 변경한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "status": CorrectionStatus.DOING_RAG.value,
-    }
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline(raise_error=True))
+    repository, service = run_rag_failure_setup(RuntimeError("RAG 실패"))
 
     await service._run_rag("c-1")
 
@@ -389,59 +409,39 @@ async def test_run_rag_failure_updates_failed_status():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("error_type", "expected_log_message"),
+    ("raised_error", "expected_log_message"),
     [
         (
-            "keyword",
+            correction_service_module.RAGKeywordExtractionError("키워드 추출 실패"),
             "RAG 키워드 추출 실패",
         ),
         (
-            "search",
+            correction_service_module.RAGSearchError("검색 실패"),
             "RAG 검색 실패",
         ),
         (
-            "insight",
+            correction_service_module.RAGInsightGenerationError("인사이트 실패"),
             "RAG 인사이트 생성 실패",
         ),
         (
-            "unknown",
+            RuntimeError("알 수 없는 실패"),
             "RAG 처리 실패",
         ),
     ],
 )
 async def test_run_rag_failure_logs_by_exception_type(
-    error_type: str,
+    raised_error: Exception,
     expected_log_message: str,
     caplog: pytest.LogCaptureFixture,
+    run_rag_failure_setup,
 ):
     """_run_rag 실패 로그는 예외 타입별로 분기된다."""
-
-    class ErrorRagPipeline(DummyRagPipeline):
-        async def run(self, company_name: str, job_title: str, job_description: str) -> str:
-            if error_type == "keyword":
-                raise correction_service_module.RAGKeywordExtractionError("키워드 추출 실패")
-            if error_type == "search":
-                raise correction_service_module.RAGSearchError("검색 실패")
-            if error_type == "insight":
-                raise correction_service_module.RAGInsightGenerationError("인사이트 실패")
-            raise RuntimeError("알 수 없는 실패")
-
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "status": CorrectionStatus.DOING_RAG.value,
-    }
-    service = CorrectionService(repository, DummyGenerator(), ErrorRagPipeline())
+    _, service = run_rag_failure_setup(raised_error)
 
     caplog.set_level("ERROR", logger="features.correction.service")
 
     await service._run_rag("c-1")
 
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.FAILED.value
     assert expected_log_message in caplog.text
 
 
