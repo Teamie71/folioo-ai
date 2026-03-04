@@ -97,3 +97,25 @@ async def test_update_result_query_does_not_update_status():
     await repo.update_result("existing-id", {"fields": []})
 
     assert "status" not in pool.fetchrow_sqls[0].lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"id": "ok"}, True),
+        (None, False),
+    ],
+)
+async def test_update_status_if_current_returns_transition_result(
+    response: dict | None,
+    expected: bool,
+):
+    """update_status_if_current는 상태 전이 성공 여부를 bool로 반환한다."""
+    pool = _DummyFetchRowPool(responses=[response])
+    repo = CorrectionRepository(pool)  # type: ignore[arg-type]
+
+    result = await repo.update_status_if_current("existing-id", "failed", "not_started")
+
+    assert result is expected
+    assert "and status = $2" in pool.fetchrow_sqls[0].lower()

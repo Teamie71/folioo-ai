@@ -82,6 +82,20 @@ class DummyRepository:
         self.rows[correction_id]["status"] = status
         self.updated_statuses.append({"correction_id": correction_id, "status": status})
 
+    async def update_status_if_current(
+        self,
+        correction_id: str,
+        expected_status: str,
+        next_status: str,
+    ) -> bool:
+        row = self.rows.get(correction_id)
+        if row is None:
+            return False
+        if row.get("status") != expected_status:
+            return False
+        await self.update_status(correction_id, next_status)
+        return True
+
     async def update_company_insight(self, correction_id: str, company_insight: str) -> None:
         if correction_id not in self.rows:
             raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
@@ -670,6 +684,39 @@ async def test_retry_raises_when_status_is_not_failed():
 
     with pytest.raises(ValueError, match="실패 상태가 아닌 첨삭은 재시도할 수 없습니다"):
         await service.retry("c-1", DummyBackgroundTasks())  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_retry_raises_when_atomic_transition_fails():
+    """retry 중 원자적 상태 전이에 실패하면 ValueError를 발생시킨다."""
+
+    class CasFailedRepository(DummyRepository):
+        async def update_status_if_current(
+            self,
+            correction_id: str,
+            expected_status: str,
+            next_status: str,
+        ) -> bool:
+            return False
+
+    repository = CasFailedRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "company_insight": None,
+        "status": CorrectionStatus.FAILED.value,
+    }
+    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+    background_tasks = DummyBackgroundTasks()
+
+    with pytest.raises(ValueError, match="실패 상태가 아닌 첨삭은 재시도할 수 없습니다"):
+        await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
+
+    assert repository.rows["c-1"]["status"] == CorrectionStatus.FAILED.value
+    assert background_tasks.tasks == []
 
 
 @pytest.mark.asyncio

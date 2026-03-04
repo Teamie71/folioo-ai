@@ -122,11 +122,23 @@ class CorrectionService:
             raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
 
         if correction.get("company_insight") is None:
-            await self._repository.update_status(correction_id, CorrectionStatus.NOT_STARTED.value)
+            transitioned = await self._repository.update_status_if_current(
+                correction_id,
+                CorrectionStatus.FAILED.value,
+                CorrectionStatus.NOT_STARTED.value,
+            )
+            if not transitioned:
+                raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
             await self.start_rag(correction_id, background_tasks)
             return
 
-        await self._repository.update_status(correction_id, CorrectionStatus.COMPANY_INSIGHT.value)
+        transitioned = await self._repository.update_status_if_current(
+            correction_id,
+            CorrectionStatus.FAILED.value,
+            CorrectionStatus.COMPANY_INSIGHT.value,
+        )
+        if not transitioned:
+            raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
         await self.start_generation(correction_id, background_tasks)
 
     async def start_generation(self, correction_id: str, background_tasks: BackgroundTasks) -> None:
