@@ -153,6 +153,38 @@ class CorrectionRepository:
         if row is None:
             raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
 
+    async def update_status_if_current(
+        self,
+        correction_id: str,
+        expected_status: str,
+        next_status: str,
+    ) -> bool:
+        """
+        현재 상태가 expected_status인 경우에만 상태를 next_status로 변경
+
+        Args:
+            correction_id: 첨삭 ID
+            expected_status: 전이 전 상태
+            next_status: 전이 후 상태
+
+        Returns:
+            상태 전이에 성공하면 True, 아니면 False
+        """
+        row = await self._pool.fetchrow(
+            """
+            UPDATE corrections
+            SET status = $3,
+                updated_at = NOW()
+            WHERE id = $1::uuid
+              AND status = $2
+            RETURNING id
+            """,
+            correction_id,
+            expected_status,
+            next_status,
+        )
+        return row is not None
+
     async def update_result(self, correction_id: str, result: dict) -> None:
         """
         첨삭 결과 저장

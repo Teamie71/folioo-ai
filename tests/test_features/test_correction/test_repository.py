@@ -130,3 +130,44 @@ async def test_get_rag_data_returns_parsed_search_results():
     assert rows[0]["search_results"]["results"][0]["title"] == "검색 결과"
     assert rows[0]["search_results"]["keywords"] == ["키워드1", "키워드2"]
     assert "FROM rag_data" in pool.fetch_sqls[0]
+
+
+@pytest.fixture
+def update_status_if_current_setup():
+    def _build(responses: list[dict | None]) -> tuple[_DummyFetchRowPool, CorrectionRepository]:
+        pool = _DummyFetchRowPool(responses=responses)
+        repo = CorrectionRepository(pool)  # type: ignore[arg-type]
+        return pool, repo
+
+    return _build
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"id": "ok"}, True),
+        (None, False),
+    ],
+)
+async def test_update_status_if_current_returns_transition_result(
+    response: dict | None,
+    expected: bool,
+    update_status_if_current_setup,
+):
+    """update_status_if_current는 상태 전이 성공 여부를 bool로 반환한다."""
+    _, repo = update_status_if_current_setup([response])
+
+    result = await repo.update_status_if_current("existing-id", "failed", "not_started")
+
+    assert result is expected
+
+
+@pytest.mark.asyncio
+async def test_update_status_includes_status_condition_in_sql(update_status_if_current_setup):
+    """update_status_if_current 쿼리는 상태 조건을 포함한다."""
+    pool, repo = update_status_if_current_setup([{"id": "ok"}])
+
+    await repo.update_status_if_current("existing-id", "failed", "not_started")
+
+    assert "and status = $2" in pool.fetchrow_sqls[0].lower()

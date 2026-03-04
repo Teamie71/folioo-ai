@@ -6,7 +6,12 @@ import logging
 from fastapi import BackgroundTasks
 
 from .generator import CorrectionGenerator, get_correction_generator
-from .rag.pipeline import RAGPipeline
+from .rag import (
+    RAGInsightGenerationError,
+    RAGKeywordExtractionError,
+    RAGPipeline,
+    RAGSearchError,
+)
 from .repository import CorrectionRepository, get_correction_repository
 from .schemas import CorrectionStatus
 
@@ -92,7 +97,16 @@ class CorrectionService:
                 correction_id, CorrectionStatus.COMPANY_INSIGHT.value
             )
         except Exception as exc:
-            logger.exception("RAG 처리 실패 (correction_id: %s): %s", correction_id, exc)
+            if isinstance(exc, RAGKeywordExtractionError):
+                logger.exception("RAG 키워드 추출 실패 (correction_id: %s): %s", correction_id, exc)
+            elif isinstance(exc, RAGSearchError):
+                logger.exception("RAG 검색 실패 (correction_id: %s): %s", correction_id, exc)
+            elif isinstance(exc, RAGInsightGenerationError):
+                logger.exception(
+                    "RAG 인사이트 생성 실패 (correction_id: %s): %s", correction_id, exc
+                )
+            else:
+                logger.exception("RAG 처리 실패 (correction_id: %s): %s", correction_id, exc)
             await self._mark_failed(correction_id)
 
     @staticmethod
@@ -163,18 +177,22 @@ class CorrectionService:
             await self._mark_failed(correction_id)
 
     async def retry(self, correction_id: str, background_tasks: BackgroundTasks) -> None:
-        """실패 상태의 첨삭을 단계에 맞게 재시도"""
+        """실패한 첨삭을 마지막 단계 기준으로 재시도"""
         correction = await self._repository.get_by_id(correction_id)
         if correction is None:
             raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
 
         if correction.get("status") != CorrectionStatus.FAILED.value:
-            raise ValueError("현재 상태에서는 재시도를 시작할 수 없습니다.")
+            raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
 
         if correction.get("company_insight") is not None:
-            await self._repository.update_status(
-                correction_id, CorrectionStatus.COMPANY_INSIGHT.value
+            transitioned = await self._repository.update_status_if_current(
+                correction_id,
+                CorrectionStatus.FAILED.value,
+                CorrectionStatus.COMPANY_INSIGHT.value,
             )
+            if not transitioned:
+                raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
             await self.start_generation(correction_id, background_tasks)
             return
 
@@ -184,9 +202,15 @@ class CorrectionService:
             search_results = self._extract_search_results(latest_rag_data)
             if search_results:
                 keywords = self._extract_keywords(latest_rag_data)
-                await self._repository.update_status(
-                    correction_id, CorrectionStatus.DOING_RAG.value
+                transitioned = await self._repository.update_status_if_current(
+                    correction_id,
+                    CorrectionStatus.FAILED.value,
+                    CorrectionStatus.DOING_RAG.value,
                 )
+                if not transitioned:
+                    raise ValueError(
+                        f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}"
+                    )
                 background_tasks.add_task(
                     self._run_rag_from_search_results,
                     correction_id,
@@ -195,7 +219,13 @@ class CorrectionService:
                 )
                 return
 
-        await self._repository.update_status(correction_id, CorrectionStatus.NOT_STARTED.value)
+        transitioned = await self._repository.update_status_if_current(
+            correction_id,
+            CorrectionStatus.FAILED.value,
+            CorrectionStatus.NOT_STARTED.value,
+        )
+        if not transitioned:
+            raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
         await self.start_rag(correction_id, background_tasks)
 
     async def start_generation(self, correction_id: str, background_tasks: BackgroundTasks) -> None:

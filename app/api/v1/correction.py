@@ -328,6 +328,50 @@ async def start_generation(
         _raise_internal_server_error()
 
 
+@router.post(
+    "/{correction_id}/retry",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="첨삭 재시도 시작",
+    responses={
+        404: {"model": ErrorResponse, "description": "첨삭이 없는 경우"},
+        409: {"model": ErrorResponse, "description": "상태 전이 규칙 위반"},
+        500: {"model": ErrorResponse, "description": "내부 서버 에러"},
+    },
+)
+async def retry_correction(
+    correction_id: str,
+    background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    """실패한 첨삭 생성을 재시도한다."""
+    _validate_correction_id(correction_id)
+    service = get_correction_service()
+    try:
+        correction = await service.get_correction(correction_id)
+        if correction is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"첨삭을 찾을 수 없습니다: {correction_id}",
+            )
+        if correction["status"] != CorrectionStatus.FAILED.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="현재 상태에서는 재시도할 수 없습니다.",
+            )
+        await service.retry(correction_id, background_tasks)
+        return {"message": "재시도를 시작했습니다."}
+    except ValueError as e:
+        if "실패 상태가 아닌 첨삭은 재시도할 수 없습니다" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="현재 상태에서는 재시도할 수 없습니다.",
+            ) from e
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except HTTPException:
+        raise
+    except Exception:
+        _raise_internal_server_error()
+
+
 @router.delete(
     "/{correction_id}",
     status_code=status.HTTP_204_NO_CONTENT,
