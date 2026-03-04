@@ -11,6 +11,18 @@ from common.llm.client import get_llm
 from features.correction.config import get_correction_rag_config
 
 
+class RAGKeywordExtractionError(Exception):
+    """RAG 키워드 추출 실패 예외"""
+
+
+class RAGSearchError(Exception):
+    """RAG 검색 실패 예외"""
+
+
+class RAGInsightGenerationError(Exception):
+    """RAG 인사이트 생성 실패 예외"""
+
+
 class RAGPipeline:
     """키워드 추출 → 검색(스텁) → 인사이트 생성 파이프라인"""
 
@@ -55,17 +67,21 @@ class RAGPipeline:
         self, company_name: str, job_title: str, job_description: str
     ) -> list[str]:
         """LLM으로 검색 키워드 추출"""
-        response = self._llm.invoke(
-            "당신은 채용 공고 기반 기업 분석 리서처입니다.\n"
-            f"아래 입력을 분석해 웹 검색용 키워드 {self._keyword_count}개를 생성하세요.\n"
-            "각 키워드는 서로 다른 관점을 커버해야 합니다: 조직문화/인재상, 사업전략/비전, 시장/경쟁, 직무/역량.\n"
-            "반드시 JSON만 출력하세요.\n"
-            "출력 형식:\n"
-            '{"search_keywords": ["keyword1", "keyword2", "..."]}\n\n'
-            f"기업명: {company_name}\n"
-            f"직무명: {job_title}\n"
-            f"JD: {job_description}\n"
-        )
+        try:
+            response = self._llm.invoke(
+                "당신은 채용 공고 기반 기업 분석 리서처입니다.\n"
+                f"아래 입력을 분석해 웹 검색용 키워드 {self._keyword_count}개를 생성하세요.\n"
+                "각 키워드는 서로 다른 관점을 커버해야 합니다: 조직문화/인재상, 사업전략/비전, 시장/경쟁, 직무/역량.\n"
+                "반드시 JSON만 출력하세요.\n"
+                "출력 형식:\n"
+                '{"search_keywords": ["keyword1", "keyword2", "..."]}\n\n'
+                f"기업명: {company_name}\n"
+                f"직무명: {job_title}\n"
+                f"JD: {job_description}\n"
+            )
+        except Exception as exc:
+            raise RAGKeywordExtractionError(f"키워드 추출 LLM 호출 실패: {exc}") from exc
+
         content = getattr(response, "content", response)
         text = str(content).strip()
 
@@ -93,10 +109,14 @@ class RAGPipeline:
 
     async def _search(self, query: str) -> list[dict]:
         """웹 검색 — Tavily API 호출"""
-        response = await self._get_tavily_client().search(
-            query=query,
-            max_results=self._max_results_per_keyword,
-        )
+        try:
+            response = await self._get_tavily_client().search(
+                query=query,
+                max_results=self._max_results_per_keyword,
+            )
+        except Exception as exc:
+            raise RAGSearchError(f"Tavily 검색 호출 실패: {exc}") from exc
+
         results = response.get("results", []) if isinstance(response, dict) else []
 
         normalized_results: list[dict] = []
@@ -124,14 +144,23 @@ class RAGPipeline:
     ) -> str:
         """검색 결과를 요약해 첨삭용 기업 인사이트 텍스트 생성"""
         serialized_search_results = json.dumps(search_results, ensure_ascii=False)
-        response = self._llm.invoke(
-            f"기업명: {company_name}\n"
-            f"직무: {job_title}\n"
-            f"검색 결과: {serialized_search_results}\n\n"
-            "위 내용을 바탕으로 기업 문화, 인재상, 직무 특성을 간결하게 요약해 주세요."
-        )
+        try:
+            response = self._llm.invoke(
+                f"기업명: {company_name}\n"
+                f"직무: {job_title}\n"
+                f"검색 결과: {serialized_search_results}\n\n"
+                "위 내용을 바탕으로 기업 문화, 인재상, 직무 특성을 간결하게 요약해 주세요."
+            )
+        except Exception as exc:
+            raise RAGInsightGenerationError(f"인사이트 생성 LLM 호출 실패: {exc}") from exc
+
         content = getattr(response, "content", response)
         return str(content).strip()
 
 
-__all__ = ["RAGPipeline"]
+__all__ = [
+    "RAGPipeline",
+    "RAGInsightGenerationError",
+    "RAGKeywordExtractionError",
+    "RAGSearchError",
+]

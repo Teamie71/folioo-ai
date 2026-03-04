@@ -374,6 +374,64 @@ async def test_run_rag_failure_updates_failed_status():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "expected_log_message"),
+    [
+        (
+            "keyword",
+            "RAG 키워드 추출 실패",
+        ),
+        (
+            "search",
+            "RAG 검색 실패",
+        ),
+        (
+            "insight",
+            "RAG 인사이트 생성 실패",
+        ),
+        (
+            "unknown",
+            "RAG 처리 실패",
+        ),
+    ],
+)
+async def test_run_rag_failure_logs_by_exception_type(
+    error_type: str,
+    expected_log_message: str,
+    caplog: pytest.LogCaptureFixture,
+):
+    """_run_rag 실패 로그는 예외 타입별로 분기된다."""
+
+    class ErrorRagPipeline(DummyRagPipeline):
+        async def run(self, company_name: str, job_title: str, job_description: str) -> str:
+            if error_type == "keyword":
+                raise correction_service_module.RAGKeywordExtractionError("키워드 추출 실패")
+            if error_type == "search":
+                raise correction_service_module.RAGSearchError("검색 실패")
+            if error_type == "insight":
+                raise correction_service_module.RAGInsightGenerationError("인사이트 실패")
+            raise RuntimeError("알 수 없는 실패")
+
+    repository = DummyRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "status": CorrectionStatus.DOING_RAG.value,
+    }
+    service = CorrectionService(repository, DummyGenerator(), ErrorRagPipeline())
+
+    caplog.set_level("ERROR", logger="features.correction.service")
+
+    await service._run_rag("c-1")
+
+    assert repository.rows["c-1"]["status"] == CorrectionStatus.FAILED.value
+    assert expected_log_message in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_run_rag_missing_correction_does_not_raise():
     """_run_rag는 없는 correction_id여도 예외를 전파하지 않는다."""
     repository = DummyRepository()
@@ -535,6 +593,92 @@ async def test_run_generation_missing_correction_does_not_raise():
     await service._run_generation("missing-id")
 
     assert repository.updated_statuses == []
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_rag_resets_not_started_and_restarts_rag():
+    """RAG 실패 재시도 시 not_started로 되돌리고 RAG를 재시작한다."""
+    repository = DummyRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "company_insight": None,
+        "status": CorrectionStatus.FAILED.value,
+    }
+    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+    background_tasks = DummyBackgroundTasks()
+
+    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
+
+    assert repository.rows["c-1"]["status"] == CorrectionStatus.DOING_RAG.value
+    assert len(background_tasks.tasks) == 1
+    task_func, task_args = background_tasks.tasks[0]
+    assert task_func == service._run_rag
+    assert task_args == ("c-1",)
+    assert repository.updated_statuses[-2:] == [
+        {"correction_id": "c-1", "status": CorrectionStatus.NOT_STARTED.value},
+        {"correction_id": "c-1", "status": CorrectionStatus.DOING_RAG.value},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_generation_resets_company_insight_and_restarts_generation():
+    """생성 실패 재시도 시 company_insight 상태로 되돌리고 생성을 재시작한다."""
+    repository = DummyRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "company_insight": "이미 생성된 인사이트",
+        "status": CorrectionStatus.FAILED.value,
+    }
+    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+    background_tasks = DummyBackgroundTasks()
+
+    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
+
+    assert repository.rows["c-1"]["status"] == CorrectionStatus.GENERATING.value
+    assert len(background_tasks.tasks) == 1
+    task_func, task_args = background_tasks.tasks[0]
+    assert task_func == service._run_generation
+    assert task_args == ("c-1",)
+    assert repository.updated_statuses[-2:] == [
+        {"correction_id": "c-1", "status": CorrectionStatus.COMPANY_INSIGHT.value},
+        {"correction_id": "c-1", "status": CorrectionStatus.GENERATING.value},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retry_raises_when_status_is_not_failed():
+    """retry는 failed 상태가 아니면 ValueError를 발생시킨다."""
+    repository = DummyRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "company_insight": None,
+        "status": CorrectionStatus.DOING_RAG.value,
+    }
+    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+
+    with pytest.raises(ValueError, match="실패 상태가 아닌 첨삭은 재시도할 수 없습니다"):
+        await service.retry("c-1", DummyBackgroundTasks())  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_retry_raises_when_correction_is_missing():
+    """retry는 correction_id가 없으면 ValueError를 발생시킨다."""
+    service = CorrectionService(DummyRepository(), DummyGenerator(), DummyRagPipeline())
+
+    with pytest.raises(ValueError, match="첨삭을 찾을 수 없습니다"):
+        await service.retry("missing-id", DummyBackgroundTasks())  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
