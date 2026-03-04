@@ -73,43 +73,104 @@ class CorrectionService:
             job_title = correction["job_title"]
             job_description = correction["job_description"]
 
-            company_insight = await self._rag_pipeline.run(
+            rag_result = await self._rag_pipeline.run(
                 company_name,
                 job_title,
                 job_description,
             )
-            await self._repository.update_company_insight(correction_id, company_insight)
-
-            keywords = await asyncio.to_thread(
-                self._rag_pipeline._extract_keywords,
-                company_name=company_name,
-                job_title=job_title,
-                job_description=job_description,
-            )
-            search_query = keywords[0] if keywords else f"{company_name} {job_title}"
-            search_results = await self._rag_pipeline._search(
-                query=search_query,
+            search_query = (
+                ", ".join(rag_result.keywords)
+                if rag_result.keywords
+                else f"{company_name} {job_title}"
             )
             await self._repository.save_rag_data(
                 correction_id,
                 search_query,
-                {"results": search_results},
+                {
+                    "keywords": rag_result.keywords,
+                    "results": rag_result.search_results,
+                },
             )
+            await self._repository.update_company_insight(correction_id, rag_result.insight)
 
             await self._repository.update_status(
                 correction_id, CorrectionStatus.COMPANY_INSIGHT.value
             )
         except Exception as exc:
             if isinstance(exc, RAGKeywordExtractionError):
-                logger.exception("RAG 키워드 추출 실패 (correction_id: %s): %s", correction_id, exc)
+                logger.exception("RAG 키워드 추출 실패 (correction_id: %s)", correction_id)
             elif isinstance(exc, RAGSearchError):
-                logger.exception("RAG 검색 실패 (correction_id: %s): %s", correction_id, exc)
+                logger.exception("RAG 검색 실패 (correction_id: %s)", correction_id)
             elif isinstance(exc, RAGInsightGenerationError):
-                logger.exception(
-                    "RAG 인사이트 생성 실패 (correction_id: %s): %s", correction_id, exc
-                )
+                logger.exception("RAG 인사이트 생성 실패 (correction_id: %s)", correction_id)
             else:
-                logger.exception("RAG 처리 실패 (correction_id: %s): %s", correction_id, exc)
+                logger.exception("RAG 처리 실패 (correction_id: %s)", correction_id)
+            await self._mark_failed(correction_id)
+
+    @staticmethod
+    def _extract_search_results(rag_data: dict) -> list[dict]:
+        """rag_data row에서 검색 결과 목록 추출"""
+        stored_search_results = rag_data.get("search_results")
+
+        if isinstance(stored_search_results, dict):
+            results = stored_search_results.get("results")
+            if isinstance(results, list):
+                return [item for item in results if isinstance(item, dict)]
+            return []
+
+        if isinstance(stored_search_results, list):
+            return [item for item in stored_search_results if isinstance(item, dict)]
+
+        return []
+
+    @staticmethod
+    def _extract_keywords(rag_data: dict) -> list[str]:
+        """rag_data row에서 키워드 목록 추출"""
+        stored_search_results = rag_data.get("search_results")
+        if isinstance(stored_search_results, dict):
+            keywords = stored_search_results.get("keywords")
+            if isinstance(keywords, list):
+                normalized_keywords: list[str] = []
+                for item in keywords:
+                    keyword = str(item).strip()
+                    if keyword:
+                        normalized_keywords.append(keyword)
+                if normalized_keywords:
+                    return normalized_keywords
+
+        search_query = rag_data.get("search_query")
+        if isinstance(search_query, str):
+            return [keyword.strip() for keyword in search_query.split(",") if keyword.strip()]
+
+        return []
+
+    async def _run_rag_from_search_results(
+        self,
+        correction_id: str,
+        search_results: list[dict],
+        keywords: list[str],
+    ) -> None:
+        """저장된 RAG 검색 결과로 인사이트만 재생성"""
+        try:
+            correction = await self._repository.get_by_id(correction_id)
+            if correction is None:
+                raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
+
+            insight = await self._rag_pipeline.run_from_search_results(
+                search_results=search_results,
+                company_name=correction["company_name"],
+                job_title=correction["job_title"],
+                keywords=keywords,
+            )
+            await self._repository.update_company_insight(correction_id, insight)
+            await self._repository.update_status(
+                correction_id, CorrectionStatus.COMPANY_INSIGHT.value
+            )
+        except Exception:
+            logger.exception(
+                "저장된 검색 결과 기반 RAG 재시도 실패 (correction_id: %s)",
+                correction_id,
+            )
             await self._mark_failed(correction_id)
 
     async def retry(self, correction_id: str, background_tasks: BackgroundTasks) -> None:
@@ -121,25 +182,48 @@ class CorrectionService:
         if correction.get("status") != CorrectionStatus.FAILED.value:
             raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
 
-        if correction.get("company_insight") is None:
+        if correction.get("company_insight") is not None:
             transitioned = await self._repository.update_status_if_current(
                 correction_id,
                 CorrectionStatus.FAILED.value,
-                CorrectionStatus.NOT_STARTED.value,
+                CorrectionStatus.COMPANY_INSIGHT.value,
             )
             if not transitioned:
                 raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
-            await self.start_rag(correction_id, background_tasks)
+            await self.start_generation(correction_id, background_tasks)
             return
+
+        rag_data_rows = await self._repository.get_rag_data(correction_id)
+        if rag_data_rows:
+            latest_rag_data = rag_data_rows[-1]
+            search_results = self._extract_search_results(latest_rag_data)
+            if search_results:
+                keywords = self._extract_keywords(latest_rag_data)
+                transitioned = await self._repository.update_status_if_current(
+                    correction_id,
+                    CorrectionStatus.FAILED.value,
+                    CorrectionStatus.DOING_RAG.value,
+                )
+                if not transitioned:
+                    raise ValueError(
+                        f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}"
+                    )
+                background_tasks.add_task(
+                    self._run_rag_from_search_results,
+                    correction_id,
+                    search_results,
+                    keywords,
+                )
+                return
 
         transitioned = await self._repository.update_status_if_current(
             correction_id,
             CorrectionStatus.FAILED.value,
-            CorrectionStatus.COMPANY_INSIGHT.value,
+            CorrectionStatus.NOT_STARTED.value,
         )
         if not transitioned:
             raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
-        await self.start_generation(correction_id, background_tasks)
+        await self.start_rag(correction_id, background_tasks)
 
     async def start_generation(self, correction_id: str, background_tasks: BackgroundTasks) -> None:
         """첨삭 생성 단계를 시작하고 백그라운드 작업을 등록"""
@@ -190,8 +274,8 @@ class CorrectionService:
                 raise ValueError("첨삭 결과 형식이 올바르지 않습니다.")
             await self._repository.update_result(correction_id, result_dict)
             await self._repository.update_status(correction_id, CorrectionStatus.DONE.value)
-        except Exception as exc:
-            logger.exception("첨삭 생성 실패 (correction_id: %s): %s", correction_id, exc)
+        except Exception:
+            logger.exception("첨삭 생성 실패 (correction_id: %s)", correction_id)
             await self._mark_failed(correction_id)
 
     async def _mark_failed(self, correction_id: str) -> None:

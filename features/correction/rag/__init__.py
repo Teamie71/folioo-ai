@@ -4,6 +4,7 @@ from .pipeline import (
     RAGInsightGenerationError,
     RAGKeywordExtractionError,
     RAGPipeline,
+    RAGRunResult,
     RAGSearchError,
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "RAGInsightGenerationError",
     "RAGKeywordExtractionError",
     "RAGPipeline",
+    "RAGRunResult",
     "RAGSearchError",
 ]
