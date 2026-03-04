@@ -39,6 +39,7 @@ class DummyRepository:
 
     def __init__(self) -> None:
         self.rows: dict[str, dict] = {}
+        self.rag_data_rows: dict[str, list[dict]] = {}
         self.created_payload: dict | None = None
         self.saved_rag_data: list[dict] = []
         self.updated_result: dict | None = None
@@ -105,13 +106,16 @@ class DummyRepository:
     async def save_rag_data(
         self, correction_id: str, search_query: str, search_results: dict
     ) -> None:
-        self.saved_rag_data.append(
-            {
-                "correction_id": correction_id,
-                "search_query": search_query,
-                "search_results": search_results,
-            }
-        )
+        rag_data = {
+            "correction_id": correction_id,
+            "search_query": search_query,
+            "search_results": search_results,
+        }
+        self.saved_rag_data.append(rag_data)
+        self.rag_data_rows.setdefault(correction_id, []).append(rag_data)
+
+    async def get_rag_data(self, correction_id: str) -> list[dict]:
+        return self.rag_data_rows.get(correction_id, [])
 
 
 class DummyGenerator:
@@ -151,6 +155,7 @@ class DummyRagPipeline:
     def __init__(self, raise_error: bool = False) -> None:
         self.raise_error = raise_error
         self.run_calls: list[dict] = []
+        self.run_from_search_results_calls: list[dict] = []
 
     async def run(self, company_name: str, job_title: str, job_description: str) -> RAGRunResult:
         self.run_calls.append(
@@ -173,6 +178,23 @@ class DummyRagPipeline:
             ],
             insight="기업 인사이트",
         )
+
+    async def run_from_search_results(
+        self,
+        search_results: list[dict],
+        company_name: str,
+        job_title: str,
+    ) -> str:
+        self.run_from_search_results_calls.append(
+            {
+                "search_results": search_results,
+                "company_name": company_name,
+                "job_title": job_title,
+            }
+        )
+        if self.raise_error:
+            raise RuntimeError("RAG 실패")
+        return "재생성 기업 인사이트"
 
 
 class DummyBackgroundTasks:
@@ -323,19 +345,8 @@ async def test_run_rag_does_not_block_event_loop():
 
 
 @pytest.mark.asyncio
-async def test_run_rag_keyword_extraction_does_not_block_event_loop():
-    """_run_rag의 키워드 추출 단계도 이벤트 루프를 블로킹하지 않는다."""
-
-    class SlowKeywordRagPipeline(DummyRagPipeline):
-        async def run(self, company_name: str, job_title: str, job_description: str) -> str:
-            return await super().run(company_name, job_title, job_description)
-
-        def _extract_keywords(
-            self, company_name: str, job_title: str, job_description: str
-        ) -> list[str]:
-            time.sleep(0.4)
-            return super()._extract_keywords(company_name, job_title, job_description)
-
+async def test_retry_reuses_saved_rag_data_for_partial_rerun():
+    """retry는 저장된 rag_data가 있으면 검색 없이 인사이트만 재생성한다."""
     repository = DummyRepository()
     repository.rows["c-1"] = {
         "id": "c-1",
@@ -343,20 +354,86 @@ async def test_run_rag_keyword_extraction_does_not_block_event_loop():
         "company_name": "회사",
         "job_title": "백엔드",
         "job_description": "JD",
-        "status": CorrectionStatus.DOING_RAG.value,
+        "status": CorrectionStatus.FAILED.value,
+        "company_insight": None,
     }
-    service = CorrectionService(repository, DummyGenerator(), SlowKeywordRagPipeline())
+    repository.rag_data_rows["c-1"] = [
+        {
+            "correction_id": "c-1",
+            "search_query": "회사 백엔드",
+            "search_results": {"results": [{"title": "기존 검색 결과", "content": "본문"}]},
+        }
+    ]
+    rag_pipeline = DummyRagPipeline()
+    service = CorrectionService(repository, DummyGenerator(), rag_pipeline)
+    background_tasks = DummyBackgroundTasks()
 
-    rag_task = asyncio.create_task(service._run_rag("c-1"))
+    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
 
-    start = time.perf_counter()
-    await asyncio.sleep(0.05)
-    elapsed = time.perf_counter() - start
+    assert repository.rows["c-1"]["status"] == CorrectionStatus.DOING_RAG.value
+    task_func, task_args = background_tasks.tasks[0]
+    assert task_func == service._run_rag_from_search_results
 
-    assert elapsed < 0.3
+    await task_func(*task_args)
 
-    await rag_task
+    assert repository.rows["c-1"]["company_insight"] == "재생성 기업 인사이트"
     assert repository.rows["c-1"]["status"] == CorrectionStatus.COMPANY_INSIGHT.value
+    assert len(rag_pipeline.run_calls) == 0
+    assert len(rag_pipeline.run_from_search_results_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_runs_full_rag_when_saved_rag_data_missing():
+    """retry는 rag_data가 없으면 전체 RAG를 다시 실행한다."""
+    repository = DummyRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "status": CorrectionStatus.FAILED.value,
+        "company_insight": None,
+    }
+    rag_pipeline = DummyRagPipeline()
+    service = CorrectionService(repository, DummyGenerator(), rag_pipeline)
+    background_tasks = DummyBackgroundTasks()
+
+    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
+
+    assert repository.rows["c-1"]["status"] == CorrectionStatus.DOING_RAG.value
+    task_func, task_args = background_tasks.tasks[0]
+    assert task_func == service._run_rag
+
+    await task_func(*task_args)
+
+    assert len(rag_pipeline.run_calls) == 1
+    assert len(rag_pipeline.run_from_search_results_calls) == 0
+    assert repository.rows["c-1"]["status"] == CorrectionStatus.COMPANY_INSIGHT.value
+
+
+@pytest.mark.asyncio
+async def test_retry_restarts_generation_when_company_insight_exists():
+    """retry는 company_insight가 있으면 생성 단계부터 재시작한다."""
+    repository = DummyRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "status": CorrectionStatus.FAILED.value,
+        "company_insight": "이미 생성된 인사이트",
+    }
+    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+    background_tasks = DummyBackgroundTasks()
+
+    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
+
+    assert repository.rows["c-1"]["status"] == CorrectionStatus.GENERATING.value
+    task_func, task_args = background_tasks.tasks[0]
+    assert task_func == service._run_generation
+    assert task_args == ("c-1",)
 
 
 @pytest.mark.asyncio

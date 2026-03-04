@@ -1,5 +1,5 @@
 """첨삭 RAG 패키지"""
 
-from .pipeline import RAGPipeline
+from .pipeline import RAGPipeline, RAGRunResult
 
-__all__ = ["RAGPipeline"]
+__all__ = ["RAGPipeline", "RAGRunResult"]

@@ -90,6 +90,83 @@ class CorrectionService:
             logger.exception("RAG 처리 실패 (correction_id: %s): %s", correction_id, exc)
             await self._mark_failed(correction_id)
 
+    @staticmethod
+    def _extract_search_results(rag_data: dict) -> list[dict]:
+        """rag_data row에서 검색 결과 목록 추출"""
+        stored_search_results = rag_data.get("search_results")
+
+        if isinstance(stored_search_results, dict):
+            results = stored_search_results.get("results")
+            if isinstance(results, list):
+                return [item for item in results if isinstance(item, dict)]
+            return []
+
+        if isinstance(stored_search_results, list):
+            return [item for item in stored_search_results if isinstance(item, dict)]
+
+        return []
+
+    async def _run_rag_from_search_results(
+        self,
+        correction_id: str,
+        search_results: list[dict],
+    ) -> None:
+        """저장된 RAG 검색 결과로 인사이트만 재생성"""
+        try:
+            correction = await self._repository.get_by_id(correction_id)
+            if correction is None:
+                raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
+
+            insight = await self._rag_pipeline.run_from_search_results(
+                search_results=search_results,
+                company_name=correction["company_name"],
+                job_title=correction["job_title"],
+            )
+            await self._repository.update_company_insight(correction_id, insight)
+            await self._repository.update_status(
+                correction_id, CorrectionStatus.COMPANY_INSIGHT.value
+            )
+        except Exception as exc:
+            logger.exception(
+                "저장된 검색 결과 기반 RAG 재시도 실패 (correction_id: %s): %s",
+                correction_id,
+                exc,
+            )
+            await self._mark_failed(correction_id)
+
+    async def retry(self, correction_id: str, background_tasks: BackgroundTasks) -> None:
+        """실패 상태의 첨삭을 단계에 맞게 재시도"""
+        correction = await self._repository.get_by_id(correction_id)
+        if correction is None:
+            raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
+
+        if correction.get("status") != CorrectionStatus.FAILED.value:
+            raise ValueError("현재 상태에서는 재시도를 시작할 수 없습니다.")
+
+        if correction.get("company_insight") is not None:
+            await self._repository.update_status(
+                correction_id, CorrectionStatus.COMPANY_INSIGHT.value
+            )
+            await self.start_generation(correction_id, background_tasks)
+            return
+
+        rag_data_rows = await self._repository.get_rag_data(correction_id)
+        if rag_data_rows:
+            search_results = self._extract_search_results(rag_data_rows[-1])
+            if search_results:
+                await self._repository.update_status(
+                    correction_id, CorrectionStatus.DOING_RAG.value
+                )
+                background_tasks.add_task(
+                    self._run_rag_from_search_results,
+                    correction_id,
+                    search_results,
+                )
+                return
+
+        await self._repository.update_status(correction_id, CorrectionStatus.NOT_STARTED.value)
+        await self.start_rag(correction_id, background_tasks)
+
     async def start_generation(self, correction_id: str, background_tasks: BackgroundTasks) -> None:
         """첨삭 생성 단계를 시작하고 백그라운드 작업을 등록"""
         correction = await self._repository.get_by_id(correction_id)
