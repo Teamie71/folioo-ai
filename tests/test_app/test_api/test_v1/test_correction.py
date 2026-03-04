@@ -24,6 +24,7 @@ class DummyCorrectionService:
         self.updated_emphasis_points: tuple[str, str] | None = None
         self.rag_started = False
         self.generation_started = False
+        self.retry_started = False
         self.deleted_id: str | None = None
 
     async def create_correction(
@@ -60,6 +61,9 @@ class DummyCorrectionService:
 
     async def start_generation(self, _correction_id: str, _background_tasks) -> None:
         self.generation_started = True
+
+    async def retry(self, _correction_id: str, _background_tasks) -> None:
+        self.retry_started = True
 
     async def delete_correction(self, correction_id: str) -> None:
         self.deleted_id = correction_id
@@ -188,3 +192,40 @@ def test_delete_correction_returns_204(monkeypatch):
 
     assert response.status_code == 204
     assert service.deleted_id == CORRECTION_UUID
+
+
+def test_retry_correction_returns_202(monkeypatch):
+    """첨삭 재시도가 성공하면 202를 반환한다."""
+    service = DummyCorrectionService(
+        correction={"id": CORRECTION_UUID, "status": CorrectionStatus.FAILED.value}
+    )
+    client = _create_client(monkeypatch, service)
+
+    response = client.post(f"/api/v1/corrections/{CORRECTION_UUID}/retry")
+
+    assert response.status_code == 202
+    assert response.json() == {"message": "재시도를 시작했습니다."}
+    assert service.retry_started is True
+
+
+def test_retry_correction_returns_409_when_status_invalid(monkeypatch):
+    """첨삭 재시도는 failed 상태가 아니면 409를 반환한다."""
+    client = _create_client(
+        monkeypatch,
+        DummyCorrectionService(
+            correction={"id": CORRECTION_UUID, "status": CorrectionStatus.COMPANY_INSIGHT.value}
+        ),
+    )
+
+    response = client.post(f"/api/v1/corrections/{CORRECTION_UUID}/retry")
+
+    assert response.status_code == 409
+
+
+def test_retry_correction_returns_404_when_correction_missing(monkeypatch):
+    """첨삭 재시도 시 첨삭이 없으면 404를 반환한다."""
+    client = _create_client(monkeypatch, DummyCorrectionService(correction=None))
+
+    response = client.post(f"/api/v1/corrections/{CORRECTION_UUID}/retry")
+
+    assert response.status_code == 404

@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from features.correction.rag.pipeline import RAGPipeline
+from features.correction.rag.pipeline import (
+    RAGInsightGenerationError,
+    RAGKeywordExtractionError,
+    RAGPipeline,
+    RAGSearchError,
+)
 
 
 class _DummyLLM:
@@ -16,6 +21,11 @@ class _DummyLLM:
     def invoke(self, prompt: str) -> str:
         self.prompts.append(prompt)
         return self._responses.pop(0)
+
+
+class _FailingLLM:
+    def invoke(self, prompt: str) -> str:
+        raise RuntimeError("invoke failed")
 
 
 class _DummyAsyncTavilyClient:
@@ -29,9 +39,10 @@ class _DummyAsyncTavilyClient:
 
     async def search(self, query: str, max_results: int) -> dict:
         type(self).calls.append((query, max_results))
-        if type(self).response_builder is None:
+        response_builder = type(self).response_builder
+        if response_builder is None:
             return {"results": []}
-        return type(self).response_builder(query, max_results)
+        return response_builder(query, max_results)
 
     @classmethod
     def reset_state(cls) -> None:
@@ -98,6 +109,30 @@ def test_extract_keywords_parses_json_output(monkeypatch):
         "인터넷 플랫폼 시장 동향",
         "백엔드 개발자 핵심 역량",
     ]
+
+
+def test_extract_keywords_raises_on_llm_invoke_failure(monkeypatch):
+    """키워드 추출 LLM 호출이 실패하면 전용 예외를 발생시킨다."""
+    from features.correction.rag import pipeline
+
+    monkeypatch.setattr(pipeline, "get_llm", lambda: _FailingLLM())
+    rag_pipeline = RAGPipeline()
+
+    with pytest.raises(RAGKeywordExtractionError, match="키워드 추출 LLM 호출 실패"):
+        rag_pipeline._extract_keywords("네이버", "백엔드", "JD")
+
+
+def test_extract_keywords_returns_default_on_json_parse_failure(monkeypatch):
+    """키워드 추출 시 JSON 파싱이 실패하면 기본 키워드를 반환한다."""
+    from features.correction.rag import pipeline
+
+    dummy_llm = _DummyLLM(['{"search_keywords": ["네이버 전략",]'])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    rag_pipeline = RAGPipeline()
+
+    keywords = rag_pipeline._extract_keywords("네이버", "백엔드", "JD")
+
+    assert keywords == ["네이버 백엔드"]
 
 
 @pytest.mark.asyncio
@@ -168,7 +203,7 @@ async def test_run_returns_generated_insight(monkeypatch, mock_tavily_client):
 
 @pytest.mark.asyncio
 async def test_search_raises_when_tavily_api_key_missing(monkeypatch, mock_tavily_client):
-    """Tavily API 키가 없으면 예외를 발생시킨다."""
+    """Tavily API 키가 없으면 검색 예외로 래핑해 전파한다."""
     from features.correction.rag import pipeline
 
     dummy_llm = _DummyLLM(["dummy"])
@@ -177,10 +212,28 @@ async def test_search_raises_when_tavily_api_key_missing(monkeypatch, mock_tavil
 
     rag_pipeline = RAGPipeline()
 
-    with pytest.raises(ValueError, match="TAVILY_API_KEY"):
+    with pytest.raises(RAGSearchError, match="TAVILY_API_KEY"):
         await rag_pipeline._search("테스트 쿼리")
 
     assert dummy_tavily_client.instances_created == 0
+
+
+@pytest.mark.asyncio
+async def test_search_raises_rag_error_on_tavily_failure(monkeypatch, mock_tavily_client):
+    """Tavily 호출이 실패하면 전용 예외를 발생시킨다."""
+    from features.correction.rag import pipeline
+
+    def _response_builder(query: str, max_results: int) -> dict:
+        raise RuntimeError("tavily down")
+
+    dummy_llm = _DummyLLM(["dummy"])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    mock_tavily_client(response_builder=_response_builder)
+
+    rag_pipeline = RAGPipeline()
+
+    with pytest.raises(RAGSearchError, match="Tavily 검색 호출 실패"):
+        await rag_pipeline._search("테스트 쿼리")
 
 
 @pytest.mark.asyncio
@@ -221,3 +274,14 @@ async def test_run_applies_rag_config_values(monkeypatch, mock_tavily_client):
     assert len(dummy_tavily_client.calls) == 2
     assert all(max_results == 3 for _, max_results in dummy_tavily_client.calls)
     assert {query for query, _ in dummy_tavily_client.calls} == {"키워드1", "키워드2"}
+
+
+def test_generate_insight_raises_on_llm_invoke_failure(monkeypatch):
+    """인사이트 생성 LLM 호출이 실패하면 전용 예외를 발생시킨다."""
+    from features.correction.rag import pipeline
+
+    monkeypatch.setattr(pipeline, "get_llm", lambda: _FailingLLM())
+    rag_pipeline = RAGPipeline()
+
+    with pytest.raises(RAGInsightGenerationError, match="인사이트 생성 LLM 호출 실패"):
+        rag_pipeline._generate_insight([], "네이버", "백엔드")
