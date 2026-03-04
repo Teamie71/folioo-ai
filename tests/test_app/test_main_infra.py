@@ -64,3 +64,47 @@ def test_get_health_returns_unhealthy_when_api_key_missing(monkeypatch):
 
     assert health["status"] == "unhealthy"
     assert health["api_key"] == "missing"
+
+
+def test_openapi_includes_x_api_key_security_scheme():
+    """OpenAPI 스키마에 `X-API-Key` 보안 스키마가 포함된다."""
+    app = main.create_app()
+
+    schema = app.openapi()
+
+    assert schema["components"]["securitySchemes"][main.OPENAPI_API_KEY_SCHEME_NAME] == {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+    }
+
+
+def test_openapi_marks_api_routes_with_api_key_security():
+    """`/api/*` 경로는 OpenAPI에서 API Key 보안 요구사항을 가진다."""
+    app = main.create_app()
+
+    schema = app.openapi()
+    api_operations = []
+
+    for path, path_item in schema["paths"].items():
+        if not path.startswith("/api/"):
+            continue
+        for method in main.OPENAPI_HTTP_METHODS:
+            operation = path_item.get(method)
+            if operation:
+                api_operations.append(operation)
+
+    assert api_operations
+    assert all(
+        operation["security"] == [{main.OPENAPI_API_KEY_SCHEME_NAME: []}]
+        for operation in api_operations
+    )
+
+
+def test_openapi_keeps_health_route_public():
+    """헬스체크 경로는 OpenAPI에서 보안 요구사항이 없다."""
+    app = main.create_app()
+
+    schema = app.openapi()
+
+    assert "security" not in schema["paths"]["/health"]["get"]

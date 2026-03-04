@@ -2,12 +2,14 @@
 
 import os
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 
 from app.api import router as api_router
-from app.middleware.auth import ApiKeyAuthMiddleware
+from app.middleware.auth import DOCS_EXEMPT_PATHS, PUBLIC_EXEMPT_PATHS, ApiKeyAuthMiddleware
 from common.checkpointer.factory import get_checkpointer, setup_checkpointer
 from common.logging import setup_logging
 
@@ -15,6 +17,39 @@ from common.logging import setup_logging
 setup_logging()
 
 APP_VERSION = "0.1.0"
+OPENAPI_API_KEY_SCHEME_NAME = "ApiKeyAuth"
+OPENAPI_HTTP_METHODS = {
+    "get",
+    "put",
+    "post",
+    "delete",
+    "options",
+    "head",
+    "patch",
+    "trace",
+}
+
+
+def _attach_api_key_security(schema: dict[str, Any]) -> dict[str, Any]:
+    """OpenAPI 스키마에 `X-API-Key` 보안 스키마를 반영한다."""
+    components = schema.setdefault("components", {})
+    security_schemes = components.setdefault("securitySchemes", {})
+    security_schemes[OPENAPI_API_KEY_SCHEME_NAME] = {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+    }
+
+    for path, path_item in schema.get("paths", {}).items():
+        if path in PUBLIC_EXEMPT_PATHS or path in DOCS_EXEMPT_PATHS:
+            continue
+
+        for method, operation in path_item.items():
+            if method not in OPENAPI_HTTP_METHODS:
+                continue
+            operation["security"] = [{OPENAPI_API_KEY_SCHEME_NAME: []}]
+
+    return schema
 
 
 def _load_allowed_origins() -> list[str]:
@@ -171,6 +206,22 @@ def create_app() -> FastAPI:
 
     # 라우터 등록
     app.include_router(api_router)
+
+    def custom_openapi() -> dict[str, Any]:
+        """Swagger UI에서 `X-API-Key` 입력을 위한 OpenAPI 스키마 생성."""
+        if app.openapi_schema:
+            return app.openapi_schema
+
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        app.openapi_schema = _attach_api_key_security(schema)
+        return app.openapi_schema
+
+    app.openapi = custom_openapi
 
     return app
 
