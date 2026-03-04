@@ -26,6 +26,7 @@ def _install_dummy_langchain_openai():
 _install_dummy_langchain_openai()
 
 correction_service_module = importlib.import_module("features.correction.service")
+RAGRunResult = importlib.import_module("features.correction.rag.pipeline").RAGRunResult
 CorrectionStatus = importlib.import_module("features.correction.schemas").CorrectionStatus
 CorrectionService = correction_service_module.CorrectionService
 get_correction_service = correction_service_module.get_correction_service
@@ -151,7 +152,7 @@ class DummyRagPipeline:
         self.raise_error = raise_error
         self.run_calls: list[dict] = []
 
-    async def run(self, company_name: str, job_title: str, job_description: str) -> str:
+    async def run(self, company_name: str, job_title: str, job_description: str) -> RAGRunResult:
         self.run_calls.append(
             {
                 "company_name": company_name,
@@ -161,15 +162,17 @@ class DummyRagPipeline:
         )
         if self.raise_error:
             raise RuntimeError("RAG 실패")
-        return "기업 인사이트"
-
-    def _extract_keywords(
-        self, company_name: str, job_title: str, job_description: str
-    ) -> list[str]:
-        return [f"{company_name} {job_title}"]
-
-    async def _search(self, query: str) -> list[dict]:
-        return [{"query": query, "title": "검색 결과"}]
+        search_query = f"{company_name} {job_title}"
+        return RAGRunResult(
+            keywords=[search_query],
+            search_results=[
+                {
+                    "query": search_query,
+                    "title": "검색 결과",
+                }
+            ],
+            insight="기업 인사이트",
+        )
 
 
 class DummyBackgroundTasks:
@@ -273,13 +276,15 @@ async def test_run_rag_success_saves_company_insight_and_rag_data():
         "status": CorrectionStatus.DOING_RAG.value,
         "company_insight": None,
     }
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+    rag_pipeline = DummyRagPipeline()
+    service = CorrectionService(repository, DummyGenerator(), rag_pipeline)
 
     await service._run_rag("c-1")
 
     assert repository.rows["c-1"]["company_insight"] == "기업 인사이트"
     assert repository.saved_rag_data[0]["search_query"] == "회사 백엔드"
     assert repository.saved_rag_data[0]["search_results"]["results"][0]["title"] == "검색 결과"
+    assert len(rag_pipeline.run_calls) == 1
     assert repository.rows["c-1"]["status"] == CorrectionStatus.COMPANY_INSIGHT.value
 
 

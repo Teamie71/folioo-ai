@@ -4,11 +4,21 @@ import asyncio
 import json
 import os
 import re
+from dataclasses import dataclass
 
 from tavily import AsyncTavilyClient
 
 from common.llm.client import get_llm
 from features.correction.config import get_correction_rag_config
+
+
+@dataclass(slots=True)
+class RAGRunResult:
+    """RAG 전체 실행 결과"""
+
+    keywords: list[str]
+    search_results: list[dict]
+    insight: str
 
 
 class RAGPipeline:
@@ -32,8 +42,8 @@ class RAGPipeline:
 
         return self._tavily_client
 
-    async def run(self, company_name: str, job_title: str, job_description: str) -> str:
-        """기업/직무/JD 기반 기업 인사이트 텍스트 생성"""
+    async def run(self, company_name: str, job_title: str, job_description: str) -> RAGRunResult:
+        """기업/직무/JD 기반 RAG 실행 결과 생성"""
         keywords = await asyncio.to_thread(
             self._extract_keywords,
             company_name=company_name,
@@ -44,11 +54,17 @@ class RAGPipeline:
         results = await asyncio.gather(*(self._search(query=keyword) for keyword in keywords))
         search_results: list[dict] = [item for sublist in results for item in sublist]
 
-        return await asyncio.to_thread(
+        insight = await asyncio.to_thread(
             self._generate_insight,
             search_results=search_results,
             company_name=company_name,
             job_title=job_title,
+        )
+
+        return RAGRunResult(
+            keywords=keywords,
+            search_results=search_results,
+            insight=insight,
         )
 
     def _extract_keywords(
@@ -134,4 +150,4 @@ class RAGPipeline:
         return str(content).strip()
 
 
-__all__ = ["RAGPipeline"]
+__all__ = ["RAGPipeline", "RAGRunResult"]
