@@ -305,9 +305,45 @@ async def test_run_rag_success_saves_company_insight_and_rag_data():
 
     assert repository.rows["c-1"]["company_insight"] == "기업 인사이트"
     assert repository.saved_rag_data[0]["search_query"] == "회사 백엔드"
+    assert repository.saved_rag_data[0]["search_results"]["keywords"] == ["회사 백엔드"]
     assert repository.saved_rag_data[0]["search_results"]["results"][0]["title"] == "검색 결과"
     assert len(rag_pipeline.run_calls) == 1
     assert repository.rows["c-1"]["status"] == CorrectionStatus.COMPANY_INSIGHT.value
+
+
+@pytest.mark.asyncio
+async def test_run_rag_stores_joined_search_query_for_multiple_keywords():
+    """_run_rag는 다중 키워드일 때 search_query를 콤마로 join하여 저장한다."""
+
+    class MultiKeywordRagPipeline(DummyRagPipeline):
+        async def run(
+            self,
+            company_name: str,
+            job_title: str,
+            job_description: str,
+        ) -> RAGRunResult:
+            return RAGRunResult(
+                keywords=["키워드A", "키워드B"],
+                search_results=[{"title": "검색 결과"}],
+                insight="기업 인사이트",
+            )
+
+    repository = DummyRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "status": CorrectionStatus.DOING_RAG.value,
+        "company_insight": None,
+    }
+    service = CorrectionService(repository, DummyGenerator(), MultiKeywordRagPipeline())
+
+    await service._run_rag("c-1")
+
+    assert repository.saved_rag_data[0]["search_query"] == "키워드A, 키워드B"
+    assert repository.saved_rag_data[0]["search_results"]["keywords"] == ["키워드A", "키워드B"]
 
 
 @pytest.mark.asyncio

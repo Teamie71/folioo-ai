@@ -74,12 +74,17 @@ class CorrectionService:
                 job_description,
             )
             search_query = (
-                rag_result.keywords[0] if rag_result.keywords else f"{company_name} {job_title}"
+                ", ".join(rag_result.keywords)
+                if rag_result.keywords
+                else f"{company_name} {job_title}"
             )
             await self._repository.save_rag_data(
                 correction_id,
                 search_query,
-                {"results": rag_result.search_results},
+                {
+                    "keywords": rag_result.keywords,
+                    "results": rag_result.search_results,
+                },
             )
             await self._repository.update_company_insight(correction_id, rag_result.insight)
 

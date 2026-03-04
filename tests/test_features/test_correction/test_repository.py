@@ -118,7 +118,7 @@ async def test_get_rag_data_returns_parsed_search_results():
                 "id": "r-1",
                 "correction_id": "c-1",
                 "search_query": "회사 백엔드",
-                "search_results": '{"results": [{"title": "검색 결과"}]}',
+                "search_results": '{"keywords": ["키워드1", "키워드2"], "results": [{"title": "검색 결과"}]}',
                 "created_at": "2026-03-04T00:00:00Z",
             }
         ]
@@ -128,4 +128,5 @@ async def test_get_rag_data_returns_parsed_search_results():
     rows = await repo.get_rag_data("c-1")
 
     assert rows[0]["search_results"]["results"][0]["title"] == "검색 결과"
+    assert rows[0]["search_results"]["keywords"] == ["키워드1", "키워드2"]
     assert "FROM rag_data" in pool.fetch_sqls[0]
