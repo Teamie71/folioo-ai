@@ -98,15 +98,13 @@ class CorrectionService:
             )
         except Exception as exc:
             if isinstance(exc, RAGKeywordExtractionError):
-                logger.exception("RAG 키워드 추출 실패 (correction_id: %s): %s", correction_id, exc)
+                logger.exception("RAG 키워드 추출 실패 (correction_id: %s)", correction_id)
             elif isinstance(exc, RAGSearchError):
-                logger.exception("RAG 검색 실패 (correction_id: %s): %s", correction_id, exc)
+                logger.exception("RAG 검색 실패 (correction_id: %s)", correction_id)
             elif isinstance(exc, RAGInsightGenerationError):
-                logger.exception(
-                    "RAG 인사이트 생성 실패 (correction_id: %s): %s", correction_id, exc
-                )
+                logger.exception("RAG 인사이트 생성 실패 (correction_id: %s)", correction_id)
             else:
-                logger.exception("RAG 처리 실패 (correction_id: %s): %s", correction_id, exc)
+                logger.exception("RAG 처리 실패 (correction_id: %s)", correction_id)
             await self._mark_failed(correction_id)
 
     @staticmethod
@@ -168,11 +166,10 @@ class CorrectionService:
             await self._repository.update_status(
                 correction_id, CorrectionStatus.COMPANY_INSIGHT.value
             )
-        except Exception as exc:
+        except Exception:
             logger.exception(
-                "저장된 검색 결과 기반 RAG 재시도 실패 (correction_id: %s): %s",
+                "저장된 검색 결과 기반 RAG 재시도 실패 (correction_id: %s)",
                 correction_id,
-                exc,
             )
             await self._mark_failed(correction_id)
 
@@ -277,8 +274,8 @@ class CorrectionService:
                 raise ValueError("첨삭 결과 형식이 올바르지 않습니다.")
             await self._repository.update_result(correction_id, result_dict)
             await self._repository.update_status(correction_id, CorrectionStatus.DONE.value)
-        except Exception as exc:
-            logger.exception("첨삭 생성 실패 (correction_id: %s): %s", correction_id, exc)
+        except Exception:
+            logger.exception("첨삭 생성 실패 (correction_id: %s)", correction_id)
             await self._mark_failed(correction_id)
 
     async def _mark_failed(self, correction_id: str) -> None:
