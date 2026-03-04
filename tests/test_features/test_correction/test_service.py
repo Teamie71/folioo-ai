@@ -184,12 +184,14 @@ class DummyRagPipeline:
         search_results: list[dict],
         company_name: str,
         job_title: str,
+        keywords: list[str] | None = None,
     ) -> str:
         self.run_from_search_results_calls.append(
             {
                 "search_results": search_results,
                 "company_name": company_name,
                 "job_title": job_title,
+                "keywords": keywords,
             }
         )
         if self.raise_error:
@@ -397,7 +399,10 @@ async def test_retry_reuses_saved_rag_data_for_partial_rerun():
         {
             "correction_id": "c-1",
             "search_query": "회사 백엔드",
-            "search_results": {"results": [{"title": "기존 검색 결과", "content": "본문"}]},
+            "search_results": {
+                "keywords": ["저장 키워드1", "저장 키워드2"],
+                "results": [{"title": "기존 검색 결과", "content": "본문"}],
+            },
         }
     ]
     rag_pipeline = DummyRagPipeline()
@@ -416,6 +421,41 @@ async def test_retry_reuses_saved_rag_data_for_partial_rerun():
     assert repository.rows["c-1"]["status"] == CorrectionStatus.COMPANY_INSIGHT.value
     assert len(rag_pipeline.run_calls) == 0
     assert len(rag_pipeline.run_from_search_results_calls) == 1
+    assert rag_pipeline.run_from_search_results_calls[0]["keywords"] == [
+        "저장 키워드1",
+        "저장 키워드2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retry_extracts_keywords_from_search_query_when_keywords_missing():
+    """retry는 저장 키워드가 없으면 search_query를 분해해 키워드로 사용한다."""
+    repository = DummyRepository()
+    repository.rows["c-1"] = {
+        "id": "c-1",
+        "portfolio_id": "p-1",
+        "company_name": "회사",
+        "job_title": "백엔드",
+        "job_description": "JD",
+        "status": CorrectionStatus.FAILED.value,
+        "company_insight": None,
+    }
+    repository.rag_data_rows["c-1"] = [
+        {
+            "correction_id": "c-1",
+            "search_query": "키워드A, 키워드B",
+            "search_results": {"results": [{"title": "기존 검색 결과", "content": "본문"}]},
+        }
+    ]
+    rag_pipeline = DummyRagPipeline()
+    service = CorrectionService(repository, DummyGenerator(), rag_pipeline)
+    background_tasks = DummyBackgroundTasks()
+
+    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
+    task_func, task_args = background_tasks.tasks[0]
+    await task_func(*task_args)
+
+    assert rag_pipeline.run_from_search_results_calls[0]["keywords"] == ["키워드A", "키워드B"]
 
 
 @pytest.mark.asyncio

@@ -56,6 +56,7 @@ class RAGPipeline:
 
         insight = await asyncio.to_thread(
             self._generate_insight,
+            keywords=keywords,
             search_results=search_results,
             company_name=company_name,
             job_title=job_title,
@@ -72,10 +73,12 @@ class RAGPipeline:
         search_results: list[dict],
         company_name: str,
         job_title: str,
+        keywords: list[str] | None = None,
     ) -> str:
         """기존 검색 결과로 인사이트만 재생성"""
         return await asyncio.to_thread(
             self._generate_insight,
+            keywords=keywords,
             search_results=search_results,
             company_name=company_name,
             job_title=job_title,
@@ -148,17 +151,21 @@ class RAGPipeline:
 
     def _generate_insight(
         self,
+        keywords: list[str] | None,
         search_results: list[dict],
         company_name: str,
         job_title: str,
     ) -> str:
         """검색 결과를 요약해 첨삭용 기업 인사이트 텍스트 생성"""
+        serialized_keywords = json.dumps(keywords or [], ensure_ascii=False)
         serialized_search_results = json.dumps(search_results, ensure_ascii=False)
         response = self._llm.invoke(
             f"기업명: {company_name}\n"
             f"직무: {job_title}\n"
+            f"검색 키워드: {serialized_keywords}\n"
             f"검색 결과: {serialized_search_results}\n\n"
-            "위 내용을 바탕으로 기업 문화, 인재상, 직무 특성을 간결하게 요약해 주세요."
+            "검색 키워드는 참고 정보로만 사용하고, 사실 근거는 검색 결과를 우선해 "
+            "기업 문화, 인재상, 직무 특성을 간결하게 요약해 주세요."
         )
         content = getattr(response, "content", response)
         return str(content).strip()

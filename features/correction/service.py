@@ -111,10 +111,32 @@ class CorrectionService:
 
         return []
 
+    @staticmethod
+    def _extract_keywords(rag_data: dict) -> list[str]:
+        """rag_data row에서 키워드 목록 추출"""
+        stored_search_results = rag_data.get("search_results")
+        if isinstance(stored_search_results, dict):
+            keywords = stored_search_results.get("keywords")
+            if isinstance(keywords, list):
+                normalized_keywords: list[str] = []
+                for item in keywords:
+                    keyword = str(item).strip()
+                    if keyword:
+                        normalized_keywords.append(keyword)
+                if normalized_keywords:
+                    return normalized_keywords
+
+        search_query = rag_data.get("search_query")
+        if isinstance(search_query, str):
+            return [keyword.strip() for keyword in search_query.split(",") if keyword.strip()]
+
+        return []
+
     async def _run_rag_from_search_results(
         self,
         correction_id: str,
         search_results: list[dict],
+        keywords: list[str],
     ) -> None:
         """저장된 RAG 검색 결과로 인사이트만 재생성"""
         try:
@@ -126,6 +148,7 @@ class CorrectionService:
                 search_results=search_results,
                 company_name=correction["company_name"],
                 job_title=correction["job_title"],
+                keywords=keywords,
             )
             await self._repository.update_company_insight(correction_id, insight)
             await self._repository.update_status(
@@ -157,8 +180,10 @@ class CorrectionService:
 
         rag_data_rows = await self._repository.get_rag_data(correction_id)
         if rag_data_rows:
-            search_results = self._extract_search_results(rag_data_rows[-1])
+            latest_rag_data = rag_data_rows[-1]
+            search_results = self._extract_search_results(latest_rag_data)
             if search_results:
+                keywords = self._extract_keywords(latest_rag_data)
                 await self._repository.update_status(
                     correction_id, CorrectionStatus.DOING_RAG.value
                 )
@@ -166,6 +191,7 @@ class CorrectionService:
                     self._run_rag_from_search_results,
                     correction_id,
                     search_results,
+                    keywords,
                 )
                 return
 

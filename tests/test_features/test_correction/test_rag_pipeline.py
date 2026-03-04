@@ -186,6 +186,8 @@ async def test_run_returns_generated_result(monkeypatch, mock_tavily_client):
         },
     ]
     assert rag_result.insight == insight_generation_response
+    assert "검색 키워드" in dummy_llm.prompts[1]
+    assert "키워드1" in dummy_llm.prompts[1]
     assert "검색 결과" in dummy_llm.prompts[1]
     assert dummy_tavily_client.instances_created == 1
 
@@ -207,9 +209,12 @@ async def test_run_from_search_results_generates_insight_without_new_search(
         search_results=[{"title": "기존 검색", "content": "본문", "url": "https://example.com"}],
         company_name="네이버",
         job_title="백엔드",
+        keywords=["재시도 키워드1", "재시도 키워드2"],
     )
 
     assert insight == "재생성된 인사이트"
+    assert "검색 키워드" in dummy_llm.prompts[0]
+    assert "재시도 키워드1" in dummy_llm.prompts[0]
     assert dummy_tavily_client.calls == []
 
 
