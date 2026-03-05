@@ -147,6 +147,30 @@ async def test_process_message_with_files(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_process_message_returns_none_when_all_complete(monkeypatch):
+    """모든 단계 완료 상태면 ai_response를 None으로 반환한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(values={"session_id": "session_1"})
+    dummy_graph.invoke_result = {
+        "messages": [HumanMessage(content="사용자 최종 답변")],
+        "current_stage": 4,
+        "stage_progress": {"fixed_q_used": 3},
+        "overall_completion_percentage": 100.0,
+        "all_stages_complete": True,
+    }
+
+    service = _build_service(monkeypatch, dummy_graph)
+
+    result = await service.process_message(
+        session_id="session_1",
+        message="마지막 답변입니다.",
+    )
+
+    assert result["ai_response"] is None
+    assert result["all_complete"] is True
+
+
+@pytest.mark.asyncio
 async def test_get_session_state_returns_none_on_empty_snapshot(monkeypatch):
     """스냅샷이 없거나 비어있을 때 None 반환 테스트"""
     dummy_graph = DummyGraph()
