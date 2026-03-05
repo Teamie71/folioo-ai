@@ -151,6 +151,11 @@ class DummyRagPipeline:
         self.run_calls: list[dict] = []
         self.run_from_search_results_calls: list[dict] = []
 
+    def _extract_keywords(
+        self, company_name: str, job_title: str, job_description: str
+    ) -> list[str]:
+        return [f"{company_name} {job_title}"]
+
     async def run(self, company_name: str, job_title: str, job_description: str) -> RAGRunResult:
         self.run_calls.append(
             {
@@ -161,9 +166,12 @@ class DummyRagPipeline:
         )
         if self.raise_error:
             raise RuntimeError("RAG 실패")
-        search_query = f"{company_name} {job_title}"
+        keywords = await asyncio.to_thread(
+            self._extract_keywords, company_name, job_title, job_description
+        )
+        search_query = ", ".join(keywords) if keywords else f"{company_name} {job_title}"
         return RAGRunResult(
-            keywords=[search_query],
+            keywords=keywords,
             search_results=[
                 {
                     "query": search_query,
@@ -512,7 +520,7 @@ async def test_run_rag_missing_correction_does_not_raise():
 
     await service._run_rag(999)
 
-    assert any(s["status"] == "FAILED" for s in client.updated_statuses) or True
+    assert any(s["status"] == "FAILED" for s in client.updated_statuses)
 
 
 # ------------------------------------------------------------------

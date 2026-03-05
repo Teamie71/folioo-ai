@@ -47,7 +47,7 @@ def _handle_main_server_error(exc: MainServerError) -> None:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=exc.detail,
         ) from exc
-    if exc.status_code == 422 or exc.error_code == "CORRECTION4221":
+    if exc.status_code == 422 and exc.error_code == "CORRECTION4221":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=exc.detail,

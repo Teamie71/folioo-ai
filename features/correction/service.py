@@ -28,9 +28,9 @@ def _to_upper_status(status: CorrectionStatus) -> str:
     return status.value.upper()
 
 
-def _normalize_status(raw: str) -> str:
+def _normalize_status(raw: str | None) -> str:
     """메인 서버 응답의 상태값을 내부 CorrectionStatus.value(lower_case)로 정규화"""
-    return raw.lower()
+    return raw.lower() if raw else ""
 
 
 class CorrectionService:

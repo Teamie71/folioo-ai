@@ -106,14 +106,27 @@ class BaseClient:
         if response.is_success:
             return response.json()
 
-        error_body: dict = {}
+        error_body: Any = None
         try:
             error_body = response.json()
         except Exception:
-            pass
+            error_body = None
 
-        error_code = error_body.get("errorCode") or error_body.get("code")
-        detail = error_body.get("message") or error_body.get("detail") or response.text
+        error_code: str | None = None
+        detail = response.text
+
+        if isinstance(error_body, dict):
+            error_code = error_body.get("errorCode") or error_body.get("code")
+            detail = error_body.get("message") or error_body.get("detail") or response.text
+        elif isinstance(error_body, list):
+            first_item = error_body[0] if error_body else None
+            if isinstance(first_item, dict):
+                error_code = first_item.get("errorCode") or first_item.get("code")
+                detail = first_item.get("message") or first_item.get("detail") or str(error_body)
+            elif first_item is not None:
+                detail = str(first_item)
+        elif error_body is not None:
+            detail = str(error_body)
 
         raise MainServerError(
             status_code=response.status_code,
