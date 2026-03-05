@@ -74,6 +74,17 @@ def _get_api_key_status() -> str:
     return "configured" if os.getenv("AI_SERVICE_API_KEY", "") else "missing"
 
 
+def _get_main_server_status() -> str:
+    """메인 서버 클라이언트 연결 상태 문자열 반환"""
+    try:
+        from common.http_client import get_http_client
+
+        get_http_client()
+        return "connected"
+    except RuntimeError:
+        return "disconnected"
+
+
 def get_health() -> dict[str, str]:
     """헬스체크 응답 생성"""
     api_key_status = _get_api_key_status()
@@ -83,6 +94,7 @@ def get_health() -> dict[str, str]:
         "status": status,
         "version": APP_VERSION,
         "checkpointer": _get_checkpointer_status(),
+        "main_server": _get_main_server_status(),
         "api_key": api_key_status,
     }
 
@@ -92,7 +104,7 @@ async def lifespan(app: FastAPI):
     """
     애플리케이션 생명주기 관리
 
-    - 시작 시: 리소스 초기화 (Checkpointer, InsightStore, 포트폴리오/첨삭 DB, httpx 클라이언트)
+    - 시작 시: 리소스 초기화 (Checkpointer, InsightStore, httpx 클라이언트)
     - 종료 시: 리소스 정리
     """
 
@@ -106,11 +118,9 @@ async def lifespan(app: FastAPI):
         init_portfolio_client,
         reset_portfolio_client,
     )
-    from common.db.connection import close_pool, create_pool
-    from common.http_client import close_http_client
+    from common.http_client import close_http_client, get_http_client
     from features.interview.agents.insight_store import MainServerInsightStore
     from features.interview.agents.nodes.retriever import init_insight_store
-    from features.portfolio.repository import PortfolioRepository
 
     logger = logging.getLogger(__name__)
 
@@ -118,29 +128,13 @@ async def lifespan(app: FastAPI):
     init_insight_store(MainServerInsightStore())
     logger.info("InsightStore(MainServer) 초기화 완료")
 
-    # ===== 공유 DB 커넥션 풀 초기화 (Portfolio 공용) =====
-    pool = None
-    db_url = os.getenv("DATABASE_URL")
-
-    if not db_url:
-        raise RuntimeError(
-            "DATABASE_URL 환경변수가 설정되지 않았습니다. 애플리케이션을 시작할 수 없습니다."
-        )
-
     try:
-        pool = await create_pool()
+        get_http_client()
+        logger.info("메인 서버 HTTP 클라이언트 초기화 완료")
+    except RuntimeError:
+        logger.warning("메인 서버 HTTP 클라이언트 초기화 건너뜀 (환경변수 미설정)")
     except Exception:
-        logger.exception("DB 커넥션 풀 생성 실패 - 애플리케이션 시작 중단")
-        raise
-
-    # ===== 포트폴리오 DB 초기화 =====
-    if pool is not None:
-        try:
-            portfolio_repo = PortfolioRepository(pool)
-            await portfolio_repo.setup_table()
-            logger.info("포트폴리오 DB 초기화 완료")
-        except Exception:
-            logger.exception("포트폴리오 DB 초기화 실패")
+        logger.exception("메인 서버 HTTP 클라이언트 초기화 실패")
 
     # ===== 메인 서버 httpx 클라이언트 초기화 =====
     correction_client = None
@@ -186,13 +180,6 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.exception("포트폴리오 클라이언트 정리 실패")
 
-        if pool is not None:
-            try:
-                await close_pool()
-                logger.info("DB 커넥션 풀 정리 완료")
-            except Exception:
-                logger.exception("DB 커넥션 풀 정리 실패")
-
 
 def create_app() -> FastAPI:
     """FastAPI 애플리케이션 생성"""
@@ -219,7 +206,7 @@ def create_app() -> FastAPI:
         response_model=dict[str, str],
         status_code=200,
         summary="헬스체크",
-        description="서버 상태, 버전, checkpointer 연결 상태를 반환합니다.",
+        description="서버 상태, 버전, checkpointer/메인 서버 연결 상태를 반환합니다.",
     )
     def health() -> dict[str, str]:
         return get_health()
