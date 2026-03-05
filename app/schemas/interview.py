@@ -64,6 +64,14 @@ class ChatRequest(BaseModel):
     )
 
 
+class ExtendSessionResponse(BaseModel):
+    """연장 시작 응답"""
+
+    ai_response: str = Field(..., description="연장 모드 첫 질문")
+    extension_count: int = Field(..., ge=1, description="누적 연장 횟수")
+    extension_turns_max: int = Field(..., ge=1, description="연장 1회당 최대 질문 횟수")
+
+
 class ChatResponse(BaseModel):
     """채팅 응답"""
 
@@ -72,6 +80,17 @@ class ChatResponse(BaseModel):
     stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
     overall_completion: float = Field(..., ge=0.0, le=100.0, description="전체 완료율 (%)")
     all_complete: bool = Field(..., description="모든 단계 완료 여부")
+    is_extended_mode: bool = Field(..., description="현재 연장 모드 활성 여부")
+    extension_turns_used: int | None = Field(
+        None,
+        ge=0,
+        description="현재 연장에서 사용한 질문 횟수",
+    )
+    extension_turns_max: int | None = Field(
+        None,
+        ge=1,
+        description="연장 1회당 최대 질문 횟수",
+    )
 
 
 # ===== 상태 조회 =====
@@ -143,6 +162,17 @@ class SSEMessagePayload(BaseModel):
     stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
     overall_completion: float = Field(..., ge=0.0, le=100.0, description="전체 완료율 (%)")
     all_complete: bool = Field(..., description="모든 단계 완료 여부")
+    is_extended_mode: bool = Field(..., description="현재 연장 모드 활성 여부")
+    extension_turns_used: int | None = Field(
+        None,
+        ge=0,
+        description="현재 연장에서 사용한 질문 횟수",
+    )
+    extension_turns_max: int | None = Field(
+        None,
+        ge=1,
+        description="연장 1회당 최대 질문 횟수",
+    )
 
 
 class SSEMessageComplete(BaseModel):

@@ -15,6 +15,7 @@ from .interview import (
     CreateSessionRequest,
     CreateSessionResponse,
     ErrorResponse,
+    ExtendSessionResponse,
     SessionStateResponse,
     StageProgressSchema,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "CreateSessionResponse",
     "ChatRequest",
     "ChatResponse",
+    "ExtendSessionResponse",
     "SessionStateResponse",
     "StageProgressSchema",
     "ErrorResponse",

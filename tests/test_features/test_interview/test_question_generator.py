@@ -242,3 +242,57 @@ def test_fallback_question_when_called_after_exhaustion(first_turn_state):
     assert result["next_node"] == "end"
     assert isinstance(result["messages"][0], AIMessage)
     assert result["messages"][0].content == "혹시 더 추가하고 싶은 내용이 있으신가요?"
+
+
+def test_extended_mode_generates_question_and_increments_turn(first_turn_state, monkeypatch):
+    """연장 모드 질문 생성 시 extension_turns_used를 증가시킨다."""
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_return("연장 질문입니다."),
+    )
+
+    state = {
+        **first_turn_state,
+        "messages": [
+            AIMessage(content="이전 질문"),
+            HumanMessage(content="이전 답변"),
+        ],
+        "is_extended_mode": True,
+        "all_stages_complete": False,
+        "extension_turns_used": 0,
+        "extension_turns_max": 3,
+    }
+
+    result = question_generator.run(state)
+
+    assert result["next_node"] == "end"
+    assert result["messages"][0].content == "연장 질문입니다."
+    assert result["extension_turns_used"] == 1
+
+
+def test_extended_mode_fallback_increments_turn(first_turn_state, monkeypatch):
+    """연장 모드에서 LLM 실패 시 fallback 질문을 만들고 턴 카운트를 증가시킨다."""
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_raise(),
+    )
+
+    state = {
+        **first_turn_state,
+        "messages": [
+            AIMessage(content="이전 질문"),
+            HumanMessage(content="이전 답변"),
+        ],
+        "is_extended_mode": True,
+        "all_stages_complete": False,
+        "extension_turns_used": 0,
+        "extension_turns_max": 3,
+    }
+
+    result = question_generator.run(state)
+
+    assert result["next_node"] == "end"
+    assert "이 활동을 시작하게 된 이유" in result["messages"][0].content
+    assert result["extension_turns_used"] == 1

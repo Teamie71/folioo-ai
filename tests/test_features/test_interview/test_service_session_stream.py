@@ -93,12 +93,21 @@ async def test_create_session_stream_yields_delta_and_complete(monkeypatch):
     assert complete_payload["message"]["session_id"] == "session-1"
     assert complete_payload["message"]["first_question"] == "첫 질문"
     assert complete_payload["message"]["current_stage"] == 1
+    assert complete_payload["message"]["is_extended_mode"] is False
 
 
 def test_create_session_stream_route_exists():
     """첫 질문 스트리밍 라우트가 등록되어 있는지 테스트"""
     assert any(
         route.path == "/interview/sessions/stream" and "POST" in route.methods
+        for route in router.routes
+    )
+
+
+def test_extend_session_stream_route_exists():
+    """연장 모드 SSE 라우트가 등록되어 있는지 테스트"""
+    assert any(
+        route.path == "/interview/sessions/{session_id}/extend/stream" and "POST" in route.methods
         for route in router.routes
     )
 
@@ -225,3 +234,83 @@ async def test_process_message_stream_returns_none_when_all_complete(monkeypatch
     )
     complete_payload = json.loads(complete_event["data"])
     assert complete_payload["message"]["ai_response"] is None
+    assert complete_payload["message"]["is_extended_mode"] is False
+
+
+@pytest.mark.anyio
+async def test_extend_session_stream_yields_delta_and_complete(monkeypatch):
+    """연장 시작 스트림에서 토큰과 완료 이벤트를 순서대로 전송한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.stream_events = [
+        {
+            "event": LangGraphEventType.ON_CHAT_MODEL_STREAM,
+            "metadata": {"langgraph_node": "question_generator"},
+            "data": {"chunk": DummyChunk("연장 질문")},
+        }
+    ]
+
+    monkeypatch.setattr(
+        "features.interview.service.build_graph", lambda checkpointer=None: dummy_graph
+    )
+    monkeypatch.setattr("features.interview.service.get_checkpointer", lambda: object())
+    monkeypatch.setattr(
+        "features.interview.service.get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_extensions": 2,
+                "extension_turns_per_session": 3,
+            },
+        )(),
+    )
+    service = InterviewService()
+
+    initial_state = {
+        "session_id": "session-1",
+        "all_stages_complete": True,
+        "extension_count": 0,
+    }
+    final_state = {
+        "messages": [AIMessage(content="연장 질문")],
+        "current_stage": 4,
+        "stage_progress": {
+            "fixed_q_used": 3,
+            "fixed_q_total": 3,
+            "generated_q_used": 2,
+            "generated_q_max": 2,
+            "force_all_generated_q": False,
+            "is_complete": True,
+        },
+        "overall_completion_percentage": 100.0,
+        "all_stages_complete": False,
+        "is_extended_mode": True,
+        "extension_turns_used": 1,
+        "extension_turns_max": 3,
+        "extension_count": 1,
+    }
+    states = [initial_state, final_state]
+
+    async def _get_session_state(_session_id: str):
+        if states:
+            return states.pop(0)
+        return final_state
+
+    monkeypatch.setattr(service, "get_session_state", _get_session_state)
+
+    events = [event async for event in service.extend_session_stream(session_id="session-1")]
+
+    assert dummy_graph.astream_calls[0]["state"]["mentioned_insight_ids"] == []
+
+    assert events[0]["event"] == SSEEventType.CONTENT_BLOCK_DELTA
+    delta_payload = json.loads(events[0]["data"])
+    assert delta_payload["delta"]["text"] == "연장 질문"
+
+    complete_event = next(
+        event for event in events if event["event"] == SSEEventType.MESSAGE_COMPLETE
+    )
+    complete_payload = json.loads(complete_event["data"])
+    assert complete_payload["message"]["ai_response"] == "연장 질문"
+    assert complete_payload["message"]["is_extended_mode"] is True
+    assert complete_payload["message"]["extension_turns_used"] == 1
+    assert complete_payload["message"]["extension_turns_max"] == 3
