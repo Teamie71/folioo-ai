@@ -16,8 +16,8 @@ from ..prompts import (
     first_turn_prompt,
     generated_question_prompt,
 )
-from ..state import CollectedField, InterviewState
-from .utils import _get_conversation_context
+from ..state import InterviewState
+from .utils import _format_incomplete_fields, _get_conversation_context, _get_incomplete_fields
 
 logger = logging.getLogger(__name__)
 
@@ -38,64 +38,6 @@ def _invoke_with_retry(
     if last_error is None:
         raise RuntimeError("질문 생성 호출에 실패했습니다.")
     raise last_error
-
-
-def _get_incomplete_fields(
-    state: InterviewState,
-    stage_config: StageConfig,
-    completeness_threshold: float = 0.7,
-) -> list[dict[str, str]]:
-    """
-    현재 단계에서 미수집 또는 불완전한 필드 목록 반환
-
-    Args:
-        state: 현재 상태
-        stage_config: 단계 설정
-        completeness_threshold: 완성도 임계값 (이하면 불완전으로 간주)
-
-    Returns:
-        미수집/불완전 필드 목록 [{"field_name": ..., "description": ...}, ...]
-    """
-    current_stage = state["current_stage"]
-    stage_key = f"stage_{current_stage}"
-    collected = state["collected_data"].get(stage_key, {})
-    required = stage_config.required_fields
-    incomplete = []
-    for field_name, field_info in required.items():
-        collected_field: CollectedField | None = collected.get(field_name)
-        if collected_field is None:
-            # 아예 수집되지 않음
-            incomplete.append(
-                {
-                    "field_name": field_name,
-                    "description": field_info["description"],
-                }
-            )
-        elif collected_field["completeness"] < completeness_threshold:
-            # 수집되었으나 불완전
-            incomplete.append(
-                {
-                    "field_name": field_name,
-                    "description": field_info["description"],
-                }
-            )
-    return incomplete
-
-
-def _format_incomplete_fields(incomplete_fields: list[dict[str, str]]) -> str:
-    """
-    미수집 필드를 프롬프트용 문자열로 포맷팅
-    Args:
-        incomplete_fields: 미수집 필드 목록
-    Returns:
-        포맷팅된 문자열
-    """
-    if not incomplete_fields:
-        return "모든 필드가 충분히 수집되었습니다."
-    lines = []
-    for field in incomplete_fields:
-        lines.append(f"- {field['field_name']}: {field['description']}")
-    return "\n".join(lines)
 
 
 def _generate_first_turn_question(
@@ -238,27 +180,6 @@ def _generate_dynamic_question(
     return (question, llm_error)
 
 
-def _should_skip_generated_questions(
-    state: InterviewState,
-    stage_config: StageConfig,
-) -> bool:
-    """
-    생성 질문을 건너뛸 수 있는지 판단
-    조건:
-    - force_all_generated_questions가 False
-    - 모든 required_fields가 충분히 수집됨 (completeness >= threshold)
-    Args:
-        state: 현재 상태
-        stage_config: 단계 설정
-    Returns:
-        True면 생성 질문 건너뛰기 가능
-    """
-    if stage_config.force_all_generated_questions:
-        return False
-    incomplete_fields = _get_incomplete_fields(state, stage_config)
-    return len(incomplete_fields) == 0
-
-
 def run(state: InterviewState) -> InterviewState:
     """
     인터뷰 질문 생성 (초기 또는 분석 기반)
@@ -267,7 +188,7 @@ def run(state: InterviewState) -> InterviewState:
     - 첫 턴: 첫 고정 질문 생성
     - 고정 질문 단계: 순차적으로 고정 질문 생성
     - 생성 질문 단계: 미수집 필드 기반 동적 질문 생성
-    - 질문 소진: 단계 완료 표시
+    - 질문 소진: 안전한 fallback 질문 생성
     """
 
     # 1. 현재 단계 설정 로드
@@ -306,34 +227,6 @@ def run(state: InterviewState) -> InterviewState:
 
     elif progress["generated_q_used"] < progress["generated_q_max"]:
         # ===== 생성 질문 생성 =====
-        global_config = get_global_config()
-        if not global_config.enable_dynamic_followup:
-            logger.info("동적 생성 질문 비활성화 설정으로 인해 단계를 완료 처리합니다.")
-            return {
-                **state,
-                "stage_progress": {
-                    **progress,
-                    "is_complete": True,
-                },
-                "next_node": "analyst",
-                "llm_error": None,
-            }
-
-        # 생성 질문 건너뛰기 가능 여부 확인
-        if _should_skip_generated_questions(state, stage_config):
-            # 모든 필드 수집 완료 + 강제 소진 아님 -> 단계 완료
-            logger.info(f"Stage {state['current_stage']}: 모든 필드 수집 완료, 생성 질문 건너뜀")
-            return {
-                **state,
-                "stage_progress": {
-                    **progress,
-                    "is_complete": True,
-                },
-                "next_node": "analyst",  # Analyst가 단계 전환 처리
-                "llm_error": None,
-            }
-
-        # 동적 질문 생성
         question, llm_error = _generate_dynamic_question(state, stage_config)
         updated_progress = {
             **progress,
@@ -341,16 +234,15 @@ def run(state: InterviewState) -> InterviewState:
         }
 
     else:
-        # ===== 질문 소진 =====
-        logger.info(f"Stage {state['current_stage']}: 모든 질문 소진, 단계 완료")
-        return {
-            **state,
-            "stage_progress": {
-                **progress,
-                "is_complete": True,
-            },
-            "next_node": "analyst",  # Analyst가 단계 전환 처리
-            "llm_error": None,
+        # ===== 질문 소진 (방어 로직) =====
+        logger.warning(
+            "Stage %s: QuestionGenerator가 질문 소진 상태로 호출되어 fallback 질문을 생성합니다.",
+            state["current_stage"],
+        )
+        question = "혹시 더 추가하고 싶은 내용이 있으신가요?"
+        llm_error = None
+        updated_progress = {
+            **progress,
         }
 
     # 4. 공통 반환 처리
