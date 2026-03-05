@@ -1,12 +1,9 @@
 """인사이트 메인 서버 API 클라이언트"""
 
-import logging
 from typing import Any
 
 from common.http_client import MainServerError, request_with_retry
 from features.interview.agents.state import InsightLog
-
-logger = logging.getLogger(__name__)
 
 
 def _to_insight_log(raw: dict[str, Any]) -> InsightLog:

@@ -1,10 +1,8 @@
 """포트폴리오 메인 서버 API 클라이언트"""
 
-import logging
+from typing import Any
 
 from common.http_client import request_with_retry
-
-logger = logging.getLogger(__name__)
 
 FIELD_MAP_SERVER_TO_AI = {
     "responsibilities": "contributions",
@@ -16,7 +14,7 @@ FIELD_MAP_SERVER_TO_AI = {
 class PortfolioClient:
     """포트폴리오 메인 서버 API 클라이언트"""
 
-    async def get_portfolio(self, portfolio_id: int) -> dict:
+    async def get_portfolio(self, portfolio_id: int) -> dict[str, Any]:
         """
         포트폴리오 단건 조회
 
@@ -37,7 +35,7 @@ class PortfolioClient:
         if not isinstance(result, dict):
             return {}
 
-        mapped: dict = {}
+        mapped: dict[str, Any] = {}
         for key, value in result.items():
             mapped[FIELD_MAP_SERVER_TO_AI.get(key, key)] = value
         return mapped

@@ -1,12 +1,9 @@
 """첨삭 메인 서버 API 클라이언트"""
 
-import logging
 from typing import Any
 
 from common.http_client import request_with_retry
 from features.correction.schemas import CorrectionOutput
-
-logger = logging.getLogger(__name__)
 
 _FIELD_NAME_TO_SERVER = {
     "description": "description",
@@ -150,7 +147,7 @@ class CorrectionClient:
             },
         )
 
-    async def get_rag_data(self, correction_id: int) -> dict:
+    async def get_rag_data(self, correction_id: int) -> dict[str, Any]:
         """
         RAG 검색 데이터 조회
 
