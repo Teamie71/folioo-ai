@@ -11,11 +11,12 @@ from common.main_server import PortfolioClient
 from features.interview import get_interview_service
 
 from .generator import PortfolioGenerator
-from .repository import PortfolioRepository
 from .schemas import PortfolioOutput, PortfolioResult, PortfolioStatus
 
 if TYPE_CHECKING:
     from app.schemas.portfolio import PortfolioStatusResponse
+
+    from .repository import PortfolioRepository
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class PortfolioService:
 
     def __init__(
         self,
-        repository: PortfolioRepository | None = None,
+        repository: "PortfolioRepository | None" = None,
         generator: PortfolioGenerator | None = None,
         interview_service=None,
         portfolio_client: PortfolioClient | None = None,
@@ -61,12 +62,8 @@ class PortfolioService:
             or "포트폴리오 생성에 실패했습니다. 잠시 후 다시 시도하거나 관리자에게 문의해주세요.",
         }[status]
 
-    def _get_repository(self) -> PortfolioRepository:
-        """기존 CRUD 엔드포인트용 Repository 반환 (지연 초기화)"""
-        if self._repository is None:
-            from common.db import get_pool
-
-            self._repository = PortfolioRepository(get_pool())
+    def _get_repository(self) -> "PortfolioRepository | None":
+        """레거시 CRUD 엔드포인트용 Repository 반환"""
         return self._repository
 
     async def start_generation(
@@ -170,6 +167,9 @@ class PortfolioService:
             )
 
         repo = self._get_repository()
+        if repo is None:
+            raise ValueError(f"포트폴리오를 찾을 수 없습니다: {portfolio_id}")
+
         try:
             row = await repo.get_by_id(portfolio_id)
         except Exception as e:
@@ -224,6 +224,9 @@ class PortfolioService:
             )
 
         repo = self._get_repository()
+        if repo is None:
+            return None
+
         try:
             row = await repo.get_by_id(portfolio_id)
         except Exception:
@@ -236,6 +239,9 @@ class PortfolioService:
     async def get_by_session(self, session_id: str) -> PortfolioResult | None:
         """세션 ID로 완료된 포트폴리오 결과 조회"""
         repo = self._get_repository()
+        if repo is None:
+            return None
+
         row = await repo.get_by_session_id(session_id)
         if row is None or row["status"] != PortfolioStatus.COMPLETED.value:
             return None
@@ -244,6 +250,9 @@ class PortfolioService:
     async def has_generating_or_completed(self, session_id: str) -> bool:
         """세션에 생성 중/완료 상태의 포트폴리오가 있는지 확인"""
         repo = self._get_repository()
+        if repo is None:
+            return False
+
         row = await repo.get_by_session_id(session_id)
         if row is None:
             return False
@@ -257,6 +266,9 @@ class PortfolioService:
             return bool(data)
 
         repo = self._get_repository()
+        if repo is None:
+            return False
+
         try:
             row = await repo.get_by_id(portfolio_id)
         except Exception:
@@ -276,6 +288,9 @@ class PortfolioService:
             )
 
         repo = self._get_repository()
+        if repo is None:
+            raise ValueError(f"포트폴리오를 찾을 수 없습니다: {portfolio_id}")
+
         try:
             await repo.update_contribution_rate(portfolio_id, rate)
         except Exception as e:
