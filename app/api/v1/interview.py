@@ -17,6 +17,7 @@ from app.schemas.interview import (
     CreateSessionRequest,
     CreateSessionResponse,
     ErrorResponse,
+    ExtendSessionResponse,
     MessageSchema,
     SessionStateResponse,
     StageProgressSchema,
@@ -30,6 +31,14 @@ logger = logging.getLogger(__name__)
 # ping 전송 간격 (초)
 _PING_INTERVAL_SECONDS = 10
 _STREAM_END = object()
+
+
+def _map_service_error_to_http_error(message: str) -> HTTPException:
+    """서비스 ValueError를 HTTP 에러로 변환"""
+    if "세션을 찾을 수 없습니다" in message:
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
 
 
 async def _interleave_ping_events(stream):
@@ -240,6 +249,67 @@ async def chat(session_id: str, request: ChatRequest) -> ChatResponse:
         stage_progress=StageProgressSchema(**result["stage_progress"]),
         overall_completion=result["overall_completion"],
         all_complete=result["all_complete"],
+        is_extended_mode=result["is_extended_mode"],
+        extension_turns_used=result["extension_turns_used"],
+        extension_turns_max=result["extension_turns_max"],
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/extend",
+    response_model=ExtendSessionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="연장 모드 시작",
+    description="완료된 인터뷰 세션을 연장 모드로 전환하고 첫 질문을 생성합니다.",
+    responses={
+        400: {"model": ErrorResponse, "description": "연장 불가 상태"},
+        404: {"model": ErrorResponse, "description": "세션을 찾을 수 없음"},
+    },
+)
+async def extend_session(session_id: str) -> ExtendSessionResponse:
+    """완료된 세션의 연장 모드 시작"""
+    service = get_interview_service()
+
+    try:
+        result = await service.extend_session(session_id)
+    except ValueError as e:
+        raise _map_service_error_to_http_error(str(e))
+
+    return ExtendSessionResponse(
+        ai_response=result["ai_response"],
+        extension_count=result["extension_count"],
+        extension_turns_max=result["extension_turns_max"],
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/extend/stream",
+    status_code=status.HTTP_200_OK,
+    summary="연장 모드 시작 (SSE 스트리밍)",
+    description="완료된 인터뷰 세션을 연장 모드로 전환하고 첫 질문을 SSE로 스트리밍합니다.",
+    responses={
+        200: {
+            "description": "SSE 스트림",
+            "content": {"text/event-stream": {}},
+        },
+        404: {"model": ErrorResponse, "description": "세션을 찾을 수 없음"},
+    },
+)
+async def extend_session_stream(session_id: str):
+    """완료된 세션의 연장 모드 시작 SSE"""
+    service = get_interview_service()
+
+    async def event_generator():
+        stream = service.extend_session_stream(session_id=session_id)
+        async for event in _interleave_ping_events(stream):
+            yield event
+
+    return EventSourceResponse(
+        event_generator(),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Nginx 프록시 버퍼링 비활성화
+        },
     )
 
 

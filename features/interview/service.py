@@ -19,6 +19,7 @@ from features.interview.agents.state import (
     InterviewState,
     get_initial_interview_state,
 )
+from features.interview.config.loader import get_global_config
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,16 @@ class InterviewService:
                     return None
                 return str(content)
         return None
+
+    @staticmethod
+    def _build_extension_meta(state: dict | None) -> dict:
+        """응답 페이로드용 연장 메타데이터 구성"""
+        state = state or {}
+        return {
+            "is_extended_mode": bool(state.get("is_extended_mode", False)),
+            "extension_turns_used": state.get("extension_turns_used"),
+            "extension_turns_max": state.get("extension_turns_max"),
+        }
 
     async def create_session(
         self,
@@ -181,6 +192,192 @@ class InterviewService:
                                 "first_question": first_question,
                                 "current_stage": final_state["current_stage"],
                                 "stage_progress": final_state["stage_progress"],
+                                **self._build_extension_meta(final_state),
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            else:
+                logger.error(f"세션 상태를 찾을 수 없습니다: {session_id}")
+                yield {
+                    "event": SSEEventType.ERROR,
+                    "data": json.dumps(
+                        {
+                            "type": SSEEventType.ERROR,
+                            "error": {
+                                "code": SSEErrorCode.FINAL_STATE_MISSING,
+                                "message": f"최종 상태를 조회할 수 없습니다: {session_id}",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+
+        except Exception as e:
+            logger.exception(f"SSE 스트리밍 중 예외 발생: {e}")
+            yield {
+                "event": SSEEventType.ERROR,
+                "data": json.dumps(
+                    {
+                        "type": SSEEventType.ERROR,
+                        "error": {
+                            "code": SSEErrorCode.LLM_ERROR,
+                            "message": f"처리 중 오류가 발생했습니다: {str(e)}",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+
+    async def extend_session(self, session_id: str) -> dict:
+        """완료된 세션을 연장 모드로 전환하고 첫 연장 질문을 생성"""
+        current_state = await self.get_session_state(session_id)
+        if current_state is None:
+            raise ValueError(f"세션을 찾을 수 없습니다: {session_id}")
+
+        global_config = get_global_config()
+        if not current_state["all_stages_complete"]:
+            raise ValueError("연장은 모든 단계 완료 후에만 시작할 수 있습니다.")
+
+        if current_state["extension_count"] >= global_config.max_extensions:
+            raise ValueError("최대 연장 횟수에 도달하여 더 이상 연장할 수 없습니다.")
+
+        input_state = {
+            "is_extended_mode": True,
+            "all_stages_complete": False,
+            "extension_count": current_state["extension_count"] + 1,
+            "extension_turns_used": 0,
+            "extension_turns_max": global_config.extension_turns_per_session,
+        }
+
+        result = await self._graph.ainvoke(
+            input_state,
+            config={"configurable": {"thread_id": session_id}},
+        )
+
+        ai_response = self._get_latest_ai_response(result.get("messages", []))
+        if ai_response is None:
+            raise ValueError("연장 질문을 생성하지 못했습니다.")
+
+        return {
+            "ai_response": ai_response,
+            "extension_count": result.get("extension_count", input_state["extension_count"]),
+            "extension_turns_max": result.get(
+                "extension_turns_max",
+                input_state["extension_turns_max"],
+            ),
+        }
+
+    async def extend_session_stream(self, session_id: str) -> AsyncGenerator[dict, None]:
+        """완료된 세션을 연장 모드로 전환하고 첫 연장 질문을 SSE로 스트리밍"""
+        current_state = await self.get_session_state(session_id)
+        if current_state is None:
+            yield {
+                "event": SSEEventType.ERROR,
+                "data": json.dumps(
+                    {
+                        "type": SSEEventType.ERROR,
+                        "error": {
+                            "code": SSEErrorCode.SESSION_NOT_FOUND,
+                            "message": f"세션을 찾을 수 없습니다: {session_id}",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+            return
+
+        global_config = get_global_config()
+        if not current_state["all_stages_complete"]:
+            yield {
+                "event": SSEEventType.ERROR,
+                "data": json.dumps(
+                    {
+                        "type": SSEEventType.ERROR,
+                        "error": {
+                            "code": SSEErrorCode.LLM_ERROR,
+                            "message": "연장은 모든 단계 완료 후에만 시작할 수 있습니다.",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+            return
+
+        if current_state["extension_count"] >= global_config.max_extensions:
+            yield {
+                "event": SSEEventType.ERROR,
+                "data": json.dumps(
+                    {
+                        "type": SSEEventType.ERROR,
+                        "error": {
+                            "code": SSEErrorCode.LLM_ERROR,
+                            "message": "최대 연장 횟수에 도달하여 더 이상 연장할 수 없습니다.",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+            return
+
+        input_state = {
+            "is_extended_mode": True,
+            "all_stages_complete": False,
+            "extension_count": current_state["extension_count"] + 1,
+            "extension_turns_used": 0,
+            "extension_turns_max": global_config.extension_turns_per_session,
+        }
+        config = {"configurable": {"thread_id": session_id}}
+        accumulated_text = ""
+
+        try:
+            async for event in self._graph.astream_events(input_state, config=config, version="v2"):
+                event_type = event.get("event")
+                metadata = event.get("metadata", {})
+                node_name = metadata.get("langgraph_node")
+
+                if (
+                    event_type == LangGraphEventType.ON_CHAT_MODEL_STREAM
+                    and node_name in STREAMING_TARGET_NODES
+                ):
+                    chunk = event["data"].get("chunk")
+                    if chunk and hasattr(chunk, "content") and chunk.content:
+                        token_text = chunk.content
+                        accumulated_text += token_text
+
+                        yield {
+                            "event": SSEEventType.CONTENT_BLOCK_DELTA,
+                            "data": json.dumps(
+                                {
+                                    "type": SSEEventType.CONTENT_BLOCK_DELTA,
+                                    "delta": {
+                                        "type": SSEDeltaType.TEXT_DELTA,
+                                        "text": token_text,
+                                    },
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+
+            final_state = await self.get_session_state(session_id)
+            if final_state:
+                ai_response = accumulated_text or self._get_latest_ai_response(
+                    final_state.get("messages", [])
+                )
+
+                yield {
+                    "event": SSEEventType.MESSAGE_COMPLETE,
+                    "data": json.dumps(
+                        {
+                            "type": SSEEventType.MESSAGE_COMPLETE,
+                            "message": {
+                                "ai_response": ai_response,
+                                "current_stage": final_state["current_stage"],
+                                "stage_progress": final_state["stage_progress"],
+                                "overall_completion": final_state["overall_completion_percentage"],
+                                "all_complete": final_state["all_stages_complete"],
+                                **self._build_extension_meta(final_state),
                             },
                         },
                         ensure_ascii=False,
@@ -279,6 +476,7 @@ class InterviewService:
             "stage_progress": result["stage_progress"],
             "overall_completion": result["overall_completion_percentage"],
             "all_complete": result["all_stages_complete"],
+            **self._build_extension_meta(result),
         }
 
     async def get_session_state(self, session_id: str) -> InterviewState | None:
@@ -452,6 +650,7 @@ class InterviewService:
                                 "stage_progress": final_state["stage_progress"],
                                 "overall_completion": final_state["overall_completion_percentage"],
                                 "all_complete": final_state["all_stages_complete"],
+                                **self._build_extension_meta(final_state),
                             },
                         },
                         ensure_ascii=False,
