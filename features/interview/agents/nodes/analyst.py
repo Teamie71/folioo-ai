@@ -11,10 +11,10 @@ from features.interview.agents.prompts.analyst import (
     analyst_prompt,
     overall_completion_prompt,
 )
-from features.interview.config.loader import get_global_config, load_stage_config
+from features.interview.config.loader import StageConfig, get_global_config, load_stage_config
 
 from ..state import CollectedField, InsightLog, InterviewState
-from .utils import _get_conversation_context
+from .utils import _get_conversation_context, _get_incomplete_fields
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +107,20 @@ def run(state: InterviewState) -> InterviewState:
         updated_collected_data = copy.deepcopy(state["collected_data"])
         llm_error = str(e)
 
-    # 5. 단계 완료 여부에 따른 라우팅
+    # 5. 단계 완료 여부에 따른 라우팅 (Analyst가 직접 판단)
     progress = state["stage_progress"]
-    if progress["is_complete"]:
+    is_stage_complete = _is_stage_complete(
+        state=state,
+        stage_config=stage_config,
+        collected_data=updated_collected_data,
+        enable_dynamic_followup=global_config.enable_dynamic_followup,
+    )
+    updated_progress = {
+        **progress,
+        "is_complete": is_stage_complete,
+    }
+
+    if is_stage_complete:
         if current_stage < 4:
             next_stage = current_stage + 1
             next_stage_config = load_stage_config(next_stage)
@@ -143,6 +154,7 @@ def run(state: InterviewState) -> InterviewState:
 
         return {
             **state,
+            "stage_progress": updated_progress,
             "collected_data": updated_collected_data,
             "all_stages_complete": True,
             "overall_completion_percentage": overall_completion_percentage,
@@ -153,10 +165,44 @@ def run(state: InterviewState) -> InterviewState:
     # 6. 상태 반환 (변경 필드)
     return {
         **state,
+        "stage_progress": updated_progress,
         "collected_data": updated_collected_data,
         "next_node": "question_generator",
         "llm_error": llm_error,
     }
+
+
+def _is_stage_complete(
+    state: InterviewState,
+    stage_config: StageConfig,
+    collected_data: dict[str, dict[str, CollectedField]],
+    enable_dynamic_followup: bool,
+) -> bool:
+    """현재 단계 완료 여부 판단"""
+    progress = state["stage_progress"]
+
+    fixed_q_exhausted = progress["fixed_q_used"] >= progress["fixed_q_total"]
+    generated_q_exhausted = progress["generated_q_used"] >= progress["generated_q_max"]
+
+    # 조건 1: 고정/생성 질문 모두 소진
+    if fixed_q_exhausted and generated_q_exhausted:
+        return True
+
+    # 조건 2: 고정 질문 소진 + 동적 질문 비활성화
+    if fixed_q_exhausted and not enable_dynamic_followup:
+        return True
+
+    # 조건 3: 고정 질문 소진 + 미수집 필드 없음 + 생성 질문 강제 소진 아님
+    if fixed_q_exhausted and not stage_config.force_all_generated_questions:
+        incomplete_fields = _get_incomplete_fields(
+            state=state,
+            stage_config=stage_config,
+            collected_data=collected_data,
+        )
+        if not incomplete_fields:
+            return True
+
+    return False
 
 
 def _format_required_fields(required_fields: dict[str, dict[str, str]]) -> str:
