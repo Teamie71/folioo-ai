@@ -1,7 +1,6 @@
 """첨삭 API 라우터"""
 
 import logging
-import uuid as _uuid
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, status
 
@@ -9,24 +8,23 @@ from app.schemas.correction import (
     CompanyInsightResponse,
     CorrectionResultResponse,
     CorrectionStatusResponse,
-    CreateCorrectionRequest,
-    CreateCorrectionResponse,
     UpdateCompanyInsightRequest,
     UpdateEmphasisPointsRequest,
 )
 from app.schemas.interview import ErrorResponse
-from features.correction.schemas import CorrectionStatus
+from common.clients.base_client import MainServerError
+from common.clients.correction_client import get_correction_client
 from features.correction.service import get_correction_service
 
 router = APIRouter(prefix="/corrections", tags=["correction"])
 logger = logging.getLogger(__name__)
 
 
-def _validate_correction_id(correction_id: str) -> None:
-    """correction_id가 유효한 UUID 형식인지 검증한다."""
+def _validate_correction_id(correction_id: str) -> int:
+    """correction_id가 유효한 정수인지 검증하고 int로 반환한다."""
     try:
-        _uuid.UUID(correction_id)
-    except ValueError as e:
+        return int(correction_id)
+    except (ValueError, TypeError) as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"첨삭을 찾을 수 없습니다: {correction_id}",
@@ -41,42 +39,22 @@ def _raise_internal_server_error() -> None:
     )
 
 
-def _is_company_insight_or_later(status_value: str) -> bool:
-    """company_insight 이후 단계 여부를 반환한다."""
-    allowed_statuses = {
-        CorrectionStatus.COMPANY_INSIGHT.value,
-        CorrectionStatus.GENERATING.value,
-        CorrectionStatus.DONE.value,
-    }
-    return status_value in allowed_statuses
-
-
-@router.post(
-    "",
-    response_model=CreateCorrectionResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="첨삭 세션 생성",
-    responses={500: {"model": ErrorResponse, "description": "내부 서버 에러"}},
-)
-async def create_correction(request: CreateCorrectionRequest) -> CreateCorrectionResponse:
-    """첨삭 세션을 생성한다."""
-    service = get_correction_service()
-    try:
-        correction = await service.create_correction(
-            portfolio_id=request.portfolio_id,
-            user_id=request.user_id,
-            company_name=request.company_name,
-            job_title=request.job_title,
-            job_description=request.job_description,
-        )
-        return CreateCorrectionResponse(
-            correction_id=str(correction["id"]),
-            status=CorrectionStatus(correction["status"]),
-        )
-    except HTTPException:
-        raise
-    except Exception:
-        _raise_internal_server_error()
+def _handle_main_server_error(exc: MainServerError) -> None:
+    """메인 서버 에러를 적절한 HTTP 에러로 변환한다."""
+    if exc.status_code == 404:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=exc.detail,
+        ) from exc
+    if exc.status_code == 422 or exc.error_code == "CORRECTION4221":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.detail,
+        ) from exc
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail=exc.detail,
+    ) from exc
 
 
 @router.get(
@@ -90,20 +68,16 @@ async def create_correction(request: CreateCorrectionRequest) -> CreateCorrectio
 )
 async def get_correction_result(correction_id: str) -> CorrectionResultResponse:
     """첨삭 결과를 조회한다."""
-    _validate_correction_id(correction_id)
-    service = get_correction_service()
+    cid = _validate_correction_id(correction_id)
     try:
-        correction = await service.get_correction(correction_id)
-        if correction is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"첨삭을 찾을 수 없습니다: {correction_id}",
-            )
+        correction = await get_correction_client().get_correction(cid)
         return CorrectionResultResponse(
             correction_id=str(correction["id"]),
-            status=CorrectionStatus(correction["status"]),
+            status=correction.get("status", "").lower(),
             result=correction.get("result"),
         )
+    except MainServerError as exc:
+        _handle_main_server_error(exc)
     except HTTPException:
         raise
     except Exception:
@@ -121,13 +95,15 @@ async def get_correction_result(correction_id: str) -> CorrectionResultResponse:
 )
 async def get_correction_status(correction_id: str) -> CorrectionStatusResponse:
     """첨삭 상태를 조회한다."""
-    _validate_correction_id(correction_id)
-    service = get_correction_service()
+    cid = _validate_correction_id(correction_id)
     try:
-        status_value = await service.get_status(correction_id)
-        return CorrectionStatusResponse(status=status_value, progress_message=None)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+        correction = await get_correction_client().get_correction(cid)
+        return CorrectionStatusResponse(
+            status=correction.get("status", "").lower(),
+            progress_message=None,
+        )
+    except MainServerError as exc:
+        _handle_main_server_error(exc)
     except HTTPException:
         raise
     except Exception:
@@ -145,25 +121,14 @@ async def get_correction_status(correction_id: str) -> CorrectionStatusResponse:
     },
 )
 async def start_rag(correction_id: str, background_tasks: BackgroundTasks) -> dict[str, str]:
-    """RAG 실행을 시작한다."""
-    _validate_correction_id(correction_id)
+    """RAG 실행을 시작한다. 메인 서버가 상태 전이를 검증한다."""
+    cid = _validate_correction_id(correction_id)
     service = get_correction_service()
     try:
-        correction = await service.get_correction(correction_id)
-        if correction is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"첨삭을 찾을 수 없습니다: {correction_id}",
-            )
-        if correction["status"] != CorrectionStatus.NOT_STARTED.value:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="현재 상태에서는 RAG를 시작할 수 없습니다.",
-            )
-        await service.start_rag(correction_id, background_tasks)
+        await service.start_rag(cid, background_tasks)
         return {"message": "RAG 실행을 시작했습니다."}
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except MainServerError as exc:
+        _handle_main_server_error(exc)
     except HTTPException:
         raise
     except Exception:
@@ -182,29 +147,22 @@ async def start_rag(correction_id: str, background_tasks: BackgroundTasks) -> di
 )
 async def get_company_insight(correction_id: str) -> CompanyInsightResponse:
     """기업 분석 결과를 조회한다."""
-    _validate_correction_id(correction_id)
-    service = get_correction_service()
+    cid = _validate_correction_id(correction_id)
     try:
-        correction = await service.get_correction(correction_id)
-        if correction is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"첨삭을 찾을 수 없습니다: {correction_id}",
-            )
-        if not _is_company_insight_or_later(correction["status"]):
+        correction = await get_correction_client().get_correction(cid)
+        company_insight = correction.get("companyInsight")
+        if company_insight is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="기업 분석 결과를 조회할 수 있는 상태가 아닙니다.",
             )
-        if correction.get("company_insight") is None:
-            logger.error(
-                "company_insight is None in company-insight response "
-                "(correction_id: %s, correction: %s)",
-                correction_id,
-                correction,
-            )
-            raise ValueError("company_insight 데이터가 비어 있습니다.")
-        return CompanyInsightResponse(company_insight=correction.get("company_insight"))
+        if isinstance(company_insight, dict):
+            import json
+
+            company_insight = json.dumps(company_insight, ensure_ascii=False)
+        return CompanyInsightResponse(company_insight=company_insight)
+    except MainServerError as exc:
+        _handle_main_server_error(exc)
     except HTTPException:
         raise
     except Exception:
@@ -226,24 +184,12 @@ async def update_company_insight(
     request: UpdateCompanyInsightRequest,
 ) -> dict[str, str]:
     """기업 분석 내용을 수정한다."""
-    _validate_correction_id(correction_id)
-    service = get_correction_service()
+    cid = _validate_correction_id(correction_id)
     try:
-        correction = await service.get_correction(correction_id)
-        if correction is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"첨삭을 찾을 수 없습니다: {correction_id}",
-            )
-        if correction["status"] != CorrectionStatus.COMPANY_INSIGHT.value:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="기업 분석 수정은 company_insight 상태에서만 가능합니다.",
-            )
-        await service.update_company_insight(correction_id, request.company_insight)
+        await get_correction_client().update_company_insight(cid, request.company_insight)
         return {"message": "기업 분석이 수정되었습니다."}
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except MainServerError as exc:
+        _handle_main_server_error(exc)
     except HTTPException:
         raise
     except Exception:
@@ -265,24 +211,16 @@ async def update_emphasis_points(
     request: UpdateEmphasisPointsRequest,
 ) -> dict[str, str]:
     """강조 포인트를 수정한다."""
-    _validate_correction_id(correction_id)
-    service = get_correction_service()
+    cid = _validate_correction_id(correction_id)
     try:
-        correction = await service.get_correction(correction_id)
-        if correction is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"첨삭을 찾을 수 없습니다: {correction_id}",
-            )
-        if correction["status"] != CorrectionStatus.COMPANY_INSIGHT.value:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="강조 포인트 수정은 company_insight 상태에서만 가능합니다.",
-            )
-        await service.update_emphasis_points(correction_id, request.emphasis_points)
+        client = get_correction_client()
+        await client.patch(
+            f"{client._PREFIX}/{cid}/emphasis-points",
+            json={"highlightPoint": request.emphasis_points},
+        )
         return {"message": "강조 포인트가 수정되었습니다."}
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except MainServerError as exc:
+        _handle_main_server_error(exc)
     except HTTPException:
         raise
     except Exception:
@@ -303,25 +241,49 @@ async def start_generation(
     correction_id: str,
     background_tasks: BackgroundTasks,
 ) -> dict[str, str]:
-    """첨삭 생성을 시작한다."""
-    _validate_correction_id(correction_id)
+    """첨삭 생성을 시작한다. 메인 서버가 상태 전이를 검증한다."""
+    cid = _validate_correction_id(correction_id)
     service = get_correction_service()
     try:
-        correction = await service.get_correction(correction_id)
-        if correction is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"첨삭을 찾을 수 없습니다: {correction_id}",
-            )
-        if correction["status"] != CorrectionStatus.COMPANY_INSIGHT.value:
+        await service.start_generation(cid, background_tasks)
+        return {"message": "첨삭 생성을 시작했습니다."}
+    except MainServerError as exc:
+        _handle_main_server_error(exc)
+    except HTTPException:
+        raise
+    except Exception:
+        _raise_internal_server_error()
+
+
+@router.post(
+    "/{correction_id}/retry",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="첨삭 재시도 시작",
+    responses={
+        404: {"model": ErrorResponse, "description": "첨삭이 없는 경우"},
+        409: {"model": ErrorResponse, "description": "상태 전이 규칙 위반"},
+        500: {"model": ErrorResponse, "description": "내부 서버 에러"},
+    },
+)
+async def retry_correction(
+    correction_id: str,
+    background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    """실패한 첨삭 생성을 재시도한다."""
+    cid = _validate_correction_id(correction_id)
+    service = get_correction_service()
+    try:
+        await service.retry(cid, background_tasks)
+        return {"message": "재시도를 시작했습니다."}
+    except ValueError as e:
+        if "실패 상태가 아닌 첨삭은 재시도할 수 없습니다" in str(e):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="현재 상태에서는 첨삭 생성을 시작할 수 없습니다.",
-            )
-        await service.start_generation(correction_id, background_tasks)
-        return {"message": "첨삭 생성을 시작했습니다."}
-    except ValueError as e:
+                detail="현재 상태에서는 재시도할 수 없습니다.",
+            ) from e
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except MainServerError as exc:
+        _handle_main_server_error(exc)
     except HTTPException:
         raise
     except Exception:
@@ -339,13 +301,12 @@ async def start_generation(
 )
 async def delete_correction(correction_id: str) -> Response:
     """첨삭을 삭제한다."""
-    _validate_correction_id(correction_id)
-    service = get_correction_service()
+    cid = _validate_correction_id(correction_id)
     try:
-        await service.delete_correction(correction_id)
+        await get_correction_client().delete(f"/api/corrections/{cid}")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except MainServerError as exc:
+        _handle_main_server_error(exc)
     except HTTPException:
         raise
     except Exception:
