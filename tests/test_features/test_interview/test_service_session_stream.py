@@ -300,6 +300,8 @@ async def test_extend_session_stream_yields_delta_and_complete(monkeypatch):
 
     events = [event async for event in service.extend_session_stream(session_id="session-1")]
 
+    assert dummy_graph.astream_calls[0]["state"]["mentioned_insight_ids"] == []
+
     assert events[0]["event"] == SSEEventType.CONTENT_BLOCK_DELTA
     delta_payload = json.loads(events[0]["data"])
     assert delta_payload["delta"]["text"] == "연장 질문"

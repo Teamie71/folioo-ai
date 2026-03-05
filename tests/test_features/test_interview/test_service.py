@@ -216,6 +216,7 @@ async def test_extend_session_success(monkeypatch):
     assert invocation["state"]["extension_count"] == 1
     assert invocation["state"]["extension_turns_used"] == 0
     assert invocation["state"]["extension_turns_max"] == 3
+    assert invocation["state"]["mentioned_insight_ids"] == []
 
 
 @pytest.mark.asyncio

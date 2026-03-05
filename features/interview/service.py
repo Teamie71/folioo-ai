@@ -249,6 +249,7 @@ class InterviewService:
             "extension_count": current_state["extension_count"] + 1,
             "extension_turns_used": 0,
             "extension_turns_max": global_config.extension_turns_per_session,
+            "mentioned_insight_ids": [],
         }
 
         result = await self._graph.ainvoke(
@@ -327,6 +328,7 @@ class InterviewService:
             "extension_count": current_state["extension_count"] + 1,
             "extension_turns_used": 0,
             "extension_turns_max": global_config.extension_turns_per_session,
+            "mentioned_insight_ids": [],
         }
         config = {"configurable": {"thread_id": session_id}}
         accumulated_text = ""
