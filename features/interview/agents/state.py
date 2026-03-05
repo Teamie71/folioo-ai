@@ -136,6 +136,15 @@ class InterviewState(TypedDict):
     # all_stages_complete=True 이후 사용자가 결제하면 True로 설정
     # state 구조는 동일하게 유지 (단계 구조 재사용 안 함)
 
+    extension_count: int
+    # 연장 횟수 (최대 2회)
+
+    extension_turns_used: int
+    # 현재 연장에서 사용한 질문 횟수
+
+    extension_turns_max: int
+    # 연장 1회당 최대 질문 횟수
+
     # ===== 에러 추적 =====
     llm_error: str | None
     # LLM 호출 실패 시 에러 메시지 기록
@@ -152,9 +161,10 @@ def get_initial_interview_state(
     API 레이어가 첫 호출 시 이 함수를 사용하여 state 초기화
     """
 
-    from features.interview.config.loader import load_stage_config
+    from features.interview.config.loader import get_global_config, load_stage_config
 
     stage_1_config = load_stage_config(1)
+    global_config = get_global_config()
 
     return {
         # 세션 정보
@@ -192,6 +202,9 @@ def get_initial_interview_state(
         "overall_completion_percentage": 0.0,
         # 결제 후 추가 대화
         "is_extended_mode": False,
+        "extension_count": 0,
+        "extension_turns_used": 0,
+        "extension_turns_max": global_config.extension_turns_per_session,
         # 에러 추적
         "llm_error": None,
     }

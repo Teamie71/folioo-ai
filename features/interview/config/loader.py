@@ -25,6 +25,8 @@ class GlobalConfig(BaseModel):
     max_retries_per_question: int
     enable_dynamic_followup: bool
     context_window_size: int
+    extension_turns_per_session: int
+    max_extensions: int
 
 
 class StagesConfig(BaseModel):
