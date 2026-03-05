@@ -1,5 +1,6 @@
 """첨삭 API 라우터"""
 
+import json
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, status
@@ -157,8 +158,6 @@ async def get_company_insight(correction_id: str) -> CompanyInsightResponse:
                 detail="기업 분석 결과를 조회할 수 있는 상태가 아닙니다.",
             )
         if isinstance(company_insight, dict):
-            import json
-
             company_insight = json.dumps(company_insight, ensure_ascii=False)
         return CompanyInsightResponse(company_insight=company_insight)
     except MainServerError as exc:
@@ -213,11 +212,7 @@ async def update_emphasis_points(
     """강조 포인트를 수정한다."""
     cid = _validate_correction_id(correction_id)
     try:
-        client = get_correction_client()
-        await client.patch(
-            f"{client._PREFIX}/{cid}/emphasis-points",
-            json={"highlightPoint": request.emphasis_points},
-        )
+        await get_correction_client().update_emphasis_points(cid, request.emphasis_points)
         return {"message": "강조 포인트가 수정되었습니다."}
     except MainServerError as exc:
         _handle_main_server_error(exc)
@@ -303,7 +298,7 @@ async def delete_correction(correction_id: str) -> Response:
     """첨삭을 삭제한다."""
     cid = _validate_correction_id(correction_id)
     try:
-        await get_correction_client().delete(f"/api/corrections/{cid}")
+        await get_correction_client().delete_correction(cid)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except MainServerError as exc:
         _handle_main_server_error(exc)

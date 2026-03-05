@@ -27,6 +27,7 @@ _install_dummy_langchain_openai()
 
 correction_service_module = importlib.import_module("features.correction.service")
 CorrectionStatus = importlib.import_module("features.correction.schemas").CorrectionStatus
+MainServerError = importlib.import_module("common.clients.base_client").MainServerError
 CorrectionService = correction_service_module.CorrectionService
 get_correction_service = correction_service_module.get_correction_service
 init_correction_service = correction_service_module.init_correction_service
@@ -47,7 +48,9 @@ class DummyCorrectionClient:
 
     async def get_correction(self, correction_id: int) -> dict:
         if correction_id not in self.corrections:
-            raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
+            raise MainServerError(
+                status_code=404, detail=f"첨삭을 찾을 수 없습니다: {correction_id}"
+            )
         return self.corrections[correction_id]
 
     async def update_status(self, correction_id: int, status: str) -> dict:

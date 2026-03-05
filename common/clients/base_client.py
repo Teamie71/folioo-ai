@@ -2,6 +2,7 @@
 
 import logging
 import os
+from typing import Any
 
 import httpx
 
@@ -33,9 +34,12 @@ class BaseClient:
         api_key: str | None = None,
         timeout: float | None = None,
     ) -> None:
-        self._base_url = (base_url or os.getenv("MAIN_BACKEND_URL", "")).rstrip("/")
-        self._api_key = api_key or os.getenv("MAIN_BACKEND_API_KEY", "")
-        self._timeout = timeout or float(os.getenv("MAIN_BACKEND_TIMEOUT", "30"))
+        self._base_url = (
+            base_url if base_url is not None else os.getenv("MAIN_BACKEND_URL", "")
+        ).rstrip("/")
+        self._api_key = api_key if api_key is not None else os.getenv("MAIN_BACKEND_API_KEY", "")
+        _raw_timeout = timeout if timeout is not None else os.getenv("MAIN_BACKEND_TIMEOUT")
+        self._timeout = float(_raw_timeout) if _raw_timeout is not None else 30.0
 
         if not self._base_url:
             raise ValueError("MAIN_BACKEND_URL이 설정되지 않았습니다.")
@@ -60,9 +64,9 @@ class BaseClient:
         method: str,
         path: str,
         *,
-        json: dict | list | None = None,
+        json: Any = None,
         params: dict | None = None,
-    ) -> dict | list | None:
+    ) -> Any:
         """
         HTTP 요청을 보내고 응답을 반환한다.
 
@@ -90,7 +94,7 @@ class BaseClient:
                 status_code=504,
                 detail="메인 서버 요청 시간이 초과되었습니다.",
             ) from exc
-        except httpx.ConnectError as exc:
+        except httpx.NetworkError as exc:
             raise MainServerError(
                 status_code=502,
                 detail="메인 서버에 연결할 수 없습니다.",
@@ -102,7 +106,7 @@ class BaseClient:
         if response.is_success:
             return response.json()
 
-        error_body = {}
+        error_body: dict = {}
         try:
             error_body = response.json()
         except Exception:
@@ -117,17 +121,17 @@ class BaseClient:
             error_code=error_code,
         )
 
-    async def get(self, path: str, *, params: dict | None = None) -> dict | list | None:
+    async def get(self, path: str, *, params: dict | None = None) -> Any:
         return await self._request("GET", path, params=params)
 
-    async def post(self, path: str, *, json: dict | list | None = None) -> dict | list | None:
+    async def post(self, path: str, *, json: Any = None) -> Any:
         return await self._request("POST", path, json=json)
 
-    async def patch(self, path: str, *, json: dict | list | None = None) -> dict | list | None:
+    async def patch(self, path: str, *, json: Any = None) -> Any:
         return await self._request("PATCH", path, json=json)
 
-    async def put(self, path: str, *, json: dict | list | None = None) -> dict | list | None:
+    async def put(self, path: str, *, json: Any = None) -> Any:
         return await self._request("PUT", path, json=json)
 
-    async def delete(self, path: str) -> dict | list | None:
+    async def delete(self, path: str) -> Any:
         return await self._request("DELETE", path)

@@ -13,13 +13,11 @@ CORRECTION_ID = "123"
 class DummyCorrectionClient:
     """API 테스트용 CorrectionClient Mock"""
 
-    _PREFIX = "/api/corrections"
-
     def __init__(self, *, correction: dict | None = None) -> None:
         self._correction = correction
         self.updated_company_insight: tuple[int, str] | None = None
-        self.deleted_path: str | None = None
-        self.patched: list[dict] = []
+        self.updated_emphasis_points: tuple[int, str] | None = None
+        self.deleted_id: int | None = None
 
     async def get_correction(self, correction_id: int) -> dict:
         if self._correction is None:
@@ -32,13 +30,12 @@ class DummyCorrectionClient:
         self.updated_company_insight = (correction_id, company_insight)
         return {"id": correction_id}
 
-    async def patch(self, path: str, *, json: dict | None = None) -> dict:
-        self.patched.append({"path": path, "json": json})
-        return {"id": 1}
+    async def update_emphasis_points(self, correction_id: int, emphasis_points: str) -> dict:
+        self.updated_emphasis_points = (correction_id, emphasis_points)
+        return {"id": correction_id}
 
-    async def delete(self, path: str) -> None:
-        self.deleted_path = path
-        return None
+    async def delete_correction(self, correction_id: int) -> None:
+        self.deleted_id = correction_id
 
 
 class DummyCorrectionService:
@@ -217,6 +214,23 @@ def test_get_company_insight_returns_409_when_none(monkeypatch):
     assert response.status_code == 409
 
 
+def test_get_company_insight_dict_serialized_to_json(monkeypatch):
+    """companyInsight가 dict이면 JSON 문자열로 변환하여 반환한다."""
+    cc = DummyCorrectionClient(
+        correction={
+            "id": 123,
+            "status": "COMPANY_INSIGHT",
+            "companyInsight": {"summary": "요약"},
+        }
+    )
+    client = _create_client(monkeypatch, cc)
+
+    response = client.get(f"/api/v1/corrections/{CORRECTION_ID}/company-insight")
+
+    assert response.status_code == 200
+    assert '"summary"' in response.json()["company_insight"]
+
+
 def test_update_company_insight_returns_200(monkeypatch):
     """기업 분석 수정이 성공하면 200을 반환한다."""
     cc = DummyCorrectionClient(correction={"id": 123, "status": "COMPANY_INSIGHT"})
@@ -229,6 +243,25 @@ def test_update_company_insight_returns_200(monkeypatch):
 
     assert response.status_code == 200
     assert cc.updated_company_insight == (123, "수정 내용")
+
+
+# ------------------------------------------------------------------
+# 강조 포인트
+# ------------------------------------------------------------------
+
+
+def test_update_emphasis_points_returns_200(monkeypatch):
+    """강조 포인트 수정이 성공하면 200을 반환한다."""
+    cc = DummyCorrectionClient(correction={"id": 123, "status": "COMPANY_INSIGHT"})
+    client = _create_client(monkeypatch, cc)
+
+    response = client.patch(
+        f"/api/v1/corrections/{CORRECTION_ID}/emphasis-points",
+        json={"emphasis_points": "새 포인트"},
+    )
+
+    assert response.status_code == 200
+    assert cc.updated_emphasis_points == (123, "새 포인트")
 
 
 # ------------------------------------------------------------------
@@ -308,4 +341,4 @@ def test_delete_correction_returns_204(monkeypatch):
     response = client.delete(f"/api/v1/corrections/{CORRECTION_ID}")
 
     assert response.status_code == 204
-    assert cc.deleted_path == "/api/corrections/123"
+    assert cc.deleted_id == 123

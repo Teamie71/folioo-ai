@@ -94,6 +94,8 @@ async def lifespan(app: FastAPI):
             logger.info("메인 서버 httpx 클라이언트 초기화 완료")
         except Exception:
             logger.exception("메인 서버 httpx 클라이언트 초기화 실패 - 첨삭 서비스 비활성화")
+            if correction_client is not None:
+                await correction_client.close()
             reset_correction_client()
             reset_portfolio_client()
             correction_client = None
