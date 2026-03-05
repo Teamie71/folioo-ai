@@ -1,190 +1,311 @@
-"""첨삭 API 테스트"""
+"""첨삭 API 테스트 (httpx 클라이언트 기반)"""
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.v1 import correction as correction_api
-from features.correction.schemas import CorrectionStatus
+from common.clients import base_client as base_client_module
+from common.clients import correction_client as correction_client_module
 
-CORRECTION_UUID = "11111111-1111-1111-1111-111111111111"
+CORRECTION_ID = "123"
+
+
+class DummyCorrectionClient:
+    """API 테스트용 CorrectionClient Mock"""
+
+    _PREFIX = "/api/corrections"
+
+    def __init__(self, *, correction: dict | None = None) -> None:
+        self._correction = correction
+        self.updated_company_insight: tuple[int, str] | None = None
+        self.deleted_path: str | None = None
+        self.patched: list[dict] = []
+
+    async def get_correction(self, correction_id: int) -> dict:
+        if self._correction is None:
+            raise base_client_module.MainServerError(
+                status_code=404, detail=f"첨삭을 찾을 수 없습니다: {correction_id}"
+            )
+        return self._correction
+
+    async def update_company_insight(self, correction_id: int, company_insight: str) -> dict:
+        self.updated_company_insight = (correction_id, company_insight)
+        return {"id": correction_id}
+
+    async def patch(self, path: str, *, json: dict | None = None) -> dict:
+        self.patched.append({"path": path, "json": json})
+        return {"id": 1}
+
+    async def delete(self, path: str) -> None:
+        self.deleted_path = path
+        return None
 
 
 class DummyCorrectionService:
+    """API 테스트용 CorrectionService Mock"""
+
     def __init__(
         self,
         *,
-        correction: dict | None = None,
-        status_value: CorrectionStatus = CorrectionStatus.NOT_STARTED,
-        status_error: Exception | None = None,
+        rag_error: Exception | None = None,
+        gen_error: Exception | None = None,
+        retry_error: Exception | None = None,
     ) -> None:
-        self._correction = correction
-        self._status_value = status_value
-        self._status_error = status_error
-        self.updated_company_insight: tuple[str, str] | None = None
-        self.updated_emphasis_points: tuple[str, str] | None = None
         self.rag_started = False
         self.generation_started = False
-        self.deleted_id: str | None = None
+        self.retry_started = False
+        self._rag_error = rag_error
+        self._gen_error = gen_error
+        self._retry_error = retry_error
 
-    async def create_correction(
-        self,
-        portfolio_id: str,
-        user_id: str,
-        company_name: str,
-        job_title: str,
-        job_description: str,
-    ) -> dict:
-        assert portfolio_id
-        assert user_id
-        assert company_name
-        assert job_title
-        assert job_description
-        return {"id": "c-1", "status": CorrectionStatus.NOT_STARTED.value}
-
-    async def get_correction(self, _correction_id: str) -> dict | None:
-        return self._correction
-
-    async def get_status(self, _correction_id: str) -> CorrectionStatus:
-        if self._status_error is not None:
-            raise self._status_error
-        return self._status_value
-
-    async def start_rag(self, _correction_id: str, _background_tasks) -> None:
+    async def start_rag(self, correction_id: int, background_tasks) -> None:
+        if self._rag_error:
+            raise self._rag_error
         self.rag_started = True
 
-    async def update_company_insight(self, correction_id: str, company_insight: str) -> None:
-        self.updated_company_insight = (correction_id, company_insight)
-
-    async def update_emphasis_points(self, correction_id: str, emphasis_points: str) -> None:
-        self.updated_emphasis_points = (correction_id, emphasis_points)
-
-    async def start_generation(self, _correction_id: str, _background_tasks) -> None:
+    async def start_generation(self, correction_id: int, background_tasks) -> None:
+        if self._gen_error:
+            raise self._gen_error
         self.generation_started = True
 
-    async def delete_correction(self, correction_id: str) -> None:
-        self.deleted_id = correction_id
+    async def retry(self, correction_id: int, background_tasks) -> None:
+        if self._retry_error:
+            raise self._retry_error
+        self.retry_started = True
 
 
-def _create_client(monkeypatch, service: DummyCorrectionService) -> TestClient:
-    monkeypatch.setattr(correction_api, "get_correction_service", lambda: service)
+def _create_client(
+    monkeypatch,
+    correction_client: DummyCorrectionClient,
+    service: DummyCorrectionService | None = None,
+) -> TestClient:
+    monkeypatch.setattr(
+        correction_client_module, "get_correction_client", lambda: correction_client
+    )
+    monkeypatch.setattr(correction_api, "get_correction_client", lambda: correction_client)
+    if service is not None:
+        monkeypatch.setattr(correction_api, "get_correction_service", lambda: service)
     app = FastAPI()
     app.include_router(correction_api.router, prefix="/api/v1")
     return TestClient(app)
 
 
-def test_create_correction_returns_201(monkeypatch):
-    """첨삭 생성 요청이 성공하면 201을 반환한다."""
-    client = _create_client(monkeypatch, DummyCorrectionService())
-
-    response = client.post(
-        "/api/v1/corrections",
-        json={
-            "portfolio_id": "portfolio-1",
-            "user_id": "user-1",
-            "company_name": "회사",
-            "job_title": "백엔드",
-            "job_description": "JD",
-        },
-    )
-
-    assert response.status_code == 201
-    assert response.json() == {"correction_id": "c-1", "status": "not_started"}
+# ------------------------------------------------------------------
+# 결과 조회
+# ------------------------------------------------------------------
 
 
-def test_get_correction_status_returns_404(monkeypatch):
-    """상태 조회 시 첨삭이 없으면 404를 반환한다."""
-    client = _create_client(
-        monkeypatch,
-        DummyCorrectionService(status_error=ValueError("첨삭을 찾을 수 없습니다")),
-    )
+def test_get_correction_result_returns_200(monkeypatch):
+    """첨삭 결과 조회가 성공하면 200을 반환한다."""
+    cc = DummyCorrectionClient(correction={"id": 123, "status": "DONE", "result": None})
+    client = _create_client(monkeypatch, cc)
 
-    response = client.get(f"/api/v1/corrections/{CORRECTION_UUID}/status")
+    response = client.get(f"/api/v1/corrections/{CORRECTION_ID}")
+
+    assert response.status_code == 200
+    assert response.json()["correction_id"] == "123"
+    assert response.json()["status"] == "done"
+
+
+def test_get_correction_result_returns_404(monkeypatch):
+    """첨삭이 없으면 404를 반환한다."""
+    cc = DummyCorrectionClient(correction=None)
+    client = _create_client(monkeypatch, cc)
+
+    response = client.get(f"/api/v1/corrections/{CORRECTION_ID}")
 
     assert response.status_code == 404
 
 
-def test_start_rag_returns_409_when_status_invalid(monkeypatch):
-    """RAG 시작은 not_started 상태가 아니면 409를 반환한다."""
-    client = _create_client(
-        monkeypatch,
-        DummyCorrectionService(correction={"id": CORRECTION_UUID, "status": "doing_rag"}),
-    )
+# ------------------------------------------------------------------
+# 상태 조회
+# ------------------------------------------------------------------
 
-    response = client.post(f"/api/v1/corrections/{CORRECTION_UUID}/rag")
+
+def test_get_correction_status_returns_200(monkeypatch):
+    """상태 조회가 성공하면 200을 반환한다."""
+    cc = DummyCorrectionClient(correction={"id": 123, "status": "DOING_RAG"})
+    client = _create_client(monkeypatch, cc)
+
+    response = client.get(f"/api/v1/corrections/{CORRECTION_ID}/status")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "doing_rag"
+
+
+def test_get_correction_status_returns_404(monkeypatch):
+    """상태 조회 시 첨삭이 없으면 404를 반환한다."""
+    cc = DummyCorrectionClient(correction=None)
+    client = _create_client(monkeypatch, cc)
+
+    response = client.get(f"/api/v1/corrections/{CORRECTION_ID}/status")
+
+    assert response.status_code == 404
+
+
+def test_invalid_correction_id_returns_404(monkeypatch):
+    """유효하지 않은 correction_id는 404를 반환한다."""
+    cc = DummyCorrectionClient()
+    client = _create_client(monkeypatch, cc)
+
+    response = client.get("/api/v1/corrections/not-a-number/status")
+
+    assert response.status_code == 404
+
+
+# ------------------------------------------------------------------
+# RAG 시작
+# ------------------------------------------------------------------
+
+
+def test_start_rag_returns_202(monkeypatch):
+    """RAG 시작이 성공하면 202를 반환한다."""
+    cc = DummyCorrectionClient()
+    service = DummyCorrectionService()
+    client = _create_client(monkeypatch, cc, service)
+
+    response = client.post(f"/api/v1/corrections/{CORRECTION_ID}/rag")
+
+    assert response.status_code == 202
+    assert service.rag_started is True
+
+
+def test_start_rag_returns_409_on_invalid_transition(monkeypatch):
+    """RAG 시작 시 상태 전이 규칙 위반이면 409를 반환한다."""
+    cc = DummyCorrectionClient()
+    service = DummyCorrectionService(
+        rag_error=base_client_module.MainServerError(
+            status_code=422,
+            detail="유효하지 않은 상태 전이",
+            error_code="CORRECTION4221",
+        )
+    )
+    client = _create_client(monkeypatch, cc, service)
+
+    response = client.post(f"/api/v1/corrections/{CORRECTION_ID}/rag")
 
     assert response.status_code == 409
 
 
-def test_get_company_insight_returns_409_when_not_ready(monkeypatch):
-    """기업 분석 조회는 company_insight 이전 상태에서 409를 반환한다."""
-    client = _create_client(
-        monkeypatch,
-        DummyCorrectionService(correction={"id": CORRECTION_UUID, "status": "doing_rag"}),
-    )
+# ------------------------------------------------------------------
+# 기업 분석
+# ------------------------------------------------------------------
 
-    response = client.get(f"/api/v1/corrections/{CORRECTION_UUID}/company-insight")
+
+def test_get_company_insight_returns_200(monkeypatch):
+    """기업 분석 조회가 성공하면 200을 반환한다."""
+    cc = DummyCorrectionClient(
+        correction={"id": 123, "status": "COMPANY_INSIGHT", "companyInsight": "분석 내용"}
+    )
+    client = _create_client(monkeypatch, cc)
+
+    response = client.get(f"/api/v1/corrections/{CORRECTION_ID}/company-insight")
+
+    assert response.status_code == 200
+    assert response.json()["company_insight"] == "분석 내용"
+
+
+def test_get_company_insight_returns_409_when_none(monkeypatch):
+    """companyInsight가 None이면 409를 반환한다."""
+    cc = DummyCorrectionClient(
+        correction={"id": 123, "status": "NOT_STARTED", "companyInsight": None}
+    )
+    client = _create_client(monkeypatch, cc)
+
+    response = client.get(f"/api/v1/corrections/{CORRECTION_ID}/company-insight")
 
     assert response.status_code == 409
-
-
-def test_get_company_insight_returns_500_when_insight_is_none(monkeypatch, caplog):
-    """company_insight가 None이면 500을 반환하고 에러 로그를 남긴다."""
-    client = _create_client(
-        monkeypatch,
-        DummyCorrectionService(
-            correction={
-                "id": CORRECTION_UUID,
-                "status": CorrectionStatus.COMPANY_INSIGHT.value,
-                "company_insight": None,
-            }
-        ),
-    )
-
-    with caplog.at_level("ERROR", logger=correction_api.__name__):
-        response = client.get(f"/api/v1/corrections/{CORRECTION_UUID}/company-insight")
-
-    assert response.status_code == 500
-    assert response.json() == {"detail": "내부 서버 오류가 발생했습니다."}
-    assert "company_insight is None in company-insight response" in caplog.text
-    assert CORRECTION_UUID in caplog.text
-    assert "'company_insight': None" in caplog.text
 
 
 def test_update_company_insight_returns_200(monkeypatch):
     """기업 분석 수정이 성공하면 200을 반환한다."""
-    service = DummyCorrectionService(
-        correction={"id": CORRECTION_UUID, "status": CorrectionStatus.COMPANY_INSIGHT.value}
-    )
-    client = _create_client(monkeypatch, service)
+    cc = DummyCorrectionClient(correction={"id": 123, "status": "COMPANY_INSIGHT"})
+    client = _create_client(monkeypatch, cc)
 
     response = client.patch(
-        f"/api/v1/corrections/{CORRECTION_UUID}/company-insight",
+        f"/api/v1/corrections/{CORRECTION_ID}/company-insight",
         json={"company_insight": "수정 내용"},
     )
 
     assert response.status_code == 200
-    assert service.updated_company_insight == (CORRECTION_UUID, "수정 내용")
+    assert cc.updated_company_insight == (123, "수정 내용")
+
+
+# ------------------------------------------------------------------
+# 첨삭 생성
+# ------------------------------------------------------------------
 
 
 def test_start_generation_returns_202(monkeypatch):
     """첨삭 생성 시작이 성공하면 202를 반환한다."""
-    service = DummyCorrectionService(
-        correction={"id": CORRECTION_UUID, "status": CorrectionStatus.COMPANY_INSIGHT.value}
-    )
-    client = _create_client(monkeypatch, service)
+    cc = DummyCorrectionClient()
+    service = DummyCorrectionService()
+    client = _create_client(monkeypatch, cc, service)
 
-    response = client.post(f"/api/v1/corrections/{CORRECTION_UUID}/generate")
+    response = client.post(f"/api/v1/corrections/{CORRECTION_ID}/generate")
 
     assert response.status_code == 202
     assert service.generation_started is True
 
 
+def test_start_generation_returns_409_on_invalid_transition(monkeypatch):
+    """생성 시작 시 상태 전이 규칙 위반이면 409를 반환한다."""
+    cc = DummyCorrectionClient()
+    service = DummyCorrectionService(
+        gen_error=base_client_module.MainServerError(
+            status_code=422,
+            detail="유효하지 않은 상태 전이",
+            error_code="CORRECTION4221",
+        )
+    )
+    client = _create_client(monkeypatch, cc, service)
+
+    response = client.post(f"/api/v1/corrections/{CORRECTION_ID}/generate")
+
+    assert response.status_code == 409
+
+
+# ------------------------------------------------------------------
+# 재시도
+# ------------------------------------------------------------------
+
+
+def test_retry_returns_202(monkeypatch):
+    """재시도가 성공하면 202를 반환한다."""
+    cc = DummyCorrectionClient()
+    service = DummyCorrectionService()
+    client = _create_client(monkeypatch, cc, service)
+
+    response = client.post(f"/api/v1/corrections/{CORRECTION_ID}/retry")
+
+    assert response.status_code == 202
+    assert service.retry_started is True
+
+
+def test_retry_returns_409_when_not_failed(monkeypatch):
+    """실패 상태가 아니면 재시도 시 409를 반환한다."""
+    cc = DummyCorrectionClient()
+    service = DummyCorrectionService(
+        retry_error=ValueError("실패 상태가 아닌 첨삭은 재시도할 수 없습니다")
+    )
+    client = _create_client(monkeypatch, cc, service)
+
+    response = client.post(f"/api/v1/corrections/{CORRECTION_ID}/retry")
+
+    assert response.status_code == 409
+
+
+# ------------------------------------------------------------------
+# 삭제
+# ------------------------------------------------------------------
+
+
 def test_delete_correction_returns_204(monkeypatch):
     """첨삭 삭제가 성공하면 204를 반환한다."""
-    service = DummyCorrectionService()
-    client = _create_client(monkeypatch, service)
+    cc = DummyCorrectionClient()
+    client = _create_client(monkeypatch, cc)
 
-    response = client.delete(f"/api/v1/corrections/{CORRECTION_UUID}")
+    response = client.delete(f"/api/v1/corrections/{CORRECTION_ID}")
 
     assert response.status_code == 204
-    assert service.deleted_id == CORRECTION_UUID
+    assert cc.deleted_path == "/api/corrections/123"
