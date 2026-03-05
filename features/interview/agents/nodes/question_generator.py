@@ -7,17 +7,25 @@ from langchain_core.messages import AIMessage
 from common.llm.client import get_llm
 from features.interview.config.loader import (
     StageConfig,
+    get_all_stages,
     get_global_config,
     load_stage_config,
 )
 
 from ..prompts import (
     contextual_fixed_question_prompt,
+    extended_generated_question_prompt,
     first_turn_prompt,
     generated_question_prompt,
 )
 from ..state import InterviewState
-from .utils import _format_incomplete_fields, _get_conversation_context, _get_incomplete_fields
+from .utils import (
+    _format_global_incomplete_fields,
+    _format_incomplete_fields,
+    _get_all_stage_incomplete_fields,
+    _get_conversation_context,
+    _get_incomplete_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +188,61 @@ def _generate_dynamic_question(
     return (question, llm_error)
 
 
+def _generate_extended_question(
+    state: InterviewState,
+) -> tuple[str, str | None]:
+    """연장 모드 질문 생성"""
+    global_config = get_global_config()
+    all_stage_configs = get_all_stages()
+    context = _get_conversation_context(state, max_messages=global_config.context_window_size)
+    incomplete_fields = _get_all_stage_incomplete_fields(state, stages=all_stage_configs)
+    global_incomplete_fields = _format_global_incomplete_fields(incomplete_fields)
+
+    remaining_turns = state["extension_turns_max"] - state["extension_turns_used"]
+
+    llm = get_llm(temperature=0.7)
+    chain = extended_generated_question_prompt | llm
+    llm_error = None
+
+    try:
+        question = _invoke_with_retry(
+            chain=chain,
+            prompt_variables={
+                "experience_name": state["experience_name"],
+                "conversation_context": context,
+                "global_incomplete_fields": global_incomplete_fields,
+                "remaining_turns": remaining_turns,
+            },
+            max_retries_per_question=global_config.max_retries_per_question,
+        )
+    except Exception as e:
+        logger.exception("LLM 호출 실패: 연장 질문")
+        if incomplete_fields:
+            target = incomplete_fields[0]
+            question = (
+                f"좋아요. {target['stage_name']} 단계에서 '{target['description']}'에 대해 "
+                "조금 더 자세히 말씀해 주시겠어요?"
+            )
+        else:
+            question = "좋아요. 이 경험에서 특히 더 강조하고 싶은 부분이 있을까요?"
+        llm_error = str(e)
+
+    return (question, llm_error)
+
+
+def _run_extended_mode(state: InterviewState) -> InterviewState:
+    """연장 모드 분기 처리"""
+    question, llm_error = _generate_extended_question(state)
+
+    return {
+        **state,
+        "messages": [AIMessage(content=question)],
+        "extension_turns_used": state["extension_turns_used"] + 1,
+        "next_node": "end",
+        "llm_error": llm_error,
+    }
+
+
 def run(state: InterviewState) -> InterviewState:
     """
     인터뷰 질문 생성 (초기 또는 분석 기반)
@@ -190,6 +253,9 @@ def run(state: InterviewState) -> InterviewState:
     - 생성 질문 단계: 미수집 필드 기반 동적 질문 생성
     - 질문 소진: 안전한 fallback 질문 생성
     """
+
+    if state["is_extended_mode"]:
+        return _run_extended_mode(state)
 
     # 1. 현재 단계 설정 로드
     stage_config = load_stage_config(state["current_stage"])
