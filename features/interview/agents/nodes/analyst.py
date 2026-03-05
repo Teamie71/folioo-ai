@@ -9,9 +9,15 @@ from common.llm.client import get_llm
 from features.interview.agents.prompts.analyst import (
     AnalystResponse,
     analyst_prompt,
+    extended_analyst_prompt,
     overall_completion_prompt,
 )
-from features.interview.config.loader import StageConfig, get_global_config, load_stage_config
+from features.interview.config.loader import (
+    StageConfig,
+    get_all_stages,
+    get_global_config,
+    load_stage_config,
+)
 
 from ..state import CollectedField, InsightLog, InterviewState
 from .utils import _get_conversation_context, _get_incomplete_fields
@@ -29,6 +35,9 @@ def run(state: InterviewState) -> InterviewState:
 
     TODO: 마무리 멘트가 필요하면 end 대신 question_generator로 라우팅하도록 수정
     """
+
+    if state["is_extended_mode"]:
+        return _run_extended_mode(state)
 
     current_stage = state["current_stage"]
     stage_key = f"stage_{current_stage}"
@@ -172,6 +181,96 @@ def run(state: InterviewState) -> InterviewState:
     }
 
 
+def _run_extended_mode(state: InterviewState) -> InterviewState:
+    """연장 모드에서 전체 4단계 데이터를 분석하고 다음 라우팅을 결정"""
+    global_config = get_global_config()
+    all_stage_configs = get_all_stages()
+
+    conversation_context = _get_conversation_context(
+        state, max_messages=global_config.context_window_size
+    )
+    all_required_fields_str = _format_all_required_fields(all_stage_configs)
+    existing_collected_str = _format_all_stages_collected_data(
+        state["collected_data"],
+        all_stage_configs,
+    )
+    retrieved_insights_str = _format_retrieved_insights(state["retrieved_insights"])
+    file_contexts_str = _format_file_contexts(state["file_contexts"])
+
+    prompt_variables = {
+        "experience_name": state["experience_name"],
+        "conversation_context": conversation_context,
+        "all_required_fields": all_required_fields_str,
+        "existing_collected_data": existing_collected_str,
+        "retrieved_insights": retrieved_insights_str,
+        "file_contexts": file_contexts_str,
+    }
+
+    try:
+        llm = get_llm(temperature=0.3)
+        structured_llm = llm.with_structured_output(AnalystResponse)
+        chain = extended_analyst_prompt | structured_llm
+
+        response: AnalystResponse = chain.invoke(prompt_variables)
+
+        updated_collected_data = copy.deepcopy(state["collected_data"])
+        for field_result in response.fields:
+            field_name = field_result.field_name
+            field_location = _find_stage_for_field(field_name, all_stage_configs)
+
+            if field_location is None:
+                logger.warning("LLM이 전체 required_fields에 없는 필드를 반환: %s", field_name)
+                continue
+
+            stage_number, stage_config = field_location
+            stage_key = f"stage_{stage_number}"
+            stage_collected = updated_collected_data.get(stage_key, {})
+            existing_field: CollectedField | None = stage_collected.get(field_name)
+            field_description = stage_config.required_fields[field_name].get("description", "")
+
+            if existing_field is None:
+                stage_collected[field_name] = CollectedField(
+                    field_name=field_name,
+                    description=field_description,
+                    value=field_result.value,
+                    completeness=field_result.completeness,
+                )
+            elif field_result.completeness > existing_field["completeness"]:
+                stage_collected[field_name] = CollectedField(
+                    field_name=field_name,
+                    description=existing_field["description"] or field_description,
+                    value=field_result.value,
+                    completeness=field_result.completeness,
+                )
+
+            updated_collected_data[stage_key] = stage_collected
+
+        llm_error = None
+
+    except Exception as e:
+        logger.exception("Analyst 연장 모드 LLM 호출 실패")
+        updated_collected_data = copy.deepcopy(state["collected_data"])
+        llm_error = str(e)
+
+    if state["extension_turns_used"] >= state["extension_turns_max"]:
+        return {
+            **state,
+            "collected_data": updated_collected_data,
+            "all_stages_complete": True,
+            "is_extended_mode": False,
+            "next_node": "end",
+            "llm_error": llm_error,
+        }
+
+    return {
+        **state,
+        "collected_data": updated_collected_data,
+        "all_stages_complete": False,
+        "next_node": "question_generator",
+        "llm_error": llm_error,
+    }
+
+
 def _is_stage_complete(
     state: InterviewState,
     stage_config: StageConfig,
@@ -221,6 +320,19 @@ def _format_required_fields(required_fields: dict[str, dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _format_all_required_fields(all_stage_configs: dict[int, StageConfig]) -> str:
+    """전체 단계의 required_fields를 프롬프트용 문자열로 변환"""
+    lines = []
+    for stage_number in sorted(all_stage_configs):
+        stage_config = all_stage_configs[stage_number]
+        lines.append(f"[stage_{stage_number} - {stage_config.name}]")
+        for field_name, field_info in stage_config.required_fields.items():
+            lines.append(f"- {field_name}: {field_info.get('description', '')}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
 def _format_existing_collected_data(collected: dict[str, CollectedField]) -> str:
     """
     기존 수집 데이터를 프롬프트용 문자열로 변환
@@ -240,6 +352,34 @@ def _format_existing_collected_data(collected: dict[str, CollectedField]) -> str
         value = field_data["value"]
         lines.append(f"- {field_name} (완성도: {completeness}): {value}")
     return "\n".join(lines)
+
+
+def _format_all_stages_collected_data(
+    collected_data: dict[str, dict[str, CollectedField]],
+    all_stage_configs: dict[int, StageConfig],
+) -> str:
+    """전체 단계의 수집 데이터를 프롬프트용 문자열로 변환"""
+    lines = []
+    for stage_number in sorted(all_stage_configs):
+        stage_key = f"stage_{stage_number}"
+        stage_name = all_stage_configs[stage_number].name
+        lines.append(f"[stage_{stage_number} - {stage_name}]")
+        lines.append(_format_existing_collected_data(collected_data.get(stage_key, {})))
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def _find_stage_for_field(
+    field_name: str,
+    all_stage_configs: dict[int, StageConfig],
+) -> tuple[int, StageConfig] | None:
+    """field_name이 속한 단계를 반환"""
+    for stage_number, stage_config in all_stage_configs.items():
+        if field_name in stage_config.required_fields:
+            return stage_number, stage_config
+
+    return None
 
 
 def _format_retrieved_insights(insights: list[InsightLog]) -> str:
