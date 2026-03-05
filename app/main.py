@@ -18,18 +18,22 @@ async def lifespan(app: FastAPI):
     """
     애플리케이션 생명주기 관리
 
-    - 시작 시: 리소스 초기화 (Checkpointer, InsightStore, 포트폴리오/첨삭 DB)
+    - 시작 시: 리소스 초기화 (Checkpointer, InsightStore, 포트폴리오/첨삭 DB, httpx 클라이언트)
     - 종료 시: 리소스 정리
     """
 
     import logging
     import os
 
-    from common.db.connection import close_pool, create_pool
-    from features.correction.repository import (
-        init_correction_repository,
-        reset_correction_repository,
+    from common.clients.correction_client import (
+        init_correction_client,
+        reset_correction_client,
     )
+    from common.clients.portfolio_client import (
+        init_portfolio_client,
+        reset_portfolio_client,
+    )
+    from common.db.connection import close_pool, create_pool
     from features.interview.agents.insight_store.pgvector_store import (
         PgVectorInsightStore,
     )
@@ -42,7 +46,7 @@ async def lifespan(app: FastAPI):
 
     logger = logging.getLogger(__name__)
 
-    # ===== 공유 DB 커넥션 풀 초기화 (InsightStore + Portfolio + Correction 공용) =====
+    # ===== 공유 DB 커넥션 풀 초기화 (InsightStore + Portfolio 공용) =====
     pool = None
     db_url = os.getenv("DATABASE_URL")
 
@@ -50,9 +54,9 @@ async def lifespan(app: FastAPI):
         try:
             pool = await create_pool()
         except Exception:
-            logger.exception("DB 커넥션 풀 생성 실패 - InsightStore/포트폴리오/첨삭 DB 비활성화")
+            logger.exception("DB 커넥션 풀 생성 실패 - InsightStore/포트폴리오 DB 비활성화")
     else:
-        logger.warning("DATABASE_URL이 설정되지 않음 - InsightStore/포트폴리오/첨삭 DB 비활성화")
+        logger.warning("DATABASE_URL이 설정되지 않음 - InsightStore/포트폴리오 DB 비활성화")
 
     # ===== InsightStore 초기화 (임시 pgvector) =====
     if pool is not None:
@@ -78,21 +82,35 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("포트폴리오 DB 초기화 실패")
 
-    # ===== 첨삭 DB 초기화 =====
-    if pool is not None:
+    # ===== 메인 서버 httpx 클라이언트 초기화 =====
+    correction_client = None
+    portfolio_client = None
+    main_backend_url = os.getenv("MAIN_BACKEND_URL")
+
+    if main_backend_url:
         try:
-            correction_repo = init_correction_repository(pool)
-            await correction_repo.setup_table()
-            logger.info("첨삭 DB 초기화 완료")
+            correction_client = init_correction_client()
+            portfolio_client = init_portfolio_client()
+            logger.info("메인 서버 httpx 클라이언트 초기화 완료")
         except Exception:
-            reset_correction_repository()
-            logger.exception("첨삭 DB 초기화 실패")
+            logger.exception("메인 서버 httpx 클라이언트 초기화 실패 - 첨삭 서비스 비활성화")
+            reset_correction_client()
+            reset_portfolio_client()
+            correction_client = None
+            portfolio_client = None
+    else:
+        logger.warning("MAIN_BACKEND_URL이 설정되지 않음 - 첨삭 서비스 비활성화")
 
     # ===== Checkpointer 초기화 =====
     async with setup_checkpointer():
         yield
 
-    # ===== 종료 시: 커넥션 풀 정리 =====
+    # ===== 종료 시: 리소스 정리 =====
+    if correction_client:
+        await correction_client.close()
+    if portfolio_client:
+        await portfolio_client.close()
+
     if pool:
         await close_pool()
         logger.info("DB 커넥션 풀 정리 완료")
