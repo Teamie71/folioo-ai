@@ -19,7 +19,10 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
 def _validate_portfolio_id(portfolio_id: str) -> None:
-    """portfolio_id가 유효한 UUID 형식인지 검증한다."""
+    """portfolio_id가 유효한 숫자 ID 또는 UUID 형식인지 검증한다."""
+    if portfolio_id.isdigit() and int(portfolio_id) > 0:
+        return
+
     try:
         _uuid.UUID(portfolio_id)
     except ValueError as e:
@@ -135,7 +138,11 @@ async def update_contribution_rate(
             detail=f"포트폴리오를 찾을 수 없습니다: {portfolio_id}",
         )
 
-    await service.update_contribution_rate(portfolio_id, request.contribution_rate)
+    try:
+        await service.update_contribution_rate(portfolio_id, request.contribution_rate)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
     return {"message": "기여도가 수정되었습니다."}
 
 

@@ -60,6 +60,18 @@ class TestSearchSimilar:
         assert call_kwargs.kwargs["user_id"] == 123
 
     @pytest.mark.asyncio
+    async def test_converts_user_id_with_prefix_to_int(self):
+        """user-1 같은 문자열 user_id를 int로 변환"""
+        mock_client = AsyncMock()
+        mock_client.search_similar.return_value = []
+
+        store = MainServerInsightStore(client=mock_client)
+        await store.search_similar(query="test", user_id="user-1")
+
+        call_kwargs = mock_client.search_similar.call_args
+        assert call_kwargs.kwargs["user_id"] == 1
+
+    @pytest.mark.asyncio
     async def test_invalid_user_id_returns_empty_list(self):
         """int로 변환 불가능한 user_id는 빈 리스트 반환"""
         mock_client = AsyncMock()
@@ -116,6 +128,17 @@ class TestGetById:
 
         store = MainServerInsightStore(client=mock_client)
         await store.get_by_id("99")
+
+        mock_client.get_by_id.assert_called_once_with(99)
+
+    @pytest.mark.asyncio
+    async def test_converts_prefixed_insight_id_to_int(self):
+        """insight-99 같은 문자열도 숫자 ID로 변환"""
+        mock_client = AsyncMock()
+        mock_client.get_by_id.return_value = None
+
+        store = MainServerInsightStore(client=mock_client)
+        await store.get_by_id("insight-99")
 
         mock_client.get_by_id.assert_called_once_with(99)
 

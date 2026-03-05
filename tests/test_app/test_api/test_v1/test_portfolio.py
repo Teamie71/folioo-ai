@@ -18,10 +18,12 @@ class DummyPortfolioService:
         start_generation_error: Exception | None = None,
         result: PortfolioResult | None = None,
         status_error: Exception | None = None,
+        update_rate_error: Exception | None = None,
     ) -> None:
         self._start_generation_error = start_generation_error
         self._result = result
         self._status_error = status_error
+        self._update_rate_error = update_rate_error
         self.updated_rate: tuple[str, int] | None = None
 
     async def exists(self, _portfolio_id: str) -> bool:
@@ -49,6 +51,8 @@ class DummyPortfolioService:
         return self._result
 
     async def update_contribution_rate(self, portfolio_id: str, rate: int) -> None:
+        if self._update_rate_error is not None:
+            raise self._update_rate_error
         self.updated_rate = (portfolio_id, rate)
 
 
@@ -139,6 +143,15 @@ def test_get_portfolio_status_returns_200(monkeypatch):
     assert response.json()["status"] == PortfolioStatus.GENERATING.value
 
 
+def test_get_portfolio_status_accepts_numeric_id(monkeypatch):
+    """숫자형 portfolio_id 경로 파라미터를 허용한다."""
+    client = _create_client(monkeypatch, DummyPortfolioService())
+
+    response = client.get("/api/v1/portfolio/100/status")
+
+    assert response.status_code == 200
+
+
 def test_get_portfolio_status_returns_404(monkeypatch):
     """포트폴리오가 없으면 status 엔드포인트는 404를 반환한다."""
     client = _create_client(
@@ -183,3 +196,38 @@ def test_get_session_returns_404(monkeypatch):
     response = client.get("/api/v1/portfolio/session/session-1")
 
     assert response.status_code == 404
+
+
+def test_update_contribution_rate_returns_400_when_service_rejects(monkeypatch):
+    """서비스가 ValueError를 던지면 400을 반환한다."""
+    result = PortfolioResult(
+        portfolio_id="100",
+        session_id="session-1",
+        user_id="user-1",
+        experience_name="경험",
+        status=PortfolioStatus.COMPLETED,
+        contribution_rate=10,
+        output=PortfolioOutput(
+            description="상세",
+            contributions="담당",
+            achievements="해결",
+            insights="배운점",
+        ),
+        created_at=datetime.now(UTC),
+    )
+    client = _create_client(
+        monkeypatch,
+        DummyPortfolioService(
+            result=result,
+            update_rate_error=ValueError(
+                "숫자형 portfolio_id는 현재 기여도 수정을 지원하지 않습니다."
+            ),
+        ),
+    )
+
+    response = client.patch(
+        "/api/v1/portfolio/100/contribution-rate",
+        json={"contribution_rate": 35},
+    )
+
+    assert response.status_code == 400

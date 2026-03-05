@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 def _validate_correction_id(correction_id: str) -> None:
-    """correction_id가 유효한 UUID 형식인지 검증한다."""
+    """correction_id가 유효한 숫자 ID 또는 UUID 형식인지 검증한다."""
+    if correction_id.isdigit() and int(correction_id) > 0:
+        return
+
     try:
         _uuid.UUID(correction_id)
     except ValueError as e:
@@ -282,7 +285,12 @@ async def update_emphasis_points(
         await service.update_emphasis_points(correction_id, request.emphasis_points)
         return {"message": "강조 포인트가 수정되었습니다."}
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+        error_status = (
+            status.HTTP_404_NOT_FOUND
+            if "첨삭을 찾을 수 없습니다" in str(e)
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=error_status, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception:
@@ -389,7 +397,12 @@ async def delete_correction(correction_id: str) -> Response:
         await service.delete_correction(correction_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+        error_status = (
+            status.HTTP_404_NOT_FOUND
+            if "첨삭을 찾을 수 없습니다" in str(e)
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=error_status, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception:

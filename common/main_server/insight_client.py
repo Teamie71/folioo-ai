@@ -53,9 +53,16 @@ class InsightClient:
                 "threshold": threshold,
             },
         )
-        if not isinstance(result, list):
-            return []
-        return [_to_insight_log(item) for item in result]
+
+        insights: list[dict[str, Any]] = []
+        if isinstance(result, dict):
+            raw_insights = result.get("insights")
+            if isinstance(raw_insights, list):
+                insights = [item for item in raw_insights if isinstance(item, dict)]
+        elif isinstance(result, list):
+            insights = [item for item in result if isinstance(item, dict)]
+
+        return [_to_insight_log(item) for item in insights]
 
     async def get_by_id(self, insight_id: int) -> InsightLog | None:
         """

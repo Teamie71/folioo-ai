@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from fastapi import BackgroundTasks
@@ -36,6 +37,29 @@ class PortfolioService:
         self._interview_service = interview_service or get_interview_service()
         self._portfolio_client = portfolio_client or PortfolioClient()
         self._inprocess_tasks: set[asyncio.Task] = set()
+
+    @staticmethod
+    def _parse_numeric_portfolio_id(portfolio_id: str) -> int | None:
+        """문자열 portfolio_id를 숫자형 ID로 변환 시도"""
+        try:
+            numeric_id = int(portfolio_id)
+        except (ValueError, TypeError):
+            return None
+
+        if numeric_id <= 0:
+            return None
+        return numeric_id
+
+    @staticmethod
+    def _build_progress_message(status: PortfolioStatus, error_message: str | None) -> str:
+        """상태 기반 진행 메시지 생성"""
+        return {
+            PortfolioStatus.NOT_STARTED: "포트폴리오 생성을 준비하고 있습니다.",
+            PortfolioStatus.GENERATING: "포트폴리오를 생성하고 있습니다.",
+            PortfolioStatus.COMPLETED: "포트폴리오 생성이 완료되었습니다.",
+            PortfolioStatus.FAILED: error_message
+            or "포트폴리오 생성에 실패했습니다. 잠시 후 다시 시도하거나 관리자에게 문의해주세요.",
+        }[status]
 
     def _get_repository(self) -> PortfolioRepository:
         """기존 CRUD 엔드포인트용 Repository 반환 (지연 초기화)"""
@@ -128,26 +152,83 @@ class PortfolioService:
         """포트폴리오 생성 상태 조회"""
         from app.schemas.portfolio import PortfolioStatusResponse
 
+        numeric_portfolio_id = self._parse_numeric_portfolio_id(portfolio_id)
+        if numeric_portfolio_id is not None:
+            data = await self._portfolio_client.get_portfolio(numeric_portfolio_id)
+            if not data:
+                raise ValueError(f"포트폴리오를 찾을 수 없습니다: {portfolio_id}")
+
+            status_value = str(data.get("status", "")).lower()
+            try:
+                status = PortfolioStatus(status_value)
+            except ValueError as e:
+                raise ValueError(f"알 수 없는 포트폴리오 상태입니다: {status_value}") from e
+
+            return PortfolioStatusResponse(
+                status=status,
+                progress_message=self._build_progress_message(status, data.get("error_message")),
+            )
+
         repo = self._get_repository()
-        row = await repo.get_by_id(portfolio_id)
+        try:
+            row = await repo.get_by_id(portfolio_id)
+        except Exception as e:
+            raise ValueError(f"포트폴리오를 찾을 수 없습니다: {portfolio_id}") from e
+
         if row is None:
             raise ValueError(f"포트폴리오를 찾을 수 없습니다: {portfolio_id}")
 
         status = PortfolioStatus(row["status"])
-        progress_message = {
-            PortfolioStatus.NOT_STARTED: "포트폴리오 생성을 준비하고 있습니다.",
-            PortfolioStatus.GENERATING: "포트폴리오를 생성하고 있습니다.",
-            PortfolioStatus.COMPLETED: "포트폴리오 생성이 완료되었습니다.",
-            PortfolioStatus.FAILED: row.get("error_message")
-            or "포트폴리오 생성에 실패했습니다. 잠시 후 다시 시도하거나 관리자에게 문의해주세요.",
-        }[status]
+        progress_message = self._build_progress_message(status, row.get("error_message"))
 
         return PortfolioStatusResponse(status=status, progress_message=progress_message)
 
     async def get_result(self, portfolio_id: str) -> PortfolioResult | None:
         """완료된 포트폴리오 결과 조회"""
+        numeric_portfolio_id = self._parse_numeric_portfolio_id(portfolio_id)
+        if numeric_portfolio_id is not None:
+            data = await self._portfolio_client.get_portfolio(numeric_portfolio_id)
+            status_value = str(data.get("status", "")).lower() if data else ""
+            if not data or status_value != PortfolioStatus.COMPLETED.value:
+                return None
+
+            output: PortfolioOutput | None = None
+            if all(
+                data.get(key) is not None
+                for key in ["description", "contributions", "achievements", "insights"]
+            ):
+                output = PortfolioOutput(
+                    description=str(data.get("description", "")),
+                    contributions=str(data.get("contributions", "")),
+                    achievements=str(data.get("achievements", "")),
+                    insights=str(data.get("insights", "")),
+                )
+
+            contribution_rate: int | None = None
+            raw_contribution_rate = data.get("contribution_rate")
+            if raw_contribution_rate is not None:
+                try:
+                    contribution_rate = int(raw_contribution_rate)
+                except (ValueError, TypeError):
+                    contribution_rate = None
+
+            return PortfolioResult(
+                portfolio_id=str(data.get("id", numeric_portfolio_id)),
+                session_id=str(data.get("session_id", "")),
+                user_id=str(data.get("user_id", "")),
+                experience_name=str(data.get("experience_name", "")),
+                status=PortfolioStatus(status_value),
+                contribution_rate=contribution_rate,
+                output=output,
+                created_at=datetime.now(UTC),
+            )
+
         repo = self._get_repository()
-        row = await repo.get_by_id(portfolio_id)
+        try:
+            row = await repo.get_by_id(portfolio_id)
+        except Exception:
+            return None
+
         if row is None or row["status"] != PortfolioStatus.COMPLETED.value:
             return None
         return self._to_result(row)
@@ -170,16 +251,35 @@ class PortfolioService:
 
     async def exists(self, portfolio_id: str) -> bool:
         """포트폴리오 존재 여부 확인"""
+        numeric_portfolio_id = self._parse_numeric_portfolio_id(portfolio_id)
+        if numeric_portfolio_id is not None:
+            data = await self._portfolio_client.get_portfolio(numeric_portfolio_id)
+            return bool(data)
+
         repo = self._get_repository()
-        row = await repo.get_by_id(portfolio_id)
+        try:
+            row = await repo.get_by_id(portfolio_id)
+        except Exception:
+            return False
+
         return row is not None
 
     async def update_contribution_rate(self, portfolio_id: str, rate: int) -> None:
         """포트폴리오 기여도 수정"""
         if not 0 <= rate <= 100:
             raise ValueError("기여도는 0에서 100 사이여야 합니다.")
+
+        if self._parse_numeric_portfolio_id(portfolio_id) is not None:
+            raise ValueError(
+                "숫자형 portfolio_id는 현재 기여도 수정을 지원하지 않습니다. "
+                "메인 서버 API를 통해 수정해주세요."
+            )
+
         repo = self._get_repository()
-        await repo.update_contribution_rate(portfolio_id, rate)
+        try:
+            await repo.update_contribution_rate(portfolio_id, rate)
+        except Exception as e:
+            raise ValueError(f"포트폴리오를 찾을 수 없습니다: {portfolio_id}") from e
 
     @staticmethod
     def _to_result(row: dict) -> PortfolioResult:

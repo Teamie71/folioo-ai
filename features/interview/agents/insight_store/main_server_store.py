@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -10,6 +11,29 @@ if TYPE_CHECKING:
     from features.interview.agents.state import InsightLog
 
 logger = logging.getLogger(__name__)
+
+
+def _to_numeric_identifier(value: str) -> int | None:
+    """문자열 식별자를 숫자 ID로 변환 (예: "user-1" -> 1)"""
+    try:
+        parsed = int(value)
+        if parsed >= 0:
+            return parsed
+        return None
+    except (ValueError, TypeError):
+        pass
+
+    if not isinstance(value, str):
+        return None
+
+    matched_numbers = re.findall(r"\d+", value)
+    if len(matched_numbers) != 1:
+        return None
+
+    try:
+        return int(matched_numbers[0])
+    except (ValueError, TypeError):
+        return None
 
 
 class MainServerInsightStore:
@@ -47,9 +71,8 @@ class MainServerInsightStore:
         Returns:
             유사 인사이트 목록 (유사도 내림차순)
         """
-        try:
-            numeric_user_id = int(user_id)
-        except (ValueError, TypeError):
+        numeric_user_id = _to_numeric_identifier(user_id)
+        if numeric_user_id is None:
             logger.warning("user_id를 int로 변환할 수 없습니다: %s", "<redacted>")
             return []
 
@@ -70,9 +93,8 @@ class MainServerInsightStore:
         Returns:
             인사이트 로그 데이터, 없으면 None
         """
-        try:
-            numeric_id = int(insight_id)
-        except (ValueError, TypeError):
+        numeric_id = _to_numeric_identifier(insight_id)
+        if numeric_id is None:
             logger.warning("insight_id를 int로 변환할 수 없습니다: %s", "<redacted>")
             return None
 

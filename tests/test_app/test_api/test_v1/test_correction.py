@@ -107,6 +107,15 @@ def test_get_correction_status_returns_404(monkeypatch):
     assert response.status_code == 404
 
 
+def test_get_correction_status_accepts_numeric_id(monkeypatch):
+    """숫자형 correction_id 경로 파라미터를 허용한다."""
+    client = _create_client(monkeypatch, DummyCorrectionService())
+
+    response = client.get("/api/v1/corrections/100/status")
+
+    assert response.status_code == 200
+
+
 def test_start_rag_returns_409_when_status_invalid(monkeypatch):
     """RAG 시작은 not_started 상태가 아니면 409를 반환한다."""
     client = _create_client(

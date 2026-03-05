@@ -267,3 +267,67 @@ async def test_get_status_and_get_result_for_completed_row():
     assert result is not None
     assert result.output is not None
     assert result.output.achievements == "해결"
+
+
+@pytest.mark.asyncio
+async def test_get_status_uses_main_server_for_numeric_portfolio_id():
+    """숫자형 portfolio_id는 메인 서버 조회를 사용한다."""
+    mock_client = AsyncMock()
+    mock_client.get_portfolio.return_value = {
+        "id": 100,
+        "status": PortfolioStatus.GENERATING.value,
+    }
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=mock_client,
+    )
+
+    response = await service.get_status("100")
+
+    assert response.status == PortfolioStatus.GENERATING
+    mock_client.get_portfolio.assert_called_once_with(100)
+
+
+@pytest.mark.asyncio
+async def test_get_result_uses_main_server_for_numeric_portfolio_id():
+    """숫자형 portfolio_id 완료 데이터는 메인 서버 결과를 반환한다."""
+    mock_client = AsyncMock()
+    mock_client.get_portfolio.return_value = {
+        "id": 100,
+        "session_id": "session-1",
+        "user_id": 101,
+        "experience_name": "프로젝트",
+        "status": PortfolioStatus.COMPLETED.value,
+        "description": "상세",
+        "contributions": "담당",
+        "achievements": "해결",
+        "insights": "배운점",
+        "contribution_rate": 30,
+    }
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=mock_client,
+    )
+
+    result = await service.get_result("100")
+
+    assert result is not None
+    assert result.portfolio_id == "100"
+    assert result.user_id == "101"
+    assert result.output is not None
+    assert result.output.contributions == "담당"
+
+
+@pytest.mark.asyncio
+async def test_update_contribution_rate_raises_for_numeric_portfolio_id():
+    """숫자형 portfolio_id는 기여도 수정을 지원하지 않는다."""
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=AsyncMock(),
+    )
+
+    with pytest.raises(ValueError, match="기여도 수정을 지원하지 않습니다"):
+        await service.update_contribution_rate("100", 50)
