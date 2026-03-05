@@ -1,5 +1,17 @@
 """첨삭 RAG 패키지"""
 
-from .pipeline import RAGPipeline
+from .pipeline import (
+    RAGInsightGenerationError,
+    RAGKeywordExtractionError,
+    RAGPipeline,
+    RAGRunResult,
+    RAGSearchError,
+)
 
-__all__ = ["RAGPipeline"]
+__all__ = [
+    "RAGInsightGenerationError",
+    "RAGKeywordExtractionError",
+    "RAGPipeline",
+    "RAGRunResult",
+    "RAGSearchError",
+]

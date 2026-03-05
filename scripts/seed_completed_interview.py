@@ -399,6 +399,9 @@ def build_completed_state(session_id: str) -> InterviewState:
         "all_stages_complete": True,
         "overall_completion_percentage": 100.0,
         "is_extended_mode": False,
+        "extension_count": 0,
+        "extension_turns_used": 0,
+        "extension_turns_max": 3,
         "llm_error": None,
     }
 
@@ -530,6 +533,9 @@ def build_midway_state(session_id: str) -> InterviewState:
         "all_stages_complete": False,
         "overall_completion_percentage": 32.0,
         "is_extended_mode": False,
+        "extension_count": 0,
+        "extension_turns_used": 0,
+        "extension_turns_max": 3,
         "llm_error": None,
     }
 
@@ -576,6 +582,9 @@ def build_initial_state(session_id: str) -> InterviewState:
         "all_stages_complete": False,
         "overall_completion_percentage": 0.0,
         "is_extended_mode": False,
+        "extension_count": 0,
+        "extension_turns_used": 0,
+        "extension_turns_max": 3,
         "llm_error": None,
     }
 

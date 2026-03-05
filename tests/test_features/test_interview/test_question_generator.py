@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
 
 from features.interview.agents.nodes import question_generator
-from features.interview.agents.state import CollectedField, get_initial_interview_state
+from features.interview.agents.state import get_initial_interview_state
 from features.interview.config.loader import load_stage_config
 
 
@@ -117,47 +117,6 @@ def test_followup_fixed_question_generation(first_turn_state, monkeypatch):
     assert result["messages"][0].content == expected_fixed_question
 
 
-def test_generated_question_skipped_when_fields_complete(first_turn_state):
-    """
-    생성 질문 건너뛰기 테스트
-    - 모든 required_fields가 충분히 수집되면 생성 질문을 생략하고 analyst로 전환
-    """
-    collected_field: CollectedField = {
-        "field_name": "project_background",
-        "description": "이 활동을 시작하게 된 이유",
-        "value": "배경 설명",
-        "completeness": 0.9,
-    }
-    complete_collected = {
-        "project_background": collected_field,
-        "problem_definition": {**collected_field, "field_name": "problem_definition"},
-        "message_or_concept": {**collected_field, "field_name": "message_or_concept"},
-        "project_duration": {**collected_field, "field_name": "project_duration"},
-        "team_composition": {**collected_field, "field_name": "team_composition"},
-        "target_audience": {**collected_field, "field_name": "target_audience"},
-    }
-
-    state = {
-        **first_turn_state,
-        "messages": [
-            AIMessage(content="질문1"),
-            HumanMessage(content="답변1"),
-        ],
-        "stage_progress": {
-            **first_turn_state["stage_progress"],
-            "fixed_q_used": first_turn_state["stage_progress"]["fixed_q_total"],
-            "generated_q_used": 0,
-        },
-        "collected_data": {**first_turn_state["collected_data"], "stage_1": complete_collected},
-    }
-
-    result = question_generator.run(state)
-
-    assert result["next_node"] == "analyst"
-    assert result["stage_progress"]["is_complete"] is True
-    assert result["messages"] == state["messages"]
-
-
 def test_generated_question_fallback_on_llm_error(first_turn_state, monkeypatch):
     """
     생성 질문 LLM 실패 시 fallback 질문 생성 테스트
@@ -223,8 +182,8 @@ def test_first_turn_uses_retry_limit_from_global_config(first_turn_state, monkey
     assert result["messages"][0].content == "재시도 성공 질문"
 
 
-def test_generated_question_disabled_by_global_config(first_turn_state, monkeypatch):
-    """enable_dynamic_followup이 false면 생성 질문 없이 단계를 완료 처리한다."""
+def test_generated_question_ignores_dynamic_followup_switch(first_turn_state, monkeypatch):
+    """enable_dynamic_followup이 false여도 QG는 호출 시 질문을 생성한다."""
     state = {
         **first_turn_state,
         "messages": [
@@ -250,8 +209,90 @@ def test_generated_question_disabled_by_global_config(first_turn_state, monkeypa
             },
         )(),
     )
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_return("추가 질문입니다."),
+    )
 
     result = question_generator.run(state)
 
-    assert result["next_node"] == "analyst"
-    assert result["stage_progress"]["is_complete"] is True
+    assert result["next_node"] == "end"
+    assert isinstance(result["messages"][0], AIMessage)
+    assert result["messages"][0].content == "추가 질문입니다."
+
+
+def test_fallback_question_when_called_after_exhaustion(first_turn_state):
+    """질문 소진 상태로 호출되어도 AIMessage fallback을 반환한다."""
+    state = {
+        **first_turn_state,
+        "messages": [
+            AIMessage(content="질문1"),
+            HumanMessage(content="답변1"),
+        ],
+        "stage_progress": {
+            **first_turn_state["stage_progress"],
+            "fixed_q_used": first_turn_state["stage_progress"]["fixed_q_total"],
+            "generated_q_used": first_turn_state["stage_progress"]["generated_q_max"],
+        },
+    }
+
+    result = question_generator.run(state)
+
+    assert result["next_node"] == "end"
+    assert isinstance(result["messages"][0], AIMessage)
+    assert result["messages"][0].content == "혹시 더 추가하고 싶은 내용이 있으신가요?"
+
+
+def test_extended_mode_generates_question_and_increments_turn(first_turn_state, monkeypatch):
+    """연장 모드 질문 생성 시 extension_turns_used를 증가시킨다."""
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_return("연장 질문입니다."),
+    )
+
+    state = {
+        **first_turn_state,
+        "messages": [
+            AIMessage(content="이전 질문"),
+            HumanMessage(content="이전 답변"),
+        ],
+        "is_extended_mode": True,
+        "all_stages_complete": False,
+        "extension_turns_used": 0,
+        "extension_turns_max": 3,
+    }
+
+    result = question_generator.run(state)
+
+    assert result["next_node"] == "end"
+    assert result["messages"][0].content == "연장 질문입니다."
+    assert result["extension_turns_used"] == 1
+
+
+def test_extended_mode_fallback_increments_turn(first_turn_state, monkeypatch):
+    """연장 모드에서 LLM 실패 시 fallback 질문을 만들고 턴 카운트를 증가시킨다."""
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_raise(),
+    )
+
+    state = {
+        **first_turn_state,
+        "messages": [
+            AIMessage(content="이전 질문"),
+            HumanMessage(content="이전 답변"),
+        ],
+        "is_extended_mode": True,
+        "all_stages_complete": False,
+        "extension_turns_used": 0,
+        "extension_turns_max": 3,
+    }
+
+    result = question_generator.run(state)
+
+    assert result["next_node"] == "end"
+    assert "이 활동을 시작하게 된 이유" in result["messages"][0].content
+    assert result["extension_turns_used"] == 1

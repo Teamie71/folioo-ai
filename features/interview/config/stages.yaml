@@ -75,3 +75,5 @@ global_config:
     max_retries_per_question: 2 # 질문당 최대 재시도 횟수
     enable_dynamic_followup: true # 동적 후속 질문 활성화
     context_window_size: 5 # 컨텍스트로 참조할 이전 답변 개수
+    extension_turns_per_session: 3 # 연장 1회당 추가 질문 횟수
+    max_extensions: 2 # 최대 연장 횟수

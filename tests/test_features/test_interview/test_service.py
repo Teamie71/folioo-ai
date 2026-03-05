@@ -138,12 +138,143 @@ async def test_process_message_with_files(monkeypatch):
     assert result["stage_progress"]["fixed_q_used"] == 2
     assert result["overall_completion"] == 40.0
     assert result["all_complete"] is False
+    assert result["is_extended_mode"] is False
+    assert result["extension_turns_used"] is None
+    assert result["extension_turns_max"] is None
 
     invocation = dummy_graph.invocations[0]
     assert invocation["config"] == {"configurable": {"thread_id": "session_1"}}
     assert isinstance(invocation["state"]["messages"][0], HumanMessage)
     assert invocation["state"]["messages"][0].content == "답변입니다."
     assert invocation["state"]["current_turn_files"] == ["file_1", "file_2"]
+
+
+@pytest.mark.asyncio
+async def test_process_message_returns_none_when_all_complete(monkeypatch):
+    """모든 단계 완료 상태면 ai_response를 None으로 반환한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(values={"session_id": "session_1"})
+    dummy_graph.invoke_result = {
+        "messages": [HumanMessage(content="사용자 최종 답변")],
+        "current_stage": 4,
+        "stage_progress": {"fixed_q_used": 3},
+        "overall_completion_percentage": 100.0,
+        "all_stages_complete": True,
+    }
+
+    service = _build_service(monkeypatch, dummy_graph)
+
+    result = await service.process_message(
+        session_id="session_1",
+        message="마지막 답변입니다.",
+    )
+
+    assert result["ai_response"] is None
+    assert result["all_complete"] is True
+    assert result["is_extended_mode"] is False
+
+
+@pytest.mark.asyncio
+async def test_extend_session_success(monkeypatch):
+    """완료된 세션은 연장 모드로 전환되고 첫 연장 질문을 반환한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "all_stages_complete": True,
+            "extension_count": 0,
+        }
+    )
+    dummy_graph.invoke_result = {
+        "messages": [AIMessage(content="연장 첫 질문")],
+        "extension_count": 1,
+        "extension_turns_max": 3,
+    }
+    monkeypatch.setattr(
+        interview_service,
+        "get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_extensions": 2,
+                "extension_turns_per_session": 3,
+            },
+        )(),
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    result = await service.extend_session("session_1")
+
+    assert result["ai_response"] == "연장 첫 질문"
+    assert result["extension_count"] == 1
+    assert result["extension_turns_max"] == 3
+
+    invocation = dummy_graph.invocations[0]
+    assert invocation["state"]["is_extended_mode"] is True
+    assert invocation["state"]["all_stages_complete"] is False
+    assert invocation["state"]["extension_count"] == 1
+    assert invocation["state"]["extension_turns_used"] == 0
+    assert invocation["state"]["extension_turns_max"] == 3
+    assert invocation["state"]["mentioned_insight_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_extend_session_raises_when_not_completed(monkeypatch):
+    """완료되지 않은 세션은 연장할 수 없다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "all_stages_complete": False,
+            "extension_count": 0,
+        }
+    )
+    monkeypatch.setattr(
+        interview_service,
+        "get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_extensions": 2,
+                "extension_turns_per_session": 3,
+            },
+        )(),
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(ValueError, match="모든 단계 완료"):
+        await service.extend_session("session_1")
+
+
+@pytest.mark.asyncio
+async def test_extend_session_raises_when_max_extensions_reached(monkeypatch):
+    """최대 연장 횟수에 도달하면 연장을 차단한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "all_stages_complete": True,
+            "extension_count": 2,
+        }
+    )
+    monkeypatch.setattr(
+        interview_service,
+        "get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_extensions": 2,
+                "extension_turns_per_session": 3,
+            },
+        )(),
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(ValueError, match="최대 연장 횟수"):
+        await service.extend_session("session_1")
 
 
 @pytest.mark.asyncio

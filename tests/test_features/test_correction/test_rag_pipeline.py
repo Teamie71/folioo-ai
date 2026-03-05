@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from features.correction.rag.pipeline import RAGPipeline
+from features.correction.rag.pipeline import (
+    RAGInsightGenerationError,
+    RAGKeywordExtractionError,
+    RAGPipeline,
+    RAGRunResult,
+    RAGSearchError,
+)
 
 
 class _DummyLLM:
@@ -16,6 +22,11 @@ class _DummyLLM:
     def invoke(self, prompt: str) -> str:
         self.prompts.append(prompt)
         return self._responses.pop(0)
+
+
+class _FailingLLM:
+    def invoke(self, prompt: str) -> str:
+        raise RuntimeError("invoke failed")
 
 
 class _DummyAsyncTavilyClient:
@@ -29,9 +40,10 @@ class _DummyAsyncTavilyClient:
 
     async def search(self, query: str, max_results: int) -> dict:
         type(self).calls.append((query, max_results))
-        if type(self).response_builder is None:
+        response_builder = type(self).response_builder
+        if response_builder is None:
             return {"results": []}
-        return type(self).response_builder(query, max_results)
+        return response_builder(query, max_results)
 
     @classmethod
     def reset_state(cls) -> None:
@@ -100,6 +112,30 @@ def test_extract_keywords_parses_json_output(monkeypatch):
     ]
 
 
+def test_extract_keywords_raises_on_llm_invoke_failure(monkeypatch):
+    """키워드 추출 LLM 호출이 실패하면 전용 예외를 발생시킨다."""
+    from features.correction.rag import pipeline
+
+    monkeypatch.setattr(pipeline, "get_llm", lambda: _FailingLLM())
+    rag_pipeline = RAGPipeline()
+
+    with pytest.raises(RAGKeywordExtractionError, match="키워드 추출 LLM 호출 실패"):
+        rag_pipeline._extract_keywords("네이버", "백엔드", "JD")
+
+
+def test_extract_keywords_returns_default_on_json_parse_failure(monkeypatch):
+    """키워드 추출 시 JSON 파싱이 실패하면 기본 키워드를 반환한다."""
+    from features.correction.rag import pipeline
+
+    dummy_llm = _DummyLLM(['{"search_keywords": ["네이버 전략",]'])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    rag_pipeline = RAGPipeline()
+
+    keywords = rag_pipeline._extract_keywords("네이버", "백엔드", "JD")
+
+    assert keywords == ["네이버 백엔드"]
+
+
 @pytest.mark.asyncio
 async def test_search_returns_tavily_results(monkeypatch, mock_tavily_client):
     """검색은 Tavily 응답을 title/content/url 형식으로 정규화한다."""
@@ -127,8 +163,8 @@ async def test_search_returns_tavily_results(monkeypatch, mock_tavily_client):
 
 
 @pytest.mark.asyncio
-async def test_run_returns_generated_insight(monkeypatch, mock_tavily_client):
-    """run은 키워드 추출/검색/인사이트 생성을 순서대로 수행한다."""
+async def test_run_returns_generated_result(monkeypatch, mock_tavily_client):
+    """run은 키워드/검색결과/인사이트를 한 번에 반환한다."""
     from features.correction.rag import pipeline
 
     keyword_extraction_response = (
@@ -159,16 +195,68 @@ async def test_run_returns_generated_insight(monkeypatch, mock_tavily_client):
     dummy_tavily_client = mock_tavily_client(response_builder=_response_builder)
     rag_pipeline = RAGPipeline()
 
-    insight = await rag_pipeline.run("네이버", "백엔드", "JD")
+    rag_result = await rag_pipeline.run("네이버", "백엔드", "JD")
 
-    assert insight == insight_generation_response
+    assert isinstance(rag_result, RAGRunResult)
+    assert rag_result.keywords == ["키워드1", "키워드2", "키워드3", "키워드4"]
+    assert rag_result.search_results == [
+        {
+            "title": "검색 결과: 키워드1",
+            "content": "본문",
+            "url": "https://example.com",
+        },
+        {
+            "title": "검색 결과: 키워드2",
+            "content": "본문",
+            "url": "https://example.com",
+        },
+        {
+            "title": "검색 결과: 키워드3",
+            "content": "본문",
+            "url": "https://example.com",
+        },
+        {
+            "title": "검색 결과: 키워드4",
+            "content": "본문",
+            "url": "https://example.com",
+        },
+    ]
+    assert rag_result.insight == insight_generation_response
+    assert "검색 키워드" in dummy_llm.prompts[1]
+    assert "키워드1" in dummy_llm.prompts[1]
     assert "검색 결과" in dummy_llm.prompts[1]
     assert dummy_tavily_client.instances_created == 1
 
 
 @pytest.mark.asyncio
+async def test_run_from_search_results_generates_insight_without_new_search(
+    monkeypatch,
+    mock_tavily_client,
+):
+    """run_from_search_results는 저장된 검색 결과로 인사이트만 생성한다."""
+    from features.correction.rag import pipeline
+
+    dummy_llm = _DummyLLM(["재생성된 인사이트"])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    dummy_tavily_client = mock_tavily_client(response_builder=lambda *_args: {"results": []})
+    rag_pipeline = RAGPipeline()
+
+    insight = await rag_pipeline.run_from_search_results(
+        search_results=[{"title": "기존 검색", "content": "본문", "url": "https://example.com"}],
+        company_name="네이버",
+        job_title="백엔드",
+        keywords=["재시도 키워드1", "재시도 키워드2"],
+    )
+
+    assert insight == "재생성된 인사이트"
+    assert "검색 키워드" in dummy_llm.prompts[0]
+    assert "재시도 키워드1" in dummy_llm.prompts[0]
+    assert dummy_tavily_client.calls == []
+
+
+@pytest.mark.asyncio
 async def test_search_raises_when_tavily_api_key_missing(monkeypatch, mock_tavily_client):
-    """Tavily API 키가 없으면 예외를 발생시킨다."""
+    """Tavily API 키가 없으면 검색 예외로 래핑해 전파한다."""
     from features.correction.rag import pipeline
 
     dummy_llm = _DummyLLM(["dummy"])
@@ -177,10 +265,28 @@ async def test_search_raises_when_tavily_api_key_missing(monkeypatch, mock_tavil
 
     rag_pipeline = RAGPipeline()
 
-    with pytest.raises(ValueError, match="TAVILY_API_KEY"):
+    with pytest.raises(RAGSearchError, match="TAVILY_API_KEY"):
         await rag_pipeline._search("테스트 쿼리")
 
     assert dummy_tavily_client.instances_created == 0
+
+
+@pytest.mark.asyncio
+async def test_search_raises_rag_error_on_tavily_failure(monkeypatch, mock_tavily_client):
+    """Tavily 호출이 실패하면 전용 예외를 발생시킨다."""
+    from features.correction.rag import pipeline
+
+    def _response_builder(query: str, max_results: int) -> dict:
+        raise RuntimeError("tavily down")
+
+    dummy_llm = _DummyLLM(["dummy"])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    mock_tavily_client(response_builder=_response_builder)
+
+    rag_pipeline = RAGPipeline()
+
+    with pytest.raises(RAGSearchError, match="Tavily 검색 호출 실패"):
+        await rag_pipeline._search("테스트 쿼리")
 
 
 @pytest.mark.asyncio
@@ -215,9 +321,26 @@ async def test_run_applies_rag_config_values(monkeypatch, mock_tavily_client):
     dummy_tavily_client = mock_tavily_client(response_builder=_response_builder)
 
     rag_pipeline = RAGPipeline()
-    insight = await rag_pipeline.run("네이버", "백엔드", "JD")
+    rag_result = await rag_pipeline.run("네이버", "백엔드", "JD")
 
-    assert insight == "생성된 인사이트"
+    assert rag_result.insight == "생성된 인사이트"
+    assert rag_result.keywords == ["키워드1", "키워드2"]
     assert len(dummy_tavily_client.calls) == 2
     assert all(max_results == 3 for _, max_results in dummy_tavily_client.calls)
     assert {query for query, _ in dummy_tavily_client.calls} == {"키워드1", "키워드2"}
+
+
+def test_generate_insight_raises_on_llm_invoke_failure(monkeypatch):
+    """인사이트 생성 LLM 호출이 실패하면 전용 예외를 발생시킨다."""
+    from features.correction.rag import pipeline
+
+    monkeypatch.setattr(pipeline, "get_llm", lambda: _FailingLLM())
+    rag_pipeline = RAGPipeline()
+
+    with pytest.raises(RAGInsightGenerationError, match="인사이트 생성 LLM 호출 실패"):
+        rag_pipeline._generate_insight(
+            keywords=[],
+            search_results=[],
+            company_name="네이버",
+            job_title="백엔드",
+        )

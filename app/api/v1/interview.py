@@ -16,6 +16,8 @@ from app.schemas.interview import (
     CollectedFieldSchema,
     CreateSessionRequest,
     CreateSessionResponse,
+    ErrorResponse,
+    ExtendSessionResponse,
     MessageSchema,
     SessionStateResponse,
     StageProgressSchema,
@@ -29,6 +31,14 @@ logger = logging.getLogger(__name__)
 # ping 전송 간격 (초)
 _PING_INTERVAL_SECONDS = 10
 _STREAM_END = object()
+
+
+def _map_service_error_to_http_error(message: str) -> HTTPException:
+    """서비스 ValueError를 HTTP 에러로 변환"""
+    if "세션을 찾을 수 없습니다" in message:
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
 
 
 async def _interleave_ping_events(stream):
@@ -138,6 +148,7 @@ async def _interleave_ping_events(stream):
     status_code=status.HTTP_201_CREATED,
     summary="인터뷰 세션 생성",
     description="새로운 인터뷰 세션을 생성하고 첫 AI 질문을 반환합니다.",
+    responses={400: {"model": ErrorResponse, "description": "잘못된 요청"}},
 )
 async def create_session(request: CreateSessionRequest) -> CreateSessionResponse:
     """
@@ -177,6 +188,7 @@ async def create_session(request: CreateSessionRequest) -> CreateSessionResponse
             "description": "SSE 스트림",
             "content": {"text/event-stream": {}},
         },
+        400: {"model": ErrorResponse, "description": "잘못된 요청"},
     },
 )
 async def create_session_stream(request: CreateSessionRequest):
@@ -204,8 +216,10 @@ async def create_session_stream(request: CreateSessionRequest):
 @router.post(
     "/sessions/{session_id}/chat",
     response_model=ChatResponse,
+    status_code=status.HTTP_200_OK,
     summary="메시지 전송",
     description="사용자 메시지를 전송하고 AI 응답을 받습니다.",
+    responses={404: {"model": ErrorResponse, "description": "세션을 찾을 수 없음"}},
 )
 async def chat(session_id: str, request: ChatRequest) -> ChatResponse:
     """
@@ -235,13 +249,77 @@ async def chat(session_id: str, request: ChatRequest) -> ChatResponse:
         stage_progress=StageProgressSchema(**result["stage_progress"]),
         overall_completion=result["overall_completion"],
         all_complete=result["all_complete"],
+        is_extended_mode=result["is_extended_mode"],
+        extension_turns_used=result["extension_turns_used"],
+        extension_turns_max=result["extension_turns_max"],
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/extend",
+    response_model=ExtendSessionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="연장 모드 시작",
+    description="완료된 인터뷰 세션을 연장 모드로 전환하고 첫 질문을 생성합니다.",
+    responses={
+        400: {"model": ErrorResponse, "description": "연장 불가 상태"},
+        404: {"model": ErrorResponse, "description": "세션을 찾을 수 없음"},
+    },
+)
+async def extend_session(session_id: str) -> ExtendSessionResponse:
+    """완료된 세션의 연장 모드 시작"""
+    service = get_interview_service()
+
+    try:
+        result = await service.extend_session(session_id)
+    except ValueError as e:
+        raise _map_service_error_to_http_error(str(e))
+
+    return ExtendSessionResponse(
+        ai_response=result["ai_response"],
+        extension_count=result["extension_count"],
+        extension_turns_max=result["extension_turns_max"],
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/extend/stream",
+    status_code=status.HTTP_200_OK,
+    summary="연장 모드 시작 (SSE 스트리밍)",
+    description="완료된 인터뷰 세션을 연장 모드로 전환하고 첫 질문을 SSE로 스트리밍합니다.",
+    responses={
+        200: {
+            "description": "SSE 스트림",
+            "content": {"text/event-stream": {}},
+        },
+        404: {"model": ErrorResponse, "description": "세션을 찾을 수 없음"},
+    },
+)
+async def extend_session_stream(session_id: str):
+    """완료된 세션의 연장 모드 시작 SSE"""
+    service = get_interview_service()
+
+    async def event_generator():
+        stream = service.extend_session_stream(session_id=session_id)
+        async for event in _interleave_ping_events(stream):
+            yield event
+
+    return EventSourceResponse(
+        event_generator(),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Nginx 프록시 버퍼링 비활성화
+        },
     )
 
 
 @router.get(
     "/sessions/{session_id}/state",
+    response_model=SessionStateResponse,
+    status_code=status.HTTP_200_OK,
     summary="세션 상태 조회",
     description="현재 세션의 전체 상태를 조회합니다.",
+    responses={404: {"model": ErrorResponse, "description": "세션을 찾을 수 없음"}},
 )
 async def get_session_state(session_id: str) -> SessionStateResponse:
     """
@@ -295,6 +373,7 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
 
 @router.post(
     "/sessions/{session_id}/chat/stream",
+    status_code=status.HTTP_200_OK,
     summary="메시지 전송 (SSE 스트리밍)",
     description="사용자 메시지를 전송하고 AI 응답을 SSE 스트리밍으로 받습니다.",
     responses={
@@ -302,6 +381,7 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
             "description": "SSE 스트림",
             "content": {"text/event-stream": {}},
         },
+        404: {"model": ErrorResponse, "description": "세션을 찾을 수 없음"},
     },
 )
 async def chat_stream(session_id: str, request: ChatRequest):

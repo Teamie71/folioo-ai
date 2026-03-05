@@ -26,6 +26,7 @@ def _install_dummy_langchain_openai():
 _install_dummy_langchain_openai()
 
 correction_service_module = importlib.import_module("features.correction.service")
+RAGRunResult = importlib.import_module("features.correction.rag.pipeline").RAGRunResult
 CorrectionStatus = importlib.import_module("features.correction.schemas").CorrectionStatus
 MainServerError = importlib.import_module("common.clients.base_client").MainServerError
 CorrectionService = correction_service_module.CorrectionService
@@ -148,8 +149,9 @@ class DummyRagPipeline:
     def __init__(self, raise_error: bool = False) -> None:
         self.raise_error = raise_error
         self.run_calls: list[dict] = []
+        self.run_from_search_results_calls: list[dict] = []
 
-    async def run(self, company_name: str, job_title: str, job_description: str) -> str:
+    async def run(self, company_name: str, job_title: str, job_description: str) -> RAGRunResult:
         self.run_calls.append(
             {
                 "company_name": company_name,
@@ -159,15 +161,47 @@ class DummyRagPipeline:
         )
         if self.raise_error:
             raise RuntimeError("RAG 실패")
-        return "기업 인사이트"
+        search_query = f"{company_name} {job_title}"
+        return RAGRunResult(
+            keywords=[search_query],
+            search_results=[
+                {
+                    "query": search_query,
+                    "title": "검색 결과",
+                }
+            ],
+            insight="기업 인사이트",
+        )
 
-    def _extract_keywords(
-        self, company_name: str, job_title: str, job_description: str
-    ) -> list[str]:
-        return [f"{company_name} {job_title}"]
+    async def run_from_search_results(
+        self,
+        search_results: list[dict],
+        company_name: str,
+        job_title: str,
+        keywords: list[str] | None = None,
+    ) -> str:
+        self.run_from_search_results_calls.append(
+            {
+                "search_results": search_results,
+                "company_name": company_name,
+                "job_title": job_title,
+                "keywords": keywords,
+            }
+        )
+        if self.raise_error:
+            raise RuntimeError("RAG 실패")
+        return "재생성 기업 인사이트"
 
-    async def _search(self, query: str) -> list[dict]:
-        return [{"query": query, "title": "검색 결과"}]
+
+class ErrorRagPipeline(DummyRagPipeline):
+    """run 호출 시 지정된 예외를 발생시키는 RAG 파이프라인 더미"""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self._error = error
+
+    async def run(self, company_name: str, job_title: str, job_description: str) -> str:
+        raise self._error
 
 
 class DummyBackgroundTasks:
@@ -210,6 +244,19 @@ def _reset_singleton():
     reset_correction_service()
 
 
+@pytest.fixture
+def run_rag_failure_setup():
+    def _build(error: Exception) -> tuple[DummyCorrectionClient, CorrectionService]:
+        client = DummyCorrectionClient()
+        client.corrections[1] = _make_correction(status="DOING_RAG")
+        service = CorrectionService(
+            client, DummyPortfolioClient(), DummyGenerator(), ErrorRagPipeline(error)
+        )
+        return client, service
+
+    return _build
+
+
 # ------------------------------------------------------------------
 # start_rag / _run_rag
 # ------------------------------------------------------------------
@@ -236,7 +283,7 @@ async def test_start_rag_updates_status_and_registers_task():
 
 @pytest.mark.asyncio
 async def test_run_rag_success_saves_company_insight_and_rag_data():
-    """_run_rag 성공 시 RAG 데이터 저장 후 기업 인사이트를 저장한다."""
+    """_run_rag 성공 시 RAG 데이터와 기업 인사이트를 저장한다."""
     client = DummyCorrectionClient()
     client.corrections[1] = _make_correction(status="DOING_RAG")
     service = CorrectionService(
@@ -246,8 +293,37 @@ async def test_run_rag_success_saves_company_insight_and_rag_data():
     await service._run_rag(1)
 
     assert client.saved_rag_data[0]["search_query"] == "회사 백엔드"
-    assert client.saved_rag_data[0]["search_results"][0]["title"] == "검색 결과"
+    assert client.saved_rag_data[0]["search_results"]["results"][0]["title"] == "검색 결과"
     assert client.updated_company_insights[0]["company_insight"] == "기업 인사이트"
+
+
+@pytest.mark.asyncio
+async def test_run_rag_stores_joined_search_query_for_multiple_keywords():
+    """_run_rag는 다중 키워드일 때 search_query를 콤마로 join하여 저장한다."""
+
+    class MultiKeywordRagPipeline(DummyRagPipeline):
+        async def run(
+            self,
+            company_name: str,
+            job_title: str,
+            job_description: str,
+        ) -> RAGRunResult:
+            return RAGRunResult(
+                keywords=["키워드A", "키워드B"],
+                search_results=[{"title": "검색 결과"}],
+                insight="기업 인사이트",
+            )
+
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="DOING_RAG")
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), MultiKeywordRagPipeline()
+    )
+
+    await service._run_rag(1)
+
+    assert client.saved_rag_data[0]["search_query"] == "키워드A, 키워드B"
+    assert client.saved_rag_data[0]["search_results"]["keywords"] == ["키워드A", "키워드B"]
 
 
 @pytest.mark.asyncio
@@ -302,17 +378,128 @@ async def test_run_rag_keyword_extraction_does_not_block_event_loop():
 
 
 @pytest.mark.asyncio
-async def test_run_rag_failure_updates_failed_status():
-    """_run_rag 실패 시 FAILED 상태로 변경한다."""
+async def test_retry_reuses_saved_rag_data_for_partial_rerun():
+    """retry는 저장된 rag_data가 있으면 검색 없이 인사이트만 재생성한다."""
     client = DummyCorrectionClient()
-    client.corrections[1] = _make_correction(status="DOING_RAG")
+    client.corrections[1] = _make_correction(status="FAILED")
+    client.rag_data[1] = {
+        "searchQuery": "회사 백엔드",
+        "searchResults": {
+            "keywords": ["저장 키워드1", "저장 키워드2"],
+            "results": [{"title": "기존 검색 결과", "content": "본문"}],
+        },
+    }
+    rag_pipeline = DummyRagPipeline()
+    service = CorrectionService(client, DummyPortfolioClient(), DummyGenerator(), rag_pipeline)
+    bg = DummyBackgroundTasks()
+
+    await service.retry(1, bg)  # type: ignore[arg-type]
+
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "DOING_RAG"}
+    assert len(bg.tasks) == 1
+    assert bg.tasks[0][0] == service._run_rag_from_search_results
+
+
+@pytest.mark.asyncio
+async def test_retry_extracts_keywords_from_search_query_when_keywords_missing():
+    """retry는 저장 키워드가 없으면 search_query를 분해해 키워드로 사용한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="FAILED")
+    client.rag_data[1] = {
+        "searchQuery": "키워드A, 키워드B",
+        "searchResults": {"results": [{"title": "기존 검색 결과", "content": "본문"}]},
+    }
+    rag_pipeline = DummyRagPipeline()
+    service = CorrectionService(client, DummyPortfolioClient(), DummyGenerator(), rag_pipeline)
+    bg = DummyBackgroundTasks()
+
+    await service.retry(1, bg)  # type: ignore[arg-type]
+
+    assert len(bg.tasks) == 1
+    assert bg.tasks[0][0] == service._run_rag_from_search_results
+
+
+@pytest.mark.asyncio
+async def test_retry_runs_full_rag_when_saved_rag_data_missing():
+    """retry는 rag_data가 없으면 전체 RAG를 다시 실행한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="FAILED")
     service = CorrectionService(
-        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline(raise_error=True)
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
     )
+    bg = DummyBackgroundTasks()
+
+    await service.retry(1, bg)  # type: ignore[arg-type]
+
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "DOING_RAG"}
+    assert len(bg.tasks) == 1
+    assert bg.tasks[0][0] == service._run_rag
+
+
+@pytest.mark.asyncio
+async def test_retry_restarts_generation_when_company_insight_and_rag_data_exist():
+    """retry는 company_insight와 rag_data가 모두 있으면 생성부터 재시작한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="FAILED", company_insight="인사이트")
+    client.rag_data[1] = {"searchQuery": "q", "searchResults": []}
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
+    bg = DummyBackgroundTasks()
+
+    await service.retry(1, bg)  # type: ignore[arg-type]
+
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "GENERATING"}
+    assert len(bg.tasks) == 1
+    assert bg.tasks[0][0] == service._run_generation
+
+
+@pytest.mark.asyncio
+async def test_run_rag_failure_updates_failed_status(run_rag_failure_setup):
+    """_run_rag 실패 시 FAILED 상태로 변경한다."""
+    client, service = run_rag_failure_setup(RuntimeError("RAG 실패"))
 
     await service._run_rag(1)
 
     assert client.updated_statuses[-1] == {"correction_id": 1, "status": "FAILED"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raised_error", "expected_log_message"),
+    [
+        (
+            correction_service_module.RAGKeywordExtractionError("키워드 추출 실패"),
+            "RAG 키워드 추출 실패",
+        ),
+        (
+            correction_service_module.RAGSearchError("검색 실패"),
+            "RAG 검색 실패",
+        ),
+        (
+            correction_service_module.RAGInsightGenerationError("인사이트 실패"),
+            "RAG 인사이트 생성 실패",
+        ),
+        (
+            RuntimeError("알 수 없는 실패"),
+            "RAG 처리 실패",
+        ),
+    ],
+)
+async def test_run_rag_failure_logs_by_exception_type(
+    raised_error: Exception,
+    expected_log_message: str,
+    caplog: pytest.LogCaptureFixture,
+    run_rag_failure_setup,
+):
+    """_run_rag 실패 로그는 예외 타입별로 분기된다."""
+    _, service = run_rag_failure_setup(raised_error)
+
+    caplog.set_level("ERROR", logger="features.correction.service")
+
+    await service._run_rag(1)
+
+    assert expected_log_message in caplog.text
 
 
 @pytest.mark.asyncio
@@ -462,46 +649,11 @@ async def test_run_generation_no_portfolio_ids_fails():
 
 
 @pytest.mark.asyncio
-async def test_retry_with_company_insight_and_rag_data_retries_generation():
-    """retry: company_insight와 rag_data가 있으면 생성부터 재시도한다."""
-    client = DummyCorrectionClient()
-    client.corrections[1] = _make_correction(status="FAILED", company_insight="인사이트")
-    client.rag_data[1] = {"searchQuery": "q", "searchResults": []}
-    service = CorrectionService(
-        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
-    )
-    bg = DummyBackgroundTasks()
-
-    await service.retry(1, bg)  # type: ignore[arg-type]
-
-    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "GENERATING"}
-    assert len(bg.tasks) == 1
-    assert bg.tasks[0][0] == service._run_generation
-
-
-@pytest.mark.asyncio
 async def test_retry_with_company_insight_but_no_rag_data_retries_rag():
     """retry: company_insight는 있지만 rag_data가 없으면 RAG부터 재시도한다."""
     client = DummyCorrectionClient()
     client.corrections[1] = _make_correction(status="FAILED", company_insight="인사이트")
     client.rag_data[1] = None
-    service = CorrectionService(
-        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
-    )
-    bg = DummyBackgroundTasks()
-
-    await service.retry(1, bg)  # type: ignore[arg-type]
-
-    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "DOING_RAG"}
-    assert len(bg.tasks) == 1
-    assert bg.tasks[0][0] == service._run_rag
-
-
-@pytest.mark.asyncio
-async def test_retry_without_company_insight_retries_rag():
-    """retry: company_insight가 없으면 RAG부터 재시도한다."""
-    client = DummyCorrectionClient()
-    client.corrections[1] = _make_correction(status="FAILED")
     service = CorrectionService(
         client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
     )

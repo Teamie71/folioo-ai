@@ -51,6 +51,16 @@ class _DummyFetchRowPool:
         return {"id": "any"}
 
 
+class _DummyFetchPool:
+    def __init__(self, responses: list[dict]) -> None:
+        self._responses = responses
+        self.fetch_sqls: list[str] = []
+
+    async def fetch(self, sql: str, *_args) -> list[dict]:
+        self.fetch_sqls.append(sql)
+        return self._responses
+
+
 @pytest.mark.asyncio
 async def test_setup_table_creates_pgcrypto_extension_before_tables():
     """setup_table은 pgcrypto 확장 생성 후 테이블을 만든다."""
@@ -97,3 +107,67 @@ async def test_update_result_query_does_not_update_status():
     await repo.update_result("existing-id", {"fields": []})
 
     assert "status" not in pool.fetchrow_sqls[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_get_rag_data_returns_parsed_search_results():
+    """get_rag_data는 JSON 문자열 search_results를 파싱해 반환한다."""
+    pool = _DummyFetchPool(
+        responses=[
+            {
+                "id": "r-1",
+                "correction_id": "c-1",
+                "search_query": "회사 백엔드",
+                "search_results": '{"keywords": ["키워드1", "키워드2"], "results": [{"title": "검색 결과"}]}',
+                "created_at": "2026-03-04T00:00:00Z",
+            }
+        ]
+    )
+    repo = CorrectionRepository(pool)  # type: ignore[arg-type]
+
+    rows = await repo.get_rag_data("c-1")
+
+    assert rows[0]["search_results"]["results"][0]["title"] == "검색 결과"
+    assert rows[0]["search_results"]["keywords"] == ["키워드1", "키워드2"]
+    assert "FROM rag_data" in pool.fetch_sqls[0]
+
+
+@pytest.fixture
+def update_status_if_current_setup():
+    def _build(responses: list[dict | None]) -> tuple[_DummyFetchRowPool, CorrectionRepository]:
+        pool = _DummyFetchRowPool(responses=responses)
+        repo = CorrectionRepository(pool)  # type: ignore[arg-type]
+        return pool, repo
+
+    return _build
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"id": "ok"}, True),
+        (None, False),
+    ],
+)
+async def test_update_status_if_current_returns_transition_result(
+    response: dict | None,
+    expected: bool,
+    update_status_if_current_setup,
+):
+    """update_status_if_current는 상태 전이 성공 여부를 bool로 반환한다."""
+    _, repo = update_status_if_current_setup([response])
+
+    result = await repo.update_status_if_current("existing-id", "failed", "not_started")
+
+    assert result is expected
+
+
+@pytest.mark.asyncio
+async def test_update_status_includes_status_condition_in_sql(update_status_if_current_setup):
+    """update_status_if_current 쿼리는 상태 조건을 포함한다."""
+    pool, repo = update_status_if_current_setup([{"id": "ok"}])
+
+    await repo.update_status_if_current("existing-id", "failed", "not_started")
+
+    assert "and status = $2" in pool.fetchrow_sqls[0].lower()
