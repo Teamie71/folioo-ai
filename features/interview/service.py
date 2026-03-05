@@ -223,7 +223,7 @@ class InterviewService:
                         "type": SSEEventType.ERROR,
                         "error": {
                             "code": SSEErrorCode.LLM_ERROR,
-                            "message": f"처리 중 오류가 발생했습니다: {str(e)}",
+                            "message": "처리 중 오류가 발생했습니다.",
                         },
                     },
                     ensure_ascii=False,
@@ -408,7 +408,7 @@ class InterviewService:
                         "type": SSEEventType.ERROR,
                         "error": {
                             "code": SSEErrorCode.LLM_ERROR,
-                            "message": f"처리 중 오류가 발생했습니다: {str(e)}",
+                            "message": "처리 중 오류가 발생했습니다.",
                         },
                     },
                     ensure_ascii=False,
@@ -681,7 +681,7 @@ class InterviewService:
                         "type": SSEEventType.ERROR,
                         "error": {
                             "code": SSEErrorCode.LLM_ERROR,
-                            "message": f"처리 중 오류가 발생했습니다: {str(e)}",
+                            "message": "처리 중 오류가 발생했습니다.",
                         },
                     },
                     ensure_ascii=False,
