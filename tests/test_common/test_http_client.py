@@ -87,6 +87,17 @@ class TestParseEnvelope:
             _parse_envelope(response)
         assert "envelope 형식" in exc_info.value.message
 
+    def test_json_decode_error(self):
+        """JSON 파싱 실패 시 MainServerError 발생"""
+        response = MagicMock(spec=httpx.Response)
+        response.json.side_effect = ValueError("Invalid JSON")
+        response.status_code = 502
+
+        with pytest.raises(MainServerError) as exc_info:
+            _parse_envelope(response)
+        assert exc_info.value.status_code == 502
+        assert "JSON" in exc_info.value.message
+
 
 class TestRequestWithRetry:
     """재시도 로직 테스트"""

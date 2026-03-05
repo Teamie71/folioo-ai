@@ -82,7 +82,13 @@ def _parse_envelope(response: httpx.Response) -> Any:
     Raises:
         MainServerError: isSuccess=false이거나 파싱 실패 시
     """
-    body = response.json()
+    try:
+        body = response.json()
+    except Exception as e:
+        raise MainServerError(
+            status_code=response.status_code,
+            message=f"메인 서버 응답을 JSON으로 파싱할 수 없습니다: {e}",
+        ) from e
 
     if not isinstance(body, dict) or "isSuccess" not in body:
         raise MainServerError(
@@ -154,9 +160,6 @@ async def request_with_retry(
                     await asyncio.sleep(wait)
                     continue
                 raise last_exception
-
-            if 400 <= response.status_code < 500:
-                return _parse_envelope(response)
 
             return _parse_envelope(response)
 
