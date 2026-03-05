@@ -4,7 +4,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from common.checkpointer.factory import get_checkpointer
 from common.sse import (
@@ -40,6 +40,19 @@ class InterviewService:
     def __init__(self):
         """Checkpointer가 연결된 그래프 초기화"""
         self._graph = build_graph(checkpointer=get_checkpointer())
+
+    @staticmethod
+    def _get_latest_ai_response(messages: list) -> str | None:
+        """메시지 목록에서 가장 최근 AI 응답 텍스트를 반환"""
+        for message in reversed(messages):
+            if isinstance(message, AIMessage):
+                content = message.content
+                if isinstance(content, str):
+                    return content
+                if content is None:
+                    return None
+                return str(content)
+        return None
 
     async def create_session(
         self,
@@ -223,7 +236,7 @@ class InterviewService:
 
         Returns:
             dict: 처리 결과
-                - ai_response: AI 응답 메시지
+                - ai_response: AI 응답 메시지 (없으면 None)
                 - current_stage: 현재 단계
                 - stage_progress: 단계 진행 상황
                 - overall_completion: 전체 완료율 (0.0 ~ 100.0)
@@ -256,8 +269,12 @@ class InterviewService:
             config={"configurable": {"thread_id": session_id}},
         )
 
+        ai_response = None
+        if not result["all_stages_complete"]:
+            ai_response = self._get_latest_ai_response(result.get("messages", []))
+
         return {
-            "ai_response": result["messages"][-1].content,
+            "ai_response": ai_response,
             "current_stage": result["current_stage"],
             "stage_progress": result["stage_progress"],
             "overall_completion": result["overall_completion_percentage"],
@@ -418,10 +435,11 @@ class InterviewService:
             # 4. 스트리밍 완료 후 최종 상태 조회 -> message_complete 전송
             final_state = await self.get_session_state(session_id)
             if final_state:
-                # accumulated_text가 없는 경우 (단계 완료 등) 최종 메시지에서 가져옴
-                ai_response = accumulated_text
-                if not ai_response and final_state["messages"]:
-                    ai_response = final_state["messages"][-1].content
+                ai_response: str | None = None
+                if not final_state["all_stages_complete"]:
+                    ai_response = accumulated_text or self._get_latest_ai_response(
+                        final_state.get("messages", [])
+                    )
 
                 yield {
                     "event": SSEEventType.MESSAGE_COMPLETE,

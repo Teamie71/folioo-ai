@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.api.v1.interview import router
 from common.sse import LangGraphEventType, SSEEventType
@@ -182,3 +182,46 @@ async def test_process_message_stream_yields_retriever_result(monkeypatch):
         "source": "search",
     }
     assert retriever_payload["insights"][1]["source"] == "mention"
+
+
+@pytest.mark.anyio
+async def test_process_message_stream_returns_none_when_all_complete(monkeypatch):
+    """모든 단계 완료 상태면 message_complete의 ai_response는 null이다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "messages": [HumanMessage(content="사용자 최종 답변")],
+            "current_stage": 4,
+            "stage_progress": {
+                "fixed_q_used": 3,
+                "fixed_q_total": 3,
+                "generated_q_used": 2,
+                "generated_q_max": 2,
+                "force_all_generated_q": False,
+                "is_complete": True,
+            },
+            "overall_completion_percentage": 100.0,
+            "all_stages_complete": True,
+        }
+    )
+    dummy_graph.stream_events = []
+
+    monkeypatch.setattr(
+        "features.interview.service.build_graph", lambda checkpointer=None: dummy_graph
+    )
+    monkeypatch.setattr("features.interview.service.get_checkpointer", lambda: object())
+    service = InterviewService()
+
+    events = [
+        event
+        async for event in service.process_message_stream(
+            session_id="session-1",
+            message="사용자 답변",
+        )
+    ]
+
+    complete_event = next(
+        event for event in events if event["event"] == SSEEventType.MESSAGE_COMPLETE
+    )
+    complete_payload = json.loads(complete_event["data"])
+    assert complete_payload["message"]["ai_response"] is None

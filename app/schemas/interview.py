@@ -67,7 +67,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     """채팅 응답"""
 
-    ai_response: str = Field(..., description="AI 응답 메시지")
+    ai_response: str | None = Field(None, description="AI 응답 메시지 (없으면 null)")
     current_stage: int = Field(..., ge=1, le=4, description="현재 단계")
     stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
     overall_completion: float = Field(..., ge=0.0, le=100.0, description="전체 완료율 (%)")
@@ -138,7 +138,7 @@ class SSERetrieverResult(BaseModel):
 class SSEMessagePayload(BaseModel):
     """최종 완료 메시지 내용"""
 
-    ai_response: str = Field(..., description="전체 AI 응답")
+    ai_response: str | None = Field(None, description="전체 AI 응답 (없으면 null)")
     current_stage: int = Field(..., ge=1, le=4, description="현재 단계")
     stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
     overall_completion: float = Field(..., ge=0.0, le=100.0, description="전체 완료율 (%)")

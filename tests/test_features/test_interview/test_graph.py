@@ -61,21 +61,37 @@ def test_interviewer_routing(initial_state):
 
 
 def test_graph_with_end_condition(initial_state, monkeypatch):
-    """종료 조건이 있을 때 그래프가 정상 종료되는지 확인"""
-    from features.interview.agents.nodes import question_generator
+    """Analyst가 end를 반환하면 QG를 거치지 않고 종료한다."""
+    from features.interview.agents.nodes import analyst, question_generator, retriever
 
-    monkeypatch.setattr(
-        question_generator,
-        "run",
-        lambda state: {
+    def _retriever_run(state):
+        return {**state, "next_node": "analyst"}
+
+    def _analyst_run(state):
+        return {
             **state,
             "all_stages_complete": True,
             "overall_completion_percentage": 100.0,
             "next_node": "end",
-        },
+        }
+
+    def _question_generator_run(_state):
+        raise AssertionError("analyst가 end를 반환한 경우 question_generator가 호출되면 안 됩니다.")
+
+    monkeypatch.setattr(
+        retriever,
+        "run",
+        _retriever_run,
     )
+    monkeypatch.setattr(analyst, "run", _analyst_run)
+    monkeypatch.setattr(question_generator, "run", _question_generator_run)
+
+    state = {
+        **initial_state,
+        "messages": [AIMessage(content="이전 질문")],
+    }  # Router가 retriever로 분기
     graph = build_graph()
-    result = graph.invoke(initial_state)
+    result = graph.invoke(state)
     assert result is not None
     assert result["all_stages_complete"] is True
     assert result["overall_completion_percentage"] == 100.0
