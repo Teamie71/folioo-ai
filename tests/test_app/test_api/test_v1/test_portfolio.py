@@ -11,44 +11,31 @@ from features.portfolio.schemas import PortfolioOutput, PortfolioResult, Portfol
 PORTFOLIO_UUID = "11111111-1111-1111-1111-111111111111"
 
 
-class DummyRepo:
-    def __init__(self, row: dict | None = None):
-        self._row = row
-
-    async def get_by_session_id(self, _session_id: str) -> dict | None:
-        return self._row
-
-
 class DummyPortfolioService:
     def __init__(
         self,
         *,
-        repo_row: dict | None = None,
         start_generation_error: Exception | None = None,
         result: PortfolioResult | None = None,
         status_error: Exception | None = None,
     ) -> None:
-        self._repository = DummyRepo(repo_row)
         self._start_generation_error = start_generation_error
         self._result = result
         self._status_error = status_error
         self.updated_rate: tuple[str, int] | None = None
 
-    async def has_generating_or_completed(self, _session_id: str) -> bool:
-        row = await self._repository.get_by_session_id(_session_id)
-        generating_statuses = {PortfolioStatus.GENERATING.value, PortfolioStatus.COMPLETED.value}
-        return bool(row and row["status"] in generating_statuses)
-
     async def exists(self, _portfolio_id: str) -> bool:
         return self._result is not None
 
-    async def start_generation(self, session_id: str, user_id: str, background_tasks) -> str:
+    async def start_generation(
+        self, portfolio_id: int, session_id: str, user_id: str, background_tasks=None
+    ) -> int:
         if self._start_generation_error is not None:
             raise self._start_generation_error
         assert session_id
         assert user_id
         assert background_tasks is not None
-        return "portfolio-1"
+        return portfolio_id
 
     async def get_status(self, _portfolio_id: str):
         if self._status_error is not None:
@@ -78,28 +65,11 @@ def test_generate_portfolio_accepted(monkeypatch):
 
     response = client.post(
         "/api/v1/portfolio/generate",
-        json={"session_id": "session-1", "user_id": "user-1"},
+        json={"portfolio_id": 100, "session_id": "session-1", "user_id": "user-1"},
     )
 
     assert response.status_code == 202
-    assert response.json() == {"portfolio_id": "portfolio-1", "status": "generating"}
-
-
-def test_generate_portfolio_returns_409_for_existing(monkeypatch):
-    """동일 세션 생성 중/완료 상태면 409를 반환한다."""
-    client = _create_client(
-        monkeypatch,
-        DummyPortfolioService(
-            repo_row={"id": "existing", "status": PortfolioStatus.GENERATING.value}
-        ),
-    )
-
-    response = client.post(
-        "/api/v1/portfolio/generate",
-        json={"session_id": "session-1", "user_id": "user-1"},
-    )
-
-    assert response.status_code == 409
+    assert response.json() == {"portfolio_id": "100", "status": "generating"}
 
 
 def test_generate_portfolio_returns_400_for_incomplete_interview(monkeypatch):
@@ -115,7 +85,7 @@ def test_generate_portfolio_returns_400_for_incomplete_interview(monkeypatch):
 
     response = client.post(
         "/api/v1/portfolio/generate",
-        json={"session_id": "session-1", "user_id": "user-1"},
+        json={"portfolio_id": 1, "session_id": "session-1", "user_id": "user-1"},
     )
 
     assert response.status_code == 400

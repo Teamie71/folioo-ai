@@ -1,9 +1,13 @@
 """메인 서버 API 기반 InsightStore 구현"""
 
-import logging
+from __future__ import annotations
 
-from common.main_server import InsightClient
-from features.interview.agents.state import InsightLog
+import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from common.main_server import InsightClient
+    from features.interview.agents.state import InsightLog
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +21,12 @@ class MainServerInsightStore:
     """
 
     def __init__(self, client: InsightClient | None = None) -> None:
-        self._client = client or InsightClient()
+        if client is not None:
+            self._client = client
+        else:
+            from common.main_server import InsightClient as _InsightClient
+
+            self._client = _InsightClient()
 
     async def search_similar(
         self,

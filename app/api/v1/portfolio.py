@@ -62,14 +62,9 @@ async def generate_portfolio(
     """포트폴리오 생성을 시작합니다."""
     service = get_portfolio_service()
 
-    if await service.has_generating_or_completed(request.session_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"이미 생성 중이거나 완료된 포트폴리오가 존재합니다: {request.session_id}",
-        )
-
     try:
         portfolio_id = await service.start_generation(
+            portfolio_id=request.portfolio_id,
             session_id=request.session_id,
             user_id=request.user_id,
             background_tasks=background_tasks,
@@ -81,7 +76,7 @@ async def generate_portfolio(
         )
 
     return GeneratePortfolioResponse(
-        portfolio_id=portfolio_id,
+        portfolio_id=str(portfolio_id),
         status=PortfolioStatus.GENERATING,
     )
 
