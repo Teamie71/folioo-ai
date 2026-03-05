@@ -121,3 +121,10 @@ class TestPortfolioClientUpdateResult:
                     "errorMessage": "LLM 호출 실패",
                 },
             )
+
+    @pytest.mark.asyncio
+    async def test_update_invalid_status_raises(self):
+        """허용되지 않는 status 전달 시 ValueError 발생"""
+        client = PortfolioClient()
+        with pytest.raises(ValueError, match="허용되지 않는 status"):
+            await client.update_result(portfolio_id=1, status="generating")

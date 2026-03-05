@@ -4,6 +4,8 @@ from typing import Any
 
 from common.http_client import request_with_retry
 
+_ALLOWED_UPDATE_STATUSES = ("completed", "failed")
+
 FIELD_MAP_SERVER_TO_AI = {
     "responsibilities": "contributions",
     "problemSolving": "achievements",
@@ -66,6 +68,11 @@ class PortfolioClient:
         Raises:
             MainServerError: API 호출 실패 시
         """
+        if status not in _ALLOWED_UPDATE_STATUSES:
+            raise ValueError(
+                f"허용되지 않는 status입니다: {status!r} (허용: {_ALLOWED_UPDATE_STATUSES})"
+            )
+
         if status == "completed":
             payload = {
                 "status": "completed",
