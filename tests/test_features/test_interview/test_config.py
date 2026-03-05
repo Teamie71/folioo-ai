@@ -1,6 +1,10 @@
 """설정 로더 테스트"""
 
+import copy
+from pathlib import Path
+
 import pytest
+import yaml
 
 from features.interview.config.loader import (
     StageConfig,
@@ -8,6 +12,15 @@ from features.interview.config.loader import (
     get_global_config,
     load_stage_config,
 )
+
+
+def _load_raw_stages_yaml() -> dict:
+    """실제 stages.yaml 원본을 로드한다."""
+    from features.interview.config import loader
+
+    yaml_path = Path(loader.__file__).parent / "stages.yaml"
+    with open(yaml_path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 def test_load_stage_config_stage_1():
@@ -81,6 +94,54 @@ def test_invalid_yaml_type_raises_korean_error(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(loader.yaml, "safe_load", lambda _: [])
 
     with pytest.raises(ValueError, match="인터뷰 설정 파일 형식이 올바르지 않습니다"):
+        loader._load_stages_yaml()
+
+    loader._load_stages_yaml.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value", "error_message"),
+    [
+        ("extension_turns_per_session", 0, "extension_turns_per_session은 1 이상이어야 합니다"),
+        ("extension_turns_per_session", -1, "extension_turns_per_session은 1 이상이어야 합니다"),
+        ("max_extensions", 0, "max_extensions는 1 이상이어야 합니다"),
+        ("max_extensions", -1, "max_extensions는 1 이상이어야 합니다"),
+    ],
+)
+def test_invalid_extension_global_values_raise_error(
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+    invalid_value: int,
+    error_message: str,
+):
+    """연장 전역 설정이 1 미만이면 명확한 예외를 반환한다."""
+    from features.interview.config import loader
+
+    loader._load_stages_yaml.cache_clear()
+    data = copy.deepcopy(_load_raw_stages_yaml())
+    data["global_config"][field_name] = invalid_value
+    monkeypatch.setattr(loader.yaml, "safe_load", lambda _: data)
+
+    with pytest.raises(ValueError, match=error_message):
+        loader._load_stages_yaml()
+
+    loader._load_stages_yaml.cache_clear()
+
+
+@pytest.mark.parametrize("missing_field", ["extension_turns_per_session", "max_extensions"])
+def test_missing_extension_global_field_raises_error(
+    monkeypatch: pytest.MonkeyPatch,
+    missing_field: str,
+):
+    """연장 전역 설정 필드는 필수이며 누락 시 예외를 반환한다."""
+    from features.interview.config import loader
+
+    loader._load_stages_yaml.cache_clear()
+    data = copy.deepcopy(_load_raw_stages_yaml())
+    data["global_config"].pop(missing_field)
+    monkeypatch.setattr(loader.yaml, "safe_load", lambda _: data)
+
+    with pytest.raises(ValueError, match=missing_field):
         loader._load_stages_yaml()
 
     loader._load_stages_yaml.cache_clear()

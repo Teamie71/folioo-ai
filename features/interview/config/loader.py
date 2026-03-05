@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 
 class StageConfig(BaseModel):
@@ -27,6 +27,22 @@ class GlobalConfig(BaseModel):
     context_window_size: int
     extension_turns_per_session: int
     max_extensions: int
+
+    @field_validator("extension_turns_per_session")
+    @classmethod
+    def validate_extension_turns_per_session(cls, value: int) -> int:
+        """연장 1회당 질문 횟수는 1 이상이어야 한다."""
+        if value < 1:
+            raise ValueError("extension_turns_per_session은 1 이상이어야 합니다.")
+        return value
+
+    @field_validator("max_extensions")
+    @classmethod
+    def validate_max_extensions(cls, value: int) -> int:
+        """최대 연장 횟수는 1 이상이어야 한다."""
+        if value < 1:
+            raise ValueError("max_extensions는 1 이상이어야 합니다.")
+        return value
 
 
 class StagesConfig(BaseModel):
