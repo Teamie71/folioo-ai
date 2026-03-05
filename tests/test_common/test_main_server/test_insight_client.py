@@ -76,24 +76,26 @@ class TestInsightClientSearchSimilar:
     @pytest.mark.asyncio
     async def test_search_returns_list(self):
         """정상 검색 결과 리스트 반환"""
-        mock_result = [
-            {
-                "id": 1,
-                "title": "인사이트1",
-                "description": "내용1",
-                "activityNames": ["활동A"],
-                "category": "문제해결",
-                "similarityScore": 0.9,
-            },
-            {
-                "id": 2,
-                "title": "인사이트2",
-                "description": "내용2",
-                "activityNames": ["활동B"],
-                "category": "학습",
-                "similarityScore": 0.8,
-            },
-        ]
+        mock_result = {
+            "insights": [
+                {
+                    "id": 1,
+                    "title": "인사이트1",
+                    "description": "내용1",
+                    "activityNames": ["활동A"],
+                    "category": "문제해결",
+                    "similarityScore": 0.9,
+                },
+                {
+                    "id": 2,
+                    "title": "인사이트2",
+                    "description": "내용2",
+                    "activityNames": ["활동B"],
+                    "category": "학습",
+                    "similarityScore": 0.8,
+                },
+            ]
+        }
 
         client = InsightClient()
         with patch(

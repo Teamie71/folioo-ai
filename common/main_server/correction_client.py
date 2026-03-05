@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from common.http_client import request_with_retry
+from common.http_client import MainServerError, request_with_retry
 from features.correction.schemas import CorrectionOutput
 
 _FIELD_NAME_TO_SERVER = {
@@ -21,19 +21,49 @@ _STATUS_TO_UPPER = {
     "failed": "FAILED",
 }
 
+_FIELD_MAP_SERVER_TO_AI = {
+    "positionName": "job_title",
+    "highlightPoint": "emphasis_points",
+    "companyName": "company_name",
+    "jobDescription": "job_description",
+    "companyInsight": "company_insight",
+    "userId": "user_id",
+    "createdAt": "created_at",
+}
+
+_RAG_FIELD_MAP_SERVER_TO_AI = {
+    "correctionId": "correction_id",
+    "searchQuery": "search_query",
+    "searchResults": "search_results",
+    "createdAt": "created_at",
+}
+
 
 def _transform_get_correction_response(raw: dict[str, Any]) -> dict[str, Any]:
     """메인 서버 응답을 AI 서버 형식으로 변환"""
     result: dict[str, Any] = {}
     for key, value in raw.items():
-        if key == "positionName":
-            result["job_title"] = value
-        elif key == "highlightPoint":
-            result["emphasis_points"] = value
+        if key == "portfolioIds":
+            if isinstance(value, list):
+                portfolio_ids = [str(item) for item in value]
+                result["portfolio_ids"] = portfolio_ids
+                if portfolio_ids:
+                    result["portfolio_id"] = portfolio_ids[0]
+            else:
+                result["portfolio_ids"] = []
         elif key == "status" and isinstance(value, str):
             result["status"] = value.lower()
         else:
-            result[key] = value
+            result[_FIELD_MAP_SERVER_TO_AI.get(key, key)] = value
+
+    return result
+
+
+def _transform_get_rag_data_response(raw: dict[str, Any]) -> dict[str, Any]:
+    """메인 서버 RAG 데이터 응답을 AI 서버 형식으로 변환"""
+    result: dict[str, Any] = {}
+    for key, value in raw.items():
+        result[_RAG_FIELD_MAP_SERVER_TO_AI.get(key, key)] = value
     return result
 
 
@@ -72,10 +102,16 @@ class CorrectionClient:
             positionName->job_title, highlightPoint->emphasis_points,
             status UPPER_CASE->lowercase 변환된 딕셔너리
         """
-        result = await request_with_retry(
-            "GET",
-            f"/corrections/{correction_id}",
-        )
+        try:
+            result = await request_with_retry(
+                "GET",
+                f"/corrections/{correction_id}",
+            )
+        except MainServerError as e:
+            if e.status_code == 404:
+                return {}
+            raise
+
         if not isinstance(result, dict):
             return {}
         return _transform_get_correction_response(result)
@@ -128,7 +164,7 @@ class CorrectionClient:
         self,
         correction_id: int,
         search_query: str,
-        search_results: list[dict],
+        search_results: dict | list[dict],
     ) -> None:
         """
         RAG 검색 데이터 저장
@@ -157,10 +193,16 @@ class CorrectionClient:
         Returns:
             메인 서버 단일 객체 응답 (dict)
         """
-        result = await request_with_retry(
-            "GET",
-            f"/corrections/{correction_id}/rag-data",
-        )
+        try:
+            result = await request_with_retry(
+                "GET",
+                f"/corrections/{correction_id}/rag-data",
+            )
+        except MainServerError as e:
+            if e.status_code == 404:
+                return {}
+            raise
+
         if not isinstance(result, dict):
             return {}
-        return result
+        return _transform_get_rag_data_response(result)

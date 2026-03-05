@@ -1,6 +1,7 @@
 """포트폴리오 서비스 테스트"""
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -24,43 +25,6 @@ class DummyBackgroundTasks:
         self.calls.append({"fn": fn, "args": args})
 
 
-class DummyRepo:
-    def __init__(self, row: dict | None = None):
-        self.row = row
-        self.created_args = None
-        self.updated_status = None
-        self.updated_result = None
-
-    async def get_by_session_id(self, _session_id: str) -> dict | None:
-        return self.row
-
-    async def create(self, session_id: str, user_id: str, experience_name: str) -> str:
-        self.created_args = {
-            "session_id": session_id,
-            "user_id": user_id,
-            "experience_name": experience_name,
-        }
-        return "new-id"
-
-    async def update_status(
-        self, portfolio_id: str, status: str, error_message: str | None = None
-    ) -> None:
-        self.updated_status = {
-            "portfolio_id": portfolio_id,
-            "status": status,
-            "error_message": error_message,
-        }
-
-    async def update_result(self, portfolio_id: str, output: PortfolioOutput) -> None:
-        self.updated_result = {"portfolio_id": portfolio_id, "output": output}
-
-    async def get_by_id(self, _portfolio_id: str) -> dict | None:
-        return self.row
-
-    async def update_contribution_rate(self, _portfolio_id: str, _rate: int) -> None:
-        return None
-
-
 class DummyGenerator:
     def __init__(self, output: PortfolioOutput | None = None, exc: Exception | None = None):
         default_output = PortfolioOutput(
@@ -78,83 +42,198 @@ class DummyGenerator:
         return self.output
 
 
+class DummyRepo:
+    """기존 CRUD 엔드포인트용 DummyRepo (get_status, get_result 등)"""
+
+    def __init__(self, row: dict | None = None):
+        self.row = row
+
+    async def get_by_session_id(self, _session_id: str) -> dict | None:
+        return self.row
+
+    async def get_by_id(self, _portfolio_id: str) -> dict | None:
+        return self.row
+
+    async def update_contribution_rate(self, _portfolio_id: str, _rate: int) -> None:
+        return None
+
+
 @pytest.mark.asyncio
-async def test_start_generation_creates_and_schedules_background_task(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """완료된 세션이면 generating 레코드를 만들고 background task를 등록한다."""
+async def test_start_generation_schedules_background_task():
+    """완료된 세션이면 background task를 등록하고 portfolio_id를 반환한다."""
     state = {
         "all_stages_complete": True,
         "collected_data": {"stage_1": {}},
         "experience_name": "프로젝트A",
         "user_id": "user-1",
     }
-    repo = DummyRepo()
     service = PortfolioService(
-        repository=repo,
         generator=DummyGenerator(),
         interview_service=DummyInterviewService(state),
+        portfolio_client=AsyncMock(),
     )
 
     tasks = DummyBackgroundTasks()
-    portfolio_id = await service.start_generation("session-1", "user-1", background_tasks=tasks)
+    portfolio_id = await service.start_generation(
+        portfolio_id=123,
+        session_id="session-1",
+        user_id="user-1",
+        background_tasks=tasks,
+    )
 
-    assert portfolio_id == "new-id"
-    assert repo.created_args == {
-        "session_id": "session-1",
-        "user_id": "user-1",
-        "experience_name": "프로젝트A",
-    }
-    assert repo.updated_status == {
-        "portfolio_id": "new-id",
-        "status": PortfolioStatus.GENERATING.value,
-        "error_message": None,
-    }
+    assert portfolio_id == 123
     assert len(tasks.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_start_generation_returns_existing_id_for_duplicate_session():
-    """동일 세션의 generating/completed 포트폴리오가 있으면 기존 ID를 반환한다."""
+async def test_start_generation_raises_for_none_session():
+    """세션을 찾을 수 없으면 ValueError를 발생시킨다."""
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=AsyncMock(),
+    )
+
+    with pytest.raises(ValueError, match="세션을 찾을 수 없습니다"):
+        await service.start_generation(
+            portfolio_id=1,
+            session_id="nonexistent",
+            user_id="user-1",
+            background_tasks=DummyBackgroundTasks(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_start_generation_raises_for_incomplete_interview():
+    """인터뷰 미완료 시 ValueError를 발생시킨다."""
     state = {
-        "all_stages_complete": True,
+        "all_stages_complete": False,
         "collected_data": {},
         "experience_name": "x",
         "user_id": "u",
     }
-    repo = DummyRepo(row={"id": "existing-id", "status": PortfolioStatus.GENERATING.value})
     service = PortfolioService(
-        repository=repo,
         generator=DummyGenerator(),
         interview_service=DummyInterviewService(state),
+        portfolio_client=AsyncMock(),
     )
 
-    portfolio_id = await service.start_generation(
-        "session-1", "u", background_tasks=DummyBackgroundTasks()
-    )
-
-    assert portfolio_id == "existing-id"
-    assert repo.created_args is None
+    with pytest.raises(ValueError, match="인터뷰가 완료되지 않아"):
+        await service.start_generation(
+            portfolio_id=1,
+            session_id="session-1",
+            user_id="u",
+            background_tasks=DummyBackgroundTasks(),
+        )
 
 
 @pytest.mark.asyncio
-async def test_background_generation_failure_updates_failed_status():
-    """Background Task 실패 시 예외를 전파하지 않고 failed 상태를 저장한다."""
-    repo = DummyRepo()
+async def test_start_generation_raises_for_user_mismatch():
+    """세션 사용자와 요청 사용자가 불일치하면 ValueError를 발생시킨다."""
+    state = {
+        "all_stages_complete": True,
+        "collected_data": {},
+        "experience_name": "x",
+        "user_id": "user-a",
+    }
     service = PortfolioService(
-        repository=repo,
-        generator=DummyGenerator(exc=RuntimeError("boom")),
-        interview_service=DummyInterviewService(None),
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(state),
+        portfolio_client=AsyncMock(),
     )
 
-    await service._generate_portfolio_background("pid", {}, "exp")
+    with pytest.raises(ValueError, match="사용자가 일치하지 않습니다"):
+        await service.start_generation(
+            portfolio_id=1,
+            session_id="session-1",
+            user_id="user-b",
+            background_tasks=DummyBackgroundTasks(),
+        )
 
-    assert repo.updated_result is None
-    assert repo.updated_status == {
-        "portfolio_id": "pid",
-        "status": PortfolioStatus.FAILED.value,
-        "error_message": "boom",
-    }
+
+@pytest.mark.asyncio
+async def test_background_generation_success_calls_update_result():
+    """Background Task 성공 시 portfolio_client.update_result을 호출한다."""
+    mock_client = AsyncMock()
+    output = PortfolioOutput(
+        description="설명",
+        contributions="기여",
+        achievements="성과",
+        insights="인사이트",
+    )
+    service = PortfolioService(
+        generator=DummyGenerator(output=output),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=mock_client,
+    )
+
+    await service._generate_portfolio_background(42, {}, "exp")
+
+    mock_client.update_result.assert_called_once_with(
+        42,
+        status="completed",
+        description="설명",
+        contributions="기여",
+        achievements="성과",
+        insights="인사이트",
+    )
+
+
+@pytest.mark.asyncio
+async def test_background_generation_success_callback_failure_attempts_failed():
+    """성공 콜백이 실패하면 failed 콜백을 시도한다."""
+    mock_client = AsyncMock()
+    mock_client.update_result.side_effect = [
+        RuntimeError("메인 서버 연결 실패"),  # completed 콜백 실패
+        None,  # failed 콜백 성공
+    ]
+    output = PortfolioOutput(
+        description="d",
+        contributions="c",
+        achievements="a",
+        insights="i",
+    )
+    service = PortfolioService(
+        generator=DummyGenerator(output=output),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=mock_client,
+    )
+
+    await service._generate_portfolio_background(42, {}, "exp")
+
+    assert mock_client.update_result.call_count == 2
+    mock_client.update_result.assert_any_call(
+        42,
+        status="completed",
+        description="d",
+        contributions="c",
+        achievements="a",
+        insights="i",
+    )
+    mock_client.update_result.assert_any_call(
+        42,
+        status="failed",
+        error_message="메인 서버 연결 실패",
+    )
+
+
+@pytest.mark.asyncio
+async def test_background_generation_failure_calls_failed_callback():
+    """Background Task 실패 시 failed 콜백을 전송한다."""
+    mock_client = AsyncMock()
+    service = PortfolioService(
+        generator=DummyGenerator(exc=RuntimeError("boom")),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=mock_client,
+    )
+
+    await service._generate_portfolio_background(42, {}, "exp")
+
+    mock_client.update_result.assert_called_once_with(
+        42,
+        status="failed",
+        error_message="boom",
+    )
 
 
 @pytest.mark.asyncio
@@ -178,6 +257,7 @@ async def test_get_status_and_get_result_for_completed_row():
         repository=DummyRepo(row=row),
         generator=DummyGenerator(),
         interview_service=DummyInterviewService(None),
+        portfolio_client=AsyncMock(),
     )
 
     status = await service.get_status("pid")
@@ -187,3 +267,67 @@ async def test_get_status_and_get_result_for_completed_row():
     assert result is not None
     assert result.output is not None
     assert result.output.achievements == "해결"
+
+
+@pytest.mark.asyncio
+async def test_get_status_uses_main_server_for_numeric_portfolio_id():
+    """숫자형 portfolio_id는 메인 서버 조회를 사용한다."""
+    mock_client = AsyncMock()
+    mock_client.get_portfolio.return_value = {
+        "id": 100,
+        "status": PortfolioStatus.GENERATING.value,
+    }
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=mock_client,
+    )
+
+    response = await service.get_status("100")
+
+    assert response.status == PortfolioStatus.GENERATING
+    mock_client.get_portfolio.assert_called_once_with(100)
+
+
+@pytest.mark.asyncio
+async def test_get_result_uses_main_server_for_numeric_portfolio_id():
+    """숫자형 portfolio_id 완료 데이터는 메인 서버 결과를 반환한다."""
+    mock_client = AsyncMock()
+    mock_client.get_portfolio.return_value = {
+        "id": 100,
+        "session_id": "session-1",
+        "user_id": 101,
+        "experience_name": "프로젝트",
+        "status": PortfolioStatus.COMPLETED.value,
+        "description": "상세",
+        "contributions": "담당",
+        "achievements": "해결",
+        "insights": "배운점",
+        "contribution_rate": 30,
+    }
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=mock_client,
+    )
+
+    result = await service.get_result("100")
+
+    assert result is not None
+    assert result.portfolio_id == "100"
+    assert result.user_id == "101"
+    assert result.output is not None
+    assert result.output.contributions == "담당"
+
+
+@pytest.mark.asyncio
+async def test_update_contribution_rate_raises_for_numeric_portfolio_id():
+    """숫자형 portfolio_id는 기여도 수정을 지원하지 않는다."""
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=AsyncMock(),
+    )
+
+    with pytest.raises(ValueError, match="기여도 수정을 지원하지 않습니다"):
+        await service.update_contribution_rate("100", 50)
