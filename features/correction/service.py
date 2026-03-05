@@ -1,11 +1,13 @@
-"""첨삭 서비스 오케스트레이션"""
+"""첨삭 서비스 오케스트레이션 (메인 서버 API 호출 기반)"""
 
 import asyncio
+import json
 import logging
 
 from fastapi import BackgroundTasks
 
-from common.main_server import CorrectionClient
+from common.clients.correction_client import CorrectionClient, get_correction_client
+from common.clients.portfolio_client import PortfolioClient, get_portfolio_client
 
 from .generator import CorrectionGenerator, get_correction_generator
 from .rag import (
@@ -14,190 +16,62 @@ from .rag import (
     RAGPipeline,
     RAGSearchError,
 )
-from .repository import CorrectionRepository, get_correction_repository
-from .schemas import CorrectionOutput, CorrectionStatus
+from .schemas import CorrectionStatus
 
 logger = logging.getLogger(__name__)
 
 _service: "CorrectionService | None" = None
 
 
+def _to_upper_status(status: CorrectionStatus) -> str:
+    """CorrectionStatus enum을 메인 서버가 기대하는 UPPER_CASE 문자열로 변환"""
+    return status.value.upper()
+
+
+def _normalize_status(raw: str | None) -> str:
+    """메인 서버 응답의 상태값을 내부 CorrectionStatus.value(lower_case)로 정규화"""
+    return raw.lower() if raw else ""
+
+
 class CorrectionService:
-    """첨삭 생성 전 과정을 조율하는 서비스"""
+    """
+    첨삭 생성 전 과정을 조율하는 서비스
+
+    DB 직접 접근 대신 메인 서버 API(httpx)를 통해 데이터를 읽고 쓴다.
+    상태 전이는 메인 서버가 원자적으로 처리한다.
+    """
 
     def __init__(
         self,
-        repository: CorrectionRepository,
+        correction_client: CorrectionClient,
+        portfolio_client: PortfolioClient,
         generator: CorrectionGenerator,
         rag_pipeline: RAGPipeline,
-        correction_client: CorrectionClient | None = None,
     ) -> None:
-        self._repository = repository
+        self._correction_client = correction_client
+        self._portfolio_client = portfolio_client
         self._generator = generator
         self._rag_pipeline = rag_pipeline
-        self._correction_client = correction_client or CorrectionClient()
 
-    @staticmethod
-    def _parse_numeric_correction_id(correction_id: str) -> int | None:
-        """문자열 correction_id를 숫자형 ID로 변환 시도"""
-        try:
-            numeric_id = int(correction_id)
-        except (ValueError, TypeError):
-            return None
+    # ------------------------------------------------------------------
+    # RAG 단계
+    # ------------------------------------------------------------------
 
-        if numeric_id <= 0:
-            return None
-        return numeric_id
-
-    async def _get_correction_row(self, correction_id: str) -> dict | None:
-        """correction_id 형식에 맞춰 첨삭 데이터를 조회"""
-        numeric_id = self._parse_numeric_correction_id(correction_id)
-        if numeric_id is not None:
-            data = await self._correction_client.get_correction(numeric_id)
-            return data or None
-
-        try:
-            return await self._repository.get_by_id(correction_id)
-        except Exception:
-            return None
-
-    async def _update_status(self, correction_id: str, status: str) -> None:
-        """correction_id 형식에 맞춰 상태를 업데이트"""
-        numeric_id = self._parse_numeric_correction_id(correction_id)
-        if numeric_id is not None:
-            await self._correction_client.update_status(numeric_id, status)
-            return
-
-        await self._repository.update_status(correction_id, status)
-
-    async def _update_status_if_current(
-        self,
-        correction_id: str,
-        expected_status: str,
-        next_status: str,
-    ) -> bool:
-        """현재 상태가 expected_status인 경우에만 상태 전이"""
-        numeric_id = self._parse_numeric_correction_id(correction_id)
-        if numeric_id is not None:
-            correction = await self._get_correction_row(correction_id)
-            if correction is None:
-                return False
-            if correction.get("status") != expected_status:
-                return False
-            await self._correction_client.update_status(numeric_id, next_status)
-            return True
-
-        return await self._repository.update_status_if_current(
-            correction_id,
-            expected_status,
-            next_status,
-        )
-
-    async def _update_company_insight_row(self, correction_id: str, company_insight: str) -> None:
-        """correction_id 형식에 맞춰 company_insight를 저장"""
-        numeric_id = self._parse_numeric_correction_id(correction_id)
-        if numeric_id is not None:
-            await self._correction_client.update_company_insight(numeric_id, company_insight)
-            return
-
-        await self._repository.update_company_insight(correction_id, company_insight)
-
-    async def _update_emphasis_points_row(self, correction_id: str, emphasis_points: str) -> None:
-        """correction_id 형식에 맞춰 emphasis_points를 저장"""
-        if self._parse_numeric_correction_id(correction_id) is not None:
-            raise ValueError(
-                "숫자형 correction_id는 현재 강조 포인트 수정을 지원하지 않습니다. "
-                "메인 서버 API를 통해 수정해주세요."
-            )
-
-        await self._repository.update_emphasis_points(correction_id, emphasis_points)
-
-    async def _save_rag_data_row(
-        self,
-        correction_id: str,
-        search_query: str,
-        search_results: dict,
-    ) -> None:
-        """correction_id 형식에 맞춰 RAG 데이터를 저장"""
-        numeric_id = self._parse_numeric_correction_id(correction_id)
-        if numeric_id is not None:
-            await self._correction_client.save_rag_data(numeric_id, search_query, search_results)
-            return
-
-        await self._repository.save_rag_data(correction_id, search_query, search_results)
-
-    async def _get_rag_data_rows(self, correction_id: str) -> list[dict]:
-        """correction_id 형식에 맞춰 RAG 데이터를 조회"""
-        numeric_id = self._parse_numeric_correction_id(correction_id)
-        if numeric_id is not None:
-            result = await self._correction_client.get_rag_data(numeric_id)
-            if isinstance(result, list):
-                return [item for item in result if isinstance(item, dict)]
-            if isinstance(result, dict) and result:
-                return [result]
-            return []
-
-        return await self._repository.get_rag_data(correction_id)
-
-    async def _update_result_row(self, correction_id: str, result: dict) -> None:
-        """correction_id 형식에 맞춰 생성 결과를 저장"""
-        numeric_id = self._parse_numeric_correction_id(correction_id)
-        if numeric_id is not None:
-            output = CorrectionOutput.model_validate(result)
-            await self._correction_client.update_result(numeric_id, output)
-            return
-
-        await self._repository.update_result(correction_id, result)
-
-    async def _delete_correction_row(self, correction_id: str) -> None:
-        """correction_id 형식에 맞춰 첨삭 데이터를 삭제"""
-        if self._parse_numeric_correction_id(correction_id) is not None:
-            raise ValueError(
-                "숫자형 correction_id는 현재 삭제를 지원하지 않습니다. "
-                "메인 서버 API를 통해 삭제해주세요."
-            )
-
-        await self._repository.delete(correction_id)
-
-    async def create_correction(
-        self,
-        portfolio_id: str,
-        user_id: str,
-        company_name: str,
-        job_title: str,
-        job_description: str,
-    ) -> dict:
-        """첨삭 레코드를 생성하고 생성된 row를 반환"""
-        return await self._repository.create(
-            portfolio_id=portfolio_id,
-            user_id=user_id,
-            company_name=company_name,
-            job_title=job_title,
-            job_description=job_description,
-        )
-
-    async def start_rag(self, correction_id: str, background_tasks: BackgroundTasks) -> None:
+    async def start_rag(self, correction_id: int, background_tasks: BackgroundTasks) -> None:
         """RAG 단계를 시작하고 백그라운드 작업을 등록"""
-        correction = await self._get_correction_row(correction_id)
-        if correction is None:
-            raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
-
-        if correction.get("status") != CorrectionStatus.NOT_STARTED.value:
-            return
-
-        await self._update_status(correction_id, CorrectionStatus.DOING_RAG.value)
+        await self._correction_client.update_status(
+            correction_id, _to_upper_status(CorrectionStatus.DOING_RAG)
+        )
         background_tasks.add_task(self._run_rag, correction_id)
 
-    async def _run_rag(self, correction_id: str) -> None:
+    async def _run_rag(self, correction_id: int) -> None:
         """RAG 실행 후 기업 인사이트를 저장"""
         try:
-            correction = await self._get_correction_row(correction_id)
-            if correction is None:
-                raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
+            correction = await self._correction_client.get_correction(correction_id)
 
-            company_name = correction["company_name"]
-            job_title = correction["job_title"]
-            job_description = correction["job_description"]
+            company_name = correction["companyName"]
+            job_title = correction["positionName"]
+            job_description = correction["jobDescription"]
 
             rag_result = await self._rag_pipeline.run(
                 company_name,
@@ -209,7 +83,7 @@ class CorrectionService:
                 if rag_result.keywords
                 else f"{company_name} {job_title}"
             )
-            await self._save_rag_data_row(
+            await self._correction_client.save_rag_data(
                 correction_id,
                 search_query,
                 {
@@ -217,9 +91,7 @@ class CorrectionService:
                     "results": rag_result.search_results,
                 },
             )
-            await self._update_company_insight_row(correction_id, rag_result.insight)
-
-            await self._update_status(correction_id, CorrectionStatus.COMPANY_INSIGHT.value)
+            await self._correction_client.update_company_insight(correction_id, rag_result.insight)
         except Exception as exc:
             if isinstance(exc, RAGKeywordExtractionError):
                 logger.exception("RAG 키워드 추출 실패 (correction_id: %s)", correction_id)
@@ -231,38 +103,42 @@ class CorrectionService:
                 logger.exception("RAG 처리 실패 (correction_id: %s)", correction_id)
             await self._mark_failed(correction_id)
 
+    # ------------------------------------------------------------------
+    # RAG 데이터 파싱 유틸리티
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _extract_search_results(rag_data: dict) -> list[dict]:
-        """rag_data row에서 검색 결과 목록 추출"""
-        stored_search_results = rag_data.get("search_results")
+        """rag_data에서 검색 결과 목록 추출"""
+        stored = rag_data.get("searchResults")
 
-        if isinstance(stored_search_results, dict):
-            results = stored_search_results.get("results")
+        if isinstance(stored, dict):
+            results = stored.get("results")
             if isinstance(results, list):
                 return [item for item in results if isinstance(item, dict)]
             return []
 
-        if isinstance(stored_search_results, list):
-            return [item for item in stored_search_results if isinstance(item, dict)]
+        if isinstance(stored, list):
+            return [item for item in stored if isinstance(item, dict)]
 
         return []
 
     @staticmethod
     def _extract_keywords(rag_data: dict) -> list[str]:
-        """rag_data row에서 키워드 목록 추출"""
-        stored_search_results = rag_data.get("search_results")
-        if isinstance(stored_search_results, dict):
-            keywords = stored_search_results.get("keywords")
+        """rag_data에서 키워드 목록 추출"""
+        stored = rag_data.get("searchResults")
+        if isinstance(stored, dict):
+            keywords = stored.get("keywords")
             if isinstance(keywords, list):
-                normalized_keywords: list[str] = []
+                normalized: list[str] = []
                 for item in keywords:
                     keyword = str(item).strip()
                     if keyword:
-                        normalized_keywords.append(keyword)
-                if normalized_keywords:
-                    return normalized_keywords
+                        normalized.append(keyword)
+                if normalized:
+                    return normalized
 
-        search_query = rag_data.get("search_query")
+        search_query = rag_data.get("searchQuery")
         if isinstance(search_query, str):
             return [keyword.strip() for keyword in search_query.split(",") if keyword.strip()]
 
@@ -270,24 +146,21 @@ class CorrectionService:
 
     async def _run_rag_from_search_results(
         self,
-        correction_id: str,
+        correction_id: int,
         search_results: list[dict],
         keywords: list[str],
     ) -> None:
         """저장된 RAG 검색 결과로 인사이트만 재생성"""
         try:
-            correction = await self._get_correction_row(correction_id)
-            if correction is None:
-                raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
+            correction = await self._correction_client.get_correction(correction_id)
 
             insight = await self._rag_pipeline.run_from_search_results(
                 search_results=search_results,
-                company_name=correction["company_name"],
-                job_title=correction["job_title"],
+                company_name=correction["companyName"],
+                job_title=correction["positionName"],
                 keywords=keywords,
             )
-            await self._update_company_insight_row(correction_id, insight)
-            await self._update_status(correction_id, CorrectionStatus.COMPANY_INSIGHT.value)
+            await self._correction_client.update_company_insight(correction_id, insight)
         except Exception:
             logger.exception(
                 "저장된 검색 결과 기반 RAG 재시도 실패 (correction_id: %s)",
@@ -295,41 +168,110 @@ class CorrectionService:
             )
             await self._mark_failed(correction_id)
 
-    async def retry(self, correction_id: str, background_tasks: BackgroundTasks) -> None:
-        """실패한 첨삭을 마지막 단계 기준으로 재시도"""
-        correction = await self._get_correction_row(correction_id)
-        if correction is None:
-            raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
+    # ------------------------------------------------------------------
+    # 생성 단계
+    # ------------------------------------------------------------------
 
-        if correction.get("status") != CorrectionStatus.FAILED.value:
-            raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
+    async def start_generation(self, correction_id: int, background_tasks: BackgroundTasks) -> None:
+        """첨삭 생성 단계를 시작하고 백그라운드 작업을 등록"""
+        await self._correction_client.update_status(
+            correction_id, _to_upper_status(CorrectionStatus.GENERATING)
+        )
+        background_tasks.add_task(self._run_generation, correction_id)
 
-        if correction.get("company_insight") is not None:
-            transitioned = await self._update_status_if_current(
-                correction_id,
-                CorrectionStatus.FAILED.value,
-                CorrectionStatus.COMPANY_INSIGHT.value,
+    async def _run_generation(self, correction_id: int) -> None:
+        """첨삭 생성기를 호출하고 결과를 저장"""
+        try:
+            correction = await self._correction_client.get_correction(correction_id)
+
+            company_insight = correction.get("companyInsight") or ""
+            if isinstance(company_insight, dict):
+                company_insight = json.dumps(company_insight, ensure_ascii=False)
+
+            emphasis_points = correction.get("highlightPoint") or ""
+            if isinstance(emphasis_points, dict):
+                emphasis_points = json.dumps(emphasis_points, ensure_ascii=False)
+
+            portfolio_ids = correction.get("portfolioIds") or []
+            if not portfolio_ids:
+                raise ValueError("포트폴리오 ID가 없습니다.")
+
+            portfolio = await self._portfolio_client.get_portfolio(portfolio_ids[0])
+            portfolio_output = {
+                "description": portfolio.get("description", ""),
+                "contributions": portfolio.get("responsibilities", ""),
+                "achievements": portfolio.get("problemSolving", ""),
+                "insights": portfolio.get("learnings", ""),
+            }
+
+            result = await asyncio.to_thread(
+                self._generator.generate,
+                correction.get("companyName", ""),
+                correction.get("positionName", ""),
+                correction.get("jobDescription", ""),
+                company_insight,
+                portfolio_output,
+                emphasis_points,
             )
-            if not transitioned:
-                raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
-            await self.start_generation(correction_id, background_tasks)
-            return
 
-        rag_data_rows = await self._get_rag_data_rows(correction_id)
-        if rag_data_rows:
-            latest_rag_data = rag_data_rows[-1]
-            search_results = self._extract_search_results(latest_rag_data)
-            if search_results:
-                keywords = self._extract_keywords(latest_rag_data)
-                transitioned = await self._update_status_if_current(
-                    correction_id,
-                    CorrectionStatus.FAILED.value,
-                    CorrectionStatus.DOING_RAG.value,
+            result_for_server = self._convert_result_for_server(result)
+            await self._correction_client.update_result(correction_id, result_for_server)
+        except Exception as exc:
+            logger.exception("첨삭 생성 실패 (correction_id: %s): %s", correction_id, exc)
+            await self._mark_failed(correction_id)
+
+    @staticmethod
+    def _convert_result_for_server(result) -> list[dict]:
+        """CorrectionOutput을 메인 서버 배열 포맷으로 변환"""
+        if hasattr(result, "model_dump"):
+            result_dict = result.model_dump()
+        elif isinstance(result, dict):
+            result_dict = result
+        else:
+            raise ValueError("첨삭 결과 형식이 올바르지 않습니다.")
+
+        return [result_dict]
+
+    # ------------------------------------------------------------------
+    # 재시도
+    # ------------------------------------------------------------------
+
+    async def retry(self, correction_id: int, background_tasks: BackgroundTasks) -> None:
+        """
+        실패한 첨삭을 재시도한다.
+
+        company_insight 유무와 rag_data 유무에 따라 재시도 경로를 결정:
+        - company_insight + rag_data 있음 -> 생성부터 재시도
+        - rag_data만 있음 (검색 결과 존재) -> 저장된 검색 결과로 인사이트 재생성
+        - 그 외 -> 전체 RAG부터 재시도
+        """
+        correction = await self._correction_client.get_correction(correction_id)
+        status_value = _normalize_status(correction.get("status", ""))
+
+        if status_value != CorrectionStatus.FAILED.value:
+            raise ValueError("실패 상태가 아닌 첨삭은 재시도할 수 없습니다.")
+
+        company_insight = correction.get("companyInsight")
+
+        # 1) company_insight + rag_data 모두 있으면 생성부터 재시도
+        if company_insight:
+            rag_data = await self._correction_client.get_rag_data(correction_id)
+            if rag_data:
+                await self._correction_client.update_status(
+                    correction_id, _to_upper_status(CorrectionStatus.GENERATING)
                 )
-                if not transitioned:
-                    raise ValueError(
-                        f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}"
-                    )
+                background_tasks.add_task(self._run_generation, correction_id)
+                return
+
+        # 2) 저장된 RAG 데이터가 있으면 검색 결과로 인사이트만 재생성
+        rag_data = await self._correction_client.get_rag_data(correction_id)
+        if rag_data:
+            search_results = self._extract_search_results(rag_data)
+            if search_results:
+                keywords = self._extract_keywords(rag_data)
+                await self._correction_client.update_status(
+                    correction_id, _to_upper_status(CorrectionStatus.DOING_RAG)
+                )
                 background_tasks.add_task(
                     self._run_rag_from_search_results,
                     correction_id,
@@ -338,112 +280,28 @@ class CorrectionService:
                 )
                 return
 
-        transitioned = await self._update_status_if_current(
-            correction_id,
-            CorrectionStatus.FAILED.value,
-            CorrectionStatus.NOT_STARTED.value,
+        # 3) 전체 RAG부터 재시도
+        await self._correction_client.update_status(
+            correction_id, _to_upper_status(CorrectionStatus.DOING_RAG)
         )
-        if not transitioned:
-            raise ValueError(f"실패 상태가 아닌 첨삭은 재시도할 수 없습니다: {correction_id}")
-        await self.start_rag(correction_id, background_tasks)
+        background_tasks.add_task(self._run_rag, correction_id)
 
-    async def start_generation(self, correction_id: str, background_tasks: BackgroundTasks) -> None:
-        """첨삭 생성 단계를 시작하고 백그라운드 작업을 등록"""
-        correction = await self._get_correction_row(correction_id)
-        if correction is None:
-            raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
+    # ------------------------------------------------------------------
+    # 공통 유틸리티
+    # ------------------------------------------------------------------
 
-        if correction.get("status") != CorrectionStatus.COMPANY_INSIGHT.value:
-            return
-
-        await self._update_status(correction_id, CorrectionStatus.GENERATING.value)
-        background_tasks.add_task(self._run_generation, correction_id)
-
-    async def _run_generation(self, correction_id: str) -> None:
-        """첨삭 생성기를 호출하고 결과를 저장"""
-        try:
-            correction = await self._get_correction_row(correction_id)
-            if correction is None:
-                raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
-
-            from features.portfolio import get_portfolio_service
-
-            portfolio_id = correction.get("portfolio_id")
-            if portfolio_id is None:
-                raise ValueError("포트폴리오 ID를 찾을 수 없습니다.")
-
-            portfolio_result = await get_portfolio_service().get_result(str(portfolio_id))
-            if portfolio_result is None or portfolio_result.output is None:
-                raise ValueError("포트폴리오 결과를 찾을 수 없습니다.")
-
-            if hasattr(portfolio_result.output, "model_dump"):
-                portfolio_output = portfolio_result.output.model_dump()
-            elif isinstance(portfolio_result.output, dict):
-                portfolio_output = portfolio_result.output
-            else:
-                raise ValueError("포트폴리오 출력 형식이 올바르지 않습니다.")
-
-            result = await asyncio.to_thread(
-                self._generator.generate,
-                correction["company_name"],
-                correction["job_title"],
-                correction["job_description"],
-                correction.get("company_insight") or "",
-                portfolio_output,
-                correction.get("emphasis_points") or "",
-            )
-            if hasattr(result, "model_dump"):
-                result_dict = result.model_dump()
-            elif isinstance(result, dict):
-                result_dict = result
-            else:
-                raise ValueError("첨삭 결과 형식이 올바르지 않습니다.")
-            await self._update_result_row(correction_id, result_dict)
-            await self._update_status(correction_id, CorrectionStatus.DONE.value)
-        except Exception:
-            logger.exception("첨삭 생성 실패 (correction_id: %s)", correction_id)
-            await self._mark_failed(correction_id)
-
-    async def _mark_failed(self, correction_id: str) -> None:
+    async def _mark_failed(self, correction_id: int) -> None:
         """실패 상태 업데이트를 시도하고 실패 시 로깅"""
         try:
-            await self._update_status(correction_id, CorrectionStatus.FAILED.value)
+            await self._correction_client.update_status(
+                correction_id, _to_upper_status(CorrectionStatus.FAILED)
+            )
         except Exception as exc:
             logger.warning(
                 "실패 상태 업데이트를 건너뜁니다 (correction_id: %s): %s",
                 correction_id,
                 exc,
             )
-
-    async def get_correction(self, correction_id: str) -> dict | None:
-        """첨삭 전체 데이터 조회"""
-        return await self._get_correction_row(correction_id)
-
-    async def get_status(self, correction_id: str) -> CorrectionStatus:
-        """첨삭 상태 조회"""
-        correction = await self._get_correction_row(correction_id)
-        if correction is None:
-            raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
-        return CorrectionStatus(correction["status"])
-
-    async def get_company_insight(self, correction_id: str) -> str | None:
-        """기업 인사이트 조회"""
-        correction = await self._get_correction_row(correction_id)
-        if correction is None:
-            raise ValueError(f"첨삭을 찾을 수 없습니다: {correction_id}")
-        return correction.get("company_insight")
-
-    async def update_company_insight(self, correction_id: str, company_insight: str) -> None:
-        """기업 인사이트 수정"""
-        await self._update_company_insight_row(correction_id, company_insight)
-
-    async def update_emphasis_points(self, correction_id: str, emphasis_points: str) -> None:
-        """강조 포인트 수정"""
-        await self._update_emphasis_points_row(correction_id, emphasis_points)
-
-    async def delete_correction(self, correction_id: str) -> None:
-        """첨삭 삭제"""
-        await self._delete_correction_row(correction_id)
 
 
 def get_correction_service() -> CorrectionService:
@@ -452,7 +310,8 @@ def get_correction_service() -> CorrectionService:
 
     if _service is None:
         _service = CorrectionService(
-            repository=get_correction_repository(),
+            correction_client=get_correction_client(),
+            portfolio_client=get_portfolio_client(),
             generator=get_correction_generator(),
             rag_pipeline=RAGPipeline(),
         )
@@ -461,15 +320,17 @@ def get_correction_service() -> CorrectionService:
 
 
 def init_correction_service(
-    repository: CorrectionRepository,
+    correction_client: CorrectionClient,
+    portfolio_client: PortfolioClient,
     generator: CorrectionGenerator,
     rag_pipeline: RAGPipeline,
 ) -> CorrectionService:
-    """CorrectionService 싱글톤 초기화"""
+    """CorrectionService 싱글톤 초기화 (테스트용)"""
     global _service
 
     _service = CorrectionService(
-        repository=repository,
+        correction_client=correction_client,
+        portfolio_client=portfolio_client,
         generator=generator,
         rag_pipeline=rag_pipeline,
     )

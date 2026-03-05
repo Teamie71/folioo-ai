@@ -1,4 +1,4 @@
-"""첨삭 서비스 테스트"""
+"""첨삭 서비스 테스트 (httpx 클라이언트 기반)"""
 
 from __future__ import annotations
 
@@ -28,108 +28,88 @@ _install_dummy_langchain_openai()
 correction_service_module = importlib.import_module("features.correction.service")
 RAGRunResult = importlib.import_module("features.correction.rag.pipeline").RAGRunResult
 CorrectionStatus = importlib.import_module("features.correction.schemas").CorrectionStatus
+MainServerError = importlib.import_module("common.clients.base_client").MainServerError
 CorrectionService = correction_service_module.CorrectionService
 get_correction_service = correction_service_module.get_correction_service
 init_correction_service = correction_service_module.init_correction_service
 reset_correction_service = correction_service_module.reset_correction_service
 
 
-class DummyRepository:
-    """CorrectionRepository 대체 더미"""
+class DummyCorrectionClient:
+    """CorrectionClient 대체 더미 (메인 서버 API Mock)"""
 
-    def __init__(self) -> None:
-        self.rows: dict[str, dict] = {}
-        self.rag_data_rows: dict[str, list[dict]] = {}
-        self.created_payload: dict | None = None
-        self.saved_rag_data: list[dict] = []
-        self.updated_result: dict | None = None
+    def __init__(self, *, raise_on_update_status: bool = False) -> None:
+        self.corrections: dict[int, dict] = {}
+        self.rag_data: dict[int, dict | None] = {}
         self.updated_statuses: list[dict] = []
+        self.saved_rag_data: list[dict] = []
+        self.updated_company_insights: list[dict] = []
+        self.updated_results: list[dict] = []
+        self._raise_on_update_status = raise_on_update_status
 
-    async def create(
-        self,
-        portfolio_id: str,
-        user_id: str,
-        company_name: str,
-        job_title: str,
-        job_description: str,
-    ) -> dict:
-        self.created_payload = {
-            "portfolio_id": portfolio_id,
-            "user_id": user_id,
-            "company_name": company_name,
-            "job_title": job_title,
-            "job_description": job_description,
-        }
-        row = {
-            "id": "c-1",
-            "portfolio_id": portfolio_id,
-            "user_id": user_id,
-            "company_name": company_name,
-            "job_title": job_title,
-            "job_description": job_description,
-            "status": CorrectionStatus.NOT_STARTED.value,
-            "company_insight": None,
-            "emphasis_points": None,
-            "result": None,
-        }
-        self.rows[row["id"]] = row
-        return row
+    async def get_correction(self, correction_id: int) -> dict:
+        if correction_id not in self.corrections:
+            raise MainServerError(
+                status_code=404, detail=f"첨삭을 찾을 수 없습니다: {correction_id}"
+            )
+        return self.corrections[correction_id]
 
-    async def get_by_id(self, correction_id: str) -> dict | None:
-        return self.rows.get(correction_id)
-
-    async def update_status(self, correction_id: str, status: str) -> None:
-        if correction_id not in self.rows:
-            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
-        self.rows[correction_id]["status"] = status
+    async def update_status(self, correction_id: int, status: str) -> dict:
+        if self._raise_on_update_status:
+            raise RuntimeError("상태 업데이트 실패")
         self.updated_statuses.append({"correction_id": correction_id, "status": status})
-
-    async def update_status_if_current(
-        self,
-        correction_id: str,
-        expected_status: str,
-        next_status: str,
-    ) -> bool:
-        row = self.rows.get(correction_id)
-        if row is None:
-            return False
-        if row.get("status") != expected_status:
-            return False
-        await self.update_status(correction_id, next_status)
-        return True
-
-    async def update_company_insight(self, correction_id: str, company_insight: str) -> None:
-        if correction_id not in self.rows:
-            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
-        self.rows[correction_id]["company_insight"] = company_insight
-
-    async def update_emphasis_points(self, correction_id: str, emphasis_points: str) -> None:
-        if correction_id not in self.rows:
-            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
-        self.rows[correction_id]["emphasis_points"] = emphasis_points
-
-    async def update_result(self, correction_id: str, result: dict) -> None:
-        if correction_id not in self.rows:
-            raise ValueError(f"존재하지 않는 첨삭 ID입니다: {correction_id}")
-        self.updated_result = result
-        self.rows[correction_id]["result"] = result
-
-    async def delete(self, correction_id: str) -> None:
-        self.rows.pop(correction_id, None)
+        if correction_id in self.corrections:
+            self.corrections[correction_id]["status"] = status
+        return {"id": correction_id, "status": status}
 
     async def save_rag_data(
-        self, correction_id: str, search_query: str, search_results: dict
-    ) -> None:
-        rag_data = {
-            "correction_id": correction_id,
-            "search_query": search_query,
-            "search_results": search_results,
-        }
-        self.saved_rag_data.append(rag_data)
-        self.rag_data_rows.setdefault(correction_id, []).append(rag_data)
+        self,
+        correction_id: int,
+        search_query: str,
+        search_results: list | dict,
+    ) -> dict:
+        self.saved_rag_data.append(
+            {
+                "correction_id": correction_id,
+                "search_query": search_query,
+                "search_results": search_results,
+            }
+        )
+        return {"id": 1}
 
-    async def get_rag_data(self, correction_id: str) -> list[dict]:
-        return self.rag_data_rows.get(correction_id, [])
+    async def get_rag_data(self, correction_id: int) -> dict | None:
+        return self.rag_data.get(correction_id)
+
+    async def update_company_insight(self, correction_id: int, company_insight: str) -> dict:
+        self.updated_company_insights.append(
+            {"correction_id": correction_id, "company_insight": company_insight}
+        )
+        if correction_id in self.corrections:
+            self.corrections[correction_id]["companyInsight"] = company_insight
+            self.corrections[correction_id]["status"] = "COMPANY_INSIGHT"
+        return {"id": correction_id}
+
+    async def update_result(self, correction_id: int, result: list[dict]) -> dict:
+        self.updated_results.append({"correction_id": correction_id, "result": result})
+        if correction_id in self.corrections:
+            self.corrections[correction_id]["status"] = "DONE"
+        return {"id": correction_id}
+
+
+class DummyPortfolioClient:
+    """PortfolioClient 대체 더미"""
+
+    def __init__(self, portfolio: dict | None = None) -> None:
+        self._portfolio = portfolio or {
+            "id": 1,
+            "description": "설명",
+            "responsibilities": "기여",
+            "problemSolving": "성과",
+            "learnings": "인사이트",
+        }
+
+    async def get_portfolio(self, portfolio_id: int) -> dict:
+        return self._portfolio
 
 
 class DummyGenerator:
@@ -171,6 +151,11 @@ class DummyRagPipeline:
         self.run_calls: list[dict] = []
         self.run_from_search_results_calls: list[dict] = []
 
+    def _extract_keywords(
+        self, company_name: str, job_title: str, job_description: str
+    ) -> list[str]:
+        return [f"{company_name} {job_title}"]
+
     async def run(self, company_name: str, job_title: str, job_description: str) -> RAGRunResult:
         self.run_calls.append(
             {
@@ -181,9 +166,12 @@ class DummyRagPipeline:
         )
         if self.raise_error:
             raise RuntimeError("RAG 실패")
-        search_query = f"{company_name} {job_title}"
+        keywords = await asyncio.to_thread(
+            self._extract_keywords, company_name, job_title, job_description
+        )
+        search_query = ", ".join(keywords) if keywords else f"{company_name} {job_title}"
         return RAGRunResult(
-            keywords=[search_query],
+            keywords=keywords,
             search_results=[
                 {
                     "query": search_query,
@@ -234,33 +222,27 @@ class DummyBackgroundTasks:
         self.tasks.append((func, args))
 
 
-class DummyPortfolioOutput:
-    """포트폴리오 output 더미"""
-
-    def model_dump(self) -> dict:
-        return {
-            "description": "설명",
-            "contributions": "기여",
-            "achievements": "성과",
-            "insights": "인사이트",
-        }
-
-
-class DummyPortfolioResult:
-    """포트폴리오 결과 더미"""
-
-    def __init__(self, output: DummyPortfolioOutput | None) -> None:
-        self.output = output
-
-
-class DummyPortfolioService:
-    """PortfolioService 대체 더미"""
-
-    def __init__(self, result: DummyPortfolioResult | None) -> None:
-        self.result = result
-
-    async def get_result(self, _portfolio_id: str):
-        return self.result
+def _make_correction(
+    correction_id: int = 1,
+    status: str = "NOT_STARTED",
+    company_name: str = "회사",
+    position_name: str = "백엔드",
+    job_description: str = "JD",
+    company_insight: str | None = None,
+    highlight_point: str | None = None,
+    portfolio_ids: list[int] | None = None,
+) -> dict:
+    """테스트용 첨삭 데이터(camelCase) 생성 헬퍼"""
+    return {
+        "id": correction_id,
+        "companyName": company_name,
+        "positionName": position_name,
+        "jobDescription": job_description,
+        "companyInsight": company_insight,
+        "highlightPoint": highlight_point,
+        "portfolioIds": portfolio_ids if portfolio_ids is not None else [1],
+        "status": status,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -272,88 +254,55 @@ def _reset_singleton():
 
 @pytest.fixture
 def run_rag_failure_setup():
-    def _build(error: Exception) -> tuple[DummyRepository, CorrectionService]:
-        repository = DummyRepository()
-        repository.rows["c-1"] = {
-            "id": "c-1",
-            "portfolio_id": "p-1",
-            "company_name": "회사",
-            "job_title": "백엔드",
-            "job_description": "JD",
-            "status": CorrectionStatus.DOING_RAG.value,
-        }
-        service = CorrectionService(repository, DummyGenerator(), ErrorRagPipeline(error))
-        return repository, service
+    def _build(error: Exception) -> tuple[DummyCorrectionClient, CorrectionService]:
+        client = DummyCorrectionClient()
+        client.corrections[1] = _make_correction(status="DOING_RAG")
+        service = CorrectionService(
+            client, DummyPortfolioClient(), DummyGenerator(), ErrorRagPipeline(error)
+        )
+        return client, service
 
     return _build
 
 
-@pytest.mark.asyncio
-async def test_create_correction_returns_repository_result():
-    """create_correction은 repository.create 결과를 그대로 반환한다."""
-    repository = DummyRepository()
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
-
-    row = await service.create_correction("p-1", "u-1", "회사", "백엔드", "JD")
-
-    assert row["id"] == "c-1"
-    assert repository.created_payload == {
-        "portfolio_id": "p-1",
-        "user_id": "u-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-    }
+# ------------------------------------------------------------------
+# start_rag / _run_rag
+# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_start_rag_updates_status_and_registers_task():
-    """start_rag는 doing_rag로 상태 변경 후 백그라운드 작업을 등록한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "status": CorrectionStatus.NOT_STARTED.value,
-    }
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+    """start_rag는 DOING_RAG으로 상태 변경 후 백그라운드 작업을 등록한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction()
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
     background_tasks = DummyBackgroundTasks()
 
-    await service.start_rag("c-1", background_tasks)  # type: ignore[arg-type]
+    await service.start_rag(1, background_tasks)  # type: ignore[arg-type]
 
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.DOING_RAG.value
+    assert client.updated_statuses[0] == {"correction_id": 1, "status": "DOING_RAG"}
     assert len(background_tasks.tasks) == 1
     task_func, task_args = background_tasks.tasks[0]
     assert task_func == service._run_rag
-    assert task_args == ("c-1",)
+    assert task_args == (1,)
 
 
 @pytest.mark.asyncio
 async def test_run_rag_success_saves_company_insight_and_rag_data():
-    """_run_rag 성공 시 인사이트/RAG 데이터 저장 후 상태를 company_insight로 변경한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "status": CorrectionStatus.DOING_RAG.value,
-        "company_insight": None,
-    }
-    rag_pipeline = DummyRagPipeline()
-    service = CorrectionService(repository, DummyGenerator(), rag_pipeline)
+    """_run_rag 성공 시 RAG 데이터와 기업 인사이트를 저장한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="DOING_RAG")
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
 
-    await service._run_rag("c-1")
+    await service._run_rag(1)
 
-    assert repository.rows["c-1"]["company_insight"] == "기업 인사이트"
-    assert repository.saved_rag_data[0]["search_query"] == "회사 백엔드"
-    assert repository.saved_rag_data[0]["search_results"]["keywords"] == ["회사 백엔드"]
-    assert repository.saved_rag_data[0]["search_results"]["results"][0]["title"] == "검색 결과"
-    assert len(rag_pipeline.run_calls) == 1
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.COMPANY_INSIGHT.value
+    assert client.saved_rag_data[0]["search_query"] == "회사 백엔드"
+    assert client.saved_rag_data[0]["search_results"]["results"][0]["title"] == "검색 결과"
+    assert client.updated_company_insights[0]["company_insight"] == "기업 인사이트"
 
 
 @pytest.mark.asyncio
@@ -373,22 +322,16 @@ async def test_run_rag_stores_joined_search_query_for_multiple_keywords():
                 insight="기업 인사이트",
             )
 
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "status": CorrectionStatus.DOING_RAG.value,
-        "company_insight": None,
-    }
-    service = CorrectionService(repository, DummyGenerator(), MultiKeywordRagPipeline())
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="DOING_RAG")
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), MultiKeywordRagPipeline()
+    )
 
-    await service._run_rag("c-1")
+    await service._run_rag(1)
 
-    assert repository.saved_rag_data[0]["search_query"] == "키워드A, 키워드B"
-    assert repository.saved_rag_data[0]["search_results"]["keywords"] == ["키워드A", "키워드B"]
+    assert client.saved_rag_data[0]["search_query"] == "키워드A, 키워드B"
+    assert client.saved_rag_data[0]["search_results"]["keywords"] == ["키워드A", "키워드B"]
 
 
 @pytest.mark.asyncio
@@ -400,169 +343,133 @@ async def test_run_rag_does_not_block_event_loop():
             await asyncio.sleep(0.4)
             return await super().run(company_name, job_title, job_description)
 
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "status": CorrectionStatus.DOING_RAG.value,
-    }
-    service = CorrectionService(repository, DummyGenerator(), SlowRagPipeline())
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="DOING_RAG")
+    service = CorrectionService(client, DummyPortfolioClient(), DummyGenerator(), SlowRagPipeline())
 
-    rag_task = asyncio.create_task(service._run_rag("c-1"))
+    rag_task = asyncio.create_task(service._run_rag(1))
     await asyncio.sleep(0.01)
 
     start = time.perf_counter()
-    status = await service.get_status("c-1")
+    _ = await client.get_correction(1)
     elapsed = time.perf_counter() - start
 
-    assert status == CorrectionStatus.DOING_RAG
     assert elapsed < 0.3
-
     await rag_task
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.COMPANY_INSIGHT.value
+
+
+@pytest.mark.asyncio
+async def test_run_rag_keyword_extraction_does_not_block_event_loop():
+    """_run_rag의 키워드 추출 단계도 이벤트 루프를 블로킹하지 않는다."""
+
+    class SlowKeywordRagPipeline(DummyRagPipeline):
+        def _extract_keywords(
+            self, company_name: str, job_title: str, job_description: str
+        ) -> list[str]:
+            time.sleep(0.4)
+            return super()._extract_keywords(company_name, job_title, job_description)
+
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="DOING_RAG")
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), SlowKeywordRagPipeline()
+    )
+
+    rag_task = asyncio.create_task(service._run_rag(1))
+
+    start = time.perf_counter()
+    await asyncio.sleep(0.05)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 0.3
+    await rag_task
 
 
 @pytest.mark.asyncio
 async def test_retry_reuses_saved_rag_data_for_partial_rerun():
     """retry는 저장된 rag_data가 있으면 검색 없이 인사이트만 재생성한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "status": CorrectionStatus.FAILED.value,
-        "company_insight": None,
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="FAILED")
+    client.rag_data[1] = {
+        "searchQuery": "회사 백엔드",
+        "searchResults": {
+            "keywords": ["저장 키워드1", "저장 키워드2"],
+            "results": [{"title": "기존 검색 결과", "content": "본문"}],
+        },
     }
-    repository.rag_data_rows["c-1"] = [
-        {
-            "correction_id": "c-1",
-            "search_query": "회사 백엔드",
-            "search_results": {
-                "keywords": ["저장 키워드1", "저장 키워드2"],
-                "results": [{"title": "기존 검색 결과", "content": "본문"}],
-            },
-        }
-    ]
     rag_pipeline = DummyRagPipeline()
-    service = CorrectionService(repository, DummyGenerator(), rag_pipeline)
-    background_tasks = DummyBackgroundTasks()
+    service = CorrectionService(client, DummyPortfolioClient(), DummyGenerator(), rag_pipeline)
+    bg = DummyBackgroundTasks()
 
-    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
+    await service.retry(1, bg)  # type: ignore[arg-type]
 
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.DOING_RAG.value
-    task_func, task_args = background_tasks.tasks[0]
-    assert task_func == service._run_rag_from_search_results
-
-    await task_func(*task_args)
-
-    assert repository.rows["c-1"]["company_insight"] == "재생성 기업 인사이트"
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.COMPANY_INSIGHT.value
-    assert len(rag_pipeline.run_calls) == 0
-    assert len(rag_pipeline.run_from_search_results_calls) == 1
-    assert rag_pipeline.run_from_search_results_calls[0]["keywords"] == [
-        "저장 키워드1",
-        "저장 키워드2",
-    ]
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "DOING_RAG"}
+    assert len(bg.tasks) == 1
+    assert bg.tasks[0][0] == service._run_rag_from_search_results
 
 
 @pytest.mark.asyncio
 async def test_retry_extracts_keywords_from_search_query_when_keywords_missing():
     """retry는 저장 키워드가 없으면 search_query를 분해해 키워드로 사용한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "status": CorrectionStatus.FAILED.value,
-        "company_insight": None,
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="FAILED")
+    client.rag_data[1] = {
+        "searchQuery": "키워드A, 키워드B",
+        "searchResults": {"results": [{"title": "기존 검색 결과", "content": "본문"}]},
     }
-    repository.rag_data_rows["c-1"] = [
-        {
-            "correction_id": "c-1",
-            "search_query": "키워드A, 키워드B",
-            "search_results": {"results": [{"title": "기존 검색 결과", "content": "본문"}]},
-        }
-    ]
     rag_pipeline = DummyRagPipeline()
-    service = CorrectionService(repository, DummyGenerator(), rag_pipeline)
-    background_tasks = DummyBackgroundTasks()
+    service = CorrectionService(client, DummyPortfolioClient(), DummyGenerator(), rag_pipeline)
+    bg = DummyBackgroundTasks()
 
-    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
-    task_func, task_args = background_tasks.tasks[0]
-    await task_func(*task_args)
+    await service.retry(1, bg)  # type: ignore[arg-type]
 
-    assert rag_pipeline.run_from_search_results_calls[0]["keywords"] == ["키워드A", "키워드B"]
+    assert len(bg.tasks) == 1
+    assert bg.tasks[0][0] == service._run_rag_from_search_results
 
 
 @pytest.mark.asyncio
 async def test_retry_runs_full_rag_when_saved_rag_data_missing():
     """retry는 rag_data가 없으면 전체 RAG를 다시 실행한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "status": CorrectionStatus.FAILED.value,
-        "company_insight": None,
-    }
-    rag_pipeline = DummyRagPipeline()
-    service = CorrectionService(repository, DummyGenerator(), rag_pipeline)
-    background_tasks = DummyBackgroundTasks()
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="FAILED")
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
+    bg = DummyBackgroundTasks()
 
-    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
+    await service.retry(1, bg)  # type: ignore[arg-type]
 
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.DOING_RAG.value
-    task_func, task_args = background_tasks.tasks[0]
-    assert task_func == service._run_rag
-
-    await task_func(*task_args)
-
-    assert len(rag_pipeline.run_calls) == 1
-    assert len(rag_pipeline.run_from_search_results_calls) == 0
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.COMPANY_INSIGHT.value
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "DOING_RAG"}
+    assert len(bg.tasks) == 1
+    assert bg.tasks[0][0] == service._run_rag
 
 
 @pytest.mark.asyncio
-async def test_retry_restarts_generation_when_company_insight_exists():
-    """retry는 company_insight가 있으면 생성 단계부터 재시작한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "status": CorrectionStatus.FAILED.value,
-        "company_insight": "이미 생성된 인사이트",
-    }
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
-    background_tasks = DummyBackgroundTasks()
+async def test_retry_restarts_generation_when_company_insight_and_rag_data_exist():
+    """retry는 company_insight와 rag_data가 모두 있으면 생성부터 재시작한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="FAILED", company_insight="인사이트")
+    client.rag_data[1] = {"searchQuery": "q", "searchResults": []}
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
+    bg = DummyBackgroundTasks()
 
-    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
+    await service.retry(1, bg)  # type: ignore[arg-type]
 
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.GENERATING.value
-    task_func, task_args = background_tasks.tasks[0]
-    assert task_func == service._run_generation
-    assert task_args == ("c-1",)
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "GENERATING"}
+    assert len(bg.tasks) == 1
+    assert bg.tasks[0][0] == service._run_generation
 
 
 @pytest.mark.asyncio
 async def test_run_rag_failure_updates_failed_status(run_rag_failure_setup):
-    """_run_rag 실패 시 status를 failed로 변경한다."""
-    repository, service = run_rag_failure_setup(RuntimeError("RAG 실패"))
+    """_run_rag 실패 시 FAILED 상태로 변경한다."""
+    client, service = run_rag_failure_setup(RuntimeError("RAG 실패"))
 
-    await service._run_rag("c-1")
+    await service._run_rag(1)
 
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.FAILED.value
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "FAILED"}
 
 
 @pytest.mark.asyncio
@@ -598,7 +505,7 @@ async def test_run_rag_failure_logs_by_exception_type(
 
     caplog.set_level("ERROR", logger="features.correction.service")
 
-    await service._run_rag("c-1")
+    await service._run_rag(1)
 
     assert expected_log_message in caplog.text
 
@@ -606,78 +513,66 @@ async def test_run_rag_failure_logs_by_exception_type(
 @pytest.mark.asyncio
 async def test_run_rag_missing_correction_does_not_raise():
     """_run_rag는 없는 correction_id여도 예외를 전파하지 않는다."""
-    repository = DummyRepository()
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+    client = DummyCorrectionClient()
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
 
-    await service._run_rag("missing-id")
+    await service._run_rag(999)
 
-    assert repository.updated_statuses == []
+    assert any(s["status"] == "FAILED" for s in client.updated_statuses)
+
+
+# ------------------------------------------------------------------
+# start_generation / _run_generation
+# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_start_generation_updates_status_and_registers_task():
-    """start_generation은 generating으로 상태 변경 후 백그라운드 작업을 등록한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "company_insight": "인사이트",
-        "status": CorrectionStatus.COMPANY_INSIGHT.value,
-    }
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+    """start_generation은 GENERATING으로 상태 변경 후 백그라운드 작업을 등록한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="COMPANY_INSIGHT", company_insight="인사이트")
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
     background_tasks = DummyBackgroundTasks()
 
-    await service.start_generation("c-1", background_tasks)  # type: ignore[arg-type]
+    await service.start_generation(1, background_tasks)  # type: ignore[arg-type]
 
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.GENERATING.value
+    assert client.updated_statuses[0] == {"correction_id": 1, "status": "GENERATING"}
     assert len(background_tasks.tasks) == 1
     task_func, task_args = background_tasks.tasks[0]
     assert task_func == service._run_generation
-    assert task_args == ("c-1",)
+    assert task_args == (1,)
 
 
 @pytest.mark.asyncio
-async def test_run_generation_success_calls_generator_and_saves_result(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """_run_generation 성공 시 생성기 호출/결과 저장 후 done 상태가 된다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "company_insight": "인사이트",
-        "emphasis_points": "강조",
-        "status": CorrectionStatus.GENERATING.value,
-    }
-    generator = DummyGenerator()
-    service = CorrectionService(repository, generator, DummyRagPipeline())
-
-    dummy_portfolio_module = types.ModuleType("features.portfolio")
-    dummy_portfolio_module.get_portfolio_service = lambda: DummyPortfolioService(
-        DummyPortfolioResult(DummyPortfolioOutput())
+async def test_run_generation_success_calls_generator_and_saves_result():
+    """_run_generation 성공 시 생성기 호출/결과 저장이 수행된다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(
+        status="GENERATING",
+        company_insight="인사이트",
+        highlight_point="강조",
+        portfolio_ids=[1],
     )
-    monkeypatch.setitem(sys.modules, "features.portfolio", dummy_portfolio_module)
+    generator = DummyGenerator()
+    service = CorrectionService(client, DummyPortfolioClient(), generator, DummyRagPipeline())
 
-    await service._run_generation("c-1")
+    await service._run_generation(1)
 
     assert len(generator.calls) == 1
     assert generator.calls[0]["portfolio_output"]["description"] == "설명"
-    assert repository.updated_result == {"fields": [], "overall_summary": "완료"}
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.DONE.value
-    assert repository.updated_statuses[-1] == {
-        "correction_id": "c-1",
-        "status": CorrectionStatus.DONE.value,
-    }
+    assert generator.calls[0]["portfolio_output"]["contributions"] == "기여"
+    assert generator.calls[0]["portfolio_output"]["achievements"] == "성과"
+    assert generator.calls[0]["portfolio_output"]["insights"] == "인사이트"
+    assert len(client.updated_results) == 1
+    assert client.updated_results[0]["result"] == [{"fields": [], "overall_summary": "완료"}]
 
 
 @pytest.mark.asyncio
-async def test_run_generation_does_not_block_event_loop(monkeypatch: pytest.MonkeyPatch):
+async def test_run_generation_does_not_block_event_loop():
     """_run_generation의 LLM 호출은 이벤트 루프를 블로킹하지 않는다."""
 
     class SlowGenerator(DummyGenerator):
@@ -700,220 +595,118 @@ async def test_run_generation_does_not_block_event_loop(monkeypatch: pytest.Monk
                 emphasis_points,
             )
 
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "company_insight": "인사이트",
-        "emphasis_points": "강조",
-        "status": CorrectionStatus.GENERATING.value,
-    }
-    service = CorrectionService(repository, SlowGenerator(), DummyRagPipeline())
-
-    dummy_portfolio_module = types.ModuleType("features.portfolio")
-    dummy_portfolio_module.get_portfolio_service = lambda: DummyPortfolioService(
-        DummyPortfolioResult(DummyPortfolioOutput())
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(
+        status="GENERATING",
+        company_insight="인사이트",
+        highlight_point="강조",
+        portfolio_ids=[1],
     )
-    monkeypatch.setitem(sys.modules, "features.portfolio", dummy_portfolio_module)
+    service = CorrectionService(client, DummyPortfolioClient(), SlowGenerator(), DummyRagPipeline())
 
-    generation_task = asyncio.create_task(service._run_generation("c-1"))
+    generation_task = asyncio.create_task(service._run_generation(1))
     await asyncio.sleep(0.01)
 
     start = time.perf_counter()
-    status = await service.get_status("c-1")
+    _ = await client.get_correction(1)
     elapsed = time.perf_counter() - start
 
-    assert status == CorrectionStatus.GENERATING
     assert elapsed < 0.3
-
     await generation_task
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.DONE.value
 
 
 @pytest.mark.asyncio
-async def test_run_generation_failure_updates_failed_status(monkeypatch: pytest.MonkeyPatch):
-    """_run_generation 실패 시 status를 failed로 변경한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "status": CorrectionStatus.GENERATING.value,
-    }
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+async def test_run_generation_failure_updates_failed_status():
+    """_run_generation 실패 시 FAILED 상태로 변경한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(
+        status="GENERATING",
+        company_insight="인사이트",
+        portfolio_ids=[1],
+    )
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(raise_error=True), DummyRagPipeline()
+    )
 
-    dummy_portfolio_module = types.ModuleType("features.portfolio")
-    dummy_portfolio_module.get_portfolio_service = lambda: DummyPortfolioService(None)
-    monkeypatch.setitem(sys.modules, "features.portfolio", dummy_portfolio_module)
+    await service._run_generation(1)
 
-    await service._run_generation("c-1")
-
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.FAILED.value
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "FAILED"}
 
 
 @pytest.mark.asyncio
-async def test_run_generation_missing_correction_does_not_raise():
-    """_run_generation은 없는 correction_id여도 예외를 전파하지 않는다."""
-    repository = DummyRepository()
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+async def test_run_generation_no_portfolio_ids_fails():
+    """_run_generation은 portfolioIds가 비어있으면 FAILED 상태가 된다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(
+        status="GENERATING",
+        company_insight="인사이트",
+        portfolio_ids=[],
+    )
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
 
-    await service._run_generation("missing-id")
+    await service._run_generation(1)
 
-    assert repository.updated_statuses == []
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "FAILED"}
 
 
-@pytest.mark.asyncio
-async def test_retry_failed_rag_resets_not_started_and_restarts_rag():
-    """RAG 실패 재시도 시 not_started로 되돌리고 RAG를 재시작한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "company_insight": None,
-        "status": CorrectionStatus.FAILED.value,
-    }
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
-    background_tasks = DummyBackgroundTasks()
-
-    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
-
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.DOING_RAG.value
-    assert len(background_tasks.tasks) == 1
-    task_func, task_args = background_tasks.tasks[0]
-    assert task_func == service._run_rag
-    assert task_args == ("c-1",)
-    assert repository.updated_statuses[-2:] == [
-        {"correction_id": "c-1", "status": CorrectionStatus.NOT_STARTED.value},
-        {"correction_id": "c-1", "status": CorrectionStatus.DOING_RAG.value},
-    ]
+# ------------------------------------------------------------------
+# retry
+# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_retry_failed_generation_resets_company_insight_and_restarts_generation():
-    """생성 실패 재시도 시 company_insight 상태로 되돌리고 생성을 재시작한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "company_insight": "이미 생성된 인사이트",
-        "status": CorrectionStatus.FAILED.value,
-    }
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
-    background_tasks = DummyBackgroundTasks()
+async def test_retry_with_company_insight_but_no_rag_data_retries_rag():
+    """retry: company_insight는 있지만 rag_data가 없으면 RAG부터 재시도한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="FAILED", company_insight="인사이트")
+    client.rag_data[1] = None
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
+    bg = DummyBackgroundTasks()
 
-    await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
+    await service.retry(1, bg)  # type: ignore[arg-type]
 
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.GENERATING.value
-    assert len(background_tasks.tasks) == 1
-    task_func, task_args = background_tasks.tasks[0]
-    assert task_func == service._run_generation
-    assert task_args == ("c-1",)
-    assert repository.updated_statuses[-2:] == [
-        {"correction_id": "c-1", "status": CorrectionStatus.COMPANY_INSIGHT.value},
-        {"correction_id": "c-1", "status": CorrectionStatus.GENERATING.value},
-    ]
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "DOING_RAG"}
+    assert len(bg.tasks) == 1
+    assert bg.tasks[0][0] == service._run_rag
 
 
 @pytest.mark.asyncio
-async def test_retry_raises_when_status_is_not_failed():
-    """retry는 failed 상태가 아니면 ValueError를 발생시킨다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "company_insight": None,
-        "status": CorrectionStatus.DOING_RAG.value,
-    }
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
+async def test_retry_non_failed_raises_value_error():
+    """retry: 실패 상태가 아닌 첨삭은 ValueError를 발생시킨다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(status="DONE")
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
+    bg = DummyBackgroundTasks()
 
     with pytest.raises(ValueError, match="실패 상태가 아닌 첨삭은 재시도할 수 없습니다"):
-        await service.retry("c-1", DummyBackgroundTasks())  # type: ignore[arg-type]
+        await service.retry(1, bg)  # type: ignore[arg-type]
+
+
+# ------------------------------------------------------------------
+# _mark_failed
+# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_retry_raises_when_atomic_transition_fails():
-    """retry 중 원자적 상태 전이에 실패하면 ValueError를 발생시킨다."""
+async def test_mark_failed_swallows_exception():
+    """_mark_failed는 상태 업데이트 실패 시 예외를 전파하지 않는다."""
+    client = DummyCorrectionClient(raise_on_update_status=True)
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
 
-    class CasFailedRepository(DummyRepository):
-        async def update_status_if_current(
-            self,
-            correction_id: str,
-            expected_status: str,
-            next_status: str,
-        ) -> bool:
-            return False
-
-    repository = CasFailedRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "company_insight": None,
-        "status": CorrectionStatus.FAILED.value,
-    }
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
-    background_tasks = DummyBackgroundTasks()
-
-    with pytest.raises(ValueError, match="실패 상태가 아닌 첨삭은 재시도할 수 없습니다"):
-        await service.retry("c-1", background_tasks)  # type: ignore[arg-type]
-
-    assert repository.rows["c-1"]["status"] == CorrectionStatus.FAILED.value
-    assert background_tasks.tasks == []
+    await service._mark_failed(1)
 
 
-@pytest.mark.asyncio
-async def test_retry_raises_when_correction_is_missing():
-    """retry는 correction_id가 없으면 ValueError를 발생시킨다."""
-    service = CorrectionService(DummyRepository(), DummyGenerator(), DummyRagPipeline())
-
-    with pytest.raises(ValueError, match="첨삭을 찾을 수 없습니다"):
-        await service.retry("missing-id", DummyBackgroundTasks())  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-async def test_get_update_delete_methods_work():
-    """조회/수정/삭제 메서드가 repository 동작을 위임한다."""
-    repository = DummyRepository()
-    repository.rows["c-1"] = {
-        "id": "c-1",
-        "portfolio_id": "p-1",
-        "company_name": "회사",
-        "job_title": "백엔드",
-        "job_description": "JD",
-        "company_insight": "기존 인사이트",
-        "emphasis_points": "기존 포인트",
-        "status": CorrectionStatus.COMPANY_INSIGHT.value,
-    }
-    service = CorrectionService(repository, DummyGenerator(), DummyRagPipeline())
-
-    assert (await service.get_status("c-1")) == CorrectionStatus.COMPANY_INSIGHT
-    assert (await service.get_company_insight("c-1")) == "기존 인사이트"
-
-    await service.update_company_insight("c-1", "새 인사이트")
-    await service.update_emphasis_points("c-1", "새 포인트")
-    correction = await service.get_correction("c-1")
-    assert correction is not None
-    assert correction["company_insight"] == "새 인사이트"
-    assert correction["emphasis_points"] == "새 포인트"
-
-    await service.delete_correction("c-1")
-    assert await service.get_correction("c-1") is None
+# ------------------------------------------------------------------
+# 싱글톤
+# ------------------------------------------------------------------
 
 
 def test_correction_service_singleton_get_init_reset(monkeypatch: pytest.MonkeyPatch):
@@ -922,12 +715,12 @@ def test_correction_service_singleton_get_init_reset(monkeypatch: pytest.MonkeyP
     class DummyRagPipelineForSingleton:
         pass
 
-    repository_a = DummyRepository()
+    client_a = DummyCorrectionClient()
+    portfolio_a = DummyPortfolioClient()
     generator_a = DummyGenerator()
 
-    monkeypatch.setattr(
-        correction_service_module, "get_correction_repository", lambda: repository_a
-    )
+    monkeypatch.setattr(correction_service_module, "get_correction_client", lambda: client_a)
+    monkeypatch.setattr(correction_service_module, "get_portfolio_client", lambda: portfolio_a)
     monkeypatch.setattr(correction_service_module, "get_correction_generator", lambda: generator_a)
     monkeypatch.setattr(correction_service_module, "RAGPipeline", DummyRagPipelineForSingleton)
 
@@ -935,10 +728,11 @@ def test_correction_service_singleton_get_init_reset(monkeypatch: pytest.MonkeyP
     second = get_correction_service()
     assert first is second
 
-    repository_b = DummyRepository()
+    client_b = DummyCorrectionClient()
+    portfolio_b = DummyPortfolioClient()
     generator_b = DummyGenerator()
     rag_b = DummyRagPipeline()
-    initialized = init_correction_service(repository_b, generator_b, rag_b)
+    initialized = init_correction_service(client_b, portfolio_b, generator_b, rag_b)
 
     assert initialized is get_correction_service()
     assert initialized is not first
