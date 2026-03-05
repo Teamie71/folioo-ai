@@ -33,3 +33,10 @@ def test_create_session_stream_includes_session_id_header(monkeypatch):
 
     assert response.status_code == 201
     assert response.headers["x-session-id"] == "test-session-id"
+
+
+def test_extend_routes_exist():
+    """연장 API 라우트가 등록되어 있는지 확인"""
+    paths = {route.path for route in interview_api.router.routes}
+    assert "/interview/sessions/{session_id}/extend" in paths
+    assert "/interview/sessions/{session_id}/extend/stream" in paths

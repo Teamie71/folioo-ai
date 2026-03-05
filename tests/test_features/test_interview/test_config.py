@@ -69,6 +69,8 @@ def test_get_global_config():
     assert global_config.max_retries_per_question >= 0
     assert isinstance(global_config.enable_dynamic_followup, bool)
     assert global_config.context_window_size >= 1
+    assert global_config.extension_turns_per_session == 3
+    assert global_config.max_extensions == 2
 
 
 def test_invalid_yaml_type_raises_korean_error(monkeypatch: pytest.MonkeyPatch):
