@@ -39,9 +39,8 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             )
 
         provided_api_key = request.headers.get("X-API-Key")
-        is_valid = (
-            bool(provided_api_key)
-            and secrets.compare_digest(provided_api_key, expected_api_key)
+        is_valid = bool(provided_api_key) and secrets.compare_digest(
+            provided_api_key, expected_api_key
         )
 
         if not is_valid:

@@ -1,6 +1,5 @@
 """포트폴리오 서비스 테스트"""
 
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -40,22 +39,6 @@ class DummyGenerator:
         if self.exc is not None:
             raise self.exc
         return self.output
-
-
-class DummyRepo:
-    """기존 CRUD 엔드포인트용 DummyRepo (get_status, get_result 등)"""
-
-    def __init__(self, row: dict | None = None):
-        self.row = row
-
-    async def get_by_session_id(self, _session_id: str) -> dict | None:
-        return self.row
-
-    async def get_by_id(self, _portfolio_id: str) -> dict | None:
-        return self.row
-
-    async def update_contribution_rate(self, _portfolio_id: str, _rate: int) -> None:
-        return None
 
 
 @pytest.mark.asyncio
@@ -237,36 +220,30 @@ async def test_background_generation_failure_calls_failed_callback():
 
 
 @pytest.mark.asyncio
-async def test_get_status_and_get_result_for_completed_row():
-    """상태/결과 조회가 완료 레코드를 올바르게 매핑한다."""
-    row = {
-        "id": "pid",
-        "session_id": "sid",
-        "user_id": "uid",
-        "experience_name": "exp",
-        "status": PortfolioStatus.COMPLETED.value,
-        "contribution_rate": 55,
-        "description": "상세",
-        "contributions": "담당",
-        "achievements": "해결",
-        "insights": "배운점",
-        "created_at": datetime.now(UTC),
-        "error_message": None,
-    }
+async def test_get_status_raises_for_non_numeric_portfolio_id_without_repository():
+    """repository 미주입 시 비숫자형 portfolio_id는 조회할 수 없다."""
     service = PortfolioService(
-        repository=DummyRepo(row=row),
         generator=DummyGenerator(),
         interview_service=DummyInterviewService(None),
         portfolio_client=AsyncMock(),
     )
 
-    status = await service.get_status("pid")
+    with pytest.raises(ValueError, match="포트폴리오를 찾을 수 없습니다"):
+        await service.get_status("pid")
+
+
+@pytest.mark.asyncio
+async def test_get_result_returns_none_for_non_numeric_portfolio_id_without_repository():
+    """repository 미주입 시 비숫자형 portfolio_id 결과 조회는 None을 반환한다."""
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=AsyncMock(),
+    )
+
     result = await service.get_result("pid")
 
-    assert status.status == PortfolioStatus.COMPLETED
-    assert result is not None
-    assert result.output is not None
-    assert result.output.achievements == "해결"
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -331,3 +308,30 @@ async def test_update_contribution_rate_raises_for_numeric_portfolio_id():
 
     with pytest.raises(ValueError, match="기여도 수정을 지원하지 않습니다"):
         await service.update_contribution_rate("100", 50)
+
+
+@pytest.mark.asyncio
+async def test_exists_returns_false_for_non_numeric_portfolio_id_without_repository():
+    """repository 미주입 시 비숫자형 portfolio_id는 존재하지 않는 것으로 처리한다."""
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=AsyncMock(),
+    )
+
+    exists = await service.exists("pid")
+
+    assert exists is False
+
+
+@pytest.mark.asyncio
+async def test_update_contribution_rate_raises_when_repository_missing_for_non_numeric_id():
+    """repository 미주입 시 비숫자형 portfolio_id 기여도 수정은 실패한다."""
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=AsyncMock(),
+    )
+
+    with pytest.raises(ValueError, match="포트폴리오를 찾을 수 없습니다"):
+        await service.update_contribution_rate("pid", 50)
