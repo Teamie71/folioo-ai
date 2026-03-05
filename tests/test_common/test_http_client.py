@@ -103,15 +103,25 @@ class TestRequestWithRetry:
     """재시도 로직 테스트"""
 
     @pytest.fixture(autouse=True)
-    def _cleanup_client(self):
-        """각 테스트 후 클라이언트 정리 (모듈 변수 직접 리셋)"""
+    def _client_module(self, monkeypatch):
+        """모듈 참조 제공 및 테스트 후 클라이언트 리셋"""
         import common.http_client.client as module
 
+        self._module = module
+        self._monkeypatch = monkeypatch
         yield
         module._client = None
 
+    def _set_mock_client(self, mock_client):
+        """mock 클라이언트를 모듈에 주입"""
+        self._monkeypatch.setattr(self._module, "_client", mock_client)
+
+    def _suppress_sleep(self):
+        """asyncio.sleep을 no-op으로 대체"""
+        self._monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
     @pytest.mark.asyncio
-    async def test_successful_request(self, monkeypatch):
+    async def test_successful_request(self):
         """정상 요청 시 result 반환"""
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 200
@@ -123,16 +133,13 @@ class TestRequestWithRetry:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.is_closed = False
         mock_client.request = AsyncMock(return_value=mock_response)
-
-        import common.http_client.client as module
-
-        monkeypatch.setattr(module, "_client", mock_client)
+        self._set_mock_client(mock_client)
 
         result = await request_with_retry("GET", "/test")
         assert result == {"key": "value"}
 
     @pytest.mark.asyncio
-    async def test_4xx_no_retry(self, monkeypatch):
+    async def test_4xx_no_retry(self):
         """4xx 에러 시 재시도 없이 envelope 파싱"""
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 404
@@ -144,10 +151,7 @@ class TestRequestWithRetry:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.is_closed = False
         mock_client.request = AsyncMock(return_value=mock_response)
-
-        import common.http_client.client as module
-
-        monkeypatch.setattr(module, "_client", mock_client)
+        self._set_mock_client(mock_client)
 
         with pytest.raises(MainServerError) as exc_info:
             await request_with_retry("GET", "/not-found")
@@ -155,7 +159,7 @@ class TestRequestWithRetry:
         assert mock_client.request.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_5xx_retries_and_exhausts(self, monkeypatch):
+    async def test_5xx_retries_and_exhausts(self):
         """5xx 에러 시 최대 재시도 후 예외 발생"""
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 502
@@ -163,18 +167,15 @@ class TestRequestWithRetry:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.is_closed = False
         mock_client.request = AsyncMock(return_value=mock_response)
-
-        import common.http_client.client as module
-
-        monkeypatch.setattr(module, "_client", mock_client)
-        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        self._set_mock_client(mock_client)
+        self._suppress_sleep()
 
         with pytest.raises(MainServerError):
             await request_with_retry("GET", "/error")
         assert mock_client.request.call_count == MAX_RETRIES
 
     @pytest.mark.asyncio
-    async def test_5xx_then_success(self, monkeypatch):
+    async def test_5xx_then_success(self):
         """5xx 후 재시도 시 성공"""
         fail_response = MagicMock(spec=httpx.Response)
         fail_response.status_code = 503
@@ -189,34 +190,28 @@ class TestRequestWithRetry:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.is_closed = False
         mock_client.request = AsyncMock(side_effect=[fail_response, success_response])
-
-        import common.http_client.client as module
-
-        monkeypatch.setattr(module, "_client", mock_client)
-        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        self._set_mock_client(mock_client)
+        self._suppress_sleep()
 
         result = await request_with_retry("GET", "/recover")
         assert result == {"recovered": True}
         assert mock_client.request.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_timeout_retries(self, monkeypatch):
+    async def test_timeout_retries(self):
         """타임아웃 시 재시도"""
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.is_closed = False
         mock_client.request = AsyncMock(side_effect=httpx.ReadTimeout("read timeout"))
-
-        import common.http_client.client as module
-
-        monkeypatch.setattr(module, "_client", mock_client)
-        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        self._set_mock_client(mock_client)
+        self._suppress_sleep()
 
         with pytest.raises(httpx.ReadTimeout):
             await request_with_retry("GET", "/timeout")
         assert mock_client.request.call_count == MAX_RETRIES
 
     @pytest.mark.asyncio
-    async def test_linear_backoff_timing(self, monkeypatch):
+    async def test_linear_backoff_timing(self):
         """선형 백오프 대기 시간 검증 (1s, 2s, 3s)"""
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 500
@@ -224,16 +219,14 @@ class TestRequestWithRetry:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.is_closed = False
         mock_client.request = AsyncMock(return_value=mock_response)
+        self._set_mock_client(mock_client)
 
         sleep_calls: list[float] = []
 
         async def mock_sleep(seconds):
             sleep_calls.append(seconds)
 
-        import common.http_client.client as module
-
-        monkeypatch.setattr(module, "_client", mock_client)
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
+        self._monkeypatch.setattr(asyncio, "sleep", mock_sleep)
 
         with pytest.raises(MainServerError):
             await request_with_retry("GET", "/backoff")
