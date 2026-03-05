@@ -149,16 +149,17 @@ async def lifespan(app: FastAPI):
             logger.exception("첨삭 DB 초기화 실패")
 
     # ===== Checkpointer 초기화 =====
-    async with setup_checkpointer():
-        yield
+    try:
+        async with setup_checkpointer():
+            yield
+    finally:
+        # ===== 종료 시: 리소스 정리 (예외 발생 시에도 실행) =====
+        await close_http_client()
+        logger.info("HTTP 클라이언트 정리 완료")
 
-    # ===== 종료 시: 리소스 정리 =====
-    await close_http_client()
-    logger.info("HTTP 클라이언트 정리 완료")
-
-    if pool:
-        await close_pool()
-        logger.info("DB 커넥션 풀 정리 완료")
+        if pool:
+            await close_pool()
+            logger.info("DB 커넥션 풀 정리 완료")
 
 
 def create_app() -> FastAPI:

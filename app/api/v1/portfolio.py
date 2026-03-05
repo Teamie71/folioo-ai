@@ -52,7 +52,6 @@ def _to_portfolio_result_response(result) -> PortfolioResultResponse:
     summary="포트폴리오 생성 시작",
     responses={
         400: {"model": ErrorResponse, "description": "인터뷰가 완료되지 않은 경우"},
-        409: {"model": ErrorResponse, "description": "이미 생성 중/완료된 포트폴리오가 있는 경우"},
     },
 )
 async def generate_portfolio(

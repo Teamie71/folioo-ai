@@ -57,6 +57,11 @@ class PortfolioService:
 
         메인 서버가 DB 레코드를 생성한 뒤 AI 서버에 위임하는 구조.
         AI 서버는 LLM 생성 + 완료/실패 콜백만 담당한다.
+
+        Note:
+            portfolio_id는 메인 서버의 숫자형 ID(int)를 사용한다.
+            기존 CRUD 메서드(get_status, get_result 등)는 레거시 API용으로
+            portfolio_id를 str(UUID)로 받는다.
         """
         session_state = await self._interview_service.get_session_state(session_id)
         if session_state is None:

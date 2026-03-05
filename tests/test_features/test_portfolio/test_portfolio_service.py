@@ -86,6 +86,24 @@ async def test_start_generation_schedules_background_task():
 
 
 @pytest.mark.asyncio
+async def test_start_generation_raises_for_none_session():
+    """세션을 찾을 수 없으면 ValueError를 발생시킨다."""
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=AsyncMock(),
+    )
+
+    with pytest.raises(ValueError, match="세션을 찾을 수 없습니다"):
+        await service.start_generation(
+            portfolio_id=1,
+            session_id="nonexistent",
+            user_id="user-1",
+            background_tasks=DummyBackgroundTasks(),
+        )
+
+
+@pytest.mark.asyncio
 async def test_start_generation_raises_for_incomplete_interview():
     """인터뷰 미완료 시 ValueError를 발생시킨다."""
     state = {
@@ -158,6 +176,44 @@ async def test_background_generation_success_calls_update_result():
         contributions="기여",
         achievements="성과",
         insights="인사이트",
+    )
+
+
+@pytest.mark.asyncio
+async def test_background_generation_success_callback_failure_attempts_failed():
+    """성공 콜백이 실패하면 failed 콜백을 시도한다."""
+    mock_client = AsyncMock()
+    mock_client.update_result.side_effect = [
+        RuntimeError("메인 서버 연결 실패"),  # completed 콜백 실패
+        None,  # failed 콜백 성공
+    ]
+    output = PortfolioOutput(
+        description="d",
+        contributions="c",
+        achievements="a",
+        insights="i",
+    )
+    service = PortfolioService(
+        generator=DummyGenerator(output=output),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=mock_client,
+    )
+
+    await service._generate_portfolio_background(42, {}, "exp")
+
+    assert mock_client.update_result.call_count == 2
+    mock_client.update_result.assert_any_call(
+        42,
+        status="completed",
+        description="d",
+        contributions="c",
+        achievements="a",
+        insights="i",
+    )
+    mock_client.update_result.assert_any_call(
+        42,
+        status="failed",
+        error_message="메인 서버 연결 실패",
     )
 
 
