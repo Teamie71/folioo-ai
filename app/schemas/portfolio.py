@@ -9,7 +9,7 @@ from features.portfolio.schemas import PortfolioStatus
 class GeneratePortfolioRequest(BaseModel):
     """포트폴리오 생성 요청"""
 
-    portfolio_id: int = Field(..., description="메인 서버에서 생성된 포트폴리오 ID")
+    portfolio_id: int = Field(..., gt=0, description="메인 서버에서 생성된 포트폴리오 ID")
     session_id: str = Field(..., min_length=1, description="인터뷰 세션 ID")
     user_id: str = Field(..., min_length=1, description="사용자 ID")
 

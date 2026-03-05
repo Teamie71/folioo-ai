@@ -50,7 +50,7 @@ class MainServerInsightStore:
         try:
             numeric_user_id = int(user_id)
         except (ValueError, TypeError):
-            logger.warning("user_id를 int로 변환할 수 없습니다: %s", user_id)
+            logger.warning("user_id를 int로 변환할 수 없습니다: %s", "<redacted>")
             return []
 
         return await self._client.search_similar(
@@ -73,7 +73,7 @@ class MainServerInsightStore:
         try:
             numeric_id = int(insight_id)
         except (ValueError, TypeError):
-            logger.warning("insight_id를 int로 변환할 수 없습니다: %s", insight_id)
+            logger.warning("insight_id를 int로 변환할 수 없습니다: %s", "<redacted>")
             return None
 
         return await self._client.get_by_id(numeric_id)

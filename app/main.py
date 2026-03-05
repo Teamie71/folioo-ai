@@ -154,12 +154,18 @@ async def lifespan(app: FastAPI):
             yield
     finally:
         # ===== 종료 시: 리소스 정리 (예외 발생 시에도 실행) =====
-        await close_http_client()
-        logger.info("HTTP 클라이언트 정리 완료")
+        try:
+            await close_http_client()
+            logger.info("HTTP 클라이언트 정리 완료")
+        except Exception:
+            logger.exception("HTTP 클라이언트 정리 실패")
 
-        if pool:
-            await close_pool()
-            logger.info("DB 커넥션 풀 정리 완료")
+        if pool is not None:
+            try:
+                await close_pool()
+                logger.info("DB 커넥션 풀 정리 완료")
+            except Exception:
+                logger.exception("DB 커넥션 풀 정리 실패")
 
 
 def create_app() -> FastAPI:
