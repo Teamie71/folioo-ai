@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from common.http_client import MainServerError
 from common.main_server.portfolio_client import FIELD_MAP_SERVER_TO_AI, PortfolioClient
 
 
@@ -13,6 +14,11 @@ class TestFieldMapping:
     def test_server_to_ai_mapping(self):
         """서버 -> AI 서버 필드 매핑"""
         assert FIELD_MAP_SERVER_TO_AI == {
+            "sessionId": "session_id",
+            "userId": "user_id",
+            "experienceName": "experience_name",
+            "contributionRate": "contribution_rate",
+            "errorMessage": "error_message",
             "responsibilities": "contributions",
             "problemSolving": "achievements",
             "learnings": "insights",
@@ -27,10 +33,14 @@ class TestPortfolioClientGetPortfolio:
         """포트폴리오 조회 시 필드명 변환"""
         mock_result = {
             "id": 1,
+            "sessionId": "session-1",
+            "userId": 101,
+            "experienceName": "프로젝트",
             "description": "프로젝트 설명",
             "responsibilities": "팀 리딩, API 개발",
             "problemSolving": "성능 최적화 50% 달성",
             "learnings": "아키텍처 설계의 중요성",
+            "contributionRate": 70,
             "status": "completed",
         }
 
@@ -46,6 +56,10 @@ class TestPortfolioClientGetPortfolio:
             assert result["achievements"] == "성능 최적화 50% 달성"
             assert result["insights"] == "아키텍처 설계의 중요성"
             assert result["description"] == "프로젝트 설명"
+            assert result["session_id"] == "session-1"
+            assert result["user_id"] == 101
+            assert result["experience_name"] == "프로젝트"
+            assert result["contribution_rate"] == 70
             assert "responsibilities" not in result
             assert "problemSolving" not in result
             assert "learnings" not in result
@@ -60,6 +74,18 @@ class TestPortfolioClientGetPortfolio:
             "common.main_server.portfolio_client.request_with_retry",
             new_callable=AsyncMock,
             return_value=None,
+        ):
+            result = await client.get_portfolio(1)
+            assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_get_portfolio_returns_empty_dict_for_404(self):
+        """404 응답은 빈 딕셔너리로 처리한다."""
+        client = PortfolioClient()
+        with patch(
+            "common.main_server.portfolio_client.request_with_retry",
+            new_callable=AsyncMock,
+            side_effect=MainServerError(status_code=404, message="Not Found"),
         ):
             result = await client.get_portfolio(1)
             assert result == {}

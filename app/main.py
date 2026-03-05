@@ -107,19 +107,18 @@ async def lifespan(app: FastAPI):
         reset_portfolio_client,
     )
     from common.db.connection import close_pool, create_pool
-    from features.interview.agents.insight_store.pgvector_store import (
-        PgVectorInsightStore,
-    )
-    from features.interview.agents.insight_store.seed_data import (
-        SEED_INSIGHTS,
-        SEED_USER_ID,
-    )
+    from common.http_client import close_http_client
+    from features.interview.agents.insight_store import MainServerInsightStore
     from features.interview.agents.nodes.retriever import init_insight_store
     from features.portfolio.repository import PortfolioRepository
 
     logger = logging.getLogger(__name__)
 
-    # ===== 공유 DB 커넥션 풀 초기화 (InsightStore + Portfolio 공용) =====
+    # ===== InsightStore 초기화 (메인 서버 API) =====
+    init_insight_store(MainServerInsightStore())
+    logger.info("InsightStore(MainServer) 초기화 완료")
+
+    # ===== 공유 DB 커넥션 풀 초기화 (Portfolio 공용) =====
     pool = None
     db_url = os.getenv("DATABASE_URL")
 
@@ -133,21 +132,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("DB 커넥션 풀 생성 실패 - 애플리케이션 시작 중단")
         raise
-
-    # ===== InsightStore 초기화 (임시 pgvector) =====
-    if pool is not None:
-        try:
-            insight_store = PgVectorInsightStore(pool=pool)
-            await insight_store.setup_table()
-
-            # 시드 데이터 로드 (테스트용, 이미 있으면 UPSERT)
-            for insight in SEED_INSIGHTS:
-                await insight_store.add_insight(insight, user_id=SEED_USER_ID)
-
-            init_insight_store(insight_store)
-            logger.info("InsightStore(pgvector) 초기화 완료")
-        except Exception:
-            logger.exception("InsightStore 초기화 실패 - 인사이트 검색 비활성화")
 
     # ===== 포트폴리오 DB 초기화 =====
     if pool is not None:
@@ -180,18 +164,34 @@ async def lifespan(app: FastAPI):
         logger.warning("MAIN_BACKEND_URL이 설정되지 않음 - 첨삭 서비스 비활성화")
 
     # ===== Checkpointer 초기화 =====
-    async with setup_checkpointer():
-        yield
+    try:
+        async with setup_checkpointer():
+            yield
+    finally:
+        # ===== 종료 시: 리소스 정리 (예외 발생 시에도 실행) =====
+        try:
+            await close_http_client()
+            logger.info("HTTP 클라이언트 정리 완료")
+        except Exception:
+            logger.exception("HTTP 클라이언트 정리 실패")
 
-    # ===== 종료 시: 리소스 정리 =====
-    if correction_client:
-        await correction_client.close()
-    if portfolio_client:
-        await portfolio_client.close()
+        if correction_client:
+            try:
+                await correction_client.close()
+            except Exception:
+                logger.exception("첨삭 클라이언트 정리 실패")
+        if portfolio_client:
+            try:
+                await portfolio_client.close()
+            except Exception:
+                logger.exception("포트폴리오 클라이언트 정리 실패")
 
-    if pool:
-        await close_pool()
-        logger.info("DB 커넥션 풀 정리 완료")
+        if pool is not None:
+            try:
+                await close_pool()
+                logger.info("DB 커넥션 풀 정리 완료")
+            except Exception:
+                logger.exception("DB 커넥션 풀 정리 실패")
 
 
 def create_app() -> FastAPI:

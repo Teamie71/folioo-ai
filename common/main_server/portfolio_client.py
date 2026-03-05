@@ -2,11 +2,16 @@
 
 from typing import Any
 
-from common.http_client import request_with_retry
+from common.http_client import MainServerError, request_with_retry
 
 _ALLOWED_UPDATE_STATUSES = ("completed", "failed")
 
 FIELD_MAP_SERVER_TO_AI = {
+    "sessionId": "session_id",
+    "userId": "user_id",
+    "experienceName": "experience_name",
+    "contributionRate": "contribution_rate",
+    "errorMessage": "error_message",
     "responsibilities": "contributions",
     "problemSolving": "achievements",
     "learnings": "insights",
@@ -30,10 +35,16 @@ class PortfolioClient:
         Raises:
             MainServerError: API 호출 실패 시
         """
-        result = await request_with_retry(
-            "GET",
-            f"/internal/portfolios/{portfolio_id}",
-        )
+        try:
+            result = await request_with_retry(
+                "GET",
+                f"/internal/portfolios/{portfolio_id}",
+            )
+        except MainServerError as e:
+            if e.status_code == 404:
+                return {}
+            raise
+
         if not isinstance(result, dict):
             return {}
 

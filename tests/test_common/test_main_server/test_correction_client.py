@@ -4,12 +4,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from common.http_client import MainServerError
 from common.main_server.correction_client import (
+    _FIELD_MAP_SERVER_TO_AI,
     _FIELD_NAME_TO_SERVER,
+    _RAG_FIELD_MAP_SERVER_TO_AI,
     _STATUS_TO_UPPER,
     CorrectionClient,
     _correction_output_to_payload,
     _transform_get_correction_response,
+    _transform_get_rag_data_response,
 )
 from features.correction.schemas import CorrectionOutput
 
@@ -32,6 +36,25 @@ class TestFieldNameMapping:
         assert _STATUS_TO_UPPER["done"] == "DONE"
         assert _STATUS_TO_UPPER["failed"] == "FAILED"
 
+    def test_field_map_server_to_ai(self):
+        assert _FIELD_MAP_SERVER_TO_AI == {
+            "positionName": "job_title",
+            "highlightPoint": "emphasis_points",
+            "companyName": "company_name",
+            "jobDescription": "job_description",
+            "companyInsight": "company_insight",
+            "userId": "user_id",
+            "createdAt": "created_at",
+        }
+
+    def test_rag_field_map_server_to_ai(self):
+        assert _RAG_FIELD_MAP_SERVER_TO_AI == {
+            "correctionId": "correction_id",
+            "searchQuery": "search_query",
+            "searchResults": "search_results",
+            "createdAt": "created_at",
+        }
+
 
 class TestTransformGetCorrectionResponse:
     """get_correction 응답 변환 테스트"""
@@ -40,19 +63,48 @@ class TestTransformGetCorrectionResponse:
         """필드명 변환 확인"""
         raw = {
             "id": 1,
+            "companyName": "테스트 회사",
             "positionName": "백엔드 개발자",
+            "jobDescription": "JD",
             "highlightPoint": "성과 중심 기술",
+            "companyInsight": "기업 분석",
+            "userId": 123,
             "status": "COMPANY_INSIGHT",
             "portfolioIds": [1, 2, 3],
         }
         result = _transform_get_correction_response(raw)
 
         assert result["job_title"] == "백엔드 개발자"
+        assert result["company_name"] == "테스트 회사"
+        assert result["job_description"] == "JD"
         assert result["emphasis_points"] == "성과 중심 기술"
+        assert result["company_insight"] == "기업 분석"
+        assert result["user_id"] == 123
         assert result["status"] == "company_insight"
-        assert result["portfolioIds"] == [1, 2, 3]
+        assert result["portfolio_ids"] == ["1", "2", "3"]
+        assert result["portfolio_id"] == "1"
         assert "positionName" not in result
         assert "highlightPoint" not in result
+
+
+class TestTransformGetRagDataResponse:
+    """RAG 데이터 응답 변환 테스트"""
+
+    def test_field_renaming(self):
+        raw = {
+            "id": 10,
+            "correctionId": 3,
+            "searchQuery": "백엔드",
+            "searchResults": [{"title": "결과1"}],
+            "createdAt": "2024-01-01T00:00:00.000Z",
+        }
+
+        result = _transform_get_rag_data_response(raw)
+
+        assert result["correction_id"] == 3
+        assert result["search_query"] == "백엔드"
+        assert result["search_results"] == [{"title": "결과1"}]
+        assert result["created_at"] == "2024-01-01T00:00:00.000Z"
 
     def test_status_lowercase_conversion(self):
         """상태값 대소문자 변환"""
@@ -164,10 +216,13 @@ class TestCorrectionClientGetCorrection:
         """첨삭 조회 및 필드 변환"""
         mock_result = {
             "id": 10,
+            "companyName": "회사",
             "positionName": "프론트엔드 개발자",
+            "jobDescription": "JD",
             "highlightPoint": "UI/UX 개선 성과",
+            "companyInsight": "기업 분석",
+            "portfolioIds": [100],
             "status": "DONE",
-            "portfolioIds": [1],
         }
 
         client = CorrectionClient()
@@ -179,8 +234,24 @@ class TestCorrectionClientGetCorrection:
             result = await client.get_correction(10)
 
             assert result["job_title"] == "프론트엔드 개발자"
+            assert result["company_name"] == "회사"
+            assert result["job_description"] == "JD"
             assert result["emphasis_points"] == "UI/UX 개선 성과"
+            assert result["company_insight"] == "기업 분석"
+            assert result["portfolio_id"] == "100"
             assert result["status"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_get_correction_returns_empty_dict_for_404(self):
+        """404 응답은 빈 딕셔너리로 처리한다."""
+        client = CorrectionClient()
+        with patch(
+            "common.main_server.correction_client.request_with_retry",
+            new_callable=AsyncMock,
+            side_effect=MainServerError(status_code=404, message="Not Found"),
+        ):
+            result = await client.get_correction(10)
+            assert result == {}
 
 
 class TestCorrectionClientUpdateStatus:
@@ -259,7 +330,7 @@ class TestCorrectionClientGetRagData:
     @pytest.mark.asyncio
     async def test_returns_dict(self):
         """RAG 데이터 조회 시 dict 반환"""
-        mock_result = {"searchQuery": "test", "searchResults": []}
+        mock_result = {"searchQuery": "test", "searchResults": [], "correctionId": 3}
 
         client = CorrectionClient()
         with patch(
@@ -268,4 +339,20 @@ class TestCorrectionClientGetRagData:
             return_value=mock_result,
         ):
             result = await client.get_rag_data(3)
-            assert result == {"searchQuery": "test", "searchResults": []}
+            assert result == {
+                "search_query": "test",
+                "search_results": [],
+                "correction_id": 3,
+            }
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_dict_for_404(self):
+        """404 응답은 빈 딕셔너리로 처리한다."""
+        client = CorrectionClient()
+        with patch(
+            "common.main_server.correction_client.request_with_retry",
+            new_callable=AsyncMock,
+            side_effect=MainServerError(status_code=404, message="Not Found"),
+        ):
+            result = await client.get_rag_data(3)
+            assert result == {}

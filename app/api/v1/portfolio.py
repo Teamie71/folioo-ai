@@ -19,7 +19,10 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
 def _validate_portfolio_id(portfolio_id: str) -> None:
-    """portfolio_id가 유효한 UUID 형식인지 검증한다."""
+    """portfolio_id가 유효한 숫자 ID 또는 UUID 형식인지 검증한다."""
+    if portfolio_id.isdigit() and int(portfolio_id) > 0:
+        return
+
     try:
         _uuid.UUID(portfolio_id)
     except ValueError as e:
@@ -52,7 +55,6 @@ def _to_portfolio_result_response(result) -> PortfolioResultResponse:
     summary="포트폴리오 생성 시작",
     responses={
         400: {"model": ErrorResponse, "description": "인터뷰가 완료되지 않은 경우"},
-        409: {"model": ErrorResponse, "description": "이미 생성 중/완료된 포트폴리오가 있는 경우"},
     },
 )
 async def generate_portfolio(
@@ -62,14 +64,9 @@ async def generate_portfolio(
     """포트폴리오 생성을 시작합니다."""
     service = get_portfolio_service()
 
-    if await service.has_generating_or_completed(request.session_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"이미 생성 중이거나 완료된 포트폴리오가 존재합니다: {request.session_id}",
-        )
-
     try:
         portfolio_id = await service.start_generation(
+            portfolio_id=request.portfolio_id,
             session_id=request.session_id,
             user_id=request.user_id,
             background_tasks=background_tasks,
@@ -81,7 +78,7 @@ async def generate_portfolio(
         )
 
     return GeneratePortfolioResponse(
-        portfolio_id=portfolio_id,
+        portfolio_id=str(portfolio_id),
         status=PortfolioStatus.GENERATING,
     )
 
@@ -141,7 +138,11 @@ async def update_contribution_rate(
             detail=f"포트폴리오를 찾을 수 없습니다: {portfolio_id}",
         )
 
-    await service.update_contribution_rate(portfolio_id, request.contribution_rate)
+    try:
+        await service.update_contribution_rate(portfolio_id, request.contribution_rate)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
     return {"message": "기여도가 수정되었습니다."}
 
 
