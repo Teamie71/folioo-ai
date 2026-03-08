@@ -126,51 +126,56 @@ class TestCorrectionOutputToPayload:
     def sample_output(self) -> CorrectionOutput:
         return CorrectionOutput.model_validate(
             {
-                "fields": [
+                "portfolio_corrections": [
                     {
-                        "field_name": "description",
-                        "lines": [
+                        "portfolio_id": 100,
+                        "fields": [
                             {
-                                "line_number": 1,
-                                "original_text": "원문1",
-                                "type": "keep",
-                                "comment": None,
-                            }
-                        ],
-                    },
-                    {
-                        "field_name": "contributions",
-                        "lines": [
+                                "field_name": "description",
+                                "lines": [
+                                    {
+                                        "line_number": 1,
+                                        "original_text": "원문1",
+                                        "type": "keep",
+                                        "comment": None,
+                                    }
+                                ],
+                            },
                             {
-                                "line_number": 1,
-                                "original_text": "원문2",
-                                "type": "emphasize",
-                                "comment": "강조하세요.",
-                            }
-                        ],
-                    },
-                    {
-                        "field_name": "achievements",
-                        "lines": [
+                                "field_name": "contributions",
+                                "lines": [
+                                    {
+                                        "line_number": 1,
+                                        "original_text": "원문2",
+                                        "type": "emphasize",
+                                        "comment": "강조하세요.",
+                                    }
+                                ],
+                            },
                             {
-                                "line_number": 1,
-                                "original_text": "원문3",
-                                "type": "reduce",
-                                "comment": "줄이세요.",
-                            }
-                        ],
-                    },
-                    {
-                        "field_name": "insights",
-                        "lines": [
+                                "field_name": "achievements",
+                                "lines": [
+                                    {
+                                        "line_number": 1,
+                                        "original_text": "원문3",
+                                        "type": "reduce",
+                                        "comment": "줄이세요.",
+                                    }
+                                ],
+                            },
                             {
-                                "line_number": 1,
-                                "original_text": "원문4",
-                                "type": "keep",
-                                "comment": "유지.",
-                            }
+                                "field_name": "insights",
+                                "lines": [
+                                    {
+                                        "line_number": 1,
+                                        "original_text": "원문4",
+                                        "type": "keep",
+                                        "comment": "유지.",
+                                    }
+                                ],
+                            },
                         ],
-                    },
+                    }
                 ],
                 "overall_summary": "전체 요약 내용",
             }
@@ -180,11 +185,12 @@ class TestCorrectionOutputToPayload:
         """AI 서버 필드명 -> 메인 서버 필드명 변환"""
         payload = _correction_output_to_payload(sample_output)
 
-        field_names = [f["fieldName"] for f in payload["fields"]]
+        field_names = payload["result"][0].keys()
         assert "description" in field_names
         assert "responsibilities" in field_names
         assert "problemSolving" in field_names
         assert "learnings" in field_names
+        assert payload["result"][0]["portfolioId"] == 100
         assert "contributions" not in field_names
         assert "achievements" not in field_names
         assert "insights" not in field_names
@@ -198,7 +204,7 @@ class TestCorrectionOutputToPayload:
     def test_lines_camelcase(self, sample_output):
         """라인 필드 camelCase 변환"""
         payload = _correction_output_to_payload(sample_output)
-        first_line = payload["fields"][0]["lines"][0]
+        first_line = payload["result"][0]["description"]["lines"][0]
 
         assert "lineNumber" in first_line
         assert "originalText" in first_line

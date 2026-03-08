@@ -6,8 +6,8 @@ from common.llm.client import get_llm
 
 from .config import get_correction_llm_config, get_correction_validation_config
 from .prompts.correction_prompt import format_portfolio_for_correction
-from .prompts.generator import correction_generator_prompt
-from .schemas import REQUIRED_CORRECTION_FIELDS, CorrectionOutput
+from .prompts.generator import correction_generator_prompt, overall_summary_prompt
+from .schemas import REQUIRED_CORRECTION_FIELDS, PortfolioCorrectionResult, SingleCorrectionOutput
 
 _generator: "CorrectionGenerator | None" = None
 _ALLOWED_TYPES = {"reduce", "keep", "emphasize"}
@@ -34,7 +34,8 @@ class CorrectionGenerator:
         self._allow_null_comment_for_keep = validation_config.allow_null_comment_for_keep
 
         llm = get_llm(model=llm_config.model, temperature=llm_config.temperature)
-        self._structured_llm = llm.with_structured_output(CorrectionOutput)
+        self._llm = llm
+        self._structured_llm = llm.with_structured_output(SingleCorrectionOutput)
 
     def generate(
         self,
@@ -44,7 +45,7 @@ class CorrectionGenerator:
         company_insight: str,
         portfolio_data: dict,
         emphasis_points: str,
-    ) -> CorrectionOutput:
+    ) -> SingleCorrectionOutput:
         """
         첨삭 결과 생성 및 검증
 
@@ -59,13 +60,13 @@ class CorrectionGenerator:
             emphasis_points: 강조 포인트 텍스트
 
         Returns:
-            CorrectionOutput: 검증을 통과한 첨삭 결과 또는 재시도 소진 시 마지막 결과
+            SingleCorrectionOutput: 검증을 통과한 첨삭 결과 또는 재시도 소진 시 마지막 결과
 
         Raises:
             CorrectionGenerationError: LLM 호출/파싱이 연속 실패해 결과를 만들지 못한 경우
         """
         validation_feedback = "없음"
-        last_output: CorrectionOutput | None = None
+        last_output: SingleCorrectionOutput | None = None
         last_error_message: str | None = None
         portfolio_data_text = _format_portfolio_data_for_prompt(portfolio_data)
         field_line_counts = _get_field_line_counts_from_formatted_text(portfolio_data_text)
@@ -83,7 +84,7 @@ class CorrectionGenerator:
 
             try:
                 chain = correction_generator_prompt | self._structured_llm
-                output: CorrectionOutput = chain.invoke(prompt_variables)
+                output: SingleCorrectionOutput = chain.invoke(prompt_variables)
             except Exception as exc:
                 last_error_message = f"LLM 호출/파싱 실패: {exc}"
                 validation_feedback = last_error_message
@@ -105,9 +106,37 @@ class CorrectionGenerator:
             f"최대 시도({self._max_retries + 1}회) 후 중단: {last_error_message or '알 수 없는 오류'}"
         )
 
+    def generate_overall_summary(
+        self,
+        company_name: str,
+        job_title: str,
+        job_description: str,
+        company_insight: str,
+        portfolio_corrections: list[PortfolioCorrectionResult],
+        emphasis_points: str,
+    ) -> str:
+        """모든 포트폴리오 첨삭 결과를 종합한 총평을 생성한다."""
+        chain = overall_summary_prompt | self._llm
+        response = chain.invoke(
+            {
+                "company_name": company_name,
+                "job_title": job_title,
+                "job_description": job_description,
+                "company_insight": company_insight,
+                "emphasis_points": emphasis_points,
+                "portfolio_corrections_text": _format_portfolio_corrections_for_summary(
+                    portfolio_corrections
+                ),
+            }
+        )
+        overall_summary = _coerce_llm_text_response(response).strip()
+        if not overall_summary:
+            raise CorrectionGenerationError("총평 생성 결과가 비어 있습니다.")
+        return overall_summary
+
     def _validate(
         self,
-        output: CorrectionOutput,
+        output: SingleCorrectionOutput,
         portfolio_data: dict | None = None,
         field_line_counts: dict[str, int] | None = None,
     ) -> list[str]:
@@ -134,9 +163,6 @@ class CorrectionGenerator:
         missing_fields = [name for name in REQUIRED_CORRECTION_FIELDS if name not in field_map]
         if missing_fields:
             errors.append(f"필수 필드 누락: {', '.join(missing_fields)}")
-
-        if not output.overall_summary.strip():
-            errors.append("overall_summary가 비어 있습니다.")
 
         for field_name in REQUIRED_CORRECTION_FIELDS:
             field = field_map.get(field_name)
@@ -259,6 +285,51 @@ def _format_portfolio_data_for_prompt(portfolio_data: dict) -> str:
         )
 
     return format_portfolio_for_correction(normalized_portfolio)
+
+
+def _format_portfolio_corrections_for_summary(
+    portfolio_corrections: list[PortfolioCorrectionResult],
+) -> str:
+    """총평 생성용 포트폴리오 첨삭 요약 텍스트를 생성한다."""
+    sections: list[str] = []
+
+    for correction in portfolio_corrections:
+        sections.append(f"[포트폴리오 ID: {correction.portfolio_id}]")
+        for field in correction.fields:
+            sections.append(f"- {field.field_name}")
+            for line in field.lines:
+                comment = line.comment if line.comment is not None else "없음"
+                sections.append(
+                    f"  - {line.line_number}번 | {line.type} | 원문: {line.original_text} | 코멘트: {comment}"
+                )
+        sections.append("")
+
+    return "\n".join(sections).strip()
+
+
+def _coerce_llm_text_response(response: object) -> str:
+    """LangChain 응답 객체를 문자열로 정규화한다."""
+    if isinstance(response, str):
+        return response
+
+    content = getattr(response, "content", response)
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if text is not None:
+                    parts.append(str(text))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+
+    return str(content)
 
 
 def get_correction_generator() -> CorrectionGenerator:
