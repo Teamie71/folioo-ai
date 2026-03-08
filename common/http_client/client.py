@@ -82,6 +82,18 @@ def _parse_envelope(response: httpx.Response) -> Any:
     Raises:
         MainServerError: isSuccess=false이거나 파싱 실패 시
     """
+    if response.status_code == 401:
+        raise MainServerError(
+            status_code=401,
+            message=f"인증 실패: X-API-Key를 확인하세요. (응답 본문: {response.text!r})",
+        )
+
+    if response.status_code == 403:
+        raise MainServerError(
+            status_code=403,
+            message=f"권한 없음: 해당 리소스에 접근할 수 없습니다. (응답 본문: {response.text!r})",
+        )
+
     try:
         body = response.json()
     except Exception as e:
