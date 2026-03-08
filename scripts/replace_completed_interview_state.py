@@ -55,8 +55,16 @@ def build_replacement_state(existing_state: InterviewState) -> InterviewState:
     return replacement_state
 
 
+async def reset_session_thread(
+    checkpointer: AsyncSqliteSaver,
+    session_id: str,
+) -> None:
+    """기존 session_id에 연결된 모든 체크포인트와 writes를 삭제"""
+    await checkpointer.adelete_thread(session_id)
+
+
 async def replace_session_state(session_id: str) -> dict:
-    """대상 세션을 완료 상태 템플릿으로 교체하고 결과를 반환"""
+    """대상 세션을 완전히 초기화한 뒤 완료 상태 템플릿으로 교체하고 결과를 반환"""
     db_path = os.getenv("CHECKPOINT_DB_PATH", ".data/checkpoints.sqlite")
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -69,6 +77,7 @@ async def replace_session_state(session_id: str) -> dict:
             raise ValueError(f"세션 상태를 찾을 수 없습니다: {session_id}")
 
         replacement_state = build_replacement_state(snapshot.values)
+        await reset_session_thread(checkpointer, session_id)
         await graph.aupdate_state(config, replacement_state)
 
         updated_snapshot = await graph.aget_state(config)
