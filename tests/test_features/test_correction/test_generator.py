@@ -6,6 +6,8 @@ from features.correction.config.loader import CorrectionConfig, CorrectionValida
 from features.correction.generator import (
     CorrectionGenerationError,
     CorrectionGenerator,
+    _coerce_llm_text_response,
+    _format_portfolio_corrections_for_summary,
     get_correction_generator,
     reset_correction_generator,
 )
@@ -223,6 +225,36 @@ def test_generate_overall_summary_raises_error_for_empty_output(
             ],
             emphasis_points="강조 포인트",
         )
+
+
+def test_format_portfolio_corrections_for_summary():
+    """총평용 포트폴리오 첨삭 요약 텍스트를 생성한다."""
+    summary_text = _format_portfolio_corrections_for_summary(
+        [
+            PortfolioCorrectionResult(portfolio_id=1, fields=_output().fields),
+            PortfolioCorrectionResult(portfolio_id=2, fields=_output().fields),
+        ]
+    )
+
+    assert "[포트폴리오 ID: 1]" in summary_text
+    assert "[포트폴리오 ID: 2]" in summary_text
+    assert "1번 | keep | 원문: desc | 코멘트: 좋습니다." in summary_text
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ("텍스트 응답", "텍스트 응답"),
+        (type("Message", (), {"content": "메시지 응답"})(), "메시지 응답"),
+        (
+            type("RichMessage", (), {"content": ["첫 줄", {"text": "둘째 줄"}]})(),
+            "첫 줄\n둘째 줄",
+        ),
+    ],
+)
+def test_coerce_llm_text_response(response: object, expected: str):
+    """LLM 응답 객체를 문자열로 정규화한다."""
+    assert _coerce_llm_text_response(response) == expected
 
 
 def test_validate_detects_empty_comment(monkeypatch: pytest.MonkeyPatch):

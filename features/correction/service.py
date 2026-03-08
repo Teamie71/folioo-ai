@@ -253,7 +253,7 @@ class CorrectionService:
             await self._mark_failed(correction_id)
 
     @staticmethod
-    def _convert_result_for_server(result) -> list[dict]:
+    def _convert_result_for_server(result: CorrectionOutput) -> list[dict]:
         """CorrectionOutput을 메인 서버 result 배열 포맷으로 변환"""
         if hasattr(result, "model_dump"):
             result_dict = result.model_dump()
