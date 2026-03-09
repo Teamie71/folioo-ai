@@ -104,6 +104,77 @@ def test_get_correction_result_returns_200(monkeypatch):
     assert response.json()["status"] == "done"
 
 
+def test_get_correction_result_returns_multi_portfolio_result(monkeypatch):
+    """첨삭 결과 조회 시 다중 포트폴리오 응답 포맷을 반환한다."""
+    cc = DummyCorrectionClient(
+        correction={
+            "id": 123,
+            "status": "DONE",
+            "result": {
+                "portfolio_corrections": [
+                    {
+                        "portfolio_id": 10,
+                        "fields": [
+                            {
+                                "field_name": "description",
+                                "lines": [
+                                    {
+                                        "line_number": 1,
+                                        "original_text": "원문",
+                                        "type": "keep",
+                                        "comment": None,
+                                    }
+                                ],
+                            },
+                            {
+                                "field_name": "contributions",
+                                "lines": [
+                                    {
+                                        "line_number": 1,
+                                        "original_text": "원문",
+                                        "type": "emphasize",
+                                        "comment": "강조",
+                                    }
+                                ],
+                            },
+                            {
+                                "field_name": "achievements",
+                                "lines": [
+                                    {
+                                        "line_number": 1,
+                                        "original_text": "원문",
+                                        "type": "reduce",
+                                        "comment": "축소",
+                                    }
+                                ],
+                            },
+                            {
+                                "field_name": "insights",
+                                "lines": [
+                                    {
+                                        "line_number": 1,
+                                        "original_text": "원문",
+                                        "type": "keep",
+                                        "comment": None,
+                                    }
+                                ],
+                            },
+                        ],
+                    }
+                ],
+                "overall_summary": "전체 총평",
+            },
+        }
+    )
+    client = _create_client(monkeypatch, cc)
+
+    response = client.get(f"/api/v1/corrections/{CORRECTION_ID}")
+
+    assert response.status_code == 200
+    assert response.json()["result"]["portfolio_corrections"][0]["portfolio_id"] == 10
+    assert response.json()["result"]["overall_summary"] == "전체 총평"
+
+
 def test_get_correction_result_returns_404(monkeypatch):
     """첨삭이 없으면 404를 반환한다."""
     cc = DummyCorrectionClient(correction=None)

@@ -7,167 +7,110 @@ from app.schemas.correction import (
     CreateCorrectionRequest,
     UpdateEmphasisPointsRequest,
 )
-from features.correction.schemas import CorrectionOutput, CorrectionStatus
+from features.correction.schemas import (
+    CorrectionOutput,
+    CorrectionStatus,
+    PortfolioCorrectionResult,
+    SingleCorrectionOutput,
+)
 
 
-def test_correction_output_schema():
-    """CorrectionOutput 스키마 생성 테스트"""
-    output = CorrectionOutput.model_validate(
+def _sample_fields() -> list[dict]:
+    return [
         {
-            "fields": [
+            "field_name": "description",
+            "lines": [
                 {
-                    "field_name": "description",
-                    "lines": [
-                        {
-                            "line_number": 1,
-                            "original_text": "원문",
-                            "type": "keep",
-                            "comment": "좋습니다.",
-                        }
-                    ],
-                },
-                {
-                    "field_name": "contributions",
-                    "lines": [
-                        {
-                            "line_number": 1,
-                            "original_text": "원문",
-                            "type": "keep",
-                            "comment": "좋습니다.",
-                        }
-                    ],
-                },
-                {
-                    "field_name": "achievements",
-                    "lines": [
-                        {
-                            "line_number": 1,
-                            "original_text": "원문",
-                            "type": "keep",
-                            "comment": "좋습니다.",
-                        }
-                    ],
-                },
-                {
-                    "field_name": "insights",
-                    "lines": [
-                        {
-                            "line_number": 1,
-                            "original_text": "원문",
-                            "type": "keep",
-                            "comment": "좋습니다.",
-                        }
-                    ],
-                },
+                    "line_number": 1,
+                    "original_text": "원문",
+                    "type": "keep",
+                    "comment": None,
+                }
             ],
-            "overall_summary": "요약",
-        }
-    )
+        },
+        {
+            "field_name": "contributions",
+            "lines": [
+                {
+                    "line_number": 1,
+                    "original_text": "원문",
+                    "type": "keep",
+                    "comment": None,
+                }
+            ],
+        },
+        {
+            "field_name": "achievements",
+            "lines": [
+                {
+                    "line_number": 1,
+                    "original_text": "원문",
+                    "type": "keep",
+                    "comment": None,
+                }
+            ],
+        },
+        {
+            "field_name": "insights",
+            "lines": [
+                {
+                    "line_number": 1,
+                    "original_text": "원문",
+                    "type": "keep",
+                    "comment": None,
+                }
+            ],
+        },
+    ]
+
+
+def test_single_correction_output_schema():
+    """SingleCorrectionOutput 스키마 생성 테스트"""
+    output = SingleCorrectionOutput.model_validate({"fields": _sample_fields()})
 
     assert output.fields[0].field_name == "description"
     assert output.fields[0].lines[0].type == "keep"
-    assert output.overall_summary == "요약"
 
 
-def test_correction_output_schema_rejects_missing_section():
+def test_single_correction_output_rejects_missing_section():
     """필수 섹션 누락 시 ValidationError 발생 테스트"""
     with pytest.raises(ValueError):
-        CorrectionOutput.model_validate(
-            {
-                "fields": [
-                    {
-                        "field_name": "description",
-                        "lines": [
-                            {
-                                "line_number": 1,
-                                "original_text": "원문",
-                                "type": "keep",
-                                "comment": "좋습니다.",
-                            }
-                        ],
-                    },
-                    {
-                        "field_name": "contributions",
-                        "lines": [
-                            {
-                                "line_number": 1,
-                                "original_text": "원문",
-                                "type": "keep",
-                                "comment": "좋습니다.",
-                            }
-                        ],
-                    },
-                    {
-                        "field_name": "achievements",
-                        "lines": [
-                            {
-                                "line_number": 1,
-                                "original_text": "원문",
-                                "type": "keep",
-                                "comment": "좋습니다.",
-                            }
-                        ],
-                    },
-                ],
-                "overall_summary": "요약",
-            }
-        )
+        SingleCorrectionOutput.model_validate({"fields": _sample_fields()[:-1]})
 
 
-def test_correction_output_schema_rejects_duplicated_section():
+def test_single_correction_output_rejects_duplicated_section():
     """필수 섹션 중복 시 ValidationError 발생 테스트"""
+    duplicated_fields = _sample_fields()
+    duplicated_fields[1]["field_name"] = "description"
+
     with pytest.raises(ValueError):
-        CorrectionOutput.model_validate(
-            {
-                "fields": [
-                    {
-                        "field_name": "description",
-                        "lines": [
-                            {
-                                "line_number": 1,
-                                "original_text": "원문",
-                                "type": "keep",
-                                "comment": "좋습니다.",
-                            }
-                        ],
-                    },
-                    {
-                        "field_name": "description",
-                        "lines": [
-                            {
-                                "line_number": 2,
-                                "original_text": "원문2",
-                                "type": "keep",
-                                "comment": "좋습니다.",
-                            }
-                        ],
-                    },
-                    {
-                        "field_name": "achievements",
-                        "lines": [
-                            {
-                                "line_number": 1,
-                                "original_text": "원문",
-                                "type": "keep",
-                                "comment": "좋습니다.",
-                            }
-                        ],
-                    },
-                    {
-                        "field_name": "insights",
-                        "lines": [
-                            {
-                                "line_number": 1,
-                                "original_text": "원문",
-                                "type": "keep",
-                                "comment": "좋습니다.",
-                            }
-                        ],
-                    },
-                ],
-                "overall_summary": "요약",
-            }
-        )
+        SingleCorrectionOutput.model_validate({"fields": duplicated_fields})
+
+
+def test_portfolio_correction_result_schema():
+    """PortfolioCorrectionResult 스키마 생성 테스트"""
+    result = PortfolioCorrectionResult.model_validate(
+        {"portfolio_id": 101, "fields": _sample_fields()}
+    )
+
+    assert result.portfolio_id == 101
+    assert len(result.fields) == 4
+
+
+def test_correction_output_schema():
+    """다중 포트폴리오 CorrectionOutput 스키마 생성 테스트"""
+    output = CorrectionOutput.model_validate(
+        {
+            "portfolio_corrections": [
+                {"portfolio_id": 101, "fields": _sample_fields()},
+                {"portfolio_id": 202, "fields": _sample_fields()},
+            ],
+            "overall_summary": "전체 포트폴리오 총평",
+        }
+    )
+
+    assert output.portfolio_corrections[0].portfolio_id == 101
+    assert output.overall_summary == "전체 포트폴리오 총평"
 
 
 def test_create_correction_request_schema():
@@ -189,11 +132,19 @@ def test_correction_result_response_schema():
     response = CorrectionResultResponse(
         correction_id="correction-1",
         status=CorrectionStatus.DONE,
-        result=None,
+        result=CorrectionOutput.model_validate(
+            {
+                "portfolio_corrections": [
+                    {"portfolio_id": 101, "fields": _sample_fields()},
+                ],
+                "overall_summary": "총평",
+            }
+        ),
     )
 
     assert response.status == CorrectionStatus.DONE
-    assert response.result is None
+    assert response.result is not None
+    assert response.result.overall_summary == "총평"
 
 
 def test_update_emphasis_points_request_schema():
@@ -203,58 +154,8 @@ def test_update_emphasis_points_request_schema():
     assert request.emphasis_points == "핵심 역량과 성과 지표를 강조"
 
 
-def test_correction_line_comment_allows_null_for_keep():
+def test_single_correction_line_comment_allows_null_for_keep():
     """keep 타입의 comment는 null 허용 테스트"""
-    output = CorrectionOutput.model_validate(
-        {
-            "fields": [
-                {
-                    "field_name": "description",
-                    "lines": [
-                        {
-                            "line_number": 1,
-                            "original_text": "원문",
-                            "type": "keep",
-                            "comment": None,
-                        }
-                    ],
-                },
-                {
-                    "field_name": "contributions",
-                    "lines": [
-                        {
-                            "line_number": 1,
-                            "original_text": "원문",
-                            "type": "keep",
-                            "comment": None,
-                        }
-                    ],
-                },
-                {
-                    "field_name": "achievements",
-                    "lines": [
-                        {
-                            "line_number": 1,
-                            "original_text": "원문",
-                            "type": "keep",
-                            "comment": None,
-                        }
-                    ],
-                },
-                {
-                    "field_name": "insights",
-                    "lines": [
-                        {
-                            "line_number": 1,
-                            "original_text": "원문",
-                            "type": "keep",
-                            "comment": None,
-                        }
-                    ],
-                },
-            ],
-            "overall_summary": "요약",
-        }
-    )
+    output = SingleCorrectionOutput.model_validate({"fields": _sample_fields()})
 
     assert output.fields[0].lines[0].comment is None
