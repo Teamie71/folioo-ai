@@ -27,11 +27,12 @@ class CorrectionClient(BaseClient):
             correction_id: 첨삭 ID (정수)
 
         Returns:
-            메인 서버 응답 dict (camelCase 키)
+            메인 서버 응답 result dict (camelCase 키)
             예: {id, companyName, positionName, jobDescription, companyInsight,
                  highlightPoint, portfolioIds, status, ...}
         """
-        return await self.get(f"{self._PREFIX}/{correction_id}")
+        response = await self.get(f"{self._PREFIX}/{correction_id}")
+        return response["result"]
 
     async def update_status(self, correction_id: int, status: str) -> dict:
         """
