@@ -1,16 +1,15 @@
-"""Checkpointer 팩토리 (비동기 SQLite)"""
+"""Checkpointer 팩토리 (비동기 PostgreSQL)"""
 
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from dotenv import load_dotenv
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 load_dotenv()
 
 # 모듈 레벨 싱글톤
-_checkpointer: AsyncSqliteSaver | None = None
+_checkpointer: AsyncPostgresSaver | None = None
 
 
 @asynccontextmanager
@@ -23,23 +22,27 @@ async def setup_checkpointer():
     """
     global _checkpointer
 
-    db_path = os.getenv("CHECKPOINT_DB_PATH", ".data/checkpoints.sqlite")
-    # 디렉토리 생성
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    db_url = os.getenv("CHECKPOINT_DATABASE_URL") or os.getenv("DATABASE_URL")
+    if not db_url:
+        raise ValueError(
+            "CHECKPOINT_DATABASE_URL 또는 DATABASE_URL 환경변수가 설정되지 않았습니다."
+        )
 
-    async with AsyncSqliteSaver.from_conn_string(db_path) as checkpointer:
+    async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
+        await checkpointer.setup()
         _checkpointer = checkpointer
-        yield checkpointer
+        try:
+            yield checkpointer
+        finally:
+            _checkpointer = None
 
-    _checkpointer = None
 
-
-def get_checkpointer() -> AsyncSqliteSaver:
+def get_checkpointer() -> AsyncPostgresSaver:
     """
-    비동기 SQLite 기반 Checkpointer 반환 (싱글톤)
+    비동기 PostgreSQL 기반 Checkpointer 반환 (싱글톤)
 
     Returns:
-        AsyncSqliteSaver: Checkpointer 인스턴스
+        AsyncPostgresSaver: Checkpointer 인스턴스
 
     주의: setup_checkpointer()가 애플리케이션 시작 시 호출되어야 합니다.
     """

@@ -77,7 +77,11 @@ class CorrectionService:
         try:
             correction = await self._correction_client.get_correction(correction_id)
 
-            logger.info("get_correction 응답 keys (correction_id: %s): %s", correction_id, list(correction.keys()))
+            logger.info(
+                "get_correction 응답 keys (correction_id: %s): %s",
+                correction_id,
+                list(correction.keys()),
+            )
 
             company_name = correction["companyName"]
             job_title = correction["positionName"]
