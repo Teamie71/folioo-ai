@@ -52,15 +52,8 @@ CORRECTION_SYSTEM_PROMPT = """
 - comment 형식: "이유 한 문장. 제안 한 문장."
 - emphasize는 가능하면 comment 끝에 "수정 예시: ..."를 추가하세요.
 
-# overall_summary 작성 규칙
-- overall_summary는 단일 문자열로 작성하세요.
-- 반드시 3단 구조를 모두 포함하세요.
-  1) 현상 진단: 현재 톤앤매너와 강점 유형
-  2) 갭 분석: 타깃 기업/직무 기준의 핵심 부족점
-  3) 솔루션 제안: 가장 시급한 개선 방향 1가지
-
 # 출력 제약
-- 출력은 CorrectionOutput 스키마에 정확히 맞춰야 합니다.
+- 출력은 SingleCorrectionOutput 스키마에 정확히 맞춰야 합니다.
 - fields에는 description, contributions, achievements, insights를 모두 포함하세요.
 - type은 reduce, keep, emphasize만 사용하세요.
 """.strip()

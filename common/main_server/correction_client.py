@@ -69,21 +69,25 @@ def _transform_get_rag_data_response(raw: dict[str, Any]) -> dict[str, Any]:
 
 def _correction_output_to_payload(result: CorrectionOutput) -> dict[str, Any]:
     """CorrectionOutput을 메인 서버 PATCH body로 변환"""
-    fields_payload: list[dict[str, Any]] = []
-    for field in result.fields:
-        server_field_name = _FIELD_NAME_TO_SERVER[field.field_name]
-        lines_payload = [
-            {
-                "lineNumber": line.line_number,
-                "originalText": line.original_text,
-                "type": line.type,
-                "comment": line.comment,
+    result_payload: list[dict[str, Any]] = []
+    for portfolio_correction in result.portfolio_corrections:
+        portfolio_payload: dict[str, Any] = {"portfolioId": portfolio_correction.portfolio_id}
+        for field in portfolio_correction.fields:
+            server_field_name = _FIELD_NAME_TO_SERVER[field.field_name]
+            portfolio_payload[server_field_name] = {
+                "lines": [
+                    {
+                        "lineNumber": line.line_number,
+                        "originalText": line.original_text,
+                        "type": line.type,
+                        "comment": line.comment,
+                    }
+                    for line in field.lines
+                ]
             }
-            for line in field.lines
-        ]
-        fields_payload.append({"fieldName": server_field_name, "lines": lines_payload})
+        result_payload.append(portfolio_payload)
     return {
-        "fields": fields_payload,
+        "result": result_payload,
         "overallReview": result.overall_summary,
     }
 

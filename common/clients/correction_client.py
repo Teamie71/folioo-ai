@@ -96,7 +96,12 @@ class CorrectionClient(BaseClient):
             json={"companyInsight": company_insight},
         )
 
-    async def update_result(self, correction_id: int, result: list[dict]) -> dict:
+    async def update_result(
+        self,
+        correction_id: int,
+        result: list[dict],
+        overall_review: str,
+    ) -> dict:
         """
         첨삭 결과 저장 + 상태 원자적 전이 (-> DONE)
 
@@ -106,10 +111,11 @@ class CorrectionClient(BaseClient):
         Args:
             correction_id: 첨삭 ID
             result: 첨삭 결과 배열 (메인 서버 포맷)
+            overall_review: 전체 포트폴리오 총평
         """
         return await self.patch(
             f"{self._PREFIX}/{correction_id}/result",
-            json={"result": result},
+            json={"result": result, "overallReview": overall_review},
         )
 
     async def update_emphasis_points(self, correction_id: int, emphasis_points: str) -> dict:

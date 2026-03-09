@@ -26,14 +26,13 @@ class CorrectionField(BaseModel):
     lines: list[CorrectionLine] = Field(..., description="라인별 첨삭 목록")
 
 
-class CorrectionOutput(BaseModel):
-    """LLM Structured Output 최종 스키마"""
+class SingleCorrectionOutput(BaseModel):
+    """단일 포트폴리오용 LLM Structured Output 스키마"""
 
     fields: list[CorrectionField] = Field(..., description="필드별 첨삭 결과")
-    overall_summary: str = Field(..., description="전체 첨삭 요약")
 
     @model_validator(mode="after")
-    def validate_required_sections(self) -> "CorrectionOutput":
+    def validate_required_sections(self) -> "SingleCorrectionOutput":
         """필수 섹션 4개가 정확히 1회씩 포함되는지 검증"""
         field_names = [field.field_name for field in self.fields]
 
@@ -52,6 +51,22 @@ class CorrectionOutput(BaseModel):
             )
 
         return self
+
+
+class PortfolioCorrectionResult(BaseModel):
+    """포트폴리오별 첨삭 결과"""
+
+    portfolio_id: int = Field(..., description="포트폴리오 ID")
+    fields: list[CorrectionField] = Field(..., description="해당 포트폴리오의 필드별 첨삭 결과")
+
+
+class CorrectionOutput(BaseModel):
+    """다중 포트폴리오 첨삭 최종 스키마"""
+
+    portfolio_corrections: list[PortfolioCorrectionResult] = Field(
+        ..., description="포트폴리오별 첨삭 결과"
+    )
+    overall_summary: str = Field(..., description="전체 포트폴리오 총평")
 
 
 class CorrectionStatus(str, Enum):
