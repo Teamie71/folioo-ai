@@ -1,7 +1,7 @@
 """
 Swagger API 테스트용 시드 스크립트
 
-3가지 인터뷰 상태를 체크포인터(SQLite)에 주입합니다.
+3가지 인터뷰 상태를 체크포인터(PostgreSQL)에 주입합니다.
   1. 완료 상태 (4단계 all_stages_complete=True)  → 포트폴리오 생성 테스트용
   2. 중간 진행 상태 (2단계 진행 중)               → 채팅 이어하기 테스트용
   3. 최초 시작 상태 (1단계 첫 질문 직후)           → 처음부터 채팅 테스트용
@@ -9,7 +9,7 @@ Swagger API 테스트용 시드 스크립트
 사용법:
     uv run python scripts/seed_completed_interview.py
 
-앱 서버 실행 전/후 모두 사용 가능합니다 (같은 SQLite 파일 공유).
+앱 서버 실행 전/후 모두 사용 가능합니다 (같은 PostgreSQL DB 공유).
 """
 
 import asyncio
@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from features.interview.agents.graph import build_graph
 from features.interview.agents.state import InterviewState, StageProgress
@@ -601,12 +601,16 @@ SEEDS = [
 
 
 async def main():
-    db_path = os.getenv("CHECKPOINT_DB_PATH", ".data/checkpoints.sqlite")
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    db_url = os.getenv("CHECKPOINT_DATABASE_URL") or os.getenv("DATABASE_URL")
+    if not db_url:
+        raise ValueError(
+            "CHECKPOINT_DATABASE_URL 또는 DATABASE_URL 환경변수가 설정되지 않았습니다."
+        )
 
     results: list[dict] = []
 
-    async with AsyncSqliteSaver.from_conn_string(db_path) as checkpointer:
+    async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
+        await checkpointer.setup()
         graph = build_graph(checkpointer=checkpointer)
 
         for tag, builder, label in SEEDS:
@@ -634,7 +638,7 @@ async def main():
     print("=" * 70)
     print("  시드 데이터 주입 완료")
     print("=" * 70)
-    print(f"  DB: {db_path}")
+    print(f"  DB: {db_url}")
     print(f"  user_id: {USER_ID}")
     print("-" * 70)
 

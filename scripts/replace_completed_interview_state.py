@@ -1,7 +1,7 @@
 """
 기존 인터뷰 세션을 완료 상태 템플릿으로 교체하는 스크립트
 
-이미 SQLite 체크포인터에 저장된 session_id를 입력받아,
+이미 PostgreSQL 체크포인터에 저장된 session_id를 입력받아,
 해당 세션의 상태를 "대화가 모두 끝난 인터뷰" 상태로 덮어씁니다.
 
 사용법:
@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from features.interview.agents.graph import build_graph
 from features.interview.agents.state import InterviewState
@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--session-id",
         required=True,
-        help="SQLite 체크포인터에 이미 저장된 대상 세션 ID",
+        help="PostgreSQL 체크포인터에 이미 저장된 대상 세션 ID",
     )
     return parser.parse_args()
 
@@ -56,7 +56,7 @@ def build_replacement_state(existing_state: InterviewState) -> InterviewState:
 
 
 async def reset_session_thread(
-    checkpointer: AsyncSqliteSaver,
+    checkpointer: AsyncPostgresSaver,
     session_id: str,
 ) -> None:
     """기존 session_id에 연결된 모든 체크포인트와 writes를 삭제"""
@@ -65,10 +65,14 @@ async def reset_session_thread(
 
 async def replace_session_state(session_id: str) -> dict:
     """대상 세션을 완전히 초기화한 뒤 완료 상태 템플릿으로 교체하고 결과를 반환"""
-    db_path = os.getenv("CHECKPOINT_DB_PATH", ".data/checkpoints.sqlite")
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    db_url = os.getenv("CHECKPOINT_DATABASE_URL") or os.getenv("DATABASE_URL")
+    if not db_url:
+        raise ValueError(
+            "CHECKPOINT_DATABASE_URL 또는 DATABASE_URL 환경변수가 설정되지 않았습니다."
+        )
 
-    async with AsyncSqliteSaver.from_conn_string(db_path) as checkpointer:
+    async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
+        await checkpointer.setup()
         graph = build_graph(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": session_id}}
 
@@ -86,7 +90,7 @@ async def replace_session_state(session_id: str) -> dict:
 
         updated_state = updated_snapshot.values
         return {
-            "db_path": db_path,
+            "db_url": db_url,
             "session_id": session_id,
             "user_id": updated_state["user_id"],
             "experience_name": updated_state["experience_name"],
@@ -105,7 +109,7 @@ async def main() -> None:
     print("=" * 70)
     print("  인터뷰 세션 상태 교체 완료")
     print("=" * 70)
-    print(f"  DB: {result['db_path']}")
+    print(f"  DB: {result['db_url']}")
     print(f"  session_id: {result['session_id']}")
     print(f"  user_id: {result['user_id']}")
     print(f"  experience_name: {result['experience_name']}")
