@@ -105,7 +105,6 @@ async def test_lifespan_initializes_and_closes_http_client(monkeypatch):
     import common.clients.correction_client as correction_client_module
     import common.clients.portfolio_client as portfolio_client_module
     import common.http_client as http_client
-    import features.interview.agents.nodes.retriever as retriever
 
     class _DummyClient:
         async def close(self):
@@ -125,7 +124,6 @@ async def test_lifespan_initializes_and_closes_http_client(monkeypatch):
     monkeypatch.setattr(correction_client_module, "reset_correction_client", lambda: None)
     monkeypatch.setattr(portfolio_client_module, "init_portfolio_client", lambda: _DummyClient())
     monkeypatch.setattr(portfolio_client_module, "reset_portfolio_client", lambda: None)
-    monkeypatch.setattr(retriever, "init_insight_store", lambda _store: None)
 
     async with main.lifespan(FastAPI()):
         pass

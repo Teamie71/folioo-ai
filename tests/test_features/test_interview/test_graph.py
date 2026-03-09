@@ -52,20 +52,17 @@ def test_supervisor_routing(initial_state):
 
 
 def test_interviewer_routing(initial_state):
-    """Router가 후속 턴에 retriever로 라우팅하는지 확인"""
+    """Router가 후속 턴에 analyst로 라우팅하는지 확인"""
     from features.interview.agents.nodes import router
 
     state = {**initial_state, "messages": [AIMessage(content="이전 질문")]}
     result = router.run(state)
-    assert result["next_node"] == "retriever"
+    assert result["next_node"] == "analyst"
 
 
 def test_graph_with_end_condition(initial_state, monkeypatch):
     """Analyst가 end를 반환하면 QG를 거치지 않고 종료한다."""
-    from features.interview.agents.nodes import analyst, question_generator, retriever
-
-    def _retriever_run(state):
-        return {**state, "next_node": "analyst"}
+    from features.interview.agents.nodes import analyst, question_generator
 
     def _analyst_run(state):
         return {
@@ -78,18 +75,13 @@ def test_graph_with_end_condition(initial_state, monkeypatch):
     def _question_generator_run(_state):
         raise AssertionError("analyst가 end를 반환한 경우 question_generator가 호출되면 안 됩니다.")
 
-    monkeypatch.setattr(
-        retriever,
-        "run",
-        _retriever_run,
-    )
     monkeypatch.setattr(analyst, "run", _analyst_run)
     monkeypatch.setattr(question_generator, "run", _question_generator_run)
 
     state = {
         **initial_state,
         "messages": [AIMessage(content="이전 질문")],
-    }  # Router가 retriever로 분기
+    }  # Router가 analyst로 분기
     graph = build_graph()
     result = graph.invoke(state)
     assert result is not None

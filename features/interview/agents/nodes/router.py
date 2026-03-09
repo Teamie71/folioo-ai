@@ -29,7 +29,8 @@ def run(state: InterviewState) -> InterviewState:
         if has_file_attachment:
             next_node = "file_processor"
         else:
-            next_node = "retriever"
+            # 임시 비활성화: retriever 개발 완료 전까지 analyst로 우회
+            next_node = "analyst"
 
     return {
         **state,
