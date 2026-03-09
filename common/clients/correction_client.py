@@ -17,7 +17,7 @@ class CorrectionClient(BaseClient):
     호출자(CorrectionService)가 필요한 필드를 직접 추출한다.
     """
 
-    _PREFIX = "/api/corrections"
+    _PREFIX = "/corrections"
 
     async def get_correction(self, correction_id: int) -> dict:
         """

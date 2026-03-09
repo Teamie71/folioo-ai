@@ -16,7 +16,7 @@ class PortfolioClient(BaseClient):
     메인 서버 응답은 camelCase이므로, 호출자가 필요한 필드를 직접 추출한다.
     """
 
-    _PREFIX = "/api/portfolios"
+    _PREFIX = "/portfolios"
 
     async def get_portfolio(self, portfolio_id: int) -> dict:
         """
