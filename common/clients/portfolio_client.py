@@ -29,7 +29,8 @@ class PortfolioClient(BaseClient):
             메인 서버 응답 dict (camelCase 키)
             예: {id, description, responsibilities, problemSolving, learnings, ...}
         """
-        return await self.get(f"{self._PREFIX}/{portfolio_id}")
+        response = await self.get(f"{self._PREFIX}/{portfolio_id}")
+        return response["result"]
 
 
 def get_portfolio_client() -> "PortfolioClient":

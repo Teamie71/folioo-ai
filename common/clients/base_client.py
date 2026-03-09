@@ -116,8 +116,13 @@ class BaseClient:
         detail = response.text
 
         if isinstance(error_body, dict):
-            error_code = error_body.get("errorCode") or error_body.get("code")
-            detail = error_body.get("message") or error_body.get("detail") or response.text
+            error_obj = error_body.get("error")
+            if isinstance(error_obj, dict):
+                error_code = error_obj.get("errorCode") or error_obj.get("code")
+                detail = error_obj.get("reason") or error_obj.get("message") or response.text
+            else:
+                error_code = error_body.get("errorCode") or error_body.get("code")
+                detail = error_body.get("message") or error_body.get("detail") or response.text
         elif isinstance(error_body, list):
             first_item = error_body[0] if error_body else None
             if isinstance(first_item, dict):

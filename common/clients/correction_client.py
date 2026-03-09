@@ -79,7 +79,8 @@ class CorrectionClient(BaseClient):
         Returns:
             RAG 데이터 dict 또는 None
         """
-        return await self.get(f"{self._PREFIX}/{correction_id}/rag-data")
+        response = await self.get(f"{self._PREFIX}/{correction_id}/rag-data")
+        return response["result"] if response else None
 
     async def update_company_insight(self, correction_id: int, company_insight: str) -> dict:
         """
