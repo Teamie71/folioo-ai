@@ -16,6 +16,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
 # 프로젝트 루트를 sys.path에 추가 (직접 실행 시 모듈 탐색용)
@@ -638,7 +639,9 @@ async def main():
     print("=" * 70)
     print("  시드 데이터 주입 완료")
     print("=" * 70)
-    print(f"  DB: {db_url}")
+    _parsed = urlparse(db_url)
+    _safe_url = urlunparse(_parsed._replace(password="***"))
+    print(f"  DB: {_safe_url}")
     print(f"  user_id: {USER_ID}")
     print("-" * 70)
 

@@ -31,9 +31,10 @@ async def setup_checkpointer():
     async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         await checkpointer.setup()
         _checkpointer = checkpointer
-        yield checkpointer
-
-    _checkpointer = None
+        try:
+            yield checkpointer
+        finally:
+            _checkpointer = None
 
 
 def get_checkpointer() -> AsyncPostgresSaver:
