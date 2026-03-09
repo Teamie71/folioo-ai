@@ -3,7 +3,11 @@
 import pytest
 from langchain_core.prompts import ChatPromptTemplate
 
-from features.correction.prompts import format_portfolio_for_correction, get_correction_prompt
+from features.correction.prompts import (
+    format_portfolio_for_correction,
+    get_correction_prompt,
+    overall_summary_prompt,
+)
 
 
 def test_get_correction_prompt_is_chat_prompt_template():
@@ -28,8 +32,8 @@ def test_get_correction_prompt_has_required_input_variables():
     assert expected_vars == set(prompt.input_variables)
 
 
-def test_correction_prompt_contains_overall_summary_instruction():
-    """overall_summary 3단 구조 지시가 포함되는지 테스트"""
+def test_correction_prompt_removes_overall_summary_instruction():
+    """단일 포트폴리오 첨삭 프롬프트에는 overall_summary 지시가 없다."""
     prompt = get_correction_prompt()
     messages = prompt.format_messages(
         companyName="테스트 회사",
@@ -41,11 +45,41 @@ def test_correction_prompt_contains_overall_summary_instruction():
     )
 
     assert len(messages) == 2
-    assert "overall_summary" in messages[0].content
+    assert "overall_summary" not in messages[0].content
+    assert "SingleCorrectionOutput" in messages[0].content
+    assert "comment는 null" in messages[0].content
+
+
+def test_overall_summary_prompt_has_required_input_variables():
+    """총평 프롬프트 입력 변수를 검증한다."""
+    expected_vars = {
+        "company_name",
+        "job_title",
+        "job_description",
+        "company_insight",
+        "emphasis_points",
+        "portfolio_corrections_text",
+    }
+
+    assert expected_vars == set(overall_summary_prompt.input_variables)
+
+
+def test_overall_summary_prompt_contains_three_step_structure():
+    """총평 프롬프트가 3단 구조를 명시하는지 테스트"""
+    messages = overall_summary_prompt.format_messages(
+        company_name="테스트 회사",
+        job_title="백엔드 개발자",
+        job_description="Python, FastAPI 기반 서비스 개발",
+        company_insight="데이터 기반 의사결정을 중시",
+        emphasis_points="문제해결 능력과 협업을 강조",
+        portfolio_corrections_text="[포트폴리오 ID: 1]\n- description\n  - 1번 | keep | 원문: 테스트 | 코멘트: 없음",
+    )
+
+    assert len(messages) == 2
     assert "현상 진단" in messages[0].content
     assert "갭 분석" in messages[0].content
     assert "솔루션 제안" in messages[0].content
-    assert "comment는 null" in messages[0].content
+    assert "포트폴리오별 첨삭 결과 요약" in messages[1].content
 
 
 def test_format_portfolio_for_correction_numbers_only_bullet_lines():
@@ -90,10 +124,10 @@ def test_format_portfolio_for_correction_numbers_only_bullet_lines():
 def test_format_portfolio_for_correction_raises_type_error_for_invalid_portfolio():
     """portfolio가 dict 타입이 아닐 때 TypeError를 발생시키는지 테스트"""
     with pytest.raises(TypeError, match="portfolio는 dict 타입이어야 합니다"):
-        format_portfolio_for_correction("invalid")  # type: ignore
+        format_portfolio_for_correction("invalid")  # type: ignore[arg-type]
 
     with pytest.raises(TypeError, match="portfolio는 dict 타입이어야 합니다"):
-        format_portfolio_for_correction(["invalid"])  # type: ignore
+        format_portfolio_for_correction(["invalid"])  # type: ignore[arg-type]
 
     with pytest.raises(TypeError, match="portfolio는 dict 타입이어야 합니다"):
-        format_portfolio_for_correction(123)  # type: ignore
+        format_portfolio_for_correction(123)  # type: ignore[arg-type]

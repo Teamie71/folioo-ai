@@ -6,10 +6,12 @@ from features.correction.config.loader import CorrectionConfig, CorrectionValida
 from features.correction.generator import (
     CorrectionGenerationError,
     CorrectionGenerator,
+    _coerce_llm_text_response,
+    _format_portfolio_corrections_for_summary,
     get_correction_generator,
     reset_correction_generator,
 )
-from features.correction.schemas import CorrectionOutput
+from features.correction.schemas import PortfolioCorrectionResult, SingleCorrectionOutput
 
 
 class DummyChain:
@@ -19,7 +21,7 @@ class DummyChain:
         self._responses = responses
         self.calls: list[dict] = []
 
-    def invoke(self, prompt_variables: dict) -> CorrectionOutput:
+    def invoke(self, prompt_variables: dict):
         self.calls.append(prompt_variables)
         response = self._responses.pop(0)
         if isinstance(response, Exception):
@@ -40,12 +42,12 @@ class DummyPrompt:
 class DummyLLM:
     """structured output 래퍼를 대체하는 LLM 모킹 객체."""
 
-    def with_structured_output(self, _: type[CorrectionOutput]) -> object:
+    def with_structured_output(self, _: type[SingleCorrectionOutput]) -> object:
         return object()
 
 
-def _output(line_number: int = 1, comment: str | None = "좋습니다.") -> CorrectionOutput:
-    return CorrectionOutput.model_validate(
+def _output(line_number: int = 1, comment: str | None = "좋습니다.") -> SingleCorrectionOutput:
+    return SingleCorrectionOutput.model_validate(
         {
             "fields": [
                 {
@@ -92,8 +94,7 @@ def _output(line_number: int = 1, comment: str | None = "좋습니다.") -> Corr
                         }
                     ],
                 },
-            ],
-            "overall_summary": "전체 요약",
+            ]
         }
     )
 
@@ -178,13 +179,90 @@ def test_generate_raises_error_when_llm_fails_without_output(monkeypatch: pytest
         )
 
 
-def test_validate_detects_empty_summary_and_comment(monkeypatch: pytest.MonkeyPatch):
-    """검증에서 빈 요약과 빈 코멘트를 잡아낸다."""
+def test_generate_overall_summary(monkeypatch: pytest.MonkeyPatch):
+    """여러 포트폴리오 첨삭 결과를 바탕으로 총평을 생성한다."""
+    from features.correction import generator
+
+    chain = DummyChain(["현상 진단\n갭 분석\n솔루션 제안"])
+    monkeypatch.setattr(generator, "overall_summary_prompt", DummyPrompt(chain))
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
+
+    result = CorrectionGenerator(max_retries=0).generate_overall_summary(
+        company_name="테스트 회사",
+        job_title="백엔드",
+        job_description="채용 공고",
+        company_insight="인사이트",
+        portfolio_corrections=[
+            PortfolioCorrectionResult(portfolio_id=1, fields=_output().fields),
+            PortfolioCorrectionResult(portfolio_id=2, fields=_output().fields),
+        ],
+        emphasis_points="강조 포인트",
+    )
+
+    assert result == "현상 진단\n갭 분석\n솔루션 제안"
+    assert "포트폴리오 ID: 1" in chain.calls[0]["portfolio_corrections_text"]
+    assert "포트폴리오 ID: 2" in chain.calls[0]["portfolio_corrections_text"]
+
+
+def test_generate_overall_summary_raises_error_for_empty_output(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """총평 결과가 비어 있으면 예외를 발생시킨다."""
+    from features.correction import generator
+
+    chain = DummyChain(["   "])
+    monkeypatch.setattr(generator, "overall_summary_prompt", DummyPrompt(chain))
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
+
+    with pytest.raises(CorrectionGenerationError, match="총평 생성 결과가 비어 있습니다"):
+        CorrectionGenerator(max_retries=0).generate_overall_summary(
+            company_name="테스트 회사",
+            job_title="백엔드",
+            job_description="채용 공고",
+            company_insight="인사이트",
+            portfolio_corrections=[
+                PortfolioCorrectionResult(portfolio_id=1, fields=_output().fields)
+            ],
+            emphasis_points="강조 포인트",
+        )
+
+
+def test_format_portfolio_corrections_for_summary():
+    """총평용 포트폴리오 첨삭 요약 텍스트를 생성한다."""
+    summary_text = _format_portfolio_corrections_for_summary(
+        [
+            PortfolioCorrectionResult(portfolio_id=1, fields=_output().fields),
+            PortfolioCorrectionResult(portfolio_id=2, fields=_output().fields),
+        ]
+    )
+
+    assert "[포트폴리오 ID: 1]" in summary_text
+    assert "[포트폴리오 ID: 2]" in summary_text
+    assert "1번 | keep | 원문: desc | 코멘트: 좋습니다." in summary_text
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ("텍스트 응답", "텍스트 응답"),
+        (type("Message", (), {"content": "메시지 응답"})(), "메시지 응답"),
+        (
+            type("RichMessage", (), {"content": ["첫 줄", {"text": "둘째 줄"}]})(),
+            "첫 줄\n둘째 줄",
+        ),
+    ],
+)
+def test_coerce_llm_text_response(response: object, expected: str):
+    """LLM 응답 객체를 문자열로 정규화한다."""
+    assert _coerce_llm_text_response(response) == expected
+
+
+def test_validate_detects_empty_comment(monkeypatch: pytest.MonkeyPatch):
+    """검증에서 빈 코멘트를 잡아낸다."""
     from features.correction import generator
 
     monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
     output = _output(comment=" ")
-    output.overall_summary = " "
 
     errors = CorrectionGenerator(max_retries=0)._validate(
         output,
@@ -196,7 +274,6 @@ def test_validate_detects_empty_summary_and_comment(monkeypatch: pytest.MonkeyPa
         },
     )
 
-    assert "overall_summary가 비어 있습니다." in errors
     assert "description의 1번 라인 comment가 비어 있습니다." in errors
 
 

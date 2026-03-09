@@ -99,7 +99,10 @@ class CorrectionClient(BaseClient):
         )
 
     async def update_result(
-        self, correction_id: int, result: list[dict], overall_review: str
+        self,
+        correction_id: int,
+        result: list[dict],
+        overall_review: str,
     ) -> dict:
         """
         첨삭 결과 저장 + 상태 원자적 전이 (-> DONE)
@@ -110,7 +113,7 @@ class CorrectionClient(BaseClient):
         Args:
             correction_id: 첨삭 ID
             result: 첨삭 결과 배열 (메인 서버 포맷)
-            overall_review: 전체 첨삭 요약
+            overall_review: 전체 포트폴리오 총평
         """
         return await self.patch(
             f"{self._PREFIX}/{correction_id}/result",

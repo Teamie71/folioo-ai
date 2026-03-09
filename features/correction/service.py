@@ -16,11 +16,17 @@ from .rag import (
     RAGPipeline,
     RAGSearchError,
 )
-from .schemas import CorrectionStatus
+from .schemas import CorrectionOutput, CorrectionStatus, PortfolioCorrectionResult
 
 logger = logging.getLogger(__name__)
 
 _service: "CorrectionService | None" = None
+_FIELD_NAME_TO_SERVER = {
+    "description": "description",
+    "contributions": "responsibilities",
+    "achievements": "problemSolving",
+    "insights": "learnings",
+}
 
 
 def _to_upper_status(status: CorrectionStatus) -> str:
@@ -199,30 +205,54 @@ class CorrectionService:
             portfolio_ids = correction.get("portfolioIds") or []
             if not portfolio_ids:
                 raise ValueError("포트폴리오 ID가 없습니다.")
+            if len(portfolio_ids) > 5:
+                raise ValueError("포트폴리오는 최대 5개까지 허용됩니다.")
 
-            portfolio = await self._portfolio_client.get_portfolio(portfolio_ids[0])
-            portfolio_output = {
-                "description": portfolio.get("description", ""),
-                "contributions": portfolio.get("responsibilities", ""),
-                "achievements": portfolio.get("problemSolving", ""),
-                "insights": portfolio.get("learnings", ""),
-            }
+            portfolio_corrections: list[PortfolioCorrectionResult] = []
+            for portfolio_id in portfolio_ids:
+                portfolio = await self._portfolio_client.get_portfolio(portfolio_id)
+                portfolio_output = {
+                    "description": portfolio.get("description", ""),
+                    "contributions": portfolio.get("responsibilities", ""),
+                    "achievements": portfolio.get("problemSolving", ""),
+                    "insights": portfolio.get("learnings", ""),
+                }
 
-            result = await asyncio.to_thread(
-                self._generator.generate,
+                generated = await asyncio.to_thread(
+                    self._generator.generate,
+                    correction.get("companyName", ""),
+                    correction.get("positionName", ""),
+                    correction.get("jobDescription", ""),
+                    company_insight,
+                    portfolio_output,
+                    emphasis_points,
+                )
+                portfolio_corrections.append(
+                    PortfolioCorrectionResult(
+                        portfolio_id=portfolio_id,
+                        fields=generated.fields,
+                    )
+                )
+
+            overall_summary = await asyncio.to_thread(
+                self._generator.generate_overall_summary,
                 correction.get("companyName", ""),
                 correction.get("positionName", ""),
                 correction.get("jobDescription", ""),
                 company_insight,
-                portfolio_output,
+                portfolio_corrections,
                 emphasis_points,
             )
+            result = CorrectionOutput(
+                portfolio_corrections=portfolio_corrections,
+                overall_summary=overall_summary,
+            )
 
-            result_for_server = self._convert_result_for_server(result, portfolio_ids[0])
+            result_for_server = self._convert_result_for_server(result)
             await self._correction_client.update_result(
                 correction_id,
-                result_for_server["result"],
-                result_for_server["overallReview"],
+                result_for_server,
+                result.overall_summary,
             )
         except Exception as exc:
             logger.exception("첨삭 생성 실패 (correction_id: %s): %s", correction_id, exc)
@@ -236,8 +266,8 @@ class CorrectionService:
     }
 
     @staticmethod
-    def _convert_result_for_server(result, portfolio_id: int) -> dict:
-        """CorrectionOutput을 메인 서버 요청 바디 포맷으로 변환"""
+    def _convert_result_for_server(result: CorrectionOutput) -> list[dict]:
+        """CorrectionOutput을 메인 서버 result 배열 포맷으로 변환"""
         if hasattr(result, "model_dump"):
             result_dict = result.model_dump()
         elif isinstance(result, dict):
@@ -245,11 +275,11 @@ class CorrectionService:
         else:
             raise ValueError("첨삭 결과 형식이 올바르지 않습니다.")
 
-        result_item: dict = {"portfolioId": portfolio_id}
-        for field in result_dict.get("fields", []):
-            server_key = CorrectionService._FIELD_NAME_MAP.get(field["field_name"])
-            if server_key:
-                result_item[server_key] = {
+        converted_results: list[dict] = []
+        for portfolio_correction in result_dict.get("portfolio_corrections", []):
+            converted_portfolio = {"portfolioId": portfolio_correction["portfolio_id"]}
+            for field in portfolio_correction.get("fields", []):
+                converted_portfolio[_FIELD_NAME_TO_SERVER[field["field_name"]]] = {
                     "lines": [
                         {
                             "lineNumber": line["line_number"],
@@ -257,14 +287,12 @@ class CorrectionService:
                             "type": line["type"],
                             "comment": line["comment"],
                         }
-                        for line in field["lines"]
+                        for line in field.get("lines", [])
                     ]
                 }
+            converted_results.append(converted_portfolio)
 
-        return {
-            "result": [result_item],
-            "overallReview": result_dict.get("overall_summary", ""),
-        }
+        return converted_results
 
     # ------------------------------------------------------------------
     # 재시도

@@ -28,6 +28,13 @@ _install_dummy_langchain_openai()
 correction_service_module = importlib.import_module("features.correction.service")
 RAGRunResult = importlib.import_module("features.correction.rag.pipeline").RAGRunResult
 CorrectionStatus = importlib.import_module("features.correction.schemas").CorrectionStatus
+CorrectionOutput = importlib.import_module("features.correction.schemas").CorrectionOutput
+PortfolioCorrectionResult = importlib.import_module(
+    "features.correction.schemas"
+).PortfolioCorrectionResult
+SingleCorrectionOutput = importlib.import_module(
+    "features.correction.schemas"
+).SingleCorrectionOutput
 MainServerError = importlib.import_module("common.clients.base_client").MainServerError
 CorrectionService = correction_service_module.CorrectionService
 get_correction_service = correction_service_module.get_correction_service
@@ -89,8 +96,19 @@ class DummyCorrectionClient:
             self.corrections[correction_id]["status"] = "COMPANY_INSIGHT"
         return {"id": correction_id}
 
-    async def update_result(self, correction_id: int, result: list[dict]) -> dict:
-        self.updated_results.append({"correction_id": correction_id, "result": result})
+    async def update_result(
+        self,
+        correction_id: int,
+        result: list[dict],
+        overall_review: str,
+    ) -> dict:
+        self.updated_results.append(
+            {
+                "correction_id": correction_id,
+                "result": result,
+                "overall_review": overall_review,
+            }
+        )
         if correction_id in self.corrections:
             self.corrections[correction_id]["status"] = "DONE"
         return {"id": correction_id}
@@ -99,25 +117,40 @@ class DummyCorrectionClient:
 class DummyPortfolioClient:
     """PortfolioClient 대체 더미"""
 
-    def __init__(self, portfolio: dict | None = None) -> None:
-        self._portfolio = portfolio or {
-            "id": 1,
-            "description": "설명",
-            "responsibilities": "기여",
-            "problemSolving": "성과",
-            "learnings": "인사이트",
+    def __init__(self, portfolios: dict[int, dict] | None = None) -> None:
+        self._portfolios = portfolios or {
+            1: {
+                "id": 1,
+                "description": "설명",
+                "responsibilities": "기여",
+                "problemSolving": "성과",
+                "learnings": "인사이트",
+            },
+            2: {
+                "id": 2,
+                "description": "설명2",
+                "responsibilities": "기여2",
+                "problemSolving": "성과2",
+                "learnings": "인사이트2",
+            },
         }
 
     async def get_portfolio(self, portfolio_id: int) -> dict:
-        return self._portfolio
+        return self._portfolios[portfolio_id]
 
 
 class DummyGenerator:
     """CorrectionGenerator 대체 더미"""
 
-    def __init__(self, raise_error: bool = False) -> None:
+    def __init__(
+        self,
+        raise_error: bool = False,
+        raise_overall_summary_error: bool = False,
+    ) -> None:
         self.raise_error = raise_error
+        self.raise_overall_summary_error = raise_overall_summary_error
         self.calls: list[dict] = []
+        self.overall_summary_calls: list[dict] = []
 
     def generate(
         self,
@@ -140,7 +173,30 @@ class DummyGenerator:
         )
         if self.raise_error:
             raise RuntimeError("생성 실패")
-        return {"fields": [], "overall_summary": "완료"}
+        return _make_single_output(portfolio_output)
+
+    def generate_overall_summary(
+        self,
+        company_name: str,
+        job_title: str,
+        job_description: str,
+        company_insight: str,
+        portfolio_corrections: list[PortfolioCorrectionResult],
+        emphasis_points: str,
+    ) -> str:
+        self.overall_summary_calls.append(
+            {
+                "company_name": company_name,
+                "job_title": job_title,
+                "job_description": job_description,
+                "company_insight": company_insight,
+                "portfolio_corrections": portfolio_corrections,
+                "emphasis_points": emphasis_points,
+            }
+        )
+        if self.raise_overall_summary_error:
+            raise RuntimeError("총평 생성 실패")
+        return "통합 총평"
 
 
 class DummyRagPipeline:
@@ -243,6 +299,65 @@ def _make_correction(
         "portfolioIds": portfolio_ids if portfolio_ids is not None else [1],
         "status": status,
     }
+
+
+def _make_single_output(portfolio_output: dict | None = None) -> SingleCorrectionOutput:
+    portfolio_output = portfolio_output or {
+        "description": "설명",
+        "contributions": "기여",
+        "achievements": "성과",
+        "insights": "인사이트",
+    }
+    return SingleCorrectionOutput.model_validate(
+        {
+            "fields": [
+                {
+                    "field_name": "description",
+                    "lines": [
+                        {
+                            "line_number": 1,
+                            "original_text": portfolio_output["description"],
+                            "type": "keep",
+                            "comment": None,
+                        }
+                    ],
+                },
+                {
+                    "field_name": "contributions",
+                    "lines": [
+                        {
+                            "line_number": 1,
+                            "original_text": portfolio_output["contributions"],
+                            "type": "emphasize",
+                            "comment": "강조하세요.",
+                        }
+                    ],
+                },
+                {
+                    "field_name": "achievements",
+                    "lines": [
+                        {
+                            "line_number": 1,
+                            "original_text": portfolio_output["achievements"],
+                            "type": "reduce",
+                            "comment": "줄이세요.",
+                        }
+                    ],
+                },
+                {
+                    "field_name": "insights",
+                    "lines": [
+                        {
+                            "line_number": 1,
+                            "original_text": portfolio_output["insights"],
+                            "type": "keep",
+                            "comment": None,
+                        }
+                    ],
+                },
+            ]
+        }
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -549,26 +664,117 @@ async def test_start_generation_updates_status_and_registers_task():
 
 @pytest.mark.asyncio
 async def test_run_generation_success_calls_generator_and_saves_result():
-    """_run_generation 성공 시 생성기 호출/결과 저장이 수행된다."""
+    """_run_generation 성공 시 다중 포트폴리오 결과와 총평을 저장한다."""
     client = DummyCorrectionClient()
     client.corrections[1] = _make_correction(
         status="GENERATING",
         company_insight="인사이트",
         highlight_point="강조",
-        portfolio_ids=[1],
+        portfolio_ids=[1, 2],
     )
     generator = DummyGenerator()
     service = CorrectionService(client, DummyPortfolioClient(), generator, DummyRagPipeline())
 
     await service._run_generation(1)
 
-    assert len(generator.calls) == 1
+    assert len(generator.calls) == 2
     assert generator.calls[0]["portfolio_output"]["description"] == "설명"
     assert generator.calls[0]["portfolio_output"]["contributions"] == "기여"
     assert generator.calls[0]["portfolio_output"]["achievements"] == "성과"
     assert generator.calls[0]["portfolio_output"]["insights"] == "인사이트"
+    assert generator.calls[1]["portfolio_output"]["description"] == "설명2"
+    assert len(generator.overall_summary_calls) == 1
+    assert len(generator.overall_summary_calls[0]["portfolio_corrections"]) == 2
     assert len(client.updated_results) == 1
-    assert client.updated_results[0]["result"] == [{"fields": [], "overall_summary": "완료"}]
+    assert client.updated_results[0]["overall_review"] == "통합 총평"
+    assert client.updated_results[0]["result"] == [
+        {
+            "portfolioId": 1,
+            "description": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "설명",
+                        "type": "keep",
+                        "comment": None,
+                    }
+                ]
+            },
+            "responsibilities": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "기여",
+                        "type": "emphasize",
+                        "comment": "강조하세요.",
+                    }
+                ]
+            },
+            "problemSolving": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "성과",
+                        "type": "reduce",
+                        "comment": "줄이세요.",
+                    }
+                ]
+            },
+            "learnings": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "인사이트",
+                        "type": "keep",
+                        "comment": None,
+                    }
+                ]
+            },
+        },
+        {
+            "portfolioId": 2,
+            "description": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "설명2",
+                        "type": "keep",
+                        "comment": None,
+                    }
+                ]
+            },
+            "responsibilities": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "기여2",
+                        "type": "emphasize",
+                        "comment": "강조하세요.",
+                    }
+                ]
+            },
+            "problemSolving": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "성과2",
+                        "type": "reduce",
+                        "comment": "줄이세요.",
+                    }
+                ]
+            },
+            "learnings": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "인사이트2",
+                        "type": "keep",
+                        "comment": None,
+                    }
+                ]
+            },
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -617,12 +823,12 @@ async def test_run_generation_does_not_block_event_loop():
 
 @pytest.mark.asyncio
 async def test_run_generation_failure_updates_failed_status():
-    """_run_generation 실패 시 FAILED 상태로 변경한다."""
+    """포트폴리오별 생성 실패 시 FAILED 상태로 변경한다."""
     client = DummyCorrectionClient()
     client.corrections[1] = _make_correction(
         status="GENERATING",
         company_insight="인사이트",
-        portfolio_ids=[1],
+        portfolio_ids=[1, 2],
     )
     service = CorrectionService(
         client, DummyPortfolioClient(), DummyGenerator(raise_error=True), DummyRagPipeline()
@@ -649,6 +855,139 @@ async def test_run_generation_no_portfolio_ids_fails():
     await service._run_generation(1)
 
     assert client.updated_statuses[-1] == {"correction_id": 1, "status": "FAILED"}
+
+
+@pytest.mark.asyncio
+async def test_run_generation_failure_when_overall_summary_fails():
+    """총평 생성 실패 시 전체 첨삭을 FAILED 처리한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(
+        status="GENERATING",
+        company_insight="인사이트",
+        portfolio_ids=[1, 2],
+    )
+    service = CorrectionService(
+        client,
+        DummyPortfolioClient(),
+        DummyGenerator(raise_overall_summary_error=True),
+        DummyRagPipeline(),
+    )
+
+    await service._run_generation(1)
+
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "FAILED"}
+
+
+def test_convert_result_for_server_converts_multi_portfolio_format():
+    """_convert_result_for_server는 다중 포트폴리오 결과를 메인 서버 포맷으로 변환한다."""
+    result = CorrectionOutput(
+        portfolio_corrections=[
+            PortfolioCorrectionResult(portfolio_id=11, fields=_make_single_output().fields),
+            PortfolioCorrectionResult(
+                portfolio_id=22,
+                fields=_make_single_output(
+                    {
+                        "description": "설명B",
+                        "contributions": "기여B",
+                        "achievements": "성과B",
+                        "insights": "인사이트B",
+                    }
+                ).fields,
+            ),
+        ],
+        overall_summary="총평",
+    )
+
+    converted = CorrectionService._convert_result_for_server(result)
+
+    assert converted == [
+        {
+            "portfolioId": 11,
+            "description": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "설명",
+                        "type": "keep",
+                        "comment": None,
+                    }
+                ]
+            },
+            "responsibilities": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "기여",
+                        "type": "emphasize",
+                        "comment": "강조하세요.",
+                    }
+                ]
+            },
+            "problemSolving": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "성과",
+                        "type": "reduce",
+                        "comment": "줄이세요.",
+                    }
+                ]
+            },
+            "learnings": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "인사이트",
+                        "type": "keep",
+                        "comment": None,
+                    }
+                ]
+            },
+        },
+        {
+            "portfolioId": 22,
+            "description": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "설명B",
+                        "type": "keep",
+                        "comment": None,
+                    }
+                ]
+            },
+            "responsibilities": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "기여B",
+                        "type": "emphasize",
+                        "comment": "강조하세요.",
+                    }
+                ]
+            },
+            "problemSolving": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "성과B",
+                        "type": "reduce",
+                        "comment": "줄이세요.",
+                    }
+                ]
+            },
+            "learnings": {
+                "lines": [
+                    {
+                        "lineNumber": 1,
+                        "originalText": "인사이트B",
+                        "type": "keep",
+                        "comment": None,
+                    }
+                ]
+            },
+        },
+    ]
 
 
 # ------------------------------------------------------------------
