@@ -218,15 +218,26 @@ class CorrectionService:
                 emphasis_points,
             )
 
-            result_for_server = self._convert_result_for_server(result)
-            await self._correction_client.update_result(correction_id, result_for_server)
+            result_for_server = self._convert_result_for_server(result, portfolio_ids[0])
+            await self._correction_client.update_result(
+                correction_id,
+                result_for_server["result"],
+                result_for_server["overallReview"],
+            )
         except Exception as exc:
             logger.exception("첨삭 생성 실패 (correction_id: %s): %s", correction_id, exc)
             await self._mark_failed(correction_id)
 
+    _FIELD_NAME_MAP: dict[str, str] = {
+        "description": "description",
+        "contributions": "responsibilities",
+        "achievements": "problemSolving",
+        "insights": "learnings",
+    }
+
     @staticmethod
-    def _convert_result_for_server(result) -> list[dict]:
-        """CorrectionOutput을 메인 서버 배열 포맷으로 변환"""
+    def _convert_result_for_server(result, portfolio_id: int) -> dict:
+        """CorrectionOutput을 메인 서버 요청 바디 포맷으로 변환"""
         if hasattr(result, "model_dump"):
             result_dict = result.model_dump()
         elif isinstance(result, dict):
@@ -234,7 +245,26 @@ class CorrectionService:
         else:
             raise ValueError("첨삭 결과 형식이 올바르지 않습니다.")
 
-        return [result_dict]
+        result_item: dict = {"portfolioId": portfolio_id}
+        for field in result_dict.get("fields", []):
+            server_key = CorrectionService._FIELD_NAME_MAP.get(field["field_name"])
+            if server_key:
+                result_item[server_key] = {
+                    "lines": [
+                        {
+                            "lineNumber": line["line_number"],
+                            "originalText": line["original_text"],
+                            "type": line["type"],
+                            "comment": line["comment"],
+                        }
+                        for line in field["lines"]
+                    ]
+                }
+
+        return {
+            "result": [result_item],
+            "overallReview": result_dict.get("overall_summary", ""),
+        }
 
     # ------------------------------------------------------------------
     # 재시도
