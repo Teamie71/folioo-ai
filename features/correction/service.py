@@ -201,6 +201,8 @@ class CorrectionService:
             portfolio_ids = correction.get("portfolioIds") or []
             if not portfolio_ids:
                 raise ValueError("포트폴리오 ID가 없습니다.")
+            if len(portfolio_ids) > 5:
+                raise ValueError("포트폴리오는 최대 5개까지 허용됩니다.")
 
             portfolio_corrections: list[PortfolioCorrectionResult] = []
             for portfolio_id in portfolio_ids:
