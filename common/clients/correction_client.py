@@ -17,7 +17,7 @@ class CorrectionClient(BaseClient):
     호출자(CorrectionService)가 필요한 필드를 직접 추출한다.
     """
 
-    _PREFIX = "/api/corrections"
+    _PREFIX = "/corrections"
 
     async def get_correction(self, correction_id: int) -> dict:
         """
@@ -27,11 +27,12 @@ class CorrectionClient(BaseClient):
             correction_id: 첨삭 ID (정수)
 
         Returns:
-            메인 서버 응답 dict (camelCase 키)
+            메인 서버 응답 result dict (camelCase 키)
             예: {id, companyName, positionName, jobDescription, companyInsight,
                  highlightPoint, portfolioIds, status, ...}
         """
-        return await self.get(f"{self._PREFIX}/{correction_id}")
+        response = await self.get(f"{self._PREFIX}/{correction_id}")
+        return response["result"]
 
     async def update_status(self, correction_id: int, status: str) -> dict:
         """
@@ -78,7 +79,8 @@ class CorrectionClient(BaseClient):
         Returns:
             RAG 데이터 dict 또는 None
         """
-        return await self.get(f"{self._PREFIX}/{correction_id}/rag-data")
+        response = await self.get(f"{self._PREFIX}/{correction_id}/rag-data")
+        return response["result"] if response else None
 
     async def update_company_insight(self, correction_id: int, company_insight: str) -> dict:
         """
@@ -93,7 +95,7 @@ class CorrectionClient(BaseClient):
         """
         return await self.patch(
             f"{self._PREFIX}/{correction_id}/company-insight",
-            json={"companyInsight": company_insight},
+            json={"companyInsight": company_insight[:1500]},
         )
 
     async def update_result(

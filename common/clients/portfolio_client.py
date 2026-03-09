@@ -16,7 +16,7 @@ class PortfolioClient(BaseClient):
     메인 서버 응답은 camelCase이므로, 호출자가 필요한 필드를 직접 추출한다.
     """
 
-    _PREFIX = "/api/portfolios"
+    _PREFIX = "/internal/portfolios"
 
     async def get_portfolio(self, portfolio_id: int) -> dict:
         """
@@ -29,7 +29,8 @@ class PortfolioClient(BaseClient):
             메인 서버 응답 dict (camelCase 키)
             예: {id, description, responsibilities, problemSolving, learnings, ...}
         """
-        return await self.get(f"{self._PREFIX}/{portfolio_id}")
+        response = await self.get(f"{self._PREFIX}/{portfolio_id}")
+        return response["result"]
 
 
 def get_portfolio_client() -> "PortfolioClient":

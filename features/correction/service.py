@@ -65,15 +65,19 @@ class CorrectionService:
 
     async def start_rag(self, correction_id: int, background_tasks: BackgroundTasks) -> None:
         """RAG 단계를 시작하고 백그라운드 작업을 등록"""
+        logger.info("RAG 시작 요청 (correction_id: %s)", correction_id)
         await self._correction_client.update_status(
             correction_id, _to_upper_status(CorrectionStatus.DOING_RAG)
         )
+        logger.info("상태 DOING_RAG 전이 완료 (correction_id: %s)", correction_id)
         background_tasks.add_task(self._run_rag, correction_id)
 
     async def _run_rag(self, correction_id: int) -> None:
         """RAG 실행 후 기업 인사이트를 저장"""
         try:
             correction = await self._correction_client.get_correction(correction_id)
+
+            logger.info("get_correction 응답 keys (correction_id: %s): %s", correction_id, list(correction.keys()))
 
             company_name = correction["companyName"]
             job_title = correction["positionName"]
@@ -253,6 +257,13 @@ class CorrectionService:
         except Exception as exc:
             logger.exception("첨삭 생성 실패 (correction_id: %s): %s", correction_id, exc)
             await self._mark_failed(correction_id)
+
+    _FIELD_NAME_MAP: dict[str, str] = {
+        "description": "description",
+        "contributions": "responsibilities",
+        "achievements": "problemSolving",
+        "insights": "learnings",
+    }
 
     @staticmethod
     def _convert_result_for_server(result: CorrectionOutput) -> list[dict]:
