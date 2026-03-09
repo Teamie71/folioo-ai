@@ -10,6 +10,7 @@ from common.http_client.client import (
     LINEAR_BACKOFF_BASE,
     MAX_RETRIES,
     MainServerError,
+    _build_5xx_error_message,
     _parse_envelope,
     request_with_retry,
 )
@@ -99,6 +100,27 @@ class TestParseEnvelope:
         assert "JSON" in exc_info.value.message
 
 
+class TestBuild5xxErrorMessage:
+    """5xx 응답 메시지 구성 테스트"""
+
+    def test_build_5xx_error_message_uses_reason_and_body(self):
+        """envelope의 error.reason과 본문을 함께 포함한다."""
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 500
+        response.text = '{"isSuccess":false,"error":{"reason":"검증 실패"}}'
+        response.json.return_value = {
+            "isSuccess": False,
+            "error": {"reason": "검증 실패"},
+            "result": None,
+        }
+
+        message = _build_5xx_error_message(response)
+
+        assert "서버 에러 (HTTP 500)" in message
+        assert "검증 실패" in message
+        assert "응답 본문" in message
+
+
 class TestRequestWithRetry:
     """재시도 로직 테스트"""
 
@@ -163,6 +185,12 @@ class TestRequestWithRetry:
         """5xx 에러 시 최대 재시도 후 예외 발생"""
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 502
+        mock_response.text = '{"isSuccess":false,"error":{"reason":"메인 서버 내부 오류"}}'
+        mock_response.json.return_value = {
+            "isSuccess": False,
+            "error": {"reason": "메인 서버 내부 오류"},
+            "result": None,
+        }
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.is_closed = False
@@ -170,8 +198,10 @@ class TestRequestWithRetry:
         self._set_mock_client(mock_client)
         self._suppress_sleep()
 
-        with pytest.raises(MainServerError):
+        with pytest.raises(MainServerError) as exc_info:
             await request_with_retry("GET", "/error")
+
+        assert "메인 서버 내부 오류" in exc_info.value.message
         assert mock_client.request.call_count == MAX_RETRIES
 
     @pytest.mark.asyncio

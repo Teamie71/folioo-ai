@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _service: "PortfolioService | None" = None
+_PORTFOLIO_FIELD_MAX_LENGTH = 400
 
 
 class PortfolioService:
@@ -65,6 +66,11 @@ class PortfolioService:
     def _get_repository(self) -> "PortfolioRepository | None":
         """레거시 CRUD 엔드포인트용 Repository 반환"""
         return self._repository
+
+    @staticmethod
+    def _truncate_portfolio_field(text: str | None) -> str:
+        """메인 서버 제약에 맞춰 포트폴리오 필드를 400자로 제한"""
+        return (text or "")[:_PORTFOLIO_FIELD_MAX_LENGTH]
 
     async def start_generation(
         self,
@@ -129,10 +135,10 @@ class PortfolioService:
             await self._portfolio_client.update_result(
                 portfolio_id,
                 status="completed",
-                description=output.description,
-                contributions=output.contributions,
-                achievements=output.achievements,
-                insights=output.insights,
+                description=self._truncate_portfolio_field(output.description),
+                contributions=self._truncate_portfolio_field(output.contributions),
+                achievements=self._truncate_portfolio_field(output.achievements),
+                insights=self._truncate_portfolio_field(output.insights),
             )
         except Exception as exc:
             logger.exception("포트폴리오 생성 실패 (portfolio_id: %s): %s", portfolio_id, exc)

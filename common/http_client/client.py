@@ -25,6 +25,58 @@ class MainServerError(Exception):
         super().__init__(f"[{status_code}] {message}")
 
 
+def _get_response_text_excerpt(response: httpx.Response, limit: int = 300) -> str:
+    """응답 본문을 로그/예외 메시지용으로 짧게 추출"""
+    try:
+        body_text = response.text
+    except Exception:
+        return ""
+
+    if not isinstance(body_text, str):
+        return ""
+
+    body_text = body_text.strip()
+    if not body_text:
+        return ""
+
+    if len(body_text) > limit:
+        return f"{body_text[:limit]}..."
+    return body_text
+
+
+def _build_5xx_error_message(response: httpx.Response) -> str:
+    """5xx 응답에서 디버깅 가능한 에러 메시지 구성"""
+    base_message = f"서버 에러 (HTTP {response.status_code})"
+
+    detail_message = ""
+    try:
+        body = response.json()
+    except Exception:
+        body = None
+
+    if isinstance(body, dict):
+        error_info = body.get("error")
+        if isinstance(error_info, dict):
+            detail_message = str(
+                error_info.get("message")
+                or error_info.get("reason")
+                or error_info.get("errorCode")
+                or ""
+            ).strip()
+        elif isinstance(error_info, str):
+            detail_message = error_info.strip()
+
+    response_excerpt = _get_response_text_excerpt(response)
+
+    if detail_message and response_excerpt:
+        return f"{base_message}: {detail_message} (응답 본문: {response_excerpt!r})"
+    if detail_message:
+        return f"{base_message}: {detail_message}"
+    if response_excerpt:
+        return f"{base_message} (응답 본문: {response_excerpt!r})"
+    return base_message
+
+
 def get_http_client() -> httpx.AsyncClient:
     """
     싱글톤 httpx.AsyncClient 반환
@@ -82,6 +134,18 @@ def _parse_envelope(response: httpx.Response) -> Any:
     Raises:
         MainServerError: isSuccess=false이거나 파싱 실패 시
     """
+    if response.status_code == 401:
+        raise MainServerError(
+            status_code=401,
+            message=f"인증 실패: X-API-Key를 확인하세요. (응답 본문: {response.text!r})",
+        )
+
+    if response.status_code == 403:
+        raise MainServerError(
+            status_code=403,
+            message=f"권한 없음: 해당 리소스에 접근할 수 없습니다. (응답 본문: {response.text!r})",
+        )
+
     try:
         body = response.json()
     except Exception as e:
@@ -144,18 +208,20 @@ async def request_with_retry(
             response = await client.request(method, url, **kwargs)
 
             if response.status_code >= 500:
+                error_message = _build_5xx_error_message(response)
                 last_exception = MainServerError(
                     status_code=response.status_code,
-                    message=f"서버 에러 (HTTP {response.status_code})",
+                    message=error_message,
                 )
                 if attempt < MAX_RETRIES:
                     wait = LINEAR_BACKOFF_BASE * attempt
                     logger.warning(
-                        "5xx 에러 (HTTP %d), %d/%d 재시도 (%.1fs 대기)",
+                        "5xx 에러 (HTTP %d), %d/%d 재시도 (%.1fs 대기): %s",
                         response.status_code,
                         attempt,
                         MAX_RETRIES,
                         wait,
+                        error_message,
                     )
                     await asyncio.sleep(wait)
                     continue

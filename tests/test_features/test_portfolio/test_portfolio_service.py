@@ -163,6 +163,35 @@ async def test_background_generation_success_calls_update_result():
 
 
 @pytest.mark.asyncio
+async def test_background_generation_truncates_fields_to_400_chars():
+    """메인 서버 전송 전 포트폴리오 각 필드를 400자로 자른다."""
+    mock_client = AsyncMock()
+    long_text = "가" * 450
+    output = PortfolioOutput(
+        description=long_text,
+        contributions=long_text,
+        achievements=long_text,
+        insights=long_text,
+    )
+    service = PortfolioService(
+        generator=DummyGenerator(output=output),
+        interview_service=DummyInterviewService(None),
+        portfolio_client=mock_client,
+    )
+
+    await service._generate_portfolio_background(42, {}, "exp")
+
+    mock_client.update_result.assert_called_once_with(
+        42,
+        status="completed",
+        description="가" * 400,
+        contributions="가" * 400,
+        achievements="가" * 400,
+        insights="가" * 400,
+    )
+
+
+@pytest.mark.asyncio
 async def test_background_generation_success_callback_failure_attempts_failed():
     """성공 콜백이 실패하면 failed 콜백을 시도한다."""
     mock_client = AsyncMock()
