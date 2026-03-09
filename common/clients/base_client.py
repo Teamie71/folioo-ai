@@ -82,6 +82,14 @@ class BaseClient:
         Raises:
             MainServerError: HTTP 에러 응답 시
         """
+        logger.debug(
+            "메인 서버 요청 시작: [%s %s%s] params=%s has_json=%s",
+            method,
+            self._base_url,
+            path,
+            params,
+            json is not None,
+        )
         try:
             response = await self._client.request(
                 method,
@@ -90,20 +98,42 @@ class BaseClient:
                 params=params,
             )
         except httpx.TimeoutException as exc:
+            logger.error(
+                "메인 서버 요청 타임아웃: [%s %s%s] timeout=%s",
+                method,
+                self._base_url,
+                path,
+                self._timeout,
+            )
             raise MainServerError(
                 status_code=504,
                 detail="메인 서버 요청 시간이 초과되었습니다.",
             ) from exc
         except httpx.NetworkError as exc:
+            logger.error(
+                "메인 서버 네트워크 오류: [%s %s%s] detail=%s",
+                method,
+                self._base_url,
+                path,
+                exc,
+            )
             raise MainServerError(
                 status_code=502,
                 detail="메인 서버에 연결할 수 없습니다.",
             ) from exc
 
         if response.status_code == 204:
+            logger.debug("메인 서버 응답 성공: [%s %s%s] status=204", method, self._base_url, path)
             return None
 
         if response.is_success:
+            logger.debug(
+                "메인 서버 응답 성공: [%s %s%s] status=%s",
+                method,
+                self._base_url,
+                path,
+                response.status_code,
+            )
             return response.json()
 
         error_body: Any = None
