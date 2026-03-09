@@ -120,6 +120,9 @@ class BaseClient:
             if isinstance(error_obj, dict):
                 error_code = error_obj.get("errorCode") or error_obj.get("code")
                 detail = error_obj.get("reason") or error_obj.get("message") or response.text
+                details = error_obj.get("details")
+                if details:
+                    detail = f"{detail} {details}"
             else:
                 error_code = error_body.get("errorCode") or error_body.get("code")
                 detail = error_body.get("message") or error_body.get("detail") or response.text

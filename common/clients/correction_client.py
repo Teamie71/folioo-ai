@@ -95,7 +95,7 @@ class CorrectionClient(BaseClient):
         """
         return await self.patch(
             f"{self._PREFIX}/{correction_id}/company-insight",
-            json={"companyInsight": company_insight},
+            json={"companyInsight": company_insight[:1500]},
         )
 
     async def update_result(self, correction_id: int, result: list[dict]) -> dict:
