@@ -4,6 +4,7 @@
 llm:
     model: "openai/gpt-oss-120b"
     temperature: 0.2
+    timeout: 300
 
 # 출력 검증 규칙
 validation:
