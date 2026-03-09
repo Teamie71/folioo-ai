@@ -89,8 +89,12 @@ class DummyCorrectionClient:
             self.corrections[correction_id]["status"] = "COMPANY_INSIGHT"
         return {"id": correction_id}
 
-    async def update_result(self, correction_id: int, result: list[dict]) -> dict:
-        self.updated_results.append({"correction_id": correction_id, "result": result})
+    async def update_result(
+        self, correction_id: int, result: list[dict], overall_review: str
+    ) -> dict:
+        self.updated_results.append(
+            {"correction_id": correction_id, "result": result, "overall_review": overall_review}
+        )
         if correction_id in self.corrections:
             self.corrections[correction_id]["status"] = "DONE"
         return {"id": correction_id}
