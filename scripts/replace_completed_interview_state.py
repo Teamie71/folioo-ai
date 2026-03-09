@@ -13,6 +13,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 # 프로젝트 루트를 sys.path에 추가 (직접 실행 시 모듈 탐색용)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -109,7 +110,9 @@ async def main() -> None:
     print("=" * 70)
     print("  인터뷰 세션 상태 교체 완료")
     print("=" * 70)
-    print(f"  DB: {result['db_url']}")
+    _parsed = urlparse(result["db_url"])
+    _safe_url = urlunparse(_parsed._replace(password="***"))
+    print(f"  DB: {_safe_url}")
     print(f"  session_id: {result['session_id']}")
     print(f"  user_id: {result['user_id']}")
     print(f"  experience_name: {result['experience_name']}")
