@@ -59,9 +59,11 @@ class CorrectionService:
 
     async def start_rag(self, correction_id: int, background_tasks: BackgroundTasks) -> None:
         """RAG 단계를 시작하고 백그라운드 작업을 등록"""
+        logger.info("RAG 시작 요청 (correction_id: %s)", correction_id)
         await self._correction_client.update_status(
             correction_id, _to_upper_status(CorrectionStatus.DOING_RAG)
         )
+        logger.info("상태 DOING_RAG 전이 완료 (correction_id: %s)", correction_id)
         background_tasks.add_task(self._run_rag, correction_id)
 
     async def _run_rag(self, correction_id: int) -> None:

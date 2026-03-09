@@ -128,6 +128,15 @@ class BaseClient:
         elif error_body is not None:
             detail = str(error_body)
 
+        logger.error(
+            "메인 서버 API 오류: [%s %s%s] status=%s error_code=%s detail=%s",
+            method,
+            self._base_url,
+            path,
+            response.status_code,
+            error_code,
+            detail,
+        )
         raise MainServerError(
             status_code=response.status_code,
             detail=detail,
