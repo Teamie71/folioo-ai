@@ -261,9 +261,12 @@ class CorrectionService:
         try:
             logger.info("백그라운드 첨삭 생성 시작 (correction_id: %s)", correction_id)
             correction = await self._correction_client.get_correction(correction_id)
-            company_name = correction.get("companyName", "")
-            job_title = correction.get("positionName", "")
-            job_description = correction.get("jobDescription", "")
+            company_name = correction.get("companyName")
+            job_title = correction.get("positionName")
+            job_description = correction.get("jobDescription")
+
+            if not company_name or not job_title or not job_description:
+                raise ValueError("첨삭 생성에 필요한 회사명, 직무명, 채용 공고가 누락되었습니다.")
 
             company_insight = correction.get("companyInsight") or ""
             if isinstance(company_insight, dict):
