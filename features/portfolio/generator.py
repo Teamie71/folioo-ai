@@ -16,6 +16,7 @@ from .schemas import PortfolioOutput
 
 _DEFAULT_MAX_RETRIES = 3
 _SECTION_FIELDS = ("description", "contributions", "achievements", "insights")
+_PORTFOLIO_FIELD_MAX_LENGTH = 400
 # min_length 제약 제거 후 LLM이 반환하는 플레이스홀더("0")와 빈 문자열을 빈 응답으로 간주한다.
 _EMPTY_TEXT_VALUES = {"", "0"}
 
@@ -100,6 +101,12 @@ class PortfolioGenerator:
 
             if required and text in _EMPTY_TEXT_VALUES:
                 errors.append(f"{field_name} 섹션이 비어 있습니다.")
+
+            if len(text) > _PORTFOLIO_FIELD_MAX_LENGTH:
+                errors.append(
+                    f"{field_name} 섹션이 글자수 제한을 초과했습니다. "
+                    f"(현재 {len(text)}자 / 최대 {_PORTFOLIO_FIELD_MAX_LENGTH}자)"
+                )
 
         return errors
 

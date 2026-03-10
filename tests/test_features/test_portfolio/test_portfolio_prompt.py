@@ -78,3 +78,4 @@ def test_portfolio_prompt_formatting_contains_guidelines():
     assert "명사 종결" in messages[0].content
     assert '"~다" 종결' in messages[0].content
     assert "**굵게**만 사용" in messages[0].content
+    assert "400자 이내" in messages[0].content
