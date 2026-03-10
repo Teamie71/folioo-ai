@@ -6,8 +6,8 @@ import re
 from common.llm.client import get_llm
 
 from .config import get_correction_llm_config, get_correction_validation_config
-from .prompts.correction_prompt import format_portfolio_for_correction
-from .prompts.generator import correction_generator_prompt, overall_summary_prompt
+from .prompts.correction_prompt import correction_generator_prompt, format_portfolio_for_correction
+from .prompts.generator import overall_summary_prompt
 from .schemas import REQUIRED_CORRECTION_FIELDS, PortfolioCorrectionResult, SingleCorrectionOutput
 
 _generator: "CorrectionGenerator | None" = None

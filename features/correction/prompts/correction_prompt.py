@@ -58,6 +58,13 @@ CORRECTION_SYSTEM_PROMPT = """
 - type은 reduce, keep, emphasize만 사용하세요.
 """.strip()
 
+CORRECTION_GENERATOR_SYSTEM_TEMPLATE = f"""
+{CORRECTION_SYSTEM_PROMPT}
+
+# 이전 시도 피드백
+{{validation_feedback}}
+""".strip()
+
 CORRECTION_HUMAN_PROMPT = """
 ## 입력 데이터
 ### 기업명
@@ -171,9 +178,34 @@ def get_correction_prompt() -> ChatPromptTemplate:
     )
 
 
+correction_generator_prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", CORRECTION_GENERATOR_SYSTEM_TEMPLATE),
+        (
+            "human",
+            "## 입력 데이터\n"
+            "### 기업명\n"
+            "{company_name}\n\n"
+            "### 직무명\n"
+            "{job_title}\n\n"
+            "### Job Description (JD)\n"
+            "{job_description}\n\n"
+            "### 기업 분석 정보\n"
+            "{company_insight}\n\n"
+            "### 첨삭 대상 마스터 포트폴리오\n"
+            "{portfolio_data_text}\n\n"
+            "### 강조 포인트\n"
+            "{emphasis_points}",
+        ),
+    ]
+).partial(validation_feedback="없음")
+
+
 __all__ = [
+    "CORRECTION_GENERATOR_SYSTEM_TEMPLATE",
     "CORRECTION_HUMAN_PROMPT",
     "CORRECTION_SYSTEM_PROMPT",
+    "correction_generator_prompt",
     "format_portfolio_for_correction",
     "get_correction_prompt",
 ]
