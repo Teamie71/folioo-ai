@@ -4,6 +4,7 @@ import pytest
 from langchain_core.prompts import ChatPromptTemplate
 
 from features.correction.prompts import (
+    correction_generator_prompt,
     format_portfolio_for_correction,
     get_correction_prompt,
     overall_summary_prompt,
@@ -48,6 +49,38 @@ def test_correction_prompt_removes_overall_summary_instruction():
     assert "overall_summary" not in messages[0].content
     assert "SingleCorrectionOutput" in messages[0].content
     assert "comment는 null" in messages[0].content
+
+
+def test_correction_generator_prompt_has_required_input_variables():
+    """런타임 첨삭 프롬프트 입력 변수를 검증한다."""
+    expected_vars = {
+        "company_name",
+        "job_title",
+        "job_description",
+        "company_insight",
+        "portfolio_data_text",
+        "emphasis_points",
+    }
+
+    assert expected_vars == set(correction_generator_prompt.input_variables)
+
+
+def test_correction_generator_prompt_includes_field_scoped_validation_rules():
+    """런타임 첨삭 프롬프트가 field 단위 번호 규칙을 명시하는지 테스트"""
+    messages = correction_generator_prompt.format_messages(
+        company_name="테스트 회사",
+        job_title="백엔드 개발자",
+        job_description="Python, FastAPI 기반 서비스 개발",
+        company_insight="데이터 기반 의사결정을 중시",
+        portfolio_data_text="[상세 정보 - description]\n1. 테스트",
+        emphasis_points="문제해결 능력과 협업을 강조",
+    )
+
+    assert len(messages) == 2
+    assert "각 field 내부에서 1부터 다시 시작" in messages[0].content
+    assert "중복 반환이나 일부 누락은 허용되지 않습니다" in messages[0].content
+    assert "각각 정확히 1회씩 포함" in messages[0].content
+    assert "이전 시도 피드백\n없음" in messages[0].content
 
 
 def test_overall_summary_prompt_has_required_input_variables():
