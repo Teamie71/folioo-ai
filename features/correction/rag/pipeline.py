@@ -11,6 +11,8 @@ from tavily import AsyncTavilyClient
 from common.llm.client import get_llm
 from features.correction.config import get_correction_rag_config
 
+_COMPANY_INSIGHT_MAX_LENGTH = 1500
+
 
 @dataclass(slots=True)
 class RAGRunResult:
@@ -186,12 +188,18 @@ class RAGPipeline:
                 f"검색 키워드: {serialized_keywords}\n"
                 f"검색 결과: {serialized_search_results}\n\n"
                 "검색 키워드는 참고 정보로만 사용하고, 사실 근거는 검색 결과를 우선해 "
-                "기업 문화, 인재상, 직무 특성을 간결하게 요약해 주세요."
+                "기업 문화, 인재상, 직무 특성을 간결하게 요약해 주세요. "
+                f"최종 출력은 공백과 줄바꿈을 포함해 {_COMPANY_INSIGHT_MAX_LENGTH}자 이내로 작성하세요."
             )
         except Exception as exc:
             raise RAGInsightGenerationError(f"인사이트 생성 LLM 호출 실패: {exc}") from exc
         content = getattr(response, "content", response)
-        return str(content).strip()
+        return self._truncate_company_insight(str(content).strip())
+
+    @staticmethod
+    def _truncate_company_insight(text: str) -> str:
+        """기업 인사이트 길이를 1500자로 제한"""
+        return text[:_COMPANY_INSIGHT_MAX_LENGTH]
 
 
 __all__ = [

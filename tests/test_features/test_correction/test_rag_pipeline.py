@@ -344,3 +344,39 @@ def test_generate_insight_raises_on_llm_invoke_failure(monkeypatch):
             company_name="네이버",
             job_title="백엔드",
         )
+
+
+def test_generate_insight_prompt_contains_length_limit(monkeypatch):
+    """인사이트 생성 프롬프트에 1500자 제한이 포함된다."""
+    from features.correction.rag import pipeline
+
+    dummy_llm = _DummyLLM(["기업 인사이트"])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    rag_pipeline = RAGPipeline()
+
+    rag_pipeline._generate_insight(
+        keywords=["키워드1"],
+        search_results=[{"title": "검색 결과", "content": "본문", "url": "https://example.com"}],
+        company_name="네이버",
+        job_title="백엔드",
+    )
+
+    assert "1500자 이내" in dummy_llm.prompts[0]
+
+
+def test_generate_insight_truncates_result_to_1500_chars(monkeypatch):
+    """인사이트 결과는 1500자를 초과하지 않도록 제한한다."""
+    from features.correction.rag import pipeline
+
+    dummy_llm = _DummyLLM(["가" * 1600])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    rag_pipeline = RAGPipeline()
+
+    insight = rag_pipeline._generate_insight(
+        keywords=["키워드1"],
+        search_results=[{"title": "검색 결과", "content": "본문", "url": "https://example.com"}],
+        company_name="네이버",
+        job_title="백엔드",
+    )
+
+    assert len(insight) == 1500
