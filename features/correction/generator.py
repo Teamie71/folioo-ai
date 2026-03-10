@@ -1,5 +1,6 @@
 """첨삭 결과 생성기"""
 
+import logging
 import re
 
 from common.llm.client import get_llm
@@ -15,6 +16,7 @@ _FIELD_HEADER_PATTERN = re.compile(
     r"^\[[^\]]+ - (?P<field_name>description|contributions|achievements|insights)\]$"
 )
 _NUMBERED_LINE_PATTERN = re.compile(r"^\d+\.\s+")
+logger = logging.getLogger(__name__)
 
 
 class CorrectionGenerationError(Exception):
@@ -33,7 +35,11 @@ class CorrectionGenerator:
         self._min_lines_per_field = validation_config.min_lines_per_field
         self._allow_null_comment_for_keep = validation_config.allow_null_comment_for_keep
 
-        llm = get_llm(model=llm_config.model, temperature=llm_config.temperature)
+        llm = get_llm(
+            model=llm_config.model,
+            temperature=llm_config.temperature,
+            timeout=llm_config.timeout,
+        )
         self._llm = llm
         self._structured_llm = llm.with_structured_output(SingleCorrectionOutput)
 
@@ -70,8 +76,19 @@ class CorrectionGenerator:
         last_error_message: str | None = None
         portfolio_data_text = _format_portfolio_data_for_prompt(portfolio_data)
         field_line_counts = _get_field_line_counts_from_formatted_text(portfolio_data_text)
+        total_attempts = self._max_retries + 1
 
-        for _ in range(self._max_retries + 1):
+        logger.debug(
+            "첨삭 프롬프트 변수 요약 (company: %s, job_title: %s, portfolio_data_length: %s, "
+            "company_insight_length: %s, emphasis_points_length: %s)",
+            company_name,
+            job_title,
+            len(portfolio_data_text),
+            len(company_insight),
+            len(emphasis_points),
+        )
+
+        for attempt in range(1, total_attempts + 1):
             prompt_variables = {
                 "company_name": company_name,
                 "job_title": job_title,
@@ -83,22 +100,42 @@ class CorrectionGenerator:
             }
 
             try:
+                logger.info("LLM 첨삭 생성 시도 %s/%s 시작", attempt, total_attempts)
                 chain = correction_generator_prompt | self._structured_llm
                 output: SingleCorrectionOutput = chain.invoke(prompt_variables)
+                logger.info("LLM 첨삭 생성 시도 %s/%s 완료", attempt, total_attempts)
             except Exception as exc:
                 last_error_message = f"LLM 호출/파싱 실패: {exc}"
                 validation_feedback = last_error_message
+                logger.warning(
+                    "LLM 첨삭 생성 시도 %s/%s 실패: %s",
+                    attempt,
+                    total_attempts,
+                    exc,
+                )
                 continue
 
             last_output = output
             validation_errors = self._validate(output=output, field_line_counts=field_line_counts)
             if not validation_errors:
+                logger.info("검증 통과 (시도 %s/%s)", attempt, total_attempts)
                 return output
 
             last_error_message = "; ".join(validation_errors)
             validation_feedback = f"이전 출력 보완 필요: {last_error_message}"
+            logger.warning(
+                "검증 실패 (시도 %s/%s): %s",
+                attempt,
+                total_attempts,
+                last_error_message,
+            )
 
         if last_output is not None:
+            logger.warning(
+                "재시도 소진 후 마지막 출력 반환 (%s회 시도): %s",
+                total_attempts,
+                last_error_message or "검증 실패",
+            )
             return last_output
 
         raise CorrectionGenerationError(
@@ -116,6 +153,7 @@ class CorrectionGenerator:
         emphasis_points: str,
     ) -> str:
         """모든 포트폴리오 첨삭 결과를 종합한 총평을 생성한다."""
+        logger.info("총평 생성 시작")
         chain = overall_summary_prompt | self._llm
         response = chain.invoke(
             {
@@ -132,6 +170,7 @@ class CorrectionGenerator:
         overall_summary = _coerce_llm_text_response(response).strip()
         if not overall_summary:
             raise CorrectionGenerationError("총평 생성 결과가 비어 있습니다.")
+        logger.info("총평 생성 완료 (길이: %s자)", len(overall_summary))
         return overall_summary
 
     def _validate(

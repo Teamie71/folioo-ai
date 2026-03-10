@@ -326,7 +326,11 @@ def test_correction_yaml_max_retries_has_priority(monkeypatch: pytest.MonkeyPatc
     """max_retries는 correction.yaml(validation) 값을 우선 사용한다."""
     from features.correction import generator
 
-    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(
+        generator,
+        "get_llm",
+        lambda model=None, temperature=0.2, timeout=None: DummyLLM(),
+    )
     config = CorrectionConfig.model_validate(
         {
             "llm": {"model": "test-model", "temperature": 0.3},
@@ -349,7 +353,11 @@ def test_generator_yaml_fallback_is_used_when_correction_missing(monkeypatch: py
     """max_retries를 arg로 전달하면 config 설정값을 무시한다."""
     from features.correction import generator
 
-    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(
+        generator,
+        "get_llm",
+        lambda model=None, temperature=0.2, timeout=None: DummyLLM(),
+    )
     config = CorrectionConfig.model_validate(
         {
             "llm": {"model": "test-model", "temperature": 0.3},
@@ -372,7 +380,11 @@ def test_validate_respects_min_lines_per_field(monkeypatch: pytest.MonkeyPatch):
     """min_lines_per_field 설정을 검증 로직에 반영한다."""
     from features.correction import generator
 
-    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(
+        generator,
+        "get_llm",
+        lambda model=None, temperature=0.2, timeout=None: DummyLLM(),
+    )
     monkeypatch.setattr(
         generator,
         "get_correction_validation_config",
@@ -398,7 +410,11 @@ def test_validate_respects_allow_null_comment_for_keep(monkeypatch: pytest.Monke
     """allow_null_comment_for_keep=false면 keep null comment를 실패 처리한다."""
     from features.correction import generator
 
-    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.2: DummyLLM())
+    monkeypatch.setattr(
+        generator,
+        "get_llm",
+        lambda model=None, temperature=0.2, timeout=None: DummyLLM(),
+    )
     monkeypatch.setattr(
         generator,
         "get_correction_validation_config",

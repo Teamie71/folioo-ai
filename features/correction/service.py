@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 
 from fastapi import BackgroundTasks
 
@@ -188,15 +189,84 @@ class CorrectionService:
 
     async def start_generation(self, correction_id: int, background_tasks: BackgroundTasks) -> None:
         """첨삭 생성 단계를 시작하고 백그라운드 작업을 등록"""
+        logger.info("첨삭 생성 시작 요청 (correction_id: %s)", correction_id)
         await self._correction_client.update_status(
             correction_id, _to_upper_status(CorrectionStatus.GENERATING)
         )
+        logger.info("상태 GENERATING 전이 완료 (correction_id: %s)", correction_id)
         background_tasks.add_task(self._run_generation, correction_id)
+
+    async def _generate_portfolio_correction(
+        self,
+        *,
+        correction_id: int,
+        portfolio_id: int,
+        index: int,
+        total: int,
+        company_name: str,
+        job_title: str,
+        job_description: str,
+        company_insight: str,
+        emphasis_points: str,
+    ) -> PortfolioCorrectionResult:
+        """단일 포트폴리오 첨삭을 생성한다."""
+        started_at = time.perf_counter()
+        logger.info(
+            "포트폴리오 첨삭 생성 시작 (%s/%s, portfolio_id: %s, correction_id: %s)",
+            index,
+            total,
+            portfolio_id,
+            correction_id,
+        )
+
+        portfolio = await self._portfolio_client.get_portfolio(portfolio_id)
+        portfolio_output = {
+            "description": portfolio.get("description", ""),
+            "contributions": portfolio.get("responsibilities", ""),
+            "achievements": portfolio.get("problemSolving", ""),
+            "insights": portfolio.get("learnings", ""),
+        }
+        logger.debug(
+            "포트폴리오 첨삭 입력 요약 (correction_id: %s, portfolio_id: %s, description_length: %s, contributions_length: %s, achievements_length: %s, insights_length: %s)",
+            correction_id,
+            portfolio_id,
+            len(portfolio_output["description"]),
+            len(portfolio_output["contributions"]),
+            len(portfolio_output["achievements"]),
+            len(portfolio_output["insights"]),
+        )
+
+        generated = await asyncio.to_thread(
+            self._generator.generate,
+            company_name,
+            job_title,
+            job_description,
+            company_insight,
+            portfolio_output,
+            emphasis_points,
+        )
+        elapsed = time.perf_counter() - started_at
+        logger.info(
+            "포트폴리오 첨삭 생성 완료 (%s/%s, portfolio_id: %s, correction_id: %s, 소요: %.1f초)",
+            index,
+            total,
+            portfolio_id,
+            correction_id,
+            elapsed,
+        )
+        return PortfolioCorrectionResult(portfolio_id=portfolio_id, fields=generated.fields)
 
     async def _run_generation(self, correction_id: int) -> None:
         """첨삭 생성기를 호출하고 결과를 저장"""
         try:
+            logger.info("백그라운드 첨삭 생성 시작 (correction_id: %s)", correction_id)
             correction = await self._correction_client.get_correction(correction_id)
+            company_name = correction.get("companyName")
+            job_title = correction.get("positionName")
+            job_description = correction.get("jobDescription")
+
+            if not company_name or not job_title or not job_description:
+                raise ValueError("첨삭 생성에 필요한 회사명, 직무명, 채용 공고가 누락되었습니다.")
 
             company_insight = correction.get("companyInsight") or ""
             if isinstance(company_insight, dict):
@@ -212,41 +282,69 @@ class CorrectionService:
             if len(portfolio_ids) > 5:
                 raise ValueError("포트폴리오는 최대 5개까지 허용됩니다.")
 
-            portfolio_corrections: list[PortfolioCorrectionResult] = []
-            for portfolio_id in portfolio_ids:
-                portfolio = await self._portfolio_client.get_portfolio(portfolio_id)
-                portfolio_output = {
-                    "description": portfolio.get("description", ""),
-                    "contributions": portfolio.get("responsibilities", ""),
-                    "achievements": portfolio.get("problemSolving", ""),
-                    "insights": portfolio.get("learnings", ""),
-                }
+            logger.info(
+                "첨삭 데이터 조회 완료 (correction_id: %s, company: %s, portfolios: %s개)",
+                correction_id,
+                company_name,
+                len(portfolio_ids),
+            )
+            logger.debug(
+                "첨삭 생성 상세 변수 (correction_id: %s, portfolio_ids: %s, company_insight_length: %s, emphasis_points_length: %s)",
+                correction_id,
+                portfolio_ids,
+                len(company_insight),
+                len(emphasis_points),
+            )
 
-                generated = await asyncio.to_thread(
-                    self._generator.generate,
-                    correction.get("companyName", ""),
-                    correction.get("positionName", ""),
-                    correction.get("jobDescription", ""),
-                    company_insight,
-                    portfolio_output,
-                    emphasis_points,
-                )
-                portfolio_corrections.append(
-                    PortfolioCorrectionResult(
+            generation_results = await asyncio.gather(
+                *[
+                    self._generate_portfolio_correction(
+                        correction_id=correction_id,
                         portfolio_id=portfolio_id,
-                        fields=generated.fields,
+                        index=index,
+                        total=len(portfolio_ids),
+                        company_name=company_name,
+                        job_title=job_title,
+                        job_description=job_description,
+                        company_insight=company_insight,
+                        emphasis_points=emphasis_points,
                     )
+                    for index, portfolio_id in enumerate(portfolio_ids, start=1)
+                ],
+                return_exceptions=True,
+            )
+
+            portfolio_corrections: list[PortfolioCorrectionResult] = []
+            generation_errors: list[Exception] = []
+            for portfolio_id, result in zip(portfolio_ids, generation_results, strict=True):
+                if isinstance(result, Exception):
+                    logger.exception(
+                        "포트폴리오 첨삭 생성 실패 (correction_id: %s, portfolio_id: %s)",
+                        correction_id,
+                        portfolio_id,
+                        exc_info=result,
+                    )
+                    generation_errors.append(result)
+                    continue
+
+                portfolio_corrections.append(result)
+
+            if generation_errors:
+                raise RuntimeError(
+                    f"포트폴리오 첨삭 생성 중 {len(generation_errors)}건의 실패가 발생했습니다."
                 )
 
+            logger.info("총평 생성 시작 (correction_id: %s)", correction_id)
             overall_summary = await asyncio.to_thread(
                 self._generator.generate_overall_summary,
-                correction.get("companyName", ""),
-                correction.get("positionName", ""),
-                correction.get("jobDescription", ""),
+                company_name,
+                job_title,
+                job_description,
                 company_insight,
                 portfolio_corrections,
                 emphasis_points,
             )
+            logger.info("총평 생성 완료 (correction_id: %s)", correction_id)
             result = CorrectionOutput(
                 portfolio_corrections=portfolio_corrections,
                 overall_summary=overall_summary,
@@ -258,6 +356,7 @@ class CorrectionService:
                 result_for_server,
                 result.overall_summary,
             )
+            logger.info("첨삭 결과 저장 완료 (correction_id: %s)", correction_id)
         except Exception as exc:
             logger.exception("첨삭 생성 실패 (correction_id: %s): %s", correction_id, exc)
             await self._mark_failed(correction_id)

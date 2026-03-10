@@ -678,11 +678,24 @@ async def test_run_generation_success_calls_generator_and_saves_result():
     await service._run_generation(1)
 
     assert len(generator.calls) == 2
-    assert generator.calls[0]["portfolio_output"]["description"] == "설명"
-    assert generator.calls[0]["portfolio_output"]["contributions"] == "기여"
-    assert generator.calls[0]["portfolio_output"]["achievements"] == "성과"
-    assert generator.calls[0]["portfolio_output"]["insights"] == "인사이트"
-    assert generator.calls[1]["portfolio_output"]["description"] == "설명2"
+    actual_portfolio_outputs = {
+        call["portfolio_output"]["description"]: call["portfolio_output"]
+        for call in generator.calls
+    }
+    assert actual_portfolio_outputs == {
+        "설명": {
+            "description": "설명",
+            "contributions": "기여",
+            "achievements": "성과",
+            "insights": "인사이트",
+        },
+        "설명2": {
+            "description": "설명2",
+            "contributions": "기여2",
+            "achievements": "성과2",
+            "insights": "인사이트2",
+        },
+    }
     assert len(generator.overall_summary_calls) == 1
     assert len(generator.overall_summary_calls[0]["portfolio_corrections"]) == 2
     assert len(client.updated_results) == 1
