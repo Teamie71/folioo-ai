@@ -296,7 +296,7 @@ class CorrectionService:
                 len(emphasis_points),
             )
 
-            portfolio_corrections = await asyncio.gather(
+            generation_results = await asyncio.gather(
                 *[
                     self._generate_portfolio_correction(
                         correction_id=correction_id,
@@ -310,8 +310,29 @@ class CorrectionService:
                         emphasis_points=emphasis_points,
                     )
                     for index, portfolio_id in enumerate(portfolio_ids, start=1)
-                ]
+                ],
+                return_exceptions=True,
             )
+
+            portfolio_corrections: list[PortfolioCorrectionResult] = []
+            generation_errors: list[Exception] = []
+            for portfolio_id, result in zip(portfolio_ids, generation_results, strict=True):
+                if isinstance(result, Exception):
+                    logger.exception(
+                        "포트폴리오 첨삭 생성 실패 (correction_id: %s, portfolio_id: %s)",
+                        correction_id,
+                        portfolio_id,
+                        exc_info=result,
+                    )
+                    generation_errors.append(result)
+                    continue
+
+                portfolio_corrections.append(result)
+
+            if generation_errors:
+                raise RuntimeError(
+                    f"포트폴리오 첨삭 생성 중 {len(generation_errors)}건의 실패가 발생했습니다."
+                )
 
             logger.info("총평 생성 시작 (correction_id: %s)", correction_id)
             overall_summary = await asyncio.to_thread(
