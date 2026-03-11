@@ -14,5 +14,5 @@ validation:
 
 # RAG 검색 규칙
 rag:
-    keyword_count: 4
+    keyword_count: 6
     max_results_per_keyword: 5
