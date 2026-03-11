@@ -14,7 +14,6 @@ class AnalystFieldResult(BaseModel):
         default=None, description="대화에서 추출된 값 (문자열 또는 리스트)"
     )
     completeness: float = Field(ge=0.0, le=1.0, description="필드 완성도 (0.0 ~ 1.0)")
-    reasoning: str = Field(description="판단 근거 (디버깅용)")
 
 
 class AnalystResponse(BaseModel):
@@ -56,12 +55,11 @@ ANALYST_SYSTEM_TEMPLATE = """
 4. 각 필드에 대해 다음을 판단하세요:
    - `value`: 추출된 내용 (리스트 타입 필드는 리스트로 반환)
    - `completeness`: 해당 필드의 완성도 (0.0 ~ 1.0)
-     - 0.0: 전혀 정보 없음
-     - 0.3: 단편적인 언급만 있음
-     - 0.5: 기본적인 내용은 있으나 구체성 부족
-     - 0.7: 상당히 구체적이나 일부 보완 필요
-     - 1.0: 충분히 상세하고 완전한 정보
-   - `reasoning`: 해당 완성도를 부여한 판단 근거
+      - 0.0: 전혀 정보 없음
+      - 0.3: 단편적인 언급만 있음
+      - 0.5: 기본적인 내용은 있으나 구체성 부족
+      - 0.7: 상당히 구체적이나 일부 보완 필요
+      - 1.0: 충분히 상세하고 완전한 정보
 5. 대화에서 언급되지 않은 필드는 기존 수집 데이터를 그대로 유지하세요.
 6. 기존 데이터도 없고 대화에서도 언급되지 않은 필드는 value를 null, completeness를 0.0으로 설정하세요.
 7. 한국어로 내용을 작성하세요.
@@ -73,8 +71,7 @@ ANALYST_SYSTEM_TEMPLATE = """
     {{
       "field_name": "필드명",
       "value": "추출된 값 또는 리스트",
-      "completeness": 0.0~1.0,
-      "reasoning": "판단 근거"
+      "completeness": 0.0~1.0
     }}
   ]
 }}
@@ -118,7 +115,6 @@ EXTENDED_ANALYST_SYSTEM_TEMPLATE = """
 4. 각 필드에 대해 다음을 판단하세요:
    - `value`: 추출된 내용 (리스트 타입 필드는 리스트로 반환)
    - `completeness`: 해당 필드의 완성도 (0.0 ~ 1.0)
-   - `reasoning`: 해당 완성도를 부여한 판단 근거
 5. 대화에서 언급되지 않은 필드는 기존 수집 데이터를 그대로 유지하세요.
 6. 기존 데이터도 없고 대화에서도 언급되지 않은 필드는 value를 null, completeness를 0.0으로 설정하세요.
 7. 한국어로 내용을 작성하세요.
@@ -130,8 +126,7 @@ EXTENDED_ANALYST_SYSTEM_TEMPLATE = """
     {{
       "field_name": "필드명",
       "value": "추출된 값 또는 리스트",
-      "completeness": 0.0~1.0,
-      "reasoning": "판단 근거"
+      "completeness": 0.0~1.0
     }}
   ]
 }}

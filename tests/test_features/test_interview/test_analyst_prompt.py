@@ -23,12 +23,10 @@ class TestAnalystFieldResult:
             field_name="project_background",
             value="AI 에이전트 개발에 관심이 있어서 시작",
             completeness=0.7,
-            reasoning="배경 설명이 있으나 구체적인 계기가 부족",
         )
         assert result.field_name == "project_background"
         assert result.value == "AI 에이전트 개발에 관심이 있어서 시작"
         assert result.completeness == 0.7
-        assert result.reasoning == "배경 설명이 있으나 구체적인 계기가 부족"
 
     def test_valid_list_value(self):
         """리스트 값으로 생성 가능한지 테스트"""
@@ -36,7 +34,6 @@ class TestAnalystFieldResult:
             field_name="work_categories",
             value=["프론트엔드 개발", "API 설계", "데이터 모델링"],
             completeness=0.8,
-            reasoning="3개의 업무 카테고리가 구체적으로 언급됨",
         )
         assert isinstance(result.value, list)
         assert len(result.value) == 3
@@ -47,7 +44,6 @@ class TestAnalystFieldResult:
             field_name="target_audience",
             value=None,
             completeness=0.0,
-            reasoning="대화에서 언급되지 않음",
         )
         assert result.value is None
         assert result.completeness == 0.0
@@ -57,38 +53,33 @@ class TestAnalystFieldResult:
         result = AnalystFieldResult(
             field_name="target_audience",
             completeness=0.0,
-            reasoning="대화에서 언급되지 않음",
         )
         assert result.value is None
 
     def test_completeness_boundary_min(self):
         """completeness 최솟값 경계 테스트"""
-        result = AnalystFieldResult(
-            field_name="test", value=None, completeness=0.0, reasoning="테스트"
-        )
+        result = AnalystFieldResult(field_name="test", value=None, completeness=0.0)
         assert result.completeness == 0.0
 
     def test_completeness_boundary_max(self):
         """completeness 최댓값 경계 테스트"""
-        result = AnalystFieldResult(
-            field_name="test", value="완전한 정보", completeness=1.0, reasoning="테스트"
-        )
+        result = AnalystFieldResult(field_name="test", value="완전한 정보", completeness=1.0)
         assert result.completeness == 1.0
 
     def test_completeness_below_min_raises_error(self):
         """completeness가 0.0 미만이면 에러 발생 테스트"""
         with pytest.raises(ValidationError):
-            AnalystFieldResult(field_name="test", value=None, completeness=-0.1, reasoning="테스트")
+            AnalystFieldResult(field_name="test", value=None, completeness=-0.1)
 
     def test_completeness_above_max_raises_error(self):
         """completeness가 1.0 초과이면 에러 발생 테스트"""
         with pytest.raises(ValidationError):
-            AnalystFieldResult(field_name="test", value=None, completeness=1.1, reasoning="테스트")
+            AnalystFieldResult(field_name="test", value=None, completeness=1.1)
 
     def test_missing_required_field_raises_error(self):
         """필수 필드 누락 시 에러 발생 테스트"""
         with pytest.raises(ValidationError):
-            AnalystFieldResult(field_name="test", completeness=0.5)
+            AnalystFieldResult(value="테스트", completeness=0.5)
 
 
 class TestAnalystResponse:
@@ -102,13 +93,11 @@ class TestAnalystResponse:
                     field_name="project_background",
                     value="AI 프로젝트",
                     completeness=0.7,
-                    reasoning="기본 설명 있음",
                 ),
                 AnalystFieldResult(
                     field_name="problem_definition",
                     value=None,
                     completeness=0.0,
-                    reasoning="언급 없음",
                 ),
             ]
         )
@@ -161,6 +150,7 @@ class TestAnalystPrompt:
         assert len(messages) == 2
         assert "AI 에이전트 개발 프로젝트" in messages[0].content
         assert "프로젝트 개요 및 구조화" in messages[0].content
+        assert "reasoning" not in messages[0].content
 
     def test_prompt_handles_empty_insights_and_files(self):
         """인사이트와 파일 컨텍스트가 비어있어도 정상 동작하는지 테스트"""
@@ -176,6 +166,20 @@ class TestAnalystPrompt:
         )
         assert len(messages) == 2
         assert "테스트 프로젝트" in messages[0].content
+
+    def test_prompt_does_not_request_reasoning(self):
+        """기본 Analyst 프롬프트는 reasoning 필드를 요구하지 않는다."""
+        assert "`reasoning`" not in analyst_prompt.messages[0].prompt.template
+
+
+class TestExtendedAnalystPrompt:
+    """연장 모드 Analyst 프롬프트 테스트"""
+
+    def test_extended_prompt_does_not_request_reasoning(self):
+        """연장 모드 프롬프트도 reasoning 필드를 요구하지 않는다."""
+        from features.interview.agents.prompts import extended_analyst_prompt
+
+        assert "`reasoning`" not in extended_analyst_prompt.messages[0].prompt.template
 
 
 class TestOverallCompletionPrompt:
