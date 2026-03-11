@@ -1,0 +1,212 @@
+"""첨삭 메인 서버 API 클라이언트"""
+
+from typing import Any
+
+from common.http_client import MainServerError, request_with_retry
+from features.correction.schemas import CorrectionOutput
+
+_FIELD_NAME_TO_SERVER = {
+    "description": "description",
+    "contributions": "responsibilities",
+    "achievements": "problemSolving",
+    "insights": "learnings",
+}
+
+_STATUS_TO_UPPER = {
+    "not_started": "NOT_STARTED",
+    "doing_rag": "DOING_RAG",
+    "company_insight": "COMPANY_INSIGHT",
+    "generating": "GENERATING",
+    "done": "DONE",
+    "failed": "FAILED",
+}
+
+_FIELD_MAP_SERVER_TO_AI = {
+    "positionName": "job_title",
+    "highlightPoint": "emphasis_points",
+    "companyName": "company_name",
+    "jobDescription": "job_description",
+    "companyInsight": "company_insight",
+    "userId": "user_id",
+    "createdAt": "created_at",
+}
+
+_RAG_FIELD_MAP_SERVER_TO_AI = {
+    "correctionId": "correction_id",
+    "searchQuery": "search_query",
+    "searchResults": "search_results",
+    "createdAt": "created_at",
+}
+
+
+def _transform_get_correction_response(raw: dict[str, Any]) -> dict[str, Any]:
+    """메인 서버 응답을 AI 서버 형식으로 변환"""
+    result: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key == "portfolioIds":
+            if isinstance(value, list):
+                portfolio_ids = [str(item) for item in value]
+                result["portfolio_ids"] = portfolio_ids
+                if portfolio_ids:
+                    result["portfolio_id"] = portfolio_ids[0]
+            else:
+                result["portfolio_ids"] = []
+        elif key == "status" and isinstance(value, str):
+            result["status"] = value.lower()
+        else:
+            result[_FIELD_MAP_SERVER_TO_AI.get(key, key)] = value
+
+    return result
+
+
+def _transform_get_rag_data_response(raw: dict[str, Any]) -> dict[str, Any]:
+    """메인 서버 RAG 데이터 응답을 AI 서버 형식으로 변환"""
+    result: dict[str, Any] = {}
+    for key, value in raw.items():
+        result[_RAG_FIELD_MAP_SERVER_TO_AI.get(key, key)] = value
+    return result
+
+
+def _correction_output_to_payload(result: CorrectionOutput) -> dict[str, Any]:
+    """CorrectionOutput을 메인 서버 PATCH body로 변환"""
+    result_payload: list[dict[str, Any]] = []
+    for portfolio_correction in result.portfolio_corrections:
+        portfolio_payload: dict[str, Any] = {"portfolioId": portfolio_correction.portfolio_id}
+        for field in portfolio_correction.fields:
+            server_field_name = _FIELD_NAME_TO_SERVER[field.field_name]
+            portfolio_payload[server_field_name] = {
+                "lines": [
+                    {
+                        "lineNumber": line.line_number,
+                        "originalText": line.original_text,
+                        "type": line.type,
+                        "comment": line.comment,
+                    }
+                    for line in field.lines
+                ]
+            }
+        result_payload.append(portfolio_payload)
+    return {
+        "result": result_payload,
+        "overallReview": result.overall_summary,
+    }
+
+
+class CorrectionClient:
+    """첨삭 메인 서버 API 클라이언트"""
+
+    async def get_correction(self, correction_id: int) -> dict[str, Any]:
+        """
+        첨삭 단건 조회
+
+        Args:
+            correction_id: 첨삭 ID
+
+        Returns:
+            positionName->job_title, highlightPoint->emphasis_points,
+            status UPPER_CASE->lowercase 변환된 딕셔너리
+        """
+        try:
+            result = await request_with_retry(
+                "GET",
+                f"/corrections/{correction_id}",
+            )
+        except MainServerError as e:
+            if e.status_code == 404:
+                return {}
+            raise
+
+        if not isinstance(result, dict):
+            return {}
+        return _transform_get_correction_response(result)
+
+    async def update_status(self, correction_id: int, status: str) -> None:
+        """
+        첨삭 상태 업데이트
+
+        Args:
+            correction_id: 첨삭 ID
+            status: AI 서버 형식 상태 (lowercase), 전송 시 UPPER_CASE로 변환
+        """
+        upper_status = _STATUS_TO_UPPER.get(status, status.upper())
+        await request_with_retry(
+            "PATCH",
+            f"/corrections/{correction_id}/status",
+            json={"status": upper_status},
+        )
+
+    async def update_company_insight(self, correction_id: int, insight: str) -> None:
+        """
+        기업 인사이트 업데이트
+
+        Args:
+            correction_id: 첨삭 ID
+            insight: 기업 인사이트 텍스트
+        """
+        await request_with_retry(
+            "PATCH",
+            f"/corrections/{correction_id}/company-insight",
+            json={"companyInsight": insight},
+        )
+
+    async def update_result(self, correction_id: int, result: CorrectionOutput) -> None:
+        """
+        첨삭 결과 업데이트
+
+        Args:
+            correction_id: 첨삭 ID
+            result: CorrectionOutput (features.correction.schemas)
+        """
+        payload = _correction_output_to_payload(result)
+        await request_with_retry(
+            "PATCH",
+            f"/corrections/{correction_id}/result",
+            json=payload,
+        )
+
+    async def save_rag_data(
+        self,
+        correction_id: int,
+        search_query: str,
+        search_results: dict | list[dict],
+    ) -> None:
+        """
+        RAG 검색 데이터 저장
+
+        Args:
+            correction_id: 첨삭 ID
+            search_query: 검색어
+            search_results: 검색 결과 리스트
+        """
+        await request_with_retry(
+            "POST",
+            f"/corrections/{correction_id}/rag-data",
+            json={
+                "searchQuery": search_query,
+                "searchResults": search_results,
+            },
+        )
+
+    async def get_rag_data(self, correction_id: int) -> dict[str, Any]:
+        """
+        RAG 검색 데이터 조회
+
+        Args:
+            correction_id: 첨삭 ID
+
+        Returns:
+            메인 서버 단일 객체 응답 (dict)
+        """
+        try:
+            result = await request_with_retry(
+                "GET",
+                f"/corrections/{correction_id}/rag-data",
+            )
+        except MainServerError as e:
+            if e.status_code == 404:
+                return {}
+            raise
+
+        if not isinstance(result, dict):
+            return {}
+        return _transform_get_rag_data_response(result)

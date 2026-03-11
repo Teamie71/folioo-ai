@@ -8,3 +8,21 @@ wheels/
 
 # Virtual environments
 .venv
+
+.env
+.langgraph_api/
+.pytest_cache/
+.ruff_cache/
+
+PROJECT_INFO.md
+opencode.json
+.for_local/
+.agent/
+
+# Checkpointer 데이터 (SQLite)
+.data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+docs/

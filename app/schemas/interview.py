@@ -1,0 +1,208 @@
+"""인터뷰 API 스키마 정의"""
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+
+from common.sse import SSEDeltaType, SSEErrorCode, SSEEventType
+
+
+# ===== 공통 타입 =====
+class StageProgressSchema(BaseModel):
+    """단계 진행 상황 스키마"""
+
+    fixed_q_used: int = Field(..., description="사용자가 답변 완료한 고정 질문 수")
+    fixed_q_total: int = Field(..., description="전체 고정 질문 수")
+    generated_q_used: int = Field(..., description="사용자가 답변 완료한 생성 질문 수")
+    generated_q_max: int = Field(..., description="최대 생성 질문 수")
+    force_all_generated_q: bool = Field(..., description="생성 질문 강제 소진 여부")
+    is_complete: bool = Field(..., description="현재 단계 완료 여부")
+
+
+class CollectedFieldSchema(BaseModel):
+    """수집된 필드 정보 스키마"""
+
+    field_name: str = Field(..., description="필드 이름")
+    description: str = Field(..., description="필드 설명")
+    value: str | list | None = Field(None, description="수집된 값")
+    completeness: float = Field(..., ge=0.0, le=1.0, description="완성도 (0.0 ~ 1.0)")
+
+
+class MessageSchema(BaseModel):
+    """대화 메시지 스키마"""
+
+    type: str = Field(..., description="메시지 타입 (human, ai, system)")
+    content: str = Field(..., description="메시지 내용")
+    id: str | None = Field(None, description="메시지 ID")
+
+
+# ===== 세션 생성 =====
+class CreateSessionRequest(BaseModel):
+    """세션 생성 요청"""
+
+    user_id: str = Field(..., min_length=1, description="사용자 ID")
+    experience_name: str = Field(..., min_length=1, description="정리할 경험/프로젝트 이름")
+
+
+class CreateSessionResponse(BaseModel):
+    """세션 생성 응답"""
+
+    session_id: str = Field(..., description="생성된 세션 ID")
+    first_question: str = Field(..., description="AI의 첫 질문")
+    current_stage: int = Field(..., ge=1, le=4, description="현재 단계")
+    stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
+
+
+# ===== 채팅 =====
+class ChatRequest(BaseModel):
+    """채팅 요청"""
+
+    message: str = Field(..., min_length=1, description="사용자 메시지")
+    file_ids: list[str] | None = Field(None, description="업로드된 파일 ID 목록")
+    mentioned_insight_ids: list[str] | None = Field(
+        None, description="@ 멘션으로 참조한 인사이트 로그 ID 목록"
+    )
+
+
+class ExtendSessionResponse(BaseModel):
+    """연장 시작 응답"""
+
+    ai_response: str = Field(..., description="연장 모드 첫 질문")
+    extension_count: int = Field(..., ge=1, description="누적 연장 횟수")
+    extension_turns_max: int = Field(..., ge=1, description="연장 1회당 최대 질문 횟수")
+
+
+class ChatResponse(BaseModel):
+    """채팅 응답"""
+
+    ai_response: str | None = Field(None, description="AI 응답 메시지 (없으면 null)")
+    current_stage: int = Field(..., ge=1, le=4, description="현재 단계")
+    stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
+    overall_completion: float = Field(..., ge=0.0, le=100.0, description="전체 완료율 (%)")
+    all_complete: bool = Field(..., description="모든 단계 완료 여부")
+    is_extended_mode: bool = Field(..., description="현재 연장 모드 활성 여부")
+    extension_turns_used: int | None = Field(
+        None,
+        ge=0,
+        description="현재 연장에서 사용한 질문 횟수",
+    )
+    extension_turns_max: int | None = Field(
+        None,
+        ge=1,
+        description="연장 1회당 최대 질문 횟수",
+    )
+
+
+# ===== 상태 조회 =====
+class SessionStateResponse(BaseModel):
+    """세션 상태 조회 응답"""
+
+    session_id: str = Field(..., description="세션 ID")
+    user_id: str = Field(..., description="사용자 ID")
+    experience_name: str = Field(..., description="경험/프로젝트 이름")
+    current_stage: int = Field(..., ge=1, le=4, description="현재 단계")
+    stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
+    overall_completion: float = Field(..., ge=0.0, le=100.0, description="전체 완료율 (%)")
+    all_complete: bool = Field(..., description="모든 단계 완료 여부")
+    message_count: int = Field(..., ge=0, description="총 메시지 수")
+    is_extended_mode: bool = Field(..., description="추가 대화 모드 여부")
+    collected_data: dict[str, dict[str, CollectedFieldSchema]] = Field(
+        ..., description="수집된 포트폴리오 데이터"
+    )
+    messages: list[MessageSchema] = Field(..., description="전체 대화 기록")
+
+
+# ===== 에러 응답 =====
+class ErrorResponse(BaseModel):
+    """에러 응답"""
+
+    detail: str = Field(..., description="에러 상세 메시지")
+
+
+# ===== SSE 스트리밍 이벤트 =====
+class SSETextDelta(BaseModel):
+    """토큰 델타 내용"""
+
+    type: str = Field(default=SSEDeltaType.TEXT_DELTA, description="델타 타입")
+    text: str = Field(..., description="스트리밍된 텍스트 조각")
+
+
+class SSEContentBlockDelta(BaseModel):
+    """LLM 토큰 스트리밍 이벤트"""
+
+    type: str = Field(default=SSEEventType.CONTENT_BLOCK_DELTA, description="이벤트 타입")
+    delta: SSETextDelta = Field(..., description="텍스트 델타")
+
+
+class SSERetrieverInsight(BaseModel):
+    """Retriever 검색 인사이트 항목"""
+
+    id: str = Field(..., description="인사이트 ID")
+    title: str = Field(..., description="인사이트 제목")
+    category: str = Field(..., description="인사이트 카테고리")
+    content: str = Field(..., description="인사이트 본문 내용")
+    similarity: float | None = Field(None, description="유사도 점수")
+    source: str = Field(..., description="검색 소스 (search 또는 mention)")
+
+
+class SSERetrieverResult(BaseModel):
+    """Retriever 검색 결과 이벤트"""
+
+    type: str = Field(default=SSEEventType.RETRIEVER_RESULT, description="이벤트 타입")
+    insights: list[SSERetrieverInsight] = Field(
+        default_factory=list, description="검색된 인사이트 목록"
+    )
+
+
+class SSEMessagePayload(BaseModel):
+    """최종 완료 메시지 내용"""
+
+    ai_response: str | None = Field(None, description="전체 AI 응답 (없으면 null)")
+    current_stage: int = Field(..., ge=1, le=4, description="현재 단계")
+    stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
+    overall_completion: float = Field(..., ge=0.0, le=100.0, description="전체 완료율 (%)")
+    all_complete: bool = Field(..., description="모든 단계 완료 여부")
+    is_extended_mode: bool = Field(..., description="현재 연장 모드 활성 여부")
+    extension_turns_used: int | None = Field(
+        None,
+        ge=0,
+        description="현재 연장에서 사용한 질문 횟수",
+    )
+    extension_turns_max: int | None = Field(
+        None,
+        ge=1,
+        description="연장 1회당 최대 질문 횟수",
+    )
+
+
+class SSEMessageComplete(BaseModel):
+    """전체 처리 완료 이벤트"""
+
+    type: str = Field(default=SSEEventType.MESSAGE_COMPLETE, description="이벤트 타입")
+    message: SSEMessagePayload = Field(..., description="완료 메시지")
+
+
+class SSEErrorDetail(BaseModel):
+    """에러 상세 정보"""
+
+    code: str = Field(
+        ...,
+        description=f"에러 코드 ({SSEErrorCode.SESSION_NOT_FOUND}, "
+        f"{SSEErrorCode.FINAL_STATE_MISSING}, {SSEErrorCode.LLM_ERROR}, "
+        f"{SSEErrorCode.STREAM_EVENT_ERROR}, {SSEErrorCode.INVALID_STREAM_EVENT})",
+    )
+    message: str = Field(..., description="에러 메시지")
+
+
+class SSEError(BaseModel):
+    """에러 이벤트"""
+
+    type: str = Field(default=SSEEventType.ERROR, description="이벤트 타입")
+    error: SSEErrorDetail = Field(..., description="에러 상세")
+
+
+class SSEPing(BaseModel):
+    """하트비트 이벤트"""
+
+    type: str = Field(default=SSEEventType.PING, description="이벤트 타입")
+    timestamp: datetime = Field(..., description="전송 시각 (ISO 8601)")
