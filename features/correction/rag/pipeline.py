@@ -5,6 +5,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime
 
 from tavily import AsyncTavilyClient
 
@@ -12,6 +13,15 @@ from common.llm.client import get_llm
 from features.correction.config import get_correction_rag_config
 
 _COMPANY_INSIGHT_MAX_LENGTH = 1500
+
+
+def _get_recent_year_ranges() -> tuple[str, str, str]:
+    """프롬프트용 최신 연도 범위 문자열 반환"""
+    current_year = datetime.now().year
+    recent_years = f"{current_year - 2}~{current_year}"
+    target_years = f"{current_year - 1} 또는 {current_year}"
+    target_years_with_suffix = f"{current_year - 1}년, {current_year}년"
+    return recent_years, target_years, target_years_with_suffix
 
 
 @dataclass(slots=True)
@@ -102,6 +112,7 @@ class RAGPipeline:
         self, company_name: str, job_title: str, job_description: str
     ) -> list[str]:
         """LLM으로 검색 키워드 추출"""
+        recent_years, target_years, _ = _get_recent_year_ranges()
         try:
             response = self._llm.invoke(
                 "---\n"
@@ -114,7 +125,7 @@ class RAGPipeline:
                 "- 기업명(submissionTarget): 분석 대상 기업의 정식 명칭 또는 약칭\n"
                 "- 직무명(jobTitle): 지원하려는 직무의 명칭\n"
                 "- JD(jobDescription): 해당 직무의 상세 설명\n\n"
-                "모든 키워드는 최근 3년 이내(2023~2025)의 최신 동향, 전략, 트렌드를 반영해야 합니다.\n\n"
+                f"모든 키워드는 최근 3년 이내({recent_years})의 최신 동향, 전략, 트렌드를 반영해야 합니다.\n\n"
                 "## 최종 목표: 기업 분석 보고서 생성\n"
                 "1. 인재상과 일하는 방식: 회사의 가치, 문화, 원하는 인재상\n"
                 "2. 비전과 사업 방향성: 회사의 목표, 신사업, 성장 전략\n"
@@ -125,7 +136,7 @@ class RAGPipeline:
                 "## 키워드 추출 전략\n"
                 "1. [인재상/조직문화] 관점 키워드 1개: [기업명] + 조직문화/인재상\n"
                 "2. [사업 전략/비전] 관점 키워드 1개: JD의 핵심 사업 키워드를 반드시 포함\n"
-                "3. [최근 사업 동향/투자] 관점 키워드 1개: 반드시 연도(2024 또는 2025)를 포함\n"
+                f"3. [최근 사업 동향/투자] 관점 키워드 1개: 반드시 연도({target_years})를 포함\n"
                 "4. [시장/경쟁] 관점 키워드 1개: 산업 분야 + 시장 동향/경쟁/트렌드\n"
                 "5. [약점/이슈/고객평가] 관점 키워드 1개: [기업명] + 이슈/약점/고객평가\n"
                 "6. [직무/역량] 관점 키워드 1개: [직무명] + 필요 역량 또는 [산업] [직무명] 트렌드/전망\n\n"
@@ -146,7 +157,7 @@ class RAGPipeline:
                 "## 절대 규칙\n"
                 f"- 반드시 {self._keyword_count}개의 키워드만 생성합니다.\n"
                 "- 2번 키워드(비전)는 JD의 핵심 사업 키워드를 필수로 포함해야 합니다.\n"
-                "- 3번 키워드(최근 동향)는 반드시 연도(2024 또는 2025)를 포함해야 합니다.\n"
+                f"- 3번 키워드(최근 동향)는 반드시 연도({target_years})를 포함해야 합니다.\n"
                 "- 반드시 지정된 JSON 형식으로만 출력하고, 다른 설명은 절대 추가하지 않습니다.\n"
                 "- 일반적인 키워드가 아닌, 구체적이고 맥락이 있는 키워드를 생성해야 합니다.\n\n"
                 "## 입력 데이터\n\n"
@@ -221,6 +232,7 @@ class RAGPipeline:
         """검색 결과를 요약해 첨삭용 기업 인사이트 텍스트 생성"""
         serialized_keywords = json.dumps(keywords or [], ensure_ascii=False)
         serialized_search_results = json.dumps(search_results, ensure_ascii=False)
+        recent_years, _, target_years_with_suffix = _get_recent_year_ranges()
         try:
             response = self._llm.invoke(
                 "---\n"
@@ -232,9 +244,9 @@ class RAGPipeline:
                 "## 분석 목적\n"
                 "단순한 회사 소개가 아닌, 지원자가 자신의 강점을 어떻게 어필할 수 있는지에 대한 인사이트를 제공하는 실무적 분석을 수행합니다.\n\n"
                 "## 최신성 중요도\n"
-                "검색 결과 분석 시 최근 3년 이내(2023~2025)의 최신성 정보를 우선적으로 반영해야 합니다.\n"
+                f"검색 결과 분석 시 최근 3년 이내({recent_years})의 최신성 정보를 우선적으로 반영해야 합니다.\n"
                 "- 최근 동향, 최신 전략, 트렌드 등이 포함된 정보를 우선 활용\n"
-                "- 특히 비전과 사업 방향성 섹션에서는 최신 정보(2024년, 2025년 관련 내용)를 필수적으로 포함\n\n"
+                f"- 특히 비전과 사업 방향성 섹션에서는 최신 정보({target_years_with_suffix} 관련 내용)를 필수적으로 포함\n\n"
                 "## 필수 분석 영역\n\n"
                 "### 1. 인재상과 일하는 방식\n"
                 "목표: 회사가 추구하는 인재상과 조직문화를 파악하여 지원자가 강조해야 할 역량과 경험을 도출\n"
@@ -242,7 +254,7 @@ class RAGPipeline:
                 "도출해야 할 것: 이러한 문화에 적합한 경험이나 역량\n\n"
                 "### 2. 비전과 사업 방향성\n"
                 "목표: 회사의 미래 계획과 사업 전략을 이해하여 그 방향성에 기여할 수 있는 역량을 파악\n"
-                "분석 요소: 회사의 미션, 비전, 핵심 사업 영역, 최근 사업 확장/투자 유치/신규 서비스 런칭 등의 동향(2023~2025 최신 정보 우선), 시장에서의 포지셔닝과 경쟁 전략, 중장기 성장 계획과 목표\n"
+                f"분석 요소: 회사의 미션, 비전, 핵심 사업 영역, 최근 사업 확장/투자 유치/신규 서비스 런칭 등의 동향({recent_years} 최신 정보 우선), 시장에서의 포지셔닝과 경쟁 전략, 중장기 성장 계획과 목표\n"
                 "도출해야 할 것: 회사의 성장 방향에 부합하는 경험이나 스킬\n\n"
                 "### 3. 강점과 약점 분석\n"
                 "목표: 경쟁사 대비 강점과 시장에서 지적되는 약점을 파악하여 이를 보완할 수 있는 역량 제시\n"

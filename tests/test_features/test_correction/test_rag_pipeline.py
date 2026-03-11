@@ -1,6 +1,7 @@
 """RAG 파이프라인 테스트"""
 
 from collections.abc import Callable
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -396,6 +397,51 @@ def test_generate_insight_prompt_contains_required_report_sections(monkeypatch):
     assert "## 2. 비전과 사업 방향성" in prompt
     assert "## 3. 강점과 약점 분석" in prompt
     assert "검색 결과를 우선" in prompt
+
+
+def test_keyword_prompt_uses_dynamic_recent_years(monkeypatch):
+    """키워드 추출 프롬프트는 현재 연도 기준 최신성 범위를 사용한다."""
+    from features.correction.rag import pipeline
+
+    current_year = datetime.now().year
+    recent_years = f"{current_year - 2}~{current_year}"
+    target_years = f"{current_year - 1} 또는 {current_year}"
+
+    dummy_llm = _DummyLLM(['{"search_keywords": ["키워드1"]}'])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    rag_pipeline = RAGPipeline()
+
+    rag_pipeline._extract_keywords("네이버", "백엔드", "JD")
+
+    prompt = dummy_llm.prompts[0]
+    assert f"최근 3년 이내({recent_years})" in prompt
+    assert f"반드시 연도({target_years})를 포함" in prompt
+    assert f"반드시 연도({target_years})를 포함해야 합니다." in prompt
+
+
+def test_generate_insight_prompt_uses_dynamic_recent_years(monkeypatch):
+    """기업 분석 프롬프트는 현재 연도 기준 최신성 범위를 사용한다."""
+    from features.correction.rag import pipeline
+
+    current_year = datetime.now().year
+    recent_years = f"{current_year - 2}~{current_year}"
+    target_years = f"{current_year - 1}년, {current_year}년"
+
+    dummy_llm = _DummyLLM(["기업 인사이트"])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    rag_pipeline = RAGPipeline()
+
+    rag_pipeline._generate_insight(
+        keywords=["키워드1"],
+        search_results=[{"title": "검색 결과", "content": "본문", "url": "https://example.com"}],
+        company_name="네이버",
+        job_title="백엔드",
+    )
+
+    prompt = dummy_llm.prompts[0]
+    assert f"최근 3년 이내({recent_years})" in prompt
+    assert f"최신 정보({target_years} 관련 내용)" in prompt
+    assert f"동향({recent_years} 최신 정보 우선)" in prompt
 
 
 def test_generate_insight_truncates_result_to_1500_chars(monkeypatch):
