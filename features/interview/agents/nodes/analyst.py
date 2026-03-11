@@ -4,8 +4,11 @@ import copy
 import json
 import logging
 import re
+import time
 
-from common.llm.client import get_llm
+from httpx import ConnectError, ConnectTimeout, ReadTimeout, RemoteProtocolError
+
+from common.llm.client import get_analyst_llm
 from features.interview.agents.prompts.analyst import (
     AnalystResponse,
     analyst_prompt,
@@ -23,6 +26,26 @@ from ..state import CollectedField, InsightLog, InterviewState
 from .utils import _get_conversation_context, _get_incomplete_fields
 
 logger = logging.getLogger(__name__)
+
+_RETRYABLE_ANALYST_ERRORS = (
+    RemoteProtocolError,
+    ReadTimeout,
+    ConnectTimeout,
+    ConnectError,
+)
+_ANALYST_MAX_RETRIES = 2
+_ANALYST_RETRY_DELAY_SECONDS = 1
+
+
+def _is_retryable_analyst_error(error: Exception) -> bool:
+    """직접 발생한 예외와 래핑된 전송 계층 예외를 모두 판별한다."""
+
+    current_error: BaseException | None = error
+    while current_error is not None:
+        if isinstance(current_error, _RETRYABLE_ANALYST_ERRORS):
+            return True
+        current_error = current_error.__cause__ or current_error.__context__
+    return False
 
 
 def run(state: InterviewState) -> InterviewState:
@@ -70,11 +93,11 @@ def run(state: InterviewState) -> InterviewState:
 
     # 3. LLM 호출 (structured output)
     try:
-        llm = get_llm(temperature=0.3)
+        llm = get_analyst_llm(temperature=0.3)
         structured_llm = llm.with_structured_output(AnalystResponse)
         chain = analyst_prompt | structured_llm
 
-        response: AnalystResponse = chain.invoke(prompt_variables)
+        response: AnalystResponse = _invoke_with_retry(chain, prompt_variables)
 
         # 4. collected_data 업데이트 (병합)
         updated_collected_data = copy.deepcopy(state["collected_data"])
@@ -207,11 +230,11 @@ def _run_extended_mode(state: InterviewState) -> InterviewState:
     }
 
     try:
-        llm = get_llm(temperature=0.3)
+        llm = get_analyst_llm(temperature=0.3)
         structured_llm = llm.with_structured_output(AnalystResponse)
         chain = extended_analyst_prompt | structured_llm
 
-        response: AnalystResponse = chain.invoke(prompt_variables)
+        response: AnalystResponse = _invoke_with_retry(chain, prompt_variables)
 
         updated_collected_data = copy.deepcopy(state["collected_data"])
         for field_result in response.fields:
@@ -425,13 +448,14 @@ def _calculate_overall_completion_percentage(
     try:
         all_collected_data = json.dumps(collected_data, ensure_ascii=False, indent=2, default=str)
 
-        llm = get_llm(temperature=0.3)
+        llm = get_analyst_llm(temperature=0.3)
         chain = overall_completion_prompt | llm
-        response = chain.invoke(
+        response = _invoke_with_retry(
+            chain,
             {
                 "experience_name": experience_name,
                 "all_collected_data": all_collected_data,
-            }
+            },
         )
         response_text = str(response.content).strip()
         match = re.fullmatch(r"\d+(?:\.\d+)?", response_text)
@@ -444,3 +468,21 @@ def _calculate_overall_completion_percentage(
     except Exception as e:
         logger.exception("전체 완료율 계산 실패")
         return 0.0, str(e)
+
+
+def _invoke_with_retry(chain, payload: dict, max_retries: int = _ANALYST_MAX_RETRIES):
+    """Analyst LLM 호출에 한해 네트워크 계열 예외를 제한적으로 재시도한다."""
+
+    for attempt in range(max_retries + 1):
+        try:
+            return chain.invoke(payload)
+        except Exception as exc:
+            if not _is_retryable_analyst_error(exc) or attempt >= max_retries:
+                raise
+            logger.warning(
+                "Analyst LLM 호출 재시도 예정 (%s/%s): %s",
+                attempt + 1,
+                max_retries,
+                exc.__class__.__name__,
+            )
+            time.sleep(_ANALYST_RETRY_DELAY_SECONDS)
