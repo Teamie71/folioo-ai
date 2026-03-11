@@ -26,7 +26,7 @@ class CorrectionValidationConfig(BaseModel):
 class CorrectionRAGConfig(BaseModel):
     """첨삭 RAG 설정"""
 
-    keyword_count: int = Field(default=4, ge=1)
+    keyword_count: int = Field(default=6, ge=1)
     max_results_per_keyword: int = Field(default=5, ge=1, le=20)
 
 

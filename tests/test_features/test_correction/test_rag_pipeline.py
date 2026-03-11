@@ -95,7 +95,7 @@ def test_extract_keywords_parses_json_output(monkeypatch):
     dummy_llm = _DummyLLM(
         [
             """```json
-{"search_keywords": ["네이버 인재상 조직문화", "네이버 AI 전략", "인터넷 플랫폼 시장 동향", "백엔드 개발자 핵심 역량"]}
+{"search_keywords": ["네이버 인재상 조직문화", "네이버 AI 전략", "네이버 AI 신규 사업 2025", "인터넷 플랫폼 시장 동향", "네이버 고객 이슈 피드백", "백엔드 개발자 핵심 역량"]}
 ```"""
         ]
     )
@@ -107,7 +107,9 @@ def test_extract_keywords_parses_json_output(monkeypatch):
     assert keywords == [
         "네이버 인재상 조직문화",
         "네이버 AI 전략",
+        "네이버 AI 신규 사업 2025",
         "인터넷 플랫폼 시장 동향",
+        "네이버 고객 이슈 피드백",
         "백엔드 개발자 핵심 역량",
     ]
 
@@ -168,7 +170,7 @@ async def test_run_returns_generated_result(monkeypatch, mock_tavily_client):
     from features.correction.rag import pipeline
 
     keyword_extraction_response = (
-        '{"search_keywords": ["키워드1", "키워드2", "키워드3", "키워드4"]}'
+        '{"search_keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5", "키워드6"]}'
     )
     insight_generation_response = "생성된 기업 인사이트"
 
@@ -198,7 +200,7 @@ async def test_run_returns_generated_result(monkeypatch, mock_tavily_client):
     rag_result = await rag_pipeline.run("네이버", "백엔드", "JD")
 
     assert isinstance(rag_result, RAGRunResult)
-    assert rag_result.keywords == ["키워드1", "키워드2", "키워드3", "키워드4"]
+    assert rag_result.keywords == ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5", "키워드6"]
     assert rag_result.search_results == [
         {
             "title": "검색 결과: 키워드1",
@@ -217,6 +219,16 @@ async def test_run_returns_generated_result(monkeypatch, mock_tavily_client):
         },
         {
             "title": "검색 결과: 키워드4",
+            "content": "본문",
+            "url": "https://example.com",
+        },
+        {
+            "title": "검색 결과: 키워드5",
+            "content": "본문",
+            "url": "https://example.com",
+        },
+        {
+            "title": "검색 결과: 키워드6",
             "content": "본문",
             "url": "https://example.com",
         },
@@ -362,6 +374,28 @@ def test_generate_insight_prompt_contains_length_limit(monkeypatch):
     )
 
     assert "1500자 이내" in dummy_llm.prompts[0]
+
+
+def test_generate_insight_prompt_contains_required_report_sections(monkeypatch):
+    """인사이트 생성 프롬프트에 새 보고서 섹션 요구사항이 포함된다."""
+    from features.correction.rag import pipeline
+
+    dummy_llm = _DummyLLM(["기업 인사이트"])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    rag_pipeline = RAGPipeline()
+
+    rag_pipeline._generate_insight(
+        keywords=["키워드1"],
+        search_results=[{"title": "검색 결과", "content": "본문", "url": "https://example.com"}],
+        company_name="네이버",
+        job_title="백엔드",
+    )
+
+    prompt = dummy_llm.prompts[0]
+    assert "## 1. 인재상과 일하는 방식" in prompt
+    assert "## 2. 비전과 사업 방향성" in prompt
+    assert "## 3. 강점과 약점 분석" in prompt
+    assert "검색 결과를 우선" in prompt
 
 
 def test_generate_insight_truncates_result_to_1500_chars(monkeypatch):
