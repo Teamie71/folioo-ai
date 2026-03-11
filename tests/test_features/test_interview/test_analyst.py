@@ -460,3 +460,28 @@ def test_get_analyst_llm_uses_dedicated_configuration(monkeypatch):
     assert captured["disable_streaming"] is True
     assert captured["max_retries"] == 0
     llm_client.get_analyst_llm.cache_clear()
+
+
+def test_get_llm_omits_max_retries_when_unset(monkeypatch):
+    """기본 LLM helper는 max_retries를 명시하지 않아 provider 기본값을 유지한다."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://example.test")
+    monkeypatch.setenv("LLM_MODEL_NAME", "test-model")
+    llm_client.get_llm.cache_clear()
+
+    captured = {}
+
+    class _FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(llm_client, "ChatOpenAI", _FakeChatOpenAI)
+
+    result = llm_client.get_llm(temperature=0.6)
+
+    assert isinstance(result, _FakeChatOpenAI)
+    assert captured["model"] == "test-model"
+    assert captured["temperature"] == 0.6
+    assert captured["request_timeout"] is None
+    assert "max_retries" not in captured
+    llm_client.get_llm.cache_clear()

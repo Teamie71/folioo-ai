@@ -24,14 +24,19 @@ def _build_llm(
     if not api_key:
         raise ValueError("OPENROUTER_API_KEY 환경변수가 설정되지 않았습니다.")
 
+    llm_kwargs = {
+        "model": model or default_model,
+        "openai_api_key": api_key,
+        "openai_api_base": base_url,
+        "temperature": temperature,
+        "request_timeout": timeout,
+        "disable_streaming": disable_streaming,
+    }
+    if max_retries is not None:
+        llm_kwargs["max_retries"] = max_retries
+
     return ChatOpenAI(
-        model=model or default_model,
-        openai_api_key=api_key,
-        openai_api_base=base_url,
-        temperature=temperature,
-        request_timeout=timeout,
-        disable_streaming=disable_streaming,
-        max_retries=max_retries,
+        **llm_kwargs,
     )
 
 
