@@ -30,8 +30,11 @@ CORRECTION_SYSTEM_PROMPT = """
 - portfolioData는 필드별로 번호가 매겨진 줄 목록입니다.
 - 숫자로 시작하는 줄(예: "1. ...")만 첨삭 대상입니다.
 - "[소구분]" 또는 "1) 소구분" 헤더 줄은 첨삭 대상이 아닙니다.
-- 각 필드에서 번호가 매겨진 줄을 누락 없이 정확히 한 번씩 반환하세요.
+- fields에는 description, contributions, achievements, insights를 각각 정확히 1회씩 포함하세요.
+- 각 필드에서 번호가 매겨진 줄을 누락 없이 정확히 한 번씩 반환하세요. 중복 반환이나 일부 누락은 허용되지 않습니다.
 - line_number는 입력에 표시된 숫자를 그대로 사용하세요.
+- line_number는 전체 문서 기준으로 이어서 세지 말고, 각 field 내부에서 1부터 다시 시작하는 번호만 사용하세요.
+- 다른 field의 line_number를 가져오거나 섞지 마세요.
 - original_text는 번호를 제외한 원문을 그대로 넣으세요.
 
 # 첨삭 타입 기준
@@ -54,8 +57,15 @@ CORRECTION_SYSTEM_PROMPT = """
 
 # 출력 제약
 - 출력은 SingleCorrectionOutput 스키마에 정확히 맞춰야 합니다.
-- fields에는 description, contributions, achievements, insights를 모두 포함하세요.
+- 각 field 객체는 반드시 1개씩만 반환하세요.
 - type은 reduce, keep, emphasize만 사용하세요.
+""".strip()
+
+CORRECTION_GENERATOR_SYSTEM_TEMPLATE = f"""
+{CORRECTION_SYSTEM_PROMPT}
+
+# 이전 시도 피드백
+{{validation_feedback}}
 """.strip()
 
 CORRECTION_HUMAN_PROMPT = """
@@ -171,9 +181,34 @@ def get_correction_prompt() -> ChatPromptTemplate:
     )
 
 
+correction_generator_prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", CORRECTION_GENERATOR_SYSTEM_TEMPLATE),
+        (
+            "human",
+            "## 입력 데이터\n"
+            "### 기업명\n"
+            "{company_name}\n\n"
+            "### 직무명\n"
+            "{job_title}\n\n"
+            "### Job Description (JD)\n"
+            "{job_description}\n\n"
+            "### 기업 분석 정보\n"
+            "{company_insight}\n\n"
+            "### 첨삭 대상 마스터 포트폴리오\n"
+            "{portfolio_data_text}\n\n"
+            "### 강조 포인트\n"
+            "{emphasis_points}",
+        ),
+    ]
+).partial(validation_feedback="없음")
+
+
 __all__ = [
+    "CORRECTION_GENERATOR_SYSTEM_TEMPLATE",
     "CORRECTION_HUMAN_PROMPT",
     "CORRECTION_SYSTEM_PROMPT",
+    "correction_generator_prompt",
     "format_portfolio_for_correction",
     "get_correction_prompt",
 ]
