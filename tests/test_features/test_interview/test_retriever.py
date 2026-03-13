@@ -1,11 +1,27 @@
 """Retriever 노드 테스트"""
 
+import importlib
 from unittest.mock import AsyncMock
 
 import pytest
 from langchain_core.messages import HumanMessage
 
 from features.interview.agents.nodes import retriever
+
+
+def test_env_defaults_fallback_on_invalid_values(monkeypatch):
+    """잘못된 환경 변수 값이면 기본값으로 fallback한다."""
+    monkeypatch.setenv("INSIGHT_SEARCH_TOP_K", "invalid")
+    monkeypatch.setenv("INSIGHT_SEARCH_THRESHOLD", "bad")
+
+    reloaded = importlib.reload(retriever)
+
+    assert reloaded._DEFAULT_TOP_K == 3
+    assert reloaded._DEFAULT_THRESHOLD == 0.6
+
+    monkeypatch.delenv("INSIGHT_SEARCH_TOP_K", raising=False)
+    monkeypatch.delenv("INSIGHT_SEARCH_THRESHOLD", raising=False)
+    importlib.reload(retriever)
 
 
 def test_merge_and_deduplicate_prefers_search_source_with_higher_score():

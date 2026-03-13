@@ -8,9 +8,36 @@ from ..state import InsightLog, InterviewState
 
 logger = logging.getLogger(__name__)
 
+
+def _get_env_int(name: str, default: int) -> int:
+    """환경 변수를 int로 안전하게 변환"""
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        logger.warning("%s 값이 올바르지 않아 기본값 %d를 사용합니다.", name, default)
+        return default
+
+
+def _get_env_float(name: str, default: float) -> float:
+    """환경 변수를 float로 안전하게 변환"""
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logger.warning("%s 값이 올바르지 않아 기본값 %.1f를 사용합니다.", name, default)
+        return default
+
+
 # 환경 변수에서 검색 설정 로드
-_DEFAULT_TOP_K = int(os.getenv("INSIGHT_SEARCH_TOP_K", "3"))
-_DEFAULT_THRESHOLD = float(os.getenv("INSIGHT_SEARCH_THRESHOLD", "0.6"))
+_DEFAULT_TOP_K = _get_env_int("INSIGHT_SEARCH_TOP_K", 3)
+_DEFAULT_THRESHOLD = _get_env_float("INSIGHT_SEARCH_THRESHOLD", 0.6)
 
 # 모듈 레벨 InsightStore 싱글톤
 _store: InsightStore | None = None
