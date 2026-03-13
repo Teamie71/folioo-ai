@@ -453,14 +453,9 @@ class InterviewService:
         # 입력 상태 구성
         input_state: dict = {
             "messages": [HumanMessage(content=message)],
+            "current_turn_files": file_ids or [],
+            "mentioned_insight_ids": mentioned_insight_ids or [],
         }
-
-        # 파일 ID가 있으면 추가
-        if file_ids:
-            input_state["current_turn_files"] = file_ids
-
-        # @ 멘션된 인사이트 ID (매 턴 초기화 필요)
-        input_state["mentioned_insight_ids"] = mentioned_insight_ids or []
 
         # 그래프 비동기 실행 (Checkpointer가 이전 상태 자동 로드)
         result = await self._graph.ainvoke(
@@ -515,10 +510,12 @@ class InterviewService:
                 {
                     "id": insight.get("id"),
                     "title": insight.get("title"),
+                    "activity_name": insight.get("activity_name", ""),
                     "category": insight.get("category"),
                     "content": insight.get("content", ""),
                     "similarity": similarity,
-                    "source": "search" if similarity is not None else "mention",
+                    "source": insight.get("source")
+                    or ("search" if similarity is not None else "mention"),
                 }
             )
 
@@ -570,10 +567,9 @@ class InterviewService:
         # 2. 입력 상태 구성
         input_state: dict = {
             "messages": [HumanMessage(content=message)],
+            "current_turn_files": file_ids or [],
             "mentioned_insight_ids": mentioned_insight_ids or [],
         }
-        if file_ids:
-            input_state["current_turn_files"] = file_ids
 
         config = {"configurable": {"thread_id": session_id}}
         accumulated_text = ""
@@ -585,28 +581,27 @@ class InterviewService:
                 metadata = event.get("metadata", {})
                 node_name = metadata.get("langgraph_node")
 
-                # 임시 비활성화: retriever 노드 개발 완료 전까지 SSE 이벤트 미송출
-                # if event_type == LangGraphEventType.ON_CHAIN_START and node_name == "retriever":
-                #     yield {
-                #         "event": SSEEventType.RETRIEVER_STATUS,
-                #         "data": json.dumps(
-                #             {
-                #                 "type": SSEEventType.RETRIEVER_STATUS,
-                #                 "message": "대화 내용을 바탕으로 유사도가 높은 인사이트 로그를 읽었어요.",
-                #             },
-                #             ensure_ascii=False,
-                #         ),
-                #     }
+                if event_type == LangGraphEventType.ON_CHAIN_START and node_name == "retriever":
+                    yield {
+                        "event": SSEEventType.RETRIEVER_STATUS,
+                        "data": json.dumps(
+                            {
+                                "type": SSEEventType.RETRIEVER_STATUS,
+                                "message": "대화 내용을 바탕으로 유사도가 높은 인사이트 로그를 읽었어요.",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
 
-                # if event_type == LangGraphEventType.ON_CHAIN_END and node_name == "retriever":
-                #     output = event.get("data", {}).get("output")
-                #     yield {
-                #         "event": SSEEventType.RETRIEVER_RESULT,
-                #         "data": json.dumps(
-                #             self._build_retriever_result_payload(output),
-                #             ensure_ascii=False,
-                #         ),
-                #     }
+                if event_type == LangGraphEventType.ON_CHAIN_END and node_name == "retriever":
+                    output = event.get("data", {}).get("output")
+                    yield {
+                        "event": SSEEventType.RETRIEVER_RESULT,
+                        "data": json.dumps(
+                            self._build_retriever_result_payload(output),
+                            ensure_ascii=False,
+                        ),
+                    }
 
                 # 스트리밍 대상 노드의 LLM 토큰 스트리밍 이벤트만 처리
                 if (

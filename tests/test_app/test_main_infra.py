@@ -105,6 +105,8 @@ async def test_lifespan_initializes_and_closes_http_client(monkeypatch):
     import common.clients.correction_client as correction_client_module
     import common.clients.portfolio_client as portfolio_client_module
     import common.http_client as http_client
+    import features.interview.agents.insight_store as insight_store_module
+    import features.interview.agents.nodes.retriever as retriever_module
 
     class _DummyClient:
         async def close(self):
@@ -124,11 +126,15 @@ async def test_lifespan_initializes_and_closes_http_client(monkeypatch):
     monkeypatch.setattr(correction_client_module, "reset_correction_client", lambda: None)
     monkeypatch.setattr(portfolio_client_module, "init_portfolio_client", lambda: _DummyClient())
     monkeypatch.setattr(portfolio_client_module, "reset_portfolio_client", lambda: None)
+    init_insight_store_mock = MagicMock()
+    monkeypatch.setattr(insight_store_module, "MainServerInsightStore", lambda: object())
+    monkeypatch.setattr(retriever_module, "init_insight_store", init_insight_store_mock)
 
     async with main.lifespan(FastAPI()):
         pass
 
     get_http_client_mock.assert_called_once()
+    init_insight_store_mock.assert_called_once()
     close_http_client_mock.assert_awaited_once()
 
 

@@ -1,6 +1,6 @@
 """인터뷰 에이전트의 공유 state 정의"""
 
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 from langgraph.graph.message import add_messages
 
@@ -16,6 +16,7 @@ class InsightLog(TypedDict):
     category: Literal["대인관계", "문제해결", "학습", "레퍼런스", "기타"]
     content: str
     similarity_score: float | None  # Retriever가 검색 시 계산한 유사도
+    source: NotRequired[Literal["mention", "search"]]
 
 
 class FileAttachment(TypedDict):
