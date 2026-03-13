@@ -200,6 +200,46 @@ async def test_process_message_stream_emits_retriever_events(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_process_message_stream_resets_current_turn_files_when_no_files(monkeypatch):
+    """스트리밍 턴에서도 current_turn_files를 빈 리스트로 초기화한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "messages": [AIMessage(content="최종 응답")],
+            "current_stage": 1,
+            "stage_progress": {
+                "fixed_q_used": 0,
+                "fixed_q_total": 1,
+                "generated_q_used": 0,
+                "generated_q_max": 0,
+                "force_all_generated_q": False,
+                "is_complete": False,
+            },
+            "overall_completion_percentage": 25.0,
+            "all_stages_complete": False,
+            "current_turn_files": ["old-file"],
+        }
+    )
+    dummy_graph.stream_events = []
+
+    monkeypatch.setattr(
+        "features.interview.service.build_graph", lambda checkpointer=None: dummy_graph
+    )
+    monkeypatch.setattr("features.interview.service.get_checkpointer", lambda: object())
+    service = InterviewService()
+
+    _ = [
+        event
+        async for event in service.process_message_stream(
+            session_id="session-1",
+            message="사용자 답변",
+        )
+    ]
+
+    assert dummy_graph.astream_calls[0]["state"]["current_turn_files"] == []
+
+
+@pytest.mark.anyio
 async def test_process_message_stream_returns_none_when_all_complete(monkeypatch):
     """모든 단계 완료 상태면 message_complete의 ai_response는 null이다."""
     dummy_graph = DummyGraph()

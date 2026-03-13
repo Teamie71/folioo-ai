@@ -172,6 +172,34 @@ async def test_process_message_returns_none_when_all_complete(monkeypatch):
     assert result["ai_response"] is None
     assert result["all_complete"] is True
     assert result["is_extended_mode"] is False
+    invocation = dummy_graph.invocations[0]
+    assert invocation["state"]["current_turn_files"] == []
+
+
+@pytest.mark.asyncio
+async def test_process_message_resets_current_turn_files_when_no_files(monkeypatch):
+    """파일이 없는 턴에도 current_turn_files를 빈 리스트로 초기화한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={"session_id": "session_1", "current_turn_files": ["old_file"]}
+    )
+    dummy_graph.invoke_result = {
+        "messages": [AIMessage(content="응답")],
+        "current_stage": 2,
+        "stage_progress": {"fixed_q_used": 2},
+        "overall_completion_percentage": 40.0,
+        "all_stages_complete": False,
+    }
+
+    service = _build_service(monkeypatch, dummy_graph)
+
+    await service.process_message(
+        session_id="session_1",
+        message="파일 없는 답변입니다.",
+    )
+
+    invocation = dummy_graph.invocations[0]
+    assert invocation["state"]["current_turn_files"] == []
 
 
 @pytest.mark.asyncio
