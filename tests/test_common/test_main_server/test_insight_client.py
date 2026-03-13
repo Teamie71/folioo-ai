@@ -28,6 +28,7 @@ class TestToInsightLog:
         assert result["activity_name"] == "해커톤, 사이드 프로젝트"
         assert result["category"] == "문제해결"
         assert result["similarity_score"] == 0.85
+        assert result["source"] == "search"
 
     def test_empty_activity_names(self):
         """activityNames가 빈 배열인 경우"""
@@ -68,6 +69,20 @@ class TestToInsightLog:
         result = _to_insight_log(raw)
 
         assert result["activity_name"] == "인턴십"
+
+    def test_falls_back_to_single_activity_name_field(self):
+        """activityName 단일 필드도 activity_name으로 변환한다."""
+        raw = {
+            "id": 7,
+            "title": "제목",
+            "description": "설명",
+            "activityName": "공모전",
+        }
+
+        result = _to_insight_log(raw, source="mention")
+
+        assert result["activity_name"] == "공모전"
+        assert result["source"] == "mention"
 
 
 class TestInsightClientSearchSimilar:
@@ -141,6 +156,35 @@ class TestInsightClientSearchSimilar:
             results = await client.search_similar(keyword="test", user_id=1)
             assert results == []
 
+    @pytest.mark.asyncio
+    async def test_search_extracts_content_list_shape(self):
+        """content 리스트 형태 응답도 파싱한다."""
+        mock_result = {
+            "content": [
+                {
+                    "id": 3,
+                    "title": "인사이트3",
+                    "description": "내용3",
+                    "activityName": "활동C",
+                    "category": "대인관계",
+                    "similarityScore": 0.77,
+                }
+            ]
+        }
+
+        client = InsightClient()
+        with patch(
+            "common.main_server.insight_client.request_with_retry",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            results = await client.search_similar(keyword="협업", user_id=1)
+
+        assert len(results) == 1
+        assert results[0]["id"] == "3"
+        assert results[0]["activity_name"] == "활동C"
+        assert results[0]["source"] == "search"
+
 
 class TestInsightClientGetById:
     """InsightClient.get_by_id 테스트"""
@@ -168,6 +212,7 @@ class TestInsightClientGetById:
             assert result is not None
             assert result["id"] == "42"
             assert result["content"] == "상세 내용"
+            assert result["source"] == "mention"
 
     @pytest.mark.asyncio
     async def test_get_not_found(self):

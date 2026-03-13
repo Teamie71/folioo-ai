@@ -515,10 +515,12 @@ class InterviewService:
                 {
                     "id": insight.get("id"),
                     "title": insight.get("title"),
+                    "activity_name": insight.get("activity_name", ""),
                     "category": insight.get("category"),
                     "content": insight.get("content", ""),
                     "similarity": similarity,
-                    "source": "search" if similarity is not None else "mention",
+                    "source": insight.get("source")
+                    or ("search" if similarity is not None else "mention"),
                 }
             )
 

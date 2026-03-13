@@ -9,8 +9,8 @@ from ..state import InsightLog, InterviewState
 logger = logging.getLogger(__name__)
 
 # 환경 변수에서 검색 설정 로드
-_DEFAULT_TOP_K = int(os.getenv("INSIGHT_SEARCH_TOP_K", "5"))
-_DEFAULT_THRESHOLD = float(os.getenv("INSIGHT_SEARCH_THRESHOLD", "0.7"))
+_DEFAULT_TOP_K = int(os.getenv("INSIGHT_SEARCH_TOP_K", "3"))
+_DEFAULT_THRESHOLD = float(os.getenv("INSIGHT_SEARCH_THRESHOLD", "0.6"))
 
 # 모듈 레벨 InsightStore 싱글톤
 _store: InsightStore | None = None
@@ -64,6 +64,31 @@ def _merge_and_deduplicate(*insight_lists: list[InsightLog]) -> list[InsightLog]
     return list(seen.values())
 
 
+def _with_source(insight: InsightLog, source: str) -> InsightLog:
+    """인사이트에 source 정보를 보강"""
+    return {
+        **insight,
+        "source": source,
+    }
+
+
+def _filter_search_results(
+    insights: list[InsightLog],
+    *,
+    threshold: float,
+    top_k: int,
+) -> list[InsightLog]:
+    """threshold 이상 검색 결과만 남기고 최대 개수로 제한"""
+    filtered = [
+        insight
+        for insight in insights
+        if (insight.get("similarity_score") is not None)
+        and float(insight["similarity_score"]) >= threshold
+    ]
+    filtered.sort(key=lambda insight: float(insight.get("similarity_score") or 0.0), reverse=True)
+    return filtered[:top_k]
+
+
 async def run(state: InterviewState) -> InterviewState:
     """
     인사이트 로그 벡터 검색
@@ -99,17 +124,23 @@ async def run(state: InterviewState) -> InterviewState:
     last_message = messages[-1].content
 
     try:
+        top_k = max(0, min(_DEFAULT_TOP_K, 3))
         similar_insights = await store.search_similar(
             query=last_message,
             user_id=state["user_id"],
-            top_k=_DEFAULT_TOP_K,
+            top_k=top_k,
             threshold=_DEFAULT_THRESHOLD,
+        )
+        similar_insights = _filter_search_results(
+            [_with_source(insight, "search") for insight in similar_insights],
+            threshold=_DEFAULT_THRESHOLD,
+            top_k=top_k,
         )
         logger.info(
             "🔎 유사 인사이트 %d건 검색됨 (user_id=%s, top_k=%d, threshold=%.2f)",
             len(similar_insights),
             state["user_id"],
-            _DEFAULT_TOP_K,
+            top_k,
             _DEFAULT_THRESHOLD,
         )
         # 각 인사이트의 유사도 수치 로그
@@ -131,7 +162,7 @@ async def run(state: InterviewState) -> InterviewState:
         try:
             insight = await store.get_by_id(insight_id)
             if insight is not None:
-                mentioned_insights.append(insight)
+                mentioned_insights.append(_with_source(insight, "mention"))
                 logger.info(f"멘션 인사이트 조회 성공: {insight_id}")
             else:
                 logger.warning(f"멘션 인사이트를 찾을 수 없음: {insight_id}")

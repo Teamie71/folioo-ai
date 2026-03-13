@@ -139,6 +139,7 @@ class SSERetrieverInsight(BaseModel):
 
     id: str = Field(..., description="인사이트 ID")
     title: str = Field(..., description="인사이트 제목")
+    activity_name: str = Field(default="", description="관련 활동명")
     category: str = Field(..., description="인사이트 카테고리")
     content: str = Field(..., description="인사이트 본문 내용")
     similarity: float | None = Field(None, description="유사도 점수")

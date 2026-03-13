@@ -147,14 +147,18 @@ async def test_process_message_stream_emits_retriever_events(monkeypatch):
                         {
                             "id": "insight-1",
                             "title": "문제 해결 경험",
+                            "activity_name": "프로젝트 A",
                             "category": "문제해결",
                             "similarity_score": 0.91,
+                            "source": "search",
                         },
                         {
                             "id": "insight-2",
                             "title": "멘션 인사이트",
+                            "activity_name": "프로젝트 B",
                             "category": "기타",
                             "similarity_score": None,
+                            "source": "mention",
                         },
                     ]
                 }
@@ -188,6 +192,7 @@ async def test_process_message_stream_emits_retriever_events(monkeypatch):
 
     assert events[1]["event"] == SSEEventType.RETRIEVER_RESULT
     retriever_payload = json.loads(events[1]["data"])
+    assert retriever_payload["insights"][0]["activity_name"] == "프로젝트 A"
     assert retriever_payload["insights"][0]["source"] == "search"
     assert retriever_payload["insights"][1]["source"] == "mention"
 
