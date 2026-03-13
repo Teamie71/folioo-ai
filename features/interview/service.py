@@ -585,28 +585,27 @@ class InterviewService:
                 metadata = event.get("metadata", {})
                 node_name = metadata.get("langgraph_node")
 
-                # 임시 비활성화: retriever 노드 개발 완료 전까지 SSE 이벤트 미송출
-                # if event_type == LangGraphEventType.ON_CHAIN_START and node_name == "retriever":
-                #     yield {
-                #         "event": SSEEventType.RETRIEVER_STATUS,
-                #         "data": json.dumps(
-                #             {
-                #                 "type": SSEEventType.RETRIEVER_STATUS,
-                #                 "message": "대화 내용을 바탕으로 유사도가 높은 인사이트 로그를 읽었어요.",
-                #             },
-                #             ensure_ascii=False,
-                #         ),
-                #     }
+                if event_type == LangGraphEventType.ON_CHAIN_START and node_name == "retriever":
+                    yield {
+                        "event": SSEEventType.RETRIEVER_STATUS,
+                        "data": json.dumps(
+                            {
+                                "type": SSEEventType.RETRIEVER_STATUS,
+                                "message": "대화 내용을 바탕으로 유사도가 높은 인사이트 로그를 읽었어요.",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
 
-                # if event_type == LangGraphEventType.ON_CHAIN_END and node_name == "retriever":
-                #     output = event.get("data", {}).get("output")
-                #     yield {
-                #         "event": SSEEventType.RETRIEVER_RESULT,
-                #         "data": json.dumps(
-                #             self._build_retriever_result_payload(output),
-                #             ensure_ascii=False,
-                #         ),
-                #     }
+                if event_type == LangGraphEventType.ON_CHAIN_END and node_name == "retriever":
+                    output = event.get("data", {}).get("output")
+                    yield {
+                        "event": SSEEventType.RETRIEVER_RESULT,
+                        "data": json.dumps(
+                            self._build_retriever_result_payload(output),
+                            ensure_ascii=False,
+                        ),
+                    }
 
                 # 스트리밍 대상 노드의 LLM 토큰 스트리밍 이벤트만 처리
                 if (

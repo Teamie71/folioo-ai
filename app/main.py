@@ -119,16 +119,14 @@ async def lifespan(app: FastAPI):
         reset_portfolio_client,
     )
     from common.http_client import close_http_client, get_http_client
-    # 임시 비활성화: retriever 개발 완료 전까지 InsightStore 초기화 제외
-    # from features.interview.agents.insight_store import MainServerInsightStore
-    # from features.interview.agents.nodes.retriever import init_insight_store
+    from features.interview.agents.insight_store import MainServerInsightStore
+    from features.interview.agents.nodes.retriever import init_insight_store
 
     logger = logging.getLogger(__name__)
 
     # ===== InsightStore 초기화 (메인 서버 API) =====
-    # 임시 비활성화: retriever 개발 완료 후 재활성화
-    # init_insight_store(MainServerInsightStore())
-    # logger.info("InsightStore(MainServer) 초기화 완료")
+    init_insight_store(MainServerInsightStore())
+    logger.info("InsightStore(MainServer) 초기화 완료")
 
     try:
         get_http_client()
