@@ -18,6 +18,8 @@ from app.schemas.interview import (
     CreateSessionResponse,
     ErrorResponse,
     ExtendSessionResponse,
+    InsightLogSchema,
+    InsightTurnRecordSchema,
     MessageSchema,
     SessionStateResponse,
     StageProgressSchema,
@@ -360,6 +362,7 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
         session_id=state["session_id"],
         user_id=state["user_id"],
         experience_name=state["experience_name"],
+        turn_number=state["turn_number"],
         current_stage=state["current_stage"],
         stage_progress=StageProgressSchema(**state["stage_progress"]),
         overall_completion=state["overall_completion_percentage"],
@@ -367,6 +370,15 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
         message_count=len(state["messages"]),
         is_extended_mode=state["is_extended_mode"],
         collected_data=collected_data,
+        insight_turn_history=[
+            InsightTurnRecordSchema(
+                turn_number=record["turn_number"],
+                user_message=record["user_message"],
+                mentioned_insight_ids=record["mentioned_insight_ids"],
+                insights=[InsightLogSchema(**insight) for insight in record["insights"]],
+            )
+            for record in state["insight_turn_history"]
+        ],
         messages=messages,
     )
 

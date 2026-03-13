@@ -18,7 +18,7 @@ from ..prompts import (
     first_turn_prompt,
     generated_question_prompt,
 )
-from ..state import InterviewState
+from ..state import InterviewState, ensure_interview_state_defaults
 from .utils import (
     _format_global_incomplete_fields,
     _format_incomplete_fields,
@@ -254,15 +254,17 @@ def run(state: InterviewState) -> InterviewState:
     - 질문 소진: 안전한 fallback 질문 생성
     """
 
-    if state["is_extended_mode"]:
-        return _run_extended_mode(state)
+    normalized_state = ensure_interview_state_defaults(state)
+
+    if normalized_state["is_extended_mode"]:
+        return _run_extended_mode(normalized_state)
 
     # 1. 현재 단계 설정 로드
-    stage_config = load_stage_config(state["current_stage"])
-    progress = state["stage_progress"]
+    stage_config = load_stage_config(normalized_state["current_stage"])
+    progress = normalized_state["stage_progress"]
 
-    # 2. 첫 턴 여부 판단
-    is_first_turn = len(state["messages"]) == 0
+    # 2. 첫 질문 생성 여부 판단
+    is_first_turn = normalized_state["turn_number"] == 0
 
     question: str
     llm_error: str | None
@@ -270,7 +272,7 @@ def run(state: InterviewState) -> InterviewState:
 
     if is_first_turn:
         # ===== 첫 턴 질문 생성 =====
-        question, llm_error = _generate_first_turn_question(state, stage_config)
+        question, llm_error = _generate_first_turn_question(normalized_state, stage_config)
         updated_progress = {
             **progress,
             "fixed_q_used": 1,
@@ -282,7 +284,7 @@ def run(state: InterviewState) -> InterviewState:
         fixed_question_raw = stage_config.fixed_questions[next_fixed_question_idx]
 
         question, llm_error = _generate_contextual_fixed_question(
-            state=state,
+            state=normalized_state,
             fixed_question_content=fixed_question_raw,
         )
 
@@ -293,7 +295,7 @@ def run(state: InterviewState) -> InterviewState:
 
     elif progress["generated_q_used"] < progress["generated_q_max"]:
         # ===== 생성 질문 생성 =====
-        question, llm_error = _generate_dynamic_question(state, stage_config)
+        question, llm_error = _generate_dynamic_question(normalized_state, stage_config)
         updated_progress = {
             **progress,
             "generated_q_used": progress["generated_q_used"] + 1,
@@ -303,7 +305,7 @@ def run(state: InterviewState) -> InterviewState:
         # ===== 질문 소진 (방어 로직) =====
         logger.warning(
             "Stage %s: QuestionGenerator가 질문 소진 상태로 호출되어 fallback 질문을 생성합니다.",
-            state["current_stage"],
+            normalized_state["current_stage"],
         )
         question = "혹시 더 추가하고 싶은 내용이 있으신가요?"
         llm_error = None
@@ -313,7 +315,7 @@ def run(state: InterviewState) -> InterviewState:
 
     # 4. 공통 반환 처리
     result_state: InterviewState = {
-        **state,
+        **normalized_state,
         "messages": [AIMessage(content=question)],
         "stage_progress": updated_progress,
         "next_node": "end",

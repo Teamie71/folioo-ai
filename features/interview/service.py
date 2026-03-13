@@ -17,6 +17,7 @@ from common.sse import (
 from features.interview.agents.graph import build_graph
 from features.interview.agents.state import (
     InterviewState,
+    ensure_interview_state_defaults,
     get_initial_interview_state,
 )
 from features.interview.config.loader import get_global_config
@@ -494,7 +495,7 @@ class InterviewService:
         if state_snapshot is None or not state_snapshot.values:
             return None
 
-        return state_snapshot.values
+        return ensure_interview_state_defaults(state_snapshot.values)
 
     @staticmethod
     def _build_retriever_result_payload(output: dict | None) -> dict:
