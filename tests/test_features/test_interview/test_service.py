@@ -317,13 +317,24 @@ async def test_get_session_state_returns_none_on_empty_snapshot(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_session_state_returns_values(monkeypatch):
-    """스냅샷 값 반환 테스트"""
+    """스냅샷 값 반환 시 신규 기본 필드를 보강한다."""
     dummy_graph = DummyGraph()
-    expected_state = {"session_id": "session_1", "current_stage": 1}
+    expected_state = {
+        "session_id": "session_1",
+        "current_stage": 1,
+        "messages": [HumanMessage(content="답변")],
+    }
     dummy_graph.state_snapshot = DummyStateSnapshot(values=expected_state)
     service = _build_service(monkeypatch, dummy_graph)
 
-    assert await service.get_session_state("session_1") == expected_state
+    result = await service.get_session_state("session_1")
+
+    assert result is not None
+    assert result["session_id"] == "session_1"
+    assert result["turn_number"] == 1
+    assert result["retrieved_insights"] == []
+    assert result["mentioned_insight_ids"] == []
+    assert result["insight_turn_history"] == []
 
 
 def test_singleton_get_and_reset(monkeypatch):

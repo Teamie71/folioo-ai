@@ -4,7 +4,7 @@ import logging
 import os
 
 from ..insight_store import InsightStore
-from ..state import InsightLog, InterviewState
+from ..state import InsightLog, InsightTurnRecord, InterviewState, ensure_interview_state_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,47 @@ def _with_source(insight: InsightLog, source: str) -> InsightLog:
     }
 
 
+def _get_latest_user_message(state: InterviewState) -> str | None:
+    """현재 실행을 시작한 최신 사용자 메시지 내용 추출"""
+
+    messages = state.get("messages") or []
+    for message in reversed(messages):
+        if getattr(message, "type", None) == "human":
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                return content
+            if content is None:
+                return None
+            return str(content)
+    return None
+
+
+def _build_insight_turn_record(
+    state: InterviewState,
+    insights: list[InsightLog],
+    user_message: str,
+) -> InsightTurnRecord:
+    """현재 사용자 턴의 인사이트 복원 레코드 생성"""
+
+    return {
+        "turn_number": state["turn_number"],
+        "user_message": user_message,
+        "mentioned_insight_ids": list(state.get("mentioned_insight_ids") or []),
+        "insights": list(insights),
+    }
+
+
+def _upsert_insight_turn_history(
+    history: list[InsightTurnRecord],
+    new_record: InsightTurnRecord,
+) -> list[InsightTurnRecord]:
+    """같은 turn_number 기록을 교체하면서 히스토리를 갱신"""
+
+    turn_number = new_record["turn_number"]
+    filtered_history = [record for record in history if record["turn_number"] != turn_number]
+    return [*filtered_history, new_record]
+
+
 def _filter_search_results(
     insights: list[InsightLog],
     *,
@@ -128,33 +169,47 @@ async def run(state: InterviewState) -> InterviewState:
         dict: { "retrieved_insights": [...], "next_node": "analyst" }
     """
 
+    normalized_state = ensure_interview_state_defaults(state)
+    user_message = _get_latest_user_message(normalized_state)
+
     try:
         store = get_insight_store()
     except RuntimeError:
         logger.warning("InsightStore가 초기화되지 않음. 인사이트 검색을 건너뜁니다.")
+        if user_message is None:
+            return {
+                **normalized_state,
+                "retrieved_insights": [],
+                "next_node": "analyst",
+            }
+
+        insight_turn_record = _build_insight_turn_record(normalized_state, [], user_message)
+
         return {
-            **state,
+            **normalized_state,
             "retrieved_insights": [],
+            "insight_turn_history": _upsert_insight_turn_history(
+                normalized_state["insight_turn_history"],
+                insight_turn_record,
+            ),
             "next_node": "analyst",
         }
 
     # 1. 유사도 검색
     similar_insights: list[InsightLog] = []
-    messages = state.get("messages") or []
-    if not messages:
+    if user_message is None:
         logger.warning("메시지가 비어있어 인사이트 검색을 건너뜁니다.")
         return {
-            **state,
+            **normalized_state,
             "retrieved_insights": [],
             "next_node": "analyst",
         }
-    last_message = messages[-1].content
 
     try:
         top_k = max(0, min(_DEFAULT_TOP_K, 3))
         similar_insights = await store.search_similar(
-            query=last_message,
-            user_id=state["user_id"],
+            query=user_message,
+            user_id=normalized_state["user_id"],
             top_k=top_k,
             threshold=_DEFAULT_THRESHOLD,
         )
@@ -166,7 +221,7 @@ async def run(state: InterviewState) -> InterviewState:
         logger.info(
             "🔎 유사 인사이트 %d건 검색됨 (user_id=%s, top_k=%d, threshold=%.2f)",
             len(similar_insights),
-            state["user_id"],
+            normalized_state["user_id"],
             top_k,
             _DEFAULT_THRESHOLD,
         )
@@ -183,7 +238,7 @@ async def run(state: InterviewState) -> InterviewState:
 
     # 2. @ 멘션 인사이트 강제 포함
     mentioned_insights: list[InsightLog] = []
-    mentioned_ids = state.get("mentioned_insight_ids", [])
+    mentioned_ids = normalized_state.get("mentioned_insight_ids", [])
 
     for insight_id in mentioned_ids:
         try:
@@ -198,6 +253,7 @@ async def run(state: InterviewState) -> InterviewState:
 
     # 3. 병합 및 중복 제거 (해당 턴의 인사이트만 / 누적하지 않음)
     all_insights = _merge_and_deduplicate(similar_insights, mentioned_insights)
+    insight_turn_record = _build_insight_turn_record(normalized_state, all_insights, user_message)
 
     logger.info(
         "✅ 인사이트 병합 완료: 유사=%d, 멘션=%d → 최종=%d",
@@ -208,7 +264,11 @@ async def run(state: InterviewState) -> InterviewState:
 
     # 검색 후 Analyst 노드로 전환
     return {
-        **state,
+        **normalized_state,
         "retrieved_insights": all_insights,
+        "insight_turn_history": _upsert_insight_turn_history(
+            normalized_state["insight_turn_history"],
+            insight_turn_record,
+        ),
         "next_node": "analyst",
     }

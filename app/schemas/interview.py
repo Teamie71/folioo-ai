@@ -36,6 +36,33 @@ class MessageSchema(BaseModel):
     id: str | None = Field(None, description="메시지 ID")
 
 
+class InsightLogSchema(BaseModel):
+    """인사이트 로그 스키마"""
+
+    id: str = Field(..., description="인사이트 ID")
+    title: str = Field(..., description="인사이트 제목")
+    activity_name: str = Field(default="", description="관련 활동명")
+    category: str = Field(..., description="인사이트 카테고리")
+    content: str = Field(..., description="인사이트 내용")
+    similarity_score: float | None = Field(None, description="유사도 점수")
+    source: str | None = Field(None, description="검색 소스 (search 또는 mention)")
+
+
+class InsightTurnRecordSchema(BaseModel):
+    """턴별 인사이트 복원 기록 스키마"""
+
+    turn_number: int = Field(..., ge=1, description="사용자 턴 번호")
+    user_message: str = Field(..., description="해당 턴의 사용자 메시지")
+    mentioned_insight_ids: list[str] = Field(
+        default_factory=list,
+        description="해당 턴에서 멘션된 인사이트 ID 목록",
+    )
+    insights: list[InsightLogSchema] = Field(
+        default_factory=list,
+        description="해당 턴에서 조회된 인사이트 카드 목록",
+    )
+
+
 # ===== 세션 생성 =====
 class CreateSessionRequest(BaseModel):
     """세션 생성 요청"""
@@ -100,6 +127,7 @@ class SessionStateResponse(BaseModel):
     session_id: str = Field(..., description="세션 ID")
     user_id: str = Field(..., description="사용자 ID")
     experience_name: str = Field(..., description="경험/프로젝트 이름")
+    turn_number: int = Field(..., ge=0, description="현재 사용자 턴 번호")
     current_stage: int = Field(..., ge=1, le=4, description="현재 단계")
     stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
     overall_completion: float = Field(..., ge=0.0, le=100.0, description="전체 완료율 (%)")
@@ -108,6 +136,10 @@ class SessionStateResponse(BaseModel):
     is_extended_mode: bool = Field(..., description="추가 대화 모드 여부")
     collected_data: dict[str, dict[str, CollectedFieldSchema]] = Field(
         ..., description="수집된 포트폴리오 데이터"
+    )
+    insight_turn_history: list[InsightTurnRecordSchema] = Field(
+        default_factory=list,
+        description="과거 사용자 턴별 인사이트 복원 이력",
     )
     messages: list[MessageSchema] = Field(..., description="전체 대화 기록")
 

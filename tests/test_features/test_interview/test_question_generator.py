@@ -31,7 +31,7 @@ def first_turn_state():
 def test_first_turn_question_generation(first_turn_state, monkeypatch):
     """
     첫 턴 질문 생성 테스트
-    - 메시지가 비어있을 때 첫 질문을 생성하는지 확인
+    - turn_number가 0일 때 첫 질문을 생성하는지 확인
     - AIMessage가 추가되는지 확인
     - stage_progress의 fixed_q_used가 1로 증가하는지 확인
     - next_node가 'end'인지 확인
@@ -84,6 +84,32 @@ def test_first_turn_uses_fixed_question_content(first_turn_state, monkeypatch):
     assert "AI 에이전트 개발 프로젝트" in question_content
 
 
+def test_turn_number_controls_first_turn_detection(first_turn_state, monkeypatch):
+    """messages 길이가 아니라 turn_number로 첫 턴을 판별한다."""
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_raise(),
+    )
+
+    state = {
+        **first_turn_state,
+        "turn_number": 1,
+        "messages": [],
+        "stage_progress": {
+            **first_turn_state["stage_progress"],
+            "fixed_q_used": 1,
+        },
+    }
+
+    result = question_generator.run(state)
+
+    expected_fixed_question = load_stage_config(1).fixed_questions[1]
+
+    assert result["messages"][0].content == expected_fixed_question
+    assert result["stage_progress"]["fixed_q_used"] == 2
+
+
 def test_followup_fixed_question_generation(first_turn_state, monkeypatch):
     """
     후속 고정 질문 생성 테스트
@@ -98,6 +124,7 @@ def test_followup_fixed_question_generation(first_turn_state, monkeypatch):
 
     non_first_turn_state = {
         **first_turn_state,
+        "turn_number": 1,
         "messages": [
             AIMessage(content="첫 질문입니다."),
             HumanMessage(content="사용자 답변입니다."),
@@ -130,6 +157,7 @@ def test_generated_question_fallback_on_llm_error(first_turn_state, monkeypatch)
 
     state = {
         **first_turn_state,
+        "turn_number": 1,
         "messages": [
             AIMessage(content="질문1"),
             HumanMessage(content="답변1"),
@@ -186,6 +214,7 @@ def test_generated_question_ignores_dynamic_followup_switch(first_turn_state, mo
     """enable_dynamic_followup이 false여도 QG는 호출 시 질문을 생성한다."""
     state = {
         **first_turn_state,
+        "turn_number": 1,
         "messages": [
             AIMessage(content="질문1"),
             HumanMessage(content="답변1"),
@@ -226,6 +255,7 @@ def test_fallback_question_when_called_after_exhaustion(first_turn_state):
     """질문 소진 상태로 호출되어도 AIMessage fallback을 반환한다."""
     state = {
         **first_turn_state,
+        "turn_number": 1,
         "messages": [
             AIMessage(content="질문1"),
             HumanMessage(content="답변1"),

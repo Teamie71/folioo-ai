@@ -166,9 +166,11 @@ async def test_run_limits_search_results_and_merges_mentions(monkeypatch):
 
     result = await retriever.run(
         {
+            "turn_number": 1,
             "user_id": "user-1",
             "messages": [HumanMessage(content="문제 해결 경험")],
             "mentioned_insight_ids": ["mention-1"],
+            "insight_turn_history": [],
         }
     )
 
@@ -176,6 +178,14 @@ async def test_run_limits_search_results_and_merges_mentions(monkeypatch):
     assert [item["id"] for item in retrieved] == ["search-1", "search-2", "mention-1"]
     assert retrieved[0]["source"] == "search"
     assert retrieved[-1]["source"] == "search"
+    assert result["insight_turn_history"] == [
+        {
+            "turn_number": 1,
+            "user_message": "문제 해결 경험",
+            "mentioned_insight_ids": ["mention-1"],
+            "insights": retrieved,
+        }
+    ]
     assert result["next_node"] == "analyst"
     mock_store.search_similar.assert_awaited_once_with(
         query="문제 해결 경험",
@@ -183,3 +193,81 @@ async def test_run_limits_search_results_and_merges_mentions(monkeypatch):
         top_k=3,
         threshold=0.6,
     )
+
+
+@pytest.mark.asyncio
+async def test_run_appends_empty_history_when_store_is_unavailable(monkeypatch):
+    """스토어가 없어도 현재 턴 복원 이력은 남긴다."""
+    monkeypatch.setattr(
+        retriever,
+        "get_insight_store",
+        lambda: (_ for _ in ()).throw(RuntimeError("store missing")),
+    )
+
+    result = await retriever.run(
+        {
+            "turn_number": 2,
+            "user_id": "user-1",
+            "messages": [HumanMessage(content="추가 설명입니다.")],
+            "mentioned_insight_ids": ["mention-2"],
+            "insight_turn_history": [],
+        }
+    )
+
+    assert result["retrieved_insights"] == []
+    assert result["insight_turn_history"] == [
+        {
+            "turn_number": 2,
+            "user_message": "추가 설명입니다.",
+            "mentioned_insight_ids": ["mention-2"],
+            "insights": [],
+        }
+    ]
+
+
+def test_upsert_insight_turn_history_replaces_same_turn_record():
+    """같은 turn_number 기록은 append 대신 교체한다."""
+    history = [
+        {
+            "turn_number": 1,
+            "user_message": "이전 답변",
+            "mentioned_insight_ids": [],
+            "insights": [],
+        },
+        {
+            "turn_number": 2,
+            "user_message": "기존 답변",
+            "mentioned_insight_ids": ["old-id"],
+            "insights": [
+                {
+                    "id": "old-id",
+                    "title": "기존 인사이트",
+                    "activity_name": "활동",
+                    "category": "문제해결",
+                    "content": "기존 내용",
+                    "similarity_score": 0.8,
+                    "source": "search",
+                }
+            ],
+        },
+    ]
+    new_record = {
+        "turn_number": 2,
+        "user_message": "재처리 답변",
+        "mentioned_insight_ids": ["new-id"],
+        "insights": [
+            {
+                "id": "new-id",
+                "title": "새 인사이트",
+                "activity_name": "새 활동",
+                "category": "문제해결",
+                "content": "새 내용",
+                "similarity_score": 0.9,
+                "source": "search",
+            }
+        ],
+    }
+
+    result = retriever._upsert_insight_turn_history(history, new_record)
+
+    assert result == [history[0], new_record]
