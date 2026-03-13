@@ -129,6 +129,17 @@ def _build_insight_turn_record(
     }
 
 
+def _upsert_insight_turn_history(
+    history: list[InsightTurnRecord],
+    new_record: InsightTurnRecord,
+) -> list[InsightTurnRecord]:
+    """같은 turn_number 기록을 교체하면서 히스토리를 갱신"""
+
+    turn_number = new_record["turn_number"]
+    filtered_history = [record for record in history if record["turn_number"] != turn_number]
+    return [*filtered_history, new_record]
+
+
 def _filter_search_results(
     insights: list[InsightLog],
     *,
@@ -172,13 +183,15 @@ async def run(state: InterviewState) -> InterviewState:
                 "next_node": "analyst",
             }
 
+        insight_turn_record = _build_insight_turn_record(normalized_state, [], user_message)
+
         return {
             **normalized_state,
             "retrieved_insights": [],
-            "insight_turn_history": [
-                *normalized_state["insight_turn_history"],
-                _build_insight_turn_record(normalized_state, [], user_message),
-            ],
+            "insight_turn_history": _upsert_insight_turn_history(
+                normalized_state["insight_turn_history"],
+                insight_turn_record,
+            ),
             "next_node": "analyst",
         }
 
@@ -253,9 +266,9 @@ async def run(state: InterviewState) -> InterviewState:
     return {
         **normalized_state,
         "retrieved_insights": all_insights,
-        "insight_turn_history": [
-            *normalized_state["insight_turn_history"],
+        "insight_turn_history": _upsert_insight_turn_history(
+            normalized_state["insight_turn_history"],
             insight_turn_record,
-        ],
+        ),
         "next_node": "analyst",
     }

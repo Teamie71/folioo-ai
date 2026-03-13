@@ -223,3 +223,51 @@ async def test_run_appends_empty_history_when_store_is_unavailable(monkeypatch):
             "insights": [],
         }
     ]
+
+
+def test_upsert_insight_turn_history_replaces_same_turn_record():
+    """같은 turn_number 기록은 append 대신 교체한다."""
+    history = [
+        {
+            "turn_number": 1,
+            "user_message": "이전 답변",
+            "mentioned_insight_ids": [],
+            "insights": [],
+        },
+        {
+            "turn_number": 2,
+            "user_message": "기존 답변",
+            "mentioned_insight_ids": ["old-id"],
+            "insights": [
+                {
+                    "id": "old-id",
+                    "title": "기존 인사이트",
+                    "activity_name": "활동",
+                    "category": "문제해결",
+                    "content": "기존 내용",
+                    "similarity_score": 0.8,
+                    "source": "search",
+                }
+            ],
+        },
+    ]
+    new_record = {
+        "turn_number": 2,
+        "user_message": "재처리 답변",
+        "mentioned_insight_ids": ["new-id"],
+        "insights": [
+            {
+                "id": "new-id",
+                "title": "새 인사이트",
+                "activity_name": "새 활동",
+                "category": "문제해결",
+                "content": "새 내용",
+                "similarity_score": 0.9,
+                "source": "search",
+            }
+        ],
+    }
+
+    result = retriever._upsert_insight_turn_history(history, new_record)
+
+    assert result == [history[0], new_record]
