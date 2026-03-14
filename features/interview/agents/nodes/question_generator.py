@@ -22,6 +22,7 @@ from ..state import InterviewState, ensure_interview_state_defaults
 from .utils import (
     _format_global_incomplete_fields,
     _format_incomplete_fields,
+    _format_retrieved_insights,
     _get_all_stage_incomplete_fields,
     _get_conversation_context,
     _get_incomplete_fields,
@@ -113,6 +114,7 @@ def _generate_contextual_fixed_question(
     global_config = get_global_config()
     context = _get_conversation_context(state, max_messages=global_config.context_window_size)
     progress = state["stage_progress"]
+    retrieved_insights_str = _format_retrieved_insights(state["retrieved_insights"])
 
     # 2. LLM 프롬프트 구성
     llm = get_llm(temperature=0.7)
@@ -127,6 +129,7 @@ def _generate_contextual_fixed_question(
                 "experience_name": state["experience_name"],
                 "fixed_q_used": progress["fixed_q_used"],
                 "conversation_context": context,
+                "retrieved_insights": retrieved_insights_str,
                 "fixed_question_content": fixed_question_content,
             },
             max_retries_per_question=global_config.max_retries_per_question,
@@ -157,6 +160,7 @@ def _generate_dynamic_question(
     # 2. 미수집/불완전 필드 파악
     incomplete_fields = _get_incomplete_fields(state, stage_config)
     incomplete_fields_str = _format_incomplete_fields(incomplete_fields)
+    retrieved_insights_str = _format_retrieved_insights(state["retrieved_insights"])
     # 3. 진행 상황 정보
     progress = state["stage_progress"]
     remaining_questions = progress["generated_q_max"] - progress["generated_q_used"]
@@ -172,6 +176,7 @@ def _generate_dynamic_question(
                 "stage_name": stage_config.name,
                 "conversation_context": context,
                 "incomplete_fields": incomplete_fields_str,
+                "retrieved_insights": retrieved_insights_str,
                 "remaining_questions": remaining_questions,
             },
             max_retries_per_question=global_config.max_retries_per_question,
@@ -197,6 +202,7 @@ def _generate_extended_question(
     context = _get_conversation_context(state, max_messages=global_config.context_window_size)
     incomplete_fields = _get_all_stage_incomplete_fields(state, stages=all_stage_configs)
     global_incomplete_fields = _format_global_incomplete_fields(incomplete_fields)
+    retrieved_insights_str = _format_retrieved_insights(state["retrieved_insights"])
 
     remaining_turns = state["extension_turns_max"] - state["extension_turns_used"]
 
@@ -211,6 +217,7 @@ def _generate_extended_question(
                 "experience_name": state["experience_name"],
                 "conversation_context": context,
                 "global_incomplete_fields": global_incomplete_fields,
+                "retrieved_insights": retrieved_insights_str,
                 "remaining_turns": remaining_turns,
             },
             max_retries_per_question=global_config.max_retries_per_question,

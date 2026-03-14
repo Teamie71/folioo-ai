@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from features.interview.config.loader import StageConfig
 
-from ..state import CollectedField, InterviewState
+from ..state import CollectedField, InsightLog, InterviewState
 
 
 def _get_conversation_context(
@@ -156,5 +156,26 @@ def _format_global_incomplete_fields(
                 description=field["description"],
             )
         )
+
+    return "\n".join(lines)
+
+
+def _format_retrieved_insights(insights: list[InsightLog]) -> str:
+    """인사이트 로그를 프롬프트용 문자열로 변환"""
+    if not insights:
+        return "검색된 인사이트 없음"
+
+    lines: list[str] = []
+    for insight in insights:
+        similarity_score = insight.get("similarity_score")
+        similarity_text = (
+            f"{similarity_score:.2f}" if isinstance(similarity_score, int | float) else "없음"
+        )
+        source = insight.get("source") or ("search" if similarity_score is not None else "mention")
+        lines.append(f"- [{insight['category']}] {insight['title']}")
+        lines.append(f"  - 활동명: {insight.get('activity_name') or '없음'}")
+        lines.append(f"  - 출처: {source}")
+        lines.append(f"  - 유사도: {similarity_text}")
+        lines.append(f"  - 내용: {insight['content']}")
 
     return "\n".join(lines)
