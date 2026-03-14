@@ -36,7 +36,7 @@ class DummyInterviewService:
                 {
                     "turn_number": 1,
                     "user_message": "첫 답변",
-                    "mentioned_insight_ids": ["insight-1"],
+                    "mentioned_insight": "insight-1",
                     "insights": [
                         {
                             "id": "insight-1",
@@ -51,7 +51,7 @@ class DummyInterviewService:
                 }
             ],
             "messages": [],
-            "mentioned_insight_ids": [],
+            "mentioned_insight": None,
             "retrieved_insights": [],
         }
 

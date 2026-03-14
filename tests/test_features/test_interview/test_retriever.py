@@ -169,7 +169,7 @@ async def test_run_limits_search_results_and_merges_mentions(monkeypatch):
             "turn_number": 1,
             "user_id": "user-1",
             "messages": [HumanMessage(content="문제 해결 경험")],
-            "mentioned_insight_ids": ["mention-1"],
+            "mentioned_insight": "mention-1",
             "insight_turn_history": [],
         }
     )
@@ -182,7 +182,7 @@ async def test_run_limits_search_results_and_merges_mentions(monkeypatch):
         {
             "turn_number": 1,
             "user_message": "문제 해결 경험",
-            "mentioned_insight_ids": ["mention-1"],
+            "mentioned_insight": "mention-1",
             "insights": retrieved,
         }
     ]
@@ -209,7 +209,7 @@ async def test_run_appends_empty_history_when_store_is_unavailable(monkeypatch):
             "turn_number": 2,
             "user_id": "user-1",
             "messages": [HumanMessage(content="추가 설명입니다.")],
-            "mentioned_insight_ids": ["mention-2"],
+            "mentioned_insight": "mention-2",
             "insight_turn_history": [],
         }
     )
@@ -219,7 +219,7 @@ async def test_run_appends_empty_history_when_store_is_unavailable(monkeypatch):
         {
             "turn_number": 2,
             "user_message": "추가 설명입니다.",
-            "mentioned_insight_ids": ["mention-2"],
+            "mentioned_insight": "mention-2",
             "insights": [],
         }
     ]
@@ -231,13 +231,13 @@ def test_upsert_insight_turn_history_replaces_same_turn_record():
         {
             "turn_number": 1,
             "user_message": "이전 답변",
-            "mentioned_insight_ids": [],
+            "mentioned_insight": None,
             "insights": [],
         },
         {
             "turn_number": 2,
             "user_message": "기존 답변",
-            "mentioned_insight_ids": ["old-id"],
+            "mentioned_insight": "old-id",
             "insights": [
                 {
                     "id": "old-id",
@@ -254,7 +254,7 @@ def test_upsert_insight_turn_history_replaces_same_turn_record():
     new_record = {
         "turn_number": 2,
         "user_message": "재처리 답변",
-        "mentioned_insight_ids": ["new-id"],
+        "mentioned_insight": "new-id",
         "insights": [
             {
                 "id": "new-id",

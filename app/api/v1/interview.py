@@ -237,7 +237,7 @@ async def chat(session_id: str, request: ChatRequest) -> ChatResponse:
             session_id=session_id,
             message=request.message,
             file_ids=request.file_ids,
-            mentioned_insight_ids=request.mentioned_insight_ids,
+            mentioned_insight=request.mentioned_insight,
         )
     except ValueError as e:
         raise HTTPException(
@@ -374,7 +374,7 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
             InsightTurnRecordSchema(
                 turn_number=record["turn_number"],
                 user_message=record["user_message"],
-                mentioned_insight_ids=record["mentioned_insight_ids"],
+                mentioned_insight=record.get("mentioned_insight"),
                 insights=[InsightLogSchema(**insight) for insight in record["insights"]],
             )
             for record in state["insight_turn_history"]
@@ -415,7 +415,7 @@ async def chat_stream(session_id: str, request: ChatRequest):
             session_id=session_id,
             message=request.message,
             file_ids=request.file_ids,
-            mentioned_insight_ids=request.mentioned_insight_ids,
+            mentioned_insight=request.mentioned_insight,
         )
         async for event in _interleave_ping_events(stream):
             yield event

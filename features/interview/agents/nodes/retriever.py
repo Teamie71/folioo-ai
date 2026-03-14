@@ -124,7 +124,7 @@ def _build_insight_turn_record(
     return {
         "turn_number": state["turn_number"],
         "user_message": user_message,
-        "mentioned_insight_ids": list(state.get("mentioned_insight_ids") or []),
+        "mentioned_insight": state.get("mentioned_insight"),
         "insights": list(insights),
     }
 
@@ -238,18 +238,18 @@ async def run(state: InterviewState) -> InterviewState:
 
     # 2. @ 멘션 인사이트 강제 포함
     mentioned_insights: list[InsightLog] = []
-    mentioned_ids = normalized_state.get("mentioned_insight_ids", [])
+    mentioned_insight = normalized_state.get("mentioned_insight")
 
-    for insight_id in mentioned_ids:
+    if mentioned_insight:
         try:
-            insight = await store.get_by_id(insight_id)
+            insight = await store.get_by_id(mentioned_insight)
             if insight is not None:
                 mentioned_insights.append(_with_source(insight, "mention"))
-                logger.info(f"멘션 인사이트 조회 성공: {insight_id}")
+                logger.info("멘션 인사이트 조회 성공: %s", mentioned_insight)
             else:
-                logger.warning(f"멘션 인사이트를 찾을 수 없음: {insight_id}")
+                logger.warning("멘션 인사이트를 찾을 수 없음: %s", mentioned_insight)
         except Exception:
-            logger.exception(f"멘션 인사이트 조회 실패: {insight_id}")
+            logger.exception("멘션 인사이트 조회 실패: %s", mentioned_insight)
 
     # 3. 병합 및 중복 제거 (해당 턴의 인사이트만 / 누적하지 않음)
     all_insights = _merge_and_deduplicate(similar_insights, mentioned_insights)

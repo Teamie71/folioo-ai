@@ -53,9 +53,9 @@ class InsightTurnRecordSchema(BaseModel):
 
     turn_number: int = Field(..., ge=1, description="사용자 턴 번호")
     user_message: str = Field(..., description="해당 턴의 사용자 메시지")
-    mentioned_insight_ids: list[str] = Field(
-        default_factory=list,
-        description="해당 턴에서 멘션된 인사이트 ID 목록",
+    mentioned_insight: str | None = Field(
+        None,
+        description="해당 턴에서 멘션된 인사이트 ID",
     )
     insights: list[InsightLogSchema] = Field(
         default_factory=list,
@@ -86,9 +86,7 @@ class ChatRequest(BaseModel):
 
     message: str = Field(..., min_length=1, description="사용자 메시지")
     file_ids: list[str] | None = Field(None, description="업로드된 파일 ID 목록")
-    mentioned_insight_ids: list[str] | None = Field(
-        None, description="@ 멘션으로 참조한 인사이트 로그 ID 목록"
-    )
+    mentioned_insight: str | None = Field(None, description="@ 멘션으로 참조한 인사이트 로그 ID")
 
 
 class ExtendSessionResponse(BaseModel):
@@ -174,7 +172,7 @@ class SSERetrieverInsight(BaseModel):
     activity_name: str = Field(default="", description="관련 활동명")
     category: str = Field(..., description="인사이트 카테고리")
     content: str = Field(..., description="인사이트 본문 내용")
-    similarity: float | None = Field(None, description="유사도 점수")
+    similarity_score: float | None = Field(None, description="유사도 점수")
     source: str = Field(..., description="검색 소스 (search 또는 mention)")
 
 
