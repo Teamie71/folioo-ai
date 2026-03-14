@@ -244,7 +244,7 @@ async def test_extend_session_success(monkeypatch):
     assert invocation["state"]["extension_count"] == 1
     assert invocation["state"]["extension_turns_used"] == 0
     assert invocation["state"]["extension_turns_max"] == 3
-    assert invocation["state"]["mentioned_insight_ids"] == []
+    assert invocation["state"]["mentioned_insight"] is None
 
 
 @pytest.mark.asyncio
@@ -333,7 +333,7 @@ async def test_get_session_state_returns_values(monkeypatch):
     assert result["session_id"] == "session_1"
     assert result["turn_number"] == 1
     assert result["retrieved_insights"] == []
-    assert result["mentioned_insight_ids"] == []
+    assert result["mentioned_insight"] is None
     assert result["insight_turn_history"] == []
 
 

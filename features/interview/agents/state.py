@@ -24,7 +24,7 @@ class InsightTurnRecord(TypedDict):
 
     turn_number: int
     user_message: str
-    mentioned_insight_ids: list[str]
+    mentioned_insight: str | None
     insights: list[InsightLog]
 
 
@@ -102,9 +102,8 @@ class InterviewState(TypedDict):
     # Analyst가 현재 턴의 사용자 답변을 분석하여 업데이트
 
     # ===== 인사이트 로그 =====
-    mentioned_insight_ids: list[str]
-    # 현재 턴에서 사용자가 @로 명시한 insight ID들
-    # Retriever가 사용자 메시지를 파싱하여 추출
+    mentioned_insight: str | None
+    # 현재 턴에서 사용자가 @로 명시한 insight ID
 
     retrieved_insights: list[InsightLog]
     # 해당 턴에서 검색/멘션된 인사이트 로그 목록 (매 턴 갱신, 누적하지 않음)
@@ -204,7 +203,7 @@ def get_initial_interview_state(
         # 수집 데이터
         "collected_data": {f"stage_{i}": {} for i in range(1, 5)},
         # 인사이트
-        "mentioned_insight_ids": [],
+        "mentioned_insight": None,
         "retrieved_insights": [],
         "insight_turn_history": [],
         # 파일 업로드
@@ -240,7 +239,7 @@ def ensure_interview_state_defaults(state: InterviewState | dict) -> InterviewSt
     return {
         **state,
         "turn_number": state.get("turn_number", get_turn_number_from_messages(messages)),
-        "mentioned_insight_ids": list(state.get("mentioned_insight_ids") or []),
+        "mentioned_insight": state.get("mentioned_insight"),
         "retrieved_insights": list(state.get("retrieved_insights") or []),
         "insight_turn_history": list(state.get("insight_turn_history") or []),
     }
