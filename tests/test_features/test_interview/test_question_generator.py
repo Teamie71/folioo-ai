@@ -156,6 +156,11 @@ def test_followup_fixed_question_includes_retrieved_insights_prompt_variable(
         return "후속 질문"
 
     monkeypatch.setattr(question_generator, "_invoke_with_retry", _capture_invoke)
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_return("사용되지 않는 질문"),
+    )
 
     state = {
         **first_turn_state,
@@ -236,6 +241,11 @@ def test_generated_question_includes_retrieved_insights_prompt_variable(
         return "추가 질문"
 
     monkeypatch.setattr(question_generator, "_invoke_with_retry", _capture_invoke)
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_return("사용되지 않는 질문"),
+    )
 
     state = {
         **first_turn_state,
@@ -436,6 +446,11 @@ def test_extended_mode_includes_retrieved_insights_prompt_variable(first_turn_st
         return "연장 질문"
 
     monkeypatch.setattr(question_generator, "_invoke_with_retry", _capture_invoke)
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_return("사용되지 않는 질문"),
+    )
 
     state = {
         **first_turn_state,
