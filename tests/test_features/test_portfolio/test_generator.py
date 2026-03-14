@@ -92,7 +92,8 @@ def test_generate_retry_after_llm_exception(monkeypatch: pytest.MonkeyPatch):
 
     assert result == _valid_output()
     assert len(chain.calls) == 2
-    assert "LLM 호출/파싱 실패" in chain.calls[1]["validation_feedback"]
+    assert chain.calls[0]["validation_feedback"] == "없음"
+    assert chain.calls[1]["validation_feedback"] == "없음"
 
 
 def test_generate_raises_error_after_all_retries(monkeypatch: pytest.MonkeyPatch):
@@ -142,7 +143,24 @@ def test_generate_retry_with_length_validation_feedback(monkeypatch: pytest.Monk
 
     assert result == _valid_output()
     assert len(chain.calls) == 2
-    assert "description 섹션이 글자수 제한을 초과했습니다." in chain.calls[1]["validation_feedback"]
+    assert "description: 현재 401자, 1자 초과" in chain.calls[1]["validation_feedback"]
+
+
+def test_generate_returns_last_output_after_length_retries_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """길이 초과 재시도 소진 시 마지막 출력을 반환한다."""
+    from features.portfolio import generator
+
+    chain = DummyChain([_too_long_output(), _too_long_output(), _too_long_output()])
+    monkeypatch.setattr(generator, "portfolio_generator_prompt", DummyPrompt(chain))
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.7: DummyLLM())
+    monkeypatch.setattr(generator, "format_collected_data_for_prompt", lambda data: "formatted")
+
+    result = PortfolioGenerator().generate(collected_data={}, experience_name="테스트 경험")
+
+    assert result.description == "가" * 401
+    assert len(chain.calls) == 3
 
 
 def test_generate_uses_llm_settings_and_section_mapping(monkeypatch: pytest.MonkeyPatch):
@@ -158,7 +176,12 @@ def test_generate_uses_llm_settings_and_section_mapping(monkeypatch: pytest.Monk
         "_load_portfolio_config",
         lambda: generator.PortfolioConfig.model_validate(
             {
-                "llm": {"model": "test-model", "temperature": 0.1, "max_retries": 1},
+                "llm": {
+                    "model": "test-model",
+                    "temperature": 0.1,
+                    "call_max_retries": 1,
+                    "length_retry_max_retries": 0,
+                },
                 "sections": {"description": {"required": True}},
                 "section_mapping": {"description": ["stage_1", "stage_2"]},
             }
