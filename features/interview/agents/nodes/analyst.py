@@ -22,8 +22,8 @@ from features.interview.config.loader import (
     load_stage_config,
 )
 
-from ..state import CollectedField, InsightLog, InterviewState
-from .utils import _get_conversation_context, _get_incomplete_fields
+from ..state import CollectedField, InterviewState
+from .utils import _format_retrieved_insights, _get_conversation_context, _get_incomplete_fields
 
 logger = logging.getLogger(__name__)
 
@@ -403,25 +403,6 @@ def _find_stage_for_field(
             return stage_number, stage_config
 
     return None
-
-
-def _format_retrieved_insights(insights: list[InsightLog]) -> str:
-    """
-    인사이트 로그를 프롬프트용 문자열로 변환
-
-    Args:
-        insights: InsightLog 리스트
-
-    Returns:
-        포맷팅된 문자열
-    """
-    if not insights:
-        return "검색된 인사이트 없음"
-
-    lines = []
-    for insight in insights:
-        lines.append(f"- [{insight['category']}] {insight['title']}: {insight['content']}")
-    return "\n".join(lines)
 
 
 def _format_file_contexts(file_contexts: list[str]) -> str:

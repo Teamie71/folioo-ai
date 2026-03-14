@@ -144,6 +144,55 @@ def test_followup_fixed_question_generation(first_turn_state, monkeypatch):
     assert result["messages"][0].content == expected_fixed_question
 
 
+def test_followup_fixed_question_includes_retrieved_insights_prompt_variable(
+    first_turn_state,
+    monkeypatch,
+):
+    """후속 고정 질문 생성 시 retrieved_insights를 프롬프트 변수로 전달한다."""
+    captured: dict[str, object] = {}
+
+    def _capture_invoke(chain, prompt_variables, max_retries_per_question):
+        captured.update(prompt_variables)
+        return "후속 질문"
+
+    monkeypatch.setattr(question_generator, "_invoke_with_retry", _capture_invoke)
+
+    state = {
+        **first_turn_state,
+        "turn_number": 1,
+        "messages": [
+            AIMessage(content="첫 질문입니다."),
+            HumanMessage(content="사용자 답변입니다."),
+        ],
+        "retrieved_insights": [
+            {
+                "id": "insight-1",
+                "title": "문제 해결 경험",
+                "activity_name": "프로젝트 A",
+                "category": "문제해결",
+                "content": "복잡한 병목을 개선한 경험",
+                "similarity_score": 0.91,
+                "source": "search",
+            }
+        ],
+        "stage_progress": {
+            **first_turn_state["stage_progress"],
+            "fixed_q_used": 1,
+        },
+    }
+
+    result = question_generator.run(state)
+
+    assert result["messages"][0].content == "후속 질문"
+    assert captured["retrieved_insights"] == (
+        "- [문제해결] 문제 해결 경험\n"
+        "  - 활동명: 프로젝트 A\n"
+        "  - 출처: search\n"
+        "  - 유사도: 0.91\n"
+        "  - 내용: 복잡한 병목을 개선한 경험"
+    )
+
+
 def test_generated_question_fallback_on_llm_error(first_turn_state, monkeypatch):
     """
     생성 질문 LLM 실패 시 fallback 질문 생성 테스트
@@ -173,6 +222,56 @@ def test_generated_question_fallback_on_llm_error(first_turn_state, monkeypatch)
 
     assert result["stage_progress"]["generated_q_used"] == 1
     assert "이 활동을 시작하게 된 이유" in result["messages"][0].content
+
+
+def test_generated_question_includes_retrieved_insights_prompt_variable(
+    first_turn_state,
+    monkeypatch,
+):
+    """생성 질문 프롬프트에 retrieved_insights를 전달한다."""
+    captured: dict[str, object] = {}
+
+    def _capture_invoke(chain, prompt_variables, max_retries_per_question):
+        captured.update(prompt_variables)
+        return "추가 질문"
+
+    monkeypatch.setattr(question_generator, "_invoke_with_retry", _capture_invoke)
+
+    state = {
+        **first_turn_state,
+        "turn_number": 1,
+        "messages": [
+            AIMessage(content="질문1"),
+            HumanMessage(content="답변1"),
+        ],
+        "retrieved_insights": [
+            {
+                "id": "insight-1",
+                "title": "멘션 인사이트",
+                "activity_name": "프로젝트 B",
+                "category": "기타",
+                "content": "사용자가 직접 언급한 참고 내용",
+                "similarity_score": None,
+                "source": "mention",
+            }
+        ],
+        "stage_progress": {
+            **first_turn_state["stage_progress"],
+            "fixed_q_used": first_turn_state["stage_progress"]["fixed_q_total"],
+            "generated_q_used": 0,
+        },
+    }
+
+    result = question_generator.run(state)
+
+    assert result["messages"][0].content == "추가 질문"
+    assert captured["retrieved_insights"] == (
+        "- [기타] 멘션 인사이트\n"
+        "  - 활동명: 프로젝트 B\n"
+        "  - 출처: mention\n"
+        "  - 유사도: 없음\n"
+        "  - 내용: 사용자가 직접 언급한 참고 내용"
+    )
 
 
 def test_first_turn_uses_retry_limit_from_global_config(first_turn_state, monkeypatch):
@@ -326,3 +425,48 @@ def test_extended_mode_fallback_increments_turn(first_turn_state, monkeypatch):
     assert result["next_node"] == "end"
     assert "이 활동을 시작하게 된 이유" in result["messages"][0].content
     assert result["extension_turns_used"] == 1
+
+
+def test_extended_mode_includes_retrieved_insights_prompt_variable(first_turn_state, monkeypatch):
+    """연장 모드 질문 생성 시 retrieved_insights를 프롬프트 변수로 전달한다."""
+    captured: dict[str, object] = {}
+
+    def _capture_invoke(chain, prompt_variables, max_retries_per_question):
+        captured.update(prompt_variables)
+        return "연장 질문"
+
+    monkeypatch.setattr(question_generator, "_invoke_with_retry", _capture_invoke)
+
+    state = {
+        **first_turn_state,
+        "messages": [
+            AIMessage(content="이전 질문"),
+            HumanMessage(content="이전 답변"),
+        ],
+        "retrieved_insights": [
+            {
+                "id": "insight-1",
+                "title": "학습 인사이트",
+                "activity_name": "프로젝트 C",
+                "category": "학습",
+                "content": "새로운 기술을 빠르게 익힌 경험",
+                "similarity_score": 0.73,
+                "source": "search",
+            }
+        ],
+        "is_extended_mode": True,
+        "all_stages_complete": False,
+        "extension_turns_used": 0,
+        "extension_turns_max": 3,
+    }
+
+    result = question_generator.run(state)
+
+    assert result["messages"][0].content == "연장 질문"
+    assert captured["retrieved_insights"] == (
+        "- [학습] 학습 인사이트\n"
+        "  - 활동명: 프로젝트 C\n"
+        "  - 출처: search\n"
+        "  - 유사도: 0.73\n"
+        "  - 내용: 새로운 기술을 빠르게 익힌 경험"
+    )
