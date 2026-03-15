@@ -1,7 +1,7 @@
 """그래프 구조 테스트"""
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from features.interview.agents import InterviewState, build_graph
 from features.interview.agents.state import get_initial_interview_state
@@ -49,18 +49,60 @@ def test_supervisor_routing(initial_state):
 
     result = router.run(initial_state)
     assert result["next_node"] == "question_generator"
+    assert result["turn_number"] == 0
 
 
 def test_interviewer_routing(initial_state):
-    """Router가 후속 턴에 analyst로 라우팅하는지 확인"""
+    """Router가 후속 턴에 retriever로 라우팅하는지 확인"""
     from features.interview.agents.nodes import router
 
-    state = {**initial_state, "messages": [AIMessage(content="이전 질문")]}
+    state = {
+        **initial_state,
+        "messages": [AIMessage(content="이전 질문"), HumanMessage(content="첫 답변")],
+    }
     result = router.run(state)
-    assert result["next_node"] == "analyst"
+    assert result["next_node"] == "retriever"
+    assert result["turn_number"] == 1
 
 
-def test_graph_with_end_condition(initial_state, monkeypatch):
+def test_interviewer_routing_with_file_attachment(initial_state):
+    """파일이 있으면 Router가 file_processor로 라우팅하는지 확인"""
+    from features.interview.agents.nodes import router
+
+    state = {
+        **initial_state,
+        "messages": [AIMessage(content="이전 질문"), HumanMessage(content="파일 포함 답변")],
+        "current_turn_files": ["file-1"],
+    }
+    result = router.run(state)
+    assert result["next_node"] == "file_processor"
+    assert result["turn_number"] == 1
+
+
+def test_router_increments_existing_turn_number(initial_state):
+    """Router는 사용자 메시지 처리 시 기존 turn_number를 증가시킨다."""
+    from features.interview.agents.nodes import router
+
+    state = {
+        **initial_state,
+        "turn_number": 2,
+        "messages": [
+            AIMessage(content="이전 질문"),
+            HumanMessage(content="이전 답변"),
+            AIMessage(content="둘째 질문"),
+            HumanMessage(content="둘째 답변"),
+            AIMessage(content="새 질문"),
+            HumanMessage(content="새 답변"),
+        ],
+    }
+
+    result = router.run(state)
+
+    assert result["turn_number"] == 3
+
+
+@pytest.mark.asyncio
+async def test_graph_with_end_condition(initial_state, monkeypatch):
     """Analyst가 end를 반환하면 QG를 거치지 않고 종료한다."""
     from features.interview.agents.nodes import analyst, question_generator
 
@@ -80,10 +122,11 @@ def test_graph_with_end_condition(initial_state, monkeypatch):
 
     state = {
         **initial_state,
-        "messages": [AIMessage(content="이전 질문")],
+        "turn_number": 1,
+        "messages": [AIMessage(content="이전 질문"), HumanMessage(content="답변")],
     }  # Router가 analyst로 분기
     graph = build_graph()
-    result = graph.invoke(state)
+    result = await graph.ainvoke(state)
     assert result is not None
     assert result["all_stages_complete"] is True
     assert result["overall_completion_percentage"] == 100.0

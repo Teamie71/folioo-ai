@@ -3,7 +3,7 @@
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 
-from .nodes import analyst, file_processor, question_generator, router
+from .nodes import analyst, file_processor, question_generator, retriever, router
 from .state import InterviewState
 
 
@@ -19,9 +19,9 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     [첫 턴]
     Router (초기 감지) → QuestionGenerator → END
     [이후 턴 - 파일 있음]
-    Router → FileProcessor → Analyst → QuestionGenerator → END
+    Router → FileProcessor → Retriever → Analyst → QuestionGenerator → END
     [이후 턴 - 파일 없음]
-    Router → Analyst → QuestionGenerator → END
+    Router → Retriever → Analyst → QuestionGenerator → END
 
     Returns:
         CompiledStateGraph: 컴파일된 그래프
@@ -33,8 +33,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     # 노드 추가
     graph.add_node("router", router.run)
     graph.add_node("file_processor", file_processor.run)
-    # 임시 비활성화: retriever 개발 완료 전까지 그래프에서 제외
-    # graph.add_node("retriever", retriever.run)
+    graph.add_node("retriever", retriever.run)
     graph.add_node("question_generator", question_generator.run)
     graph.add_node("analyst", analyst.run)
 
@@ -45,14 +44,13 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
         {
             "question_generator": "question_generator",  # 첫 턴
             "file_processor": "file_processor",  # 파일 있음
-            "analyst": "analyst",  # 파일 없음
+            "retriever": "retriever",  # 파일 없음
         },
     )
 
-    # FileProcessor -> Analyst
-    graph.add_edge("file_processor", "analyst")
-    # 임시 비활성화: Retriever -> Analyst 엣지 제거
-    # graph.add_edge("retriever", "analyst")
+    # FileProcessor -> Retriever -> Analyst
+    graph.add_edge("file_processor", "retriever")
+    graph.add_edge("retriever", "analyst")
     # Analyst -> 조건부 분기 (단계 진행 또는 인터뷰 종료)
     graph.add_conditional_edges(
         "analyst",

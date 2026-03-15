@@ -16,10 +16,9 @@ def run(state: InterviewState) -> InterviewState:
     - 문서 텍스트 추출
     """
 
-    # 파일 처리 후 Analyst 노드로 전환 (Retriever 임시 비활성화)
+    # 파일 처리 후 Retriever 노드로 전환
     return {
         **state,
-        "processed_files": [],  # 처리된 파일 정보 저장
-        "file_context": {},  # 추출된 텍스트 저장
-        "next_node": "analyst",
+        "file_contexts": state.get("file_contexts", []),
+        "next_node": "retriever",
     }

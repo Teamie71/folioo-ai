@@ -1,6 +1,6 @@
 """인터뷰 에이전트의 공유 state 정의"""
 
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 from langgraph.graph.message import add_messages
 
@@ -16,6 +16,16 @@ class InsightLog(TypedDict):
     category: Literal["대인관계", "문제해결", "학습", "레퍼런스", "기타"]
     content: str
     similarity_score: float | None  # Retriever가 검색 시 계산한 유사도
+    source: NotRequired[Literal["mention", "search"]]
+
+
+class InsightTurnRecord(TypedDict):
+    """사용자 턴별 인사이트 복원 기록"""
+
+    turn_number: int
+    user_message: str
+    mentioned_insight: str | None
+    insights: list[InsightLog]
 
 
 class FileAttachment(TypedDict):
@@ -62,7 +72,7 @@ class InterviewState(TypedDict):
     user_id: str  # 사용자 고유 ID
     session_id: str  # 세션 고유 ID
     experience_name: str  # 사용자가 정리하려는 경험/프로젝트명 (세션 생성 시 입력)
-    # turn_number: int  # 현재 턴 번호 (1부터 시작, Router가 매 턴마다 증가시킴)
+    turn_number: int  # 현재 사용자 턴 번호 (세션 생성 직후 0, 사용자 메시지 처리 시 1부터 증가)
 
     # ===== 대화 기록 (LangGraph 메시지 리듀서 사용) =====
     messages: Annotated[list, add_messages]
@@ -92,9 +102,8 @@ class InterviewState(TypedDict):
     # Analyst가 현재 턴의 사용자 답변을 분석하여 업데이트
 
     # ===== 인사이트 로그 =====
-    mentioned_insight_ids: list[str]
-    # 현재 턴에서 사용자가 @로 명시한 insight ID들
-    # Retriever가 사용자 메시지를 파싱하여 추출
+    mentioned_insight: str | None
+    # 현재 턴에서 사용자가 @로 명시한 insight ID
 
     retrieved_insights: list[InsightLog]
     # 해당 턴에서 검색/멘션된 인사이트 로그 목록 (매 턴 갱신, 누적하지 않음)
@@ -103,6 +112,10 @@ class InterviewState(TypedDict):
     #   2. @멘션된 인사이트 강제 포함
     #   3. 병합 & 중복 제거 후 해당 턴의 결과만 반환
     # 이전 턴의 인사이트는 messages 히스토리를 통해 자연스럽게 context에 포함됨
+
+    insight_turn_history: list[InsightTurnRecord]
+    # 사용자 턴별 인사이트 카드 복원 이력
+    # retrieved_insights와 별개로 과거 턴 전체를 누적 저장
 
     # ===== 파일 업로드 =====
     uploaded_files: list[FileAttachment]
@@ -171,6 +184,7 @@ def get_initial_interview_state(
         "user_id": user_id,
         "session_id": session_id,
         "experience_name": experience_name,
+        "turn_number": 0,
         # 대화 기록
         "messages": [],
         # 단계 관리
@@ -189,8 +203,9 @@ def get_initial_interview_state(
         # 수집 데이터
         "collected_data": {f"stage_{i}": {} for i in range(1, 5)},
         # 인사이트
-        "mentioned_insight_ids": [],
+        "mentioned_insight": None,
         "retrieved_insights": [],
+        "insight_turn_history": [],
         # 파일 업로드
         "uploaded_files": [],
         "current_turn_files": [],
@@ -207,4 +222,24 @@ def get_initial_interview_state(
         "extension_turns_max": global_config.extension_turns_per_session,
         # 에러 추적
         "llm_error": None,
+    }
+
+
+def get_turn_number_from_messages(messages: list) -> int:
+    """메시지 목록에서 사용자 턴 수를 계산"""
+
+    return sum(1 for message in messages if getattr(message, "type", None) == "human")
+
+
+def ensure_interview_state_defaults(state: InterviewState | dict) -> InterviewState:
+    """구버전 세션 state에도 신규 기본값을 보강"""
+
+    messages = list(state.get("messages") or [])
+
+    return {
+        **state,
+        "turn_number": state.get("turn_number", get_turn_number_from_messages(messages)),
+        "mentioned_insight": state.get("mentioned_insight"),
+        "retrieved_insights": list(state.get("retrieved_insights") or []),
+        "insight_turn_history": list(state.get("insight_turn_history") or []),
     }

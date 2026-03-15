@@ -267,3 +267,6 @@ def test_all_stages_valid(stage):
 2. `ruff format .` 실행
 3. `pytest` 실행하여 테스트 통과 확인
 4. 새 기능에 대한 테스트 추가
+
+## 코드 리뷰 규칙
+- 코드 리뷰 코멘트는 반드시 한국어로 작성할 것

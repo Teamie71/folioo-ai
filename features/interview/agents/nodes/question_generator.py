@@ -18,10 +18,11 @@ from ..prompts import (
     first_turn_prompt,
     generated_question_prompt,
 )
-from ..state import InterviewState
+from ..state import InterviewState, ensure_interview_state_defaults
 from .utils import (
     _format_global_incomplete_fields,
     _format_incomplete_fields,
+    _format_retrieved_insights,
     _get_all_stage_incomplete_fields,
     _get_conversation_context,
     _get_incomplete_fields,
@@ -113,6 +114,7 @@ def _generate_contextual_fixed_question(
     global_config = get_global_config()
     context = _get_conversation_context(state, max_messages=global_config.context_window_size)
     progress = state["stage_progress"]
+    retrieved_insights_str = _format_retrieved_insights(state["retrieved_insights"])
 
     # 2. LLM 프롬프트 구성
     llm = get_llm(temperature=0.7)
@@ -127,6 +129,7 @@ def _generate_contextual_fixed_question(
                 "experience_name": state["experience_name"],
                 "fixed_q_used": progress["fixed_q_used"],
                 "conversation_context": context,
+                "retrieved_insights": retrieved_insights_str,
                 "fixed_question_content": fixed_question_content,
             },
             max_retries_per_question=global_config.max_retries_per_question,
@@ -157,6 +160,7 @@ def _generate_dynamic_question(
     # 2. 미수집/불완전 필드 파악
     incomplete_fields = _get_incomplete_fields(state, stage_config)
     incomplete_fields_str = _format_incomplete_fields(incomplete_fields)
+    retrieved_insights_str = _format_retrieved_insights(state["retrieved_insights"])
     # 3. 진행 상황 정보
     progress = state["stage_progress"]
     remaining_questions = progress["generated_q_max"] - progress["generated_q_used"]
@@ -172,6 +176,7 @@ def _generate_dynamic_question(
                 "stage_name": stage_config.name,
                 "conversation_context": context,
                 "incomplete_fields": incomplete_fields_str,
+                "retrieved_insights": retrieved_insights_str,
                 "remaining_questions": remaining_questions,
             },
             max_retries_per_question=global_config.max_retries_per_question,
@@ -197,6 +202,7 @@ def _generate_extended_question(
     context = _get_conversation_context(state, max_messages=global_config.context_window_size)
     incomplete_fields = _get_all_stage_incomplete_fields(state, stages=all_stage_configs)
     global_incomplete_fields = _format_global_incomplete_fields(incomplete_fields)
+    retrieved_insights_str = _format_retrieved_insights(state["retrieved_insights"])
 
     remaining_turns = state["extension_turns_max"] - state["extension_turns_used"]
 
@@ -211,6 +217,7 @@ def _generate_extended_question(
                 "experience_name": state["experience_name"],
                 "conversation_context": context,
                 "global_incomplete_fields": global_incomplete_fields,
+                "retrieved_insights": retrieved_insights_str,
                 "remaining_turns": remaining_turns,
             },
             max_retries_per_question=global_config.max_retries_per_question,
@@ -254,15 +261,17 @@ def run(state: InterviewState) -> InterviewState:
     - 질문 소진: 안전한 fallback 질문 생성
     """
 
-    if state["is_extended_mode"]:
-        return _run_extended_mode(state)
+    normalized_state = ensure_interview_state_defaults(state)
+
+    if normalized_state["is_extended_mode"]:
+        return _run_extended_mode(normalized_state)
 
     # 1. 현재 단계 설정 로드
-    stage_config = load_stage_config(state["current_stage"])
-    progress = state["stage_progress"]
+    stage_config = load_stage_config(normalized_state["current_stage"])
+    progress = normalized_state["stage_progress"]
 
-    # 2. 첫 턴 여부 판단
-    is_first_turn = len(state["messages"]) == 0
+    # 2. 첫 질문 생성 여부 판단
+    is_first_turn = normalized_state["turn_number"] == 0
 
     question: str
     llm_error: str | None
@@ -270,7 +279,7 @@ def run(state: InterviewState) -> InterviewState:
 
     if is_first_turn:
         # ===== 첫 턴 질문 생성 =====
-        question, llm_error = _generate_first_turn_question(state, stage_config)
+        question, llm_error = _generate_first_turn_question(normalized_state, stage_config)
         updated_progress = {
             **progress,
             "fixed_q_used": 1,
@@ -282,7 +291,7 @@ def run(state: InterviewState) -> InterviewState:
         fixed_question_raw = stage_config.fixed_questions[next_fixed_question_idx]
 
         question, llm_error = _generate_contextual_fixed_question(
-            state=state,
+            state=normalized_state,
             fixed_question_content=fixed_question_raw,
         )
 
@@ -293,7 +302,7 @@ def run(state: InterviewState) -> InterviewState:
 
     elif progress["generated_q_used"] < progress["generated_q_max"]:
         # ===== 생성 질문 생성 =====
-        question, llm_error = _generate_dynamic_question(state, stage_config)
+        question, llm_error = _generate_dynamic_question(normalized_state, stage_config)
         updated_progress = {
             **progress,
             "generated_q_used": progress["generated_q_used"] + 1,
@@ -303,7 +312,7 @@ def run(state: InterviewState) -> InterviewState:
         # ===== 질문 소진 (방어 로직) =====
         logger.warning(
             "Stage %s: QuestionGenerator가 질문 소진 상태로 호출되어 fallback 질문을 생성합니다.",
-            state["current_stage"],
+            normalized_state["current_stage"],
         )
         question = "혹시 더 추가하고 싶은 내용이 있으신가요?"
         llm_error = None
@@ -313,7 +322,7 @@ def run(state: InterviewState) -> InterviewState:
 
     # 4. 공통 반환 처리
     result_state: InterviewState = {
-        **state,
+        **normalized_state,
         "messages": [AIMessage(content=question)],
         "stage_progress": updated_progress,
         "next_node": "end",

@@ -113,10 +113,8 @@ def test_extend_session_stream_route_exists():
 
 
 @pytest.mark.anyio
-async def test_process_message_stream_ignores_retriever_events_when_temporarily_disabled(
-    monkeypatch,
-):
-    """Retriever 이벤트가 와도 retriever_result를 전송하지 않고 일반 스트림만 유지한다."""
+async def test_process_message_stream_emits_retriever_events(monkeypatch):
+    """Retriever 시작/결과 이벤트를 SSE로 전송한다."""
     dummy_graph = DummyGraph()
     dummy_graph.state_snapshot = DummyStateSnapshot(
         values={
@@ -136,6 +134,11 @@ async def test_process_message_stream_ignores_retriever_events_when_temporarily_
     )
     dummy_graph.stream_events = [
         {
+            "event": LangGraphEventType.ON_CHAIN_START,
+            "metadata": {"langgraph_node": "retriever"},
+            "data": {},
+        },
+        {
             "event": LangGraphEventType.ON_CHAIN_END,
             "metadata": {"langgraph_node": "retriever"},
             "data": {
@@ -144,14 +147,18 @@ async def test_process_message_stream_ignores_retriever_events_when_temporarily_
                         {
                             "id": "insight-1",
                             "title": "문제 해결 경험",
+                            "activity_name": "프로젝트 A",
                             "category": "문제해결",
                             "similarity_score": 0.91,
+                            "source": "search",
                         },
                         {
                             "id": "insight-2",
                             "title": "멘션 인사이트",
+                            "activity_name": "프로젝트 B",
                             "category": "기타",
                             "similarity_score": None,
+                            "source": "mention",
                         },
                     ]
                 }
@@ -179,8 +186,57 @@ async def test_process_message_stream_ignores_retriever_events_when_temporarily_
     ]
 
     assert len(events) > 0
-    assert all(event["event"] != SSEEventType.RETRIEVER_RESULT for event in events)
-    assert events[0]["event"] == SSEEventType.CONTENT_BLOCK_DELTA
+    assert events[0]["event"] == SSEEventType.RETRIEVER_STATUS
+    status_payload = json.loads(events[0]["data"])
+    assert status_payload["type"] == SSEEventType.RETRIEVER_STATUS
+
+    assert events[1]["event"] == SSEEventType.RETRIEVER_RESULT
+    retriever_payload = json.loads(events[1]["data"])
+    assert retriever_payload["insights"][0]["activity_name"] == "프로젝트 A"
+    assert retriever_payload["insights"][0]["source"] == "search"
+    assert retriever_payload["insights"][1]["source"] == "mention"
+
+    assert events[2]["event"] == SSEEventType.CONTENT_BLOCK_DELTA
+
+
+@pytest.mark.anyio
+async def test_process_message_stream_resets_current_turn_files_when_no_files(monkeypatch):
+    """스트리밍 턴에서도 current_turn_files를 빈 리스트로 초기화한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "messages": [AIMessage(content="최종 응답")],
+            "current_stage": 1,
+            "stage_progress": {
+                "fixed_q_used": 0,
+                "fixed_q_total": 1,
+                "generated_q_used": 0,
+                "generated_q_max": 0,
+                "force_all_generated_q": False,
+                "is_complete": False,
+            },
+            "overall_completion_percentage": 25.0,
+            "all_stages_complete": False,
+            "current_turn_files": ["old-file"],
+        }
+    )
+    dummy_graph.stream_events = []
+
+    monkeypatch.setattr(
+        "features.interview.service.build_graph", lambda checkpointer=None: dummy_graph
+    )
+    monkeypatch.setattr("features.interview.service.get_checkpointer", lambda: object())
+    service = InterviewService()
+
+    _ = [
+        event
+        async for event in service.process_message_stream(
+            session_id="session-1",
+            message="사용자 답변",
+        )
+    ]
+
+    assert dummy_graph.astream_calls[0]["state"]["current_turn_files"] == []
 
 
 @pytest.mark.anyio
@@ -290,7 +346,7 @@ async def test_extend_session_stream_yields_delta_and_complete(monkeypatch):
 
     events = [event async for event in service.extend_session_stream(session_id="session-1")]
 
-    assert dummy_graph.astream_calls[0]["state"]["mentioned_insight_ids"] == []
+    assert dummy_graph.astream_calls[0]["state"]["mentioned_insight"] is None
 
     assert events[0]["event"] == SSEEventType.CONTENT_BLOCK_DELTA
     delta_payload = json.loads(events[0]["data"])

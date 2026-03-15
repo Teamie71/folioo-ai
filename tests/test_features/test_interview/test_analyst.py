@@ -6,6 +6,7 @@ from langchain_core.runnables import RunnableLambda
 from common.llm import client as llm_client
 from common.llm import get_analyst_llm
 from features.interview.agents.nodes import analyst
+from features.interview.agents.nodes.utils import _format_retrieved_insights
 from features.interview.agents.prompts.analyst import AnalystFieldResult, AnalystResponse
 from features.interview.agents.state import get_initial_interview_state
 from features.interview.config.loader import load_stage_config
@@ -69,6 +70,39 @@ def test_run_keeps_stage_when_not_complete(monkeypatch):
     assert result["next_node"] == "question_generator"
     assert result["stage_progress"]["is_complete"] is False
     assert result["collected_data"]["stage_1"]["project_background"]["value"] == "프로젝트 배경"
+
+
+def test_format_retrieved_insights_includes_activity_source_and_similarity():
+    """Analyst와 QuestionGenerator가 공유하는 인사이트 포맷에 핵심 필드가 포함된다."""
+    formatted = _format_retrieved_insights(
+        [
+            {
+                "id": "insight-1",
+                "title": "문제 해결 경험",
+                "activity_name": "프로젝트 A",
+                "category": "문제해결",
+                "content": "병목을 개선한 경험",
+                "similarity_score": 0.91,
+                "source": "search",
+            },
+            {
+                "id": "insight-2",
+                "title": "멘션 인사이트",
+                "activity_name": "프로젝트 B",
+                "category": "기타",
+                "content": "사용자가 직접 언급한 내용",
+                "similarity_score": None,
+                "source": "mention",
+            },
+        ]
+    )
+
+    assert "활동명: 프로젝트 A" in formatted
+    assert "출처: search" in formatted
+    assert "유사도: 0.91" in formatted
+    assert "활동명: 프로젝트 B" in formatted
+    assert "출처: mention" in formatted
+    assert "유사도: 없음" in formatted
 
 
 def test_run_moves_to_next_stage_when_questions_exhausted(monkeypatch):

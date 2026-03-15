@@ -13,6 +13,48 @@ class DummyInterviewService:
         assert experience_name
         yield {"event": "message_complete", "data": "{}"}
 
+    async def get_session_state(self, session_id: str):
+        return {
+            "session_id": session_id,
+            "user_id": "user-1",
+            "experience_name": "프로젝트",
+            "turn_number": 2,
+            "current_stage": 1,
+            "stage_progress": {
+                "fixed_q_used": 1,
+                "fixed_q_total": 3,
+                "generated_q_used": 0,
+                "generated_q_max": 2,
+                "force_all_generated_q": False,
+                "is_complete": False,
+            },
+            "overall_completion_percentage": 25.0,
+            "all_stages_complete": False,
+            "is_extended_mode": False,
+            "collected_data": {"stage_1": {}},
+            "insight_turn_history": [
+                {
+                    "turn_number": 1,
+                    "user_message": "첫 답변",
+                    "mentioned_insight": "insight-1",
+                    "insights": [
+                        {
+                            "id": "insight-1",
+                            "title": "문제 해결 경험",
+                            "activity_name": "해커톤",
+                            "category": "문제해결",
+                            "content": "문제를 해결했습니다.",
+                            "similarity_score": 0.91,
+                            "source": "search",
+                        }
+                    ],
+                }
+            ],
+            "messages": [],
+            "mentioned_insight": None,
+            "retrieved_insights": [],
+        }
+
 
 def _create_client(monkeypatch) -> TestClient:
     monkeypatch.setattr(interview_api, "get_interview_service", lambda: DummyInterviewService())
@@ -50,3 +92,17 @@ def test_extend_routes_exist():
     assert "POST" in extend_methods
     assert extend_stream_methods is not None
     assert "POST" in extend_stream_methods
+
+
+def test_get_session_state_includes_turn_history(monkeypatch):
+    """세션 상태 응답에 turn_number와 인사이트 턴 히스토리를 포함한다."""
+    client = _create_client(monkeypatch)
+
+    response = client.get("/api/v1/interview/sessions/session-1/state")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["turn_number"] == 2
+    assert body["insight_turn_history"][0]["turn_number"] == 1
+    assert body["insight_turn_history"][0]["user_message"] == "첫 답변"
+    assert body["insight_turn_history"][0]["insights"][0]["activity_name"] == "해커톤"

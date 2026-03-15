@@ -1,15 +1,24 @@
 """인사이트 메인 서버 API 클라이언트"""
 
+from collections.abc import Iterable
 from typing import Any
 
 from common.http_client import MainServerError, request_with_retry
 from features.interview.agents.state import InsightLog
 
 
-def _to_insight_log(raw: dict[str, Any]) -> InsightLog:
+def _to_insight_log(raw: dict[str, Any], *, source: str | None = None) -> InsightLog:
     """메인 서버 응답 객체를 InsightLog로 변환"""
-    activity_names = raw.get("activityNames") or []
-    activity_name = ", ".join(str(a) for a in activity_names)
+    activity_names = raw.get("activityNames")
+    if isinstance(activity_names, str):
+        activity_name = activity_names
+    elif isinstance(activity_names, Iterable):
+        activity_name = ", ".join(str(a) for a in activity_names)
+    else:
+        activity_name = str(raw.get("activityName", ""))
+
+    similarity_score = raw.get("similarityScore")
+    insight_source = source or ("search" if similarity_score is not None else "mention")
 
     return {
         "id": str(raw["id"]),
@@ -17,8 +26,25 @@ def _to_insight_log(raw: dict[str, Any]) -> InsightLog:
         "activity_name": activity_name,
         "category": raw.get("category", "기타"),
         "content": str(raw.get("description", "")),
-        "similarity_score": raw.get("similarityScore"),
+        "similarity_score": similarity_score,
+        "source": insight_source,
     }
+
+
+def _extract_search_items(result: Any) -> list[dict[str, Any]]:
+    """검색 응답에서 인사이트 목록을 추출"""
+    if isinstance(result, list):
+        return [item for item in result if isinstance(item, dict)]
+
+    if not isinstance(result, dict):
+        return []
+
+    for key in ("insights", "content", "items"):
+        raw_items = result.get(key)
+        if isinstance(raw_items, list):
+            return [item for item in raw_items if isinstance(item, dict)]
+
+    return []
 
 
 class InsightClient:
@@ -54,15 +80,8 @@ class InsightClient:
             },
         )
 
-        insights: list[dict[str, Any]] = []
-        if isinstance(result, dict):
-            raw_insights = result.get("insights")
-            if isinstance(raw_insights, list):
-                insights = [item for item in raw_insights if isinstance(item, dict)]
-        elif isinstance(result, list):
-            insights = [item for item in result if isinstance(item, dict)]
-
-        return [_to_insight_log(item) for item in insights]
+        insights = _extract_search_items(result)
+        return [_to_insight_log(item, source="search") for item in insights]
 
     async def get_by_id(self, insight_id: int) -> InsightLog | None:
         """
@@ -85,4 +104,4 @@ class InsightClient:
             raise
         if result is None:
             return None
-        return _to_insight_log(result)
+        return _to_insight_log(result, source="mention")
