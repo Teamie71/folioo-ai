@@ -173,6 +173,7 @@ async def get_company_insight(correction_id: str) -> CompanyInsightResponse:
     status_code=status.HTTP_200_OK,
     summary="기업 분석 수정",
     responses={
+        400: {"model": ErrorResponse, "description": "요청 데이터 검증 실패 (길이 초과 등)"},
         404: {"model": ErrorResponse, "description": "첨삭이 없는 경우"},
         409: {"model": ErrorResponse, "description": "상태 전이 규칙 위반"},
         500: {"model": ErrorResponse, "description": "내부 서버 에러"},
@@ -187,6 +188,11 @@ async def update_company_insight(
     try:
         await get_correction_client().update_company_insight(cid, request.company_insight)
         return {"message": "기업 분석이 수정되었습니다."}
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
     except MainServerError as exc:
         _handle_main_server_error(exc)
     except HTTPException:
