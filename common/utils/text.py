@@ -8,16 +8,22 @@ def count_chars(text: str | None) -> int:
 
 def is_within_char_limit(text: str | None, limit: int) -> bool:
     """문자 수 제한 이내 여부 반환"""
+    if limit < 0:
+        raise ValueError("limit은 0 이상이어야 합니다.")
     return count_chars(text) <= limit
 
 
 def get_char_overflow(text: str | None, limit: int) -> int:
     """문자 수 초과량 반환"""
+    if limit < 0:
+        raise ValueError("limit은 0 이상이어야 합니다.")
     return max(count_chars(text) - limit, 0)
 
 
 def truncate_to_char_limit(text: str | None, limit: int) -> str:
     """문자 수 제한에 맞춰 잘라낸 텍스트 반환"""
+    if limit < 0:
+        raise ValueError("limit은 0 이상이어야 합니다.")
     return (text or "")[:limit]
 
 
