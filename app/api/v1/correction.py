@@ -173,7 +173,7 @@ async def get_company_insight(correction_id: str) -> CompanyInsightResponse:
     status_code=status.HTTP_200_OK,
     summary="기업 분석 수정",
     responses={
-        400: {"model": ErrorResponse, "description": "요청 데이터 검증 실패 (길이 초과 등)"},
+        422: {"model": ErrorResponse, "description": "요청 데이터 검증 실패 (길이 초과 등)"},
         404: {"model": ErrorResponse, "description": "첨삭이 없는 경우"},
         409: {"model": ErrorResponse, "description": "상태 전이 규칙 위반"},
         500: {"model": ErrorResponse, "description": "내부 서버 에러"},

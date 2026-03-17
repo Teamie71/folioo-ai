@@ -2,8 +2,6 @@
 
 import logging
 
-from features.correction.config.loader import get_correction_rag_config
-
 from .base_client import BaseClient
 
 logger = logging.getLogger(__name__)
@@ -94,20 +92,7 @@ class CorrectionClient(BaseClient):
         Args:
             correction_id: 첨삭 ID
             company_insight: 기업 분석 텍스트
-
-        Raises:
-            ValueError: company_insight이 최대 길이를 초과하는 경우
         """
-        # defensive validation: 최대 길이 제약 검증
-        max_length = get_correction_rag_config().company_insight_max_length
-        if len(company_insight) > max_length:
-            error_msg = (
-                f"기업 분석 내용이 최대 길이({max_length}자)를 초과합니다. "
-                f"현재 길이: {len(company_insight)}자"
-            )
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
         return await self.patch(
             f"{self._PREFIX}/{correction_id}/company-insight",
             json={"companyInsight": company_insight},
