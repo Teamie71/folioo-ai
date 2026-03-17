@@ -162,7 +162,9 @@ class InterviewService:
             session_id=session_id,
             experience_name=experience_name,
         )
-        initial_state["status"] = "generating"
+        # "generating" 상태를 체크포인터에 즉시 저장 (process_message_stream, extend_session_stream과 일관성)
+        # 세션 최초 생성이므로 fallback_state로 초기 상태 전달 → 체크포인터에 세션이 없으면 전체 초기 상태를 포함해 저장
+        await self._set_session_status(session_id, "generating", fallback_state=initial_state)
         config = self._get_thread_config(session_id)
         accumulated_text = ""
 
