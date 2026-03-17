@@ -7,6 +7,9 @@ from app.api.v1 import interview as interview_api
 
 
 class DummyInterviewService:
+    def __init__(self, missing_session_ids: set[str] | None = None):
+        self.missing_session_ids = missing_session_ids or set()
+
     async def create_session_stream(self, user_id: str, session_id: str, experience_name: str):
         assert user_id
         assert session_id
@@ -14,10 +17,14 @@ class DummyInterviewService:
         yield {"event": "message_complete", "data": "{}"}
 
     async def get_session_state(self, session_id: str):
+        if session_id in self.missing_session_ids:
+            return None
+
         return {
             "session_id": session_id,
             "user_id": "user-1",
             "experience_name": "프로젝트",
+            "status": "completed",
             "turn_number": 2,
             "current_stage": 1,
             "stage_progress": {
@@ -55,9 +62,22 @@ class DummyInterviewService:
             "retrieved_insights": [],
         }
 
+    async def get_session_status(self, session_id: str):
+        if session_id in self.missing_session_ids:
+            return None
 
-def _create_client(monkeypatch) -> TestClient:
-    monkeypatch.setattr(interview_api, "get_interview_service", lambda: DummyInterviewService())
+        return {
+            "session_id": session_id,
+            "status": "completed",
+            "current_stage": 1,
+            "all_complete": False,
+        }
+
+
+def _create_client(monkeypatch, service: DummyInterviewService | None = None) -> TestClient:
+    monkeypatch.setattr(
+        interview_api, "get_interview_service", lambda: service or DummyInterviewService()
+    )
     monkeypatch.setattr(interview_api, "uuid4", lambda: "test-session-id")
     app = FastAPI()
     app.include_router(interview_api.router, prefix="/api/v1")
@@ -102,7 +122,34 @@ def test_get_session_state_includes_turn_history(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
+    assert body["status"] == "completed"
     assert body["turn_number"] == 2
     assert body["insight_turn_history"][0]["turn_number"] == 1
     assert body["insight_turn_history"][0]["user_message"] == "첫 답변"
     assert body["insight_turn_history"][0]["insights"][0]["activity_name"] == "해커톤"
+
+
+def test_get_session_status_returns_compact_payload(monkeypatch):
+    """세션 경량 상태 조회 응답에 status 핵심 필드를 포함한다."""
+    client = _create_client(monkeypatch)
+
+    response = client.get("/api/v1/interview/sessions/session-1/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "session_id": "session-1",
+        "status": "completed",
+        "current_stage": 1,
+        "all_complete": False,
+    }
+
+
+def test_get_session_status_returns_404_when_missing(monkeypatch):
+    """존재하지 않는 세션의 경량 상태 조회는 404를 반환한다."""
+    client = _create_client(monkeypatch, DummyInterviewService({"missing-session"}))
+
+    response = client.get("/api/v1/interview/sessions/missing-session/status")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "세션을 찾을 수 없습니다: missing-session"

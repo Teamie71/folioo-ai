@@ -40,6 +40,7 @@ class DummyGraph:
         self.invoke_result = None
         self.state_snapshot = None
         self.last_get_state_config = None
+        self.update_state_calls = []
 
     async def ainvoke(self, state, config=None):
         self.invocations.append({"state": state, "config": config})
@@ -48,6 +49,13 @@ class DummyGraph:
     async def aget_state(self, config=None):
         self.last_get_state_config = config
         return self.state_snapshot
+
+    async def aupdate_state(self, config, state):
+        self.update_state_calls.append({"config": config, "state": state})
+        if self.state_snapshot is None:
+            self.state_snapshot = DummyStateSnapshot(values=dict(state))
+        else:
+            self.state_snapshot.values = {**self.state_snapshot.values, **state}
 
 
 def _build_service(monkeypatch, dummy_graph):
@@ -99,6 +107,7 @@ async def test_create_session_returns_expected_payload(monkeypatch):
     assert invocation["state"]["user_id"] == "user_1"
     assert invocation["state"]["session_id"] == "session_1"
     assert invocation["state"]["experience_name"] == "프로젝트 A"
+    assert invocation["state"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -332,9 +341,33 @@ async def test_get_session_state_returns_values(monkeypatch):
     assert result is not None
     assert result["session_id"] == "session_1"
     assert result["turn_number"] == 1
+    assert result["status"] == "completed"
     assert result["retrieved_insights"] == []
     assert result["mentioned_insight"] is None
     assert result["insight_turn_history"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_session_status_returns_compact_payload(monkeypatch):
+    """세션 경량 상태 조회 시 status와 핵심 필드만 반환한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "current_stage": 2,
+            "all_stages_complete": False,
+        }
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    result = await service.get_session_status("session_1")
+
+    assert result == {
+        "session_id": "session_1",
+        "status": "completed",
+        "current_stage": 2,
+        "all_complete": False,
+    }
 
 
 def test_singleton_get_and_reset(monkeypatch):

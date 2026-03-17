@@ -61,6 +61,9 @@ class CollectedField(TypedDict):
 
 
 # 메인 State 정의
+InterviewSessionStatus = Literal["generating", "completed", "failed"]
+
+
 class InterviewState(TypedDict):
     """
     인터뷰 에이전트의 공유 상태
@@ -72,6 +75,7 @@ class InterviewState(TypedDict):
     user_id: str  # 사용자 고유 ID
     session_id: str  # 세션 고유 ID
     experience_name: str  # 사용자가 정리하려는 경험/프로젝트명 (세션 생성 시 입력)
+    status: InterviewSessionStatus  # 세션 생성 상태
     turn_number: int  # 현재 사용자 턴 번호 (세션 생성 직후 0, 사용자 메시지 처리 시 1부터 증가)
 
     # ===== 대화 기록 (LangGraph 메시지 리듀서 사용) =====
@@ -184,6 +188,7 @@ def get_initial_interview_state(
         "user_id": user_id,
         "session_id": session_id,
         "experience_name": experience_name,
+        "status": "completed",
         "turn_number": 0,
         # 대화 기록
         "messages": [],
@@ -238,6 +243,7 @@ def ensure_interview_state_defaults(state: InterviewState | dict) -> InterviewSt
 
     return {
         **state,
+        "status": state.get("status", "completed"),
         "turn_number": state.get("turn_number", get_turn_number_from_messages(messages)),
         "mentioned_insight": state.get("mentioned_insight"),
         "retrieved_insights": list(state.get("retrieved_insights") or []),

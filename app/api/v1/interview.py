@@ -22,6 +22,7 @@ from app.schemas.interview import (
     InsightTurnRecordSchema,
     MessageSchema,
     SessionStateResponse,
+    SessionStatusResponse,
     StageProgressSchema,
 )
 from common.sse import SSEErrorCode, SSEEventType
@@ -316,6 +317,29 @@ async def extend_session_stream(session_id: str):
 
 
 @router.get(
+    "/sessions/{session_id}/status",
+    response_model=SessionStatusResponse,
+    status_code=status.HTTP_200_OK,
+    summary="세션 경량 상태 조회",
+    description="현재 세션의 경량 상태를 조회합니다.",
+    responses={404: {"model": ErrorResponse, "description": "세션을 찾을 수 없음"}},
+)
+async def get_session_status(session_id: str) -> SessionStatusResponse:
+    """세션의 경량 상태를 조회한다."""
+
+    service = get_interview_service()
+    session_status = await service.get_session_status(session_id)
+
+    if session_status is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"세션을 찾을 수 없습니다: {session_id}",
+        )
+
+    return SessionStatusResponse(**session_status)
+
+
+@router.get(
     "/sessions/{session_id}/state",
     response_model=SessionStateResponse,
     status_code=status.HTTP_200_OK,
@@ -362,6 +386,7 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
         session_id=state["session_id"],
         user_id=state["user_id"],
         experience_name=state["experience_name"],
+        status=state["status"],
         turn_number=state["turn_number"],
         current_stage=state["current_stage"],
         stage_progress=StageProgressSchema(**state["stage_progress"]),
