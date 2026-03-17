@@ -19,7 +19,8 @@ sections:
 llm:
     model: "google/gemini-3.1-pro-preview"
     temperature: 0.7
-    max_retries: 3
+    call_max_retries: 3
+    length_retry_max_retries: 2
 
 # collected_data → 섹션 매핑 규칙
 # 인터뷰에서 수집된 데이터를 포트폴리오 섹션에 매핑
