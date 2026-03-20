@@ -15,10 +15,10 @@ async def test_complete_pdf_extraction_posts_camel_case_payload():
 
     activities = [
         {
-            "activityName": "프로젝트명",
+            "activity_name": "프로젝트명",
             "detail": "상세 설명",
             "responsibility": "담당 업무",
-            "problemSolving": [
+            "problem_solving": [
                 {
                     "no": 1,
                     "situation": "문제 상황",
@@ -35,7 +35,22 @@ async def test_complete_pdf_extraction_posts_camel_case_payload():
     client.post.assert_awaited_once_with(
         "/internal/corrections/123/pdf-extraction-result",
         json={
-            "activities": activities,
+            "activities": [
+                {
+                    "activityName": "프로젝트명",
+                    "detail": "상세 설명",
+                    "responsibility": "담당 업무",
+                    "problemSolving": [
+                        {
+                            "no": 1,
+                            "situation": "문제 상황",
+                            "strategy": "대응 전략",
+                            "reason": "선택 이유",
+                        }
+                    ],
+                    "learning": "배운 점",
+                }
+            ],
             "sourceType": "EXTERNAL",
         },
     )

@@ -2,8 +2,9 @@
 
 import json
 import logging
+from contextlib import suppress
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Response, UploadFile, status
 
 from app.schemas.correction import (
     CompanyInsightResponse,
@@ -13,9 +14,11 @@ from app.schemas.correction import (
     UpdateEmphasisPointsRequest,
 )
 from app.schemas.interview import ErrorResponse
+from app.schemas.pdf_extraction import PdfExtractionAcceptedResponse
 from common.clients.base_client import MainServerError
 from common.clients.correction_client import get_correction_client
 from features.correction.service import get_correction_service
+from features.portfolio.pdf_extraction.service import get_pdf_extraction_service
 
 router = APIRouter(prefix="/corrections", tags=["correction"])
 logger = logging.getLogger(__name__)
@@ -289,6 +292,57 @@ async def retry_correction(
         raise
     except Exception:
         _raise_internal_server_error()
+
+
+@router.post(
+    "/{correction_id}/pdf-extraction",
+    response_model=PdfExtractionAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="PDF 추출 시작",
+    responses={
+        400: {"model": ErrorResponse, "description": "PDF 업로드 검증 실패"},
+        404: {"model": ErrorResponse, "description": "첨삭이 없는 경우"},
+        409: {"model": ErrorResponse, "description": "상태 전이 규칙 위반"},
+        500: {"model": ErrorResponse, "description": "내부 서버 에러"},
+    },
+)
+async def start_pdf_extraction(
+    correction_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> PdfExtractionAcceptedResponse:
+    """PDF 파일 업로드를 받아 추출 작업을 비동기로 시작한다."""
+    cid = _validate_correction_id(correction_id)
+    service = get_pdf_extraction_service()
+
+    try:
+        file_bytes = await file.read()
+        await service.start_extraction(
+            correction_id=cid,
+            file_bytes=file_bytes,
+            filename=file.filename or "",
+            content_type=file.content_type,
+            background_tasks=background_tasks,
+        )
+        return PdfExtractionAcceptedResponse(
+            correction_id=correction_id,
+            status="accepted",
+            message="PDF 추출 요청이 접수되었습니다.",
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except MainServerError as exc:
+        _handle_main_server_error(exc)
+    except HTTPException:
+        raise
+    except Exception:
+        _raise_internal_server_error()
+    finally:
+        with suppress(Exception):
+            await file.close()
 
 
 @router.delete(

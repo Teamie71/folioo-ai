@@ -6,6 +6,12 @@ from fastapi.testclient import TestClient
 from app.api.v1 import correction as correction_api
 from common.clients import base_client as base_client_module
 from common.clients import correction_client as correction_client_module
+from features.portfolio.pdf_extraction.schemas import (
+    PdfActivity,
+    PdfExtractionResult,
+    PdfProblemSolvingItem,
+)
+from features.portfolio.pdf_extraction.service import PdfExtractionService
 
 CORRECTION_ID = "123"
 
@@ -71,10 +77,77 @@ class DummyCorrectionService:
         self.retry_started = True
 
 
+class DummyPdfExtractionClient:
+    """PDF 추출 서비스 테스트용 콜백 클라이언트"""
+
+    def __init__(self) -> None:
+        self.completed_calls: list[tuple[int, list[dict], str]] = []
+        self.failed_calls: list[tuple[int, str]] = []
+
+    async def complete_pdf_extraction(
+        self,
+        correction_id: int,
+        activities: list[dict],
+        source_type: str,
+    ) -> dict:
+        self.completed_calls.append((correction_id, activities, source_type))
+        return {"id": correction_id}
+
+    async def fail_pdf_extraction(self, correction_id: int, error_message: str) -> dict:
+        self.failed_calls.append((correction_id, error_message))
+        return {"id": correction_id}
+
+
+class DummyPdfExtractionGenerator:
+    """PDF 추출 서비스 테스트용 generator"""
+
+    def __init__(
+        self,
+        result: PdfExtractionResult | None = None,
+        exc: Exception | None = None,
+    ) -> None:
+        self._result = result or PdfExtractionResult(
+            activities=[
+                PdfActivity(
+                    activity_name="프로젝트 A",
+                    detail="상세 설명",
+                    responsibility="담당 업무",
+                    problem_solving=[
+                        PdfProblemSolvingItem(
+                            no=3,
+                            situation="문제 상황",
+                            strategy="대응 전략",
+                            reason="선택 이유",
+                        )
+                    ],
+                    learning="배운 점",
+                )
+            ]
+        )
+        self._exc = exc
+
+    def extract(self, _file_bytes: bytes, _filename: str) -> PdfExtractionResult:
+        if self._exc is not None:
+            raise self._exc
+        return self._result
+
+
+def _create_pdf_extraction_service(
+    *,
+    generator: DummyPdfExtractionGenerator | None = None,
+    correction_client: DummyPdfExtractionClient | None = None,
+) -> PdfExtractionService:
+    return PdfExtractionService(
+        correction_client=correction_client or DummyPdfExtractionClient(),
+        generator=generator or DummyPdfExtractionGenerator(),
+    )
+
+
 def _create_client(
     monkeypatch,
     correction_client: DummyCorrectionClient,
     service: DummyCorrectionService | None = None,
+    pdf_service: PdfExtractionService | None = None,
 ) -> TestClient:
     monkeypatch.setattr(
         correction_client_module, "get_correction_client", lambda: correction_client
@@ -82,6 +155,8 @@ def _create_client(
     monkeypatch.setattr(correction_api, "get_correction_client", lambda: correction_client)
     if service is not None:
         monkeypatch.setattr(correction_api, "get_correction_service", lambda: service)
+    if pdf_service is not None:
+        monkeypatch.setattr(correction_api, "get_pdf_extraction_service", lambda: pdf_service)
     app = FastAPI()
     app.include_router(correction_api.router, prefix="/api/v1")
     return TestClient(app)
@@ -413,3 +488,93 @@ def test_delete_correction_returns_204(monkeypatch):
 
     assert response.status_code == 204
     assert cc.deleted_id == 123
+
+
+# ------------------------------------------------------------------
+# PDF 추출
+# ------------------------------------------------------------------
+
+
+def test_start_pdf_extraction_returns_202(monkeypatch):
+    """PDF 추출 요청이 유효하면 202를 반환한다."""
+    cc = DummyCorrectionClient()
+    pdf_service = _create_pdf_extraction_service()
+    client = _create_client(monkeypatch, cc, pdf_service=pdf_service)
+
+    response = client.post(
+        f"/api/v1/corrections/{CORRECTION_ID}/pdf-extraction",
+        files={"file": ("portfolio.txt", b"%PDF-1.4", "application/pdf")},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "correction_id": CORRECTION_ID,
+        "status": "accepted",
+        "message": "PDF 추출 요청이 접수되었습니다.",
+    }
+
+
+def test_start_pdf_extraction_returns_400_for_non_pdf(monkeypatch):
+    """PDF가 아닌 파일이면 400을 반환한다."""
+    cc = DummyCorrectionClient()
+    pdf_service = _create_pdf_extraction_service()
+    client = _create_client(monkeypatch, cc, pdf_service=pdf_service)
+
+    response = client.post(
+        f"/api/v1/corrections/{CORRECTION_ID}/pdf-extraction",
+        files={"file": ("portfolio.pdf", b"plain text", "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "PDF 파일만 업로드할 수 있습니다."
+
+
+def test_start_pdf_extraction_returns_400_for_empty_file(monkeypatch):
+    """빈 파일이면 400을 반환한다."""
+    cc = DummyCorrectionClient()
+    pdf_service = _create_pdf_extraction_service()
+    client = _create_client(monkeypatch, cc, pdf_service=pdf_service)
+
+    response = client.post(
+        f"/api/v1/corrections/{CORRECTION_ID}/pdf-extraction",
+        files={"file": ("portfolio.pdf", b"", "application/pdf")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "빈 PDF 파일은 업로드할 수 없습니다."
+
+
+def test_start_pdf_extraction_returns_400_for_file_too_large(monkeypatch):
+    """10MB를 초과한 파일이면 400을 반환한다."""
+    cc = DummyCorrectionClient()
+    pdf_service = _create_pdf_extraction_service()
+    client = _create_client(monkeypatch, cc, pdf_service=pdf_service)
+
+    response = client.post(
+        f"/api/v1/corrections/{CORRECTION_ID}/pdf-extraction",
+        files={
+            "file": (
+                "portfolio.pdf",
+                b"a" * (10 * 1024 * 1024 + 1),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "PDF 파일 크기는 10MB를 초과할 수 없습니다."
+
+
+def test_start_pdf_extraction_allows_extension_fallback(monkeypatch):
+    """MIME이 일반 바이너리여도 .pdf 확장자면 허용한다."""
+    cc = DummyCorrectionClient()
+    pdf_service = _create_pdf_extraction_service()
+    client = _create_client(monkeypatch, cc, pdf_service=pdf_service)
+
+    response = client.post(
+        f"/api/v1/corrections/{CORRECTION_ID}/pdf-extraction",
+        files={"file": ("portfolio.pdf", b"%PDF-1.4", "application/octet-stream")},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
