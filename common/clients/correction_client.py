@@ -1,12 +1,45 @@
 """첨삭 서비스용 메인 서버 API 클라이언트"""
 
 import logging
+from collections.abc import Sequence
+from typing import Any
 
 from .base_client import BaseClient
 
 logger = logging.getLogger(__name__)
 
 _client: "CorrectionClient | None" = None
+
+
+def _as_payload_dict(value: Any) -> dict[str, Any]:
+    """Pydantic 모델 또는 dict를 payload용 dict로 변환"""
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    return value
+
+
+def _build_problem_solving_payload(item: Any) -> dict[str, Any]:
+    """문제 해결 항목을 callback payload 형식으로 변환"""
+    data = _as_payload_dict(item)
+    return {
+        "no": data["no"],
+        "situation": data["situation"],
+        "strategy": data["strategy"],
+        "reason": data["reason"],
+    }
+
+
+def _build_pdf_activity_payload(activity: Any) -> dict[str, Any]:
+    """PDF 활동 스키마를 callback payload 형식으로 변환"""
+    data = _as_payload_dict(activity)
+    problem_solving = data.get("problem_solving", data.get("problemSolving", []))
+    return {
+        "activityName": data.get("activity_name", data.get("activityName")),
+        "detail": data["detail"],
+        "responsibility": data["responsibility"],
+        "problemSolving": [_build_problem_solving_payload(item) for item in problem_solving],
+        "learning": data["learning"],
+    }
 
 
 class CorrectionClient(BaseClient):
@@ -18,6 +51,7 @@ class CorrectionClient(BaseClient):
     """
 
     _PREFIX = "/corrections"
+    _PDF_EXTRACTION_CALLBACK_PREFIX = "/internal/corrections"
 
     async def get_correction(self, correction_id: int) -> dict:
         """
@@ -131,6 +165,41 @@ class CorrectionClient(BaseClient):
         return await self.patch(
             f"{self._PREFIX}/{correction_id}/emphasis-points",
             json={"highlightPoint": emphasis_points},
+        )
+
+    async def complete_pdf_extraction(
+        self,
+        correction_id: int,
+        activities: Sequence[Any],
+        source_type: str = "EXTERNAL",
+    ) -> dict:
+        """
+        PDF 추출 성공 callback 전송
+
+        Args:
+            correction_id: 첨삭 ID
+            activities: PDF에서 추출한 활동 목록
+            source_type: 추출 소스 타입
+        """
+        return await self.post(
+            f"{self._PDF_EXTRACTION_CALLBACK_PREFIX}/{correction_id}/pdf-extraction-result",
+            json={
+                "activities": [_build_pdf_activity_payload(activity) for activity in activities],
+                "sourceType": source_type,
+            },
+        )
+
+    async def fail_pdf_extraction(self, correction_id: int, error_message: str) -> dict:
+        """
+        PDF 추출 실패 callback 전송
+
+        Args:
+            correction_id: 첨삭 ID
+            error_message: 실패 메시지
+        """
+        return await self.post(
+            f"{self._PDF_EXTRACTION_CALLBACK_PREFIX}/{correction_id}/pdf-extraction-result",
+            json={"errorMessage": error_message},
         )
 
     async def delete_correction(self, correction_id: int) -> None:

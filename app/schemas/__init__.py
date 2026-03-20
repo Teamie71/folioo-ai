@@ -19,6 +19,7 @@ from .interview import (
     SessionStateResponse,
     StageProgressSchema,
 )
+from .pdf_extraction import PdfExtractionAcceptedResponse
 from .portfolio import (
     GeneratePortfolioRequest,
     GeneratePortfolioResponse,
@@ -48,4 +49,5 @@ __all__ = [
     "PortfolioResultResponse",
     "PortfolioStatusResponse",
     "UpdateContributionRateRequest",
+    "PdfExtractionAcceptedResponse",
 ]
