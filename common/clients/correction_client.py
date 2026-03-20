@@ -142,6 +142,28 @@ class CorrectionClient(BaseClient):
         """
         await self.delete(f"{self._PREFIX}/{correction_id}")
 
+    async def complete_pdf_extraction(
+        self,
+        correction_id: int,
+        activities: list[dict],
+        source_type: str,
+    ) -> dict:
+        """PDF 추출 완료 결과를 메인 서버에 전송한다."""
+        return await self.post(
+            f"/internal/corrections/{correction_id}/pdf-extraction-result",
+            json={
+                "activities": activities,
+                "sourceType": source_type,
+            },
+        )
+
+    async def fail_pdf_extraction(self, correction_id: int, error_message: str) -> dict:
+        """PDF 추출 실패 결과를 메인 서버에 전송한다."""
+        return await self.post(
+            f"/internal/corrections/{correction_id}/pdf-extraction-result",
+            json={"errorMessage": error_message},
+        )
+
 
 def get_correction_client() -> "CorrectionClient":
     """CorrectionClient 싱글톤 반환"""
