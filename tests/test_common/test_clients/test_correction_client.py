@@ -1,11 +1,20 @@
 """첨삭 클라이언트 callback payload 테스트"""
 
+from collections.abc import Sequence
+from typing import Any, get_type_hints
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from common.clients.correction_client import CorrectionClient
 from features.portfolio.pdf_extraction.schemas import PdfActivity
+
+
+def test_complete_pdf_extraction_type_hint_accepts_model_sequences():
+    """complete_pdf_extraction activities는 모델 리스트도 허용하는 시퀀스 타입 힌트여야 한다."""
+    activities_hint = get_type_hints(CorrectionClient.complete_pdf_extraction)["activities"]
+
+    assert activities_hint == Sequence[Any]
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 """첨삭 서비스용 메인 서버 API 클라이언트"""
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from .base_client import BaseClient
@@ -169,7 +170,7 @@ class CorrectionClient(BaseClient):
     async def complete_pdf_extraction(
         self,
         correction_id: int,
-        activities: list[dict[str, Any]],
+        activities: Sequence[Any],
         source_type: str = "EXTERNAL",
     ) -> dict:
         """
