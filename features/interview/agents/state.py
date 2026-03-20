@@ -188,7 +188,7 @@ def get_initial_interview_state(
         "user_id": user_id,
         "session_id": session_id,
         "experience_name": experience_name,
-        "status": "completed",
+        "status": "generating",
         "turn_number": 0,
         # 대화 기록
         "messages": [],

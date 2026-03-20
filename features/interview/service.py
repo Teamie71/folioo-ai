@@ -1,5 +1,6 @@
 """인터뷰 에이전트 비즈니스 로직"""
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
@@ -123,11 +124,33 @@ class InterviewService:
             experience_name=experience_name,
         )
 
-        # 그래프 비동기 실행 (첫 질문 생성)
-        result = await self._graph.ainvoke(
-            initial_state,
-            config={"configurable": {"thread_id": session_id}},
-        )
+        try:
+            # 그래프 비동기 실행 (첫 질문 생성)
+            result = await self._graph.ainvoke(
+                initial_state,
+                config={"configurable": {"thread_id": session_id}},
+            )
+            await self._set_session_status(
+                session_id,
+                "completed",
+                fallback_state={**initial_state, **result},
+            )
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await self._set_session_status(
+                    session_id,
+                    "failed",
+                    fallback_state=initial_state,
+                )
+            raise
+        except Exception:
+            with suppress(Exception):
+                await self._set_session_status(
+                    session_id,
+                    "failed",
+                    fallback_state=initial_state,
+                )
+            raise
 
         return {
             "session_id": session_id,
@@ -164,12 +187,12 @@ class InterviewService:
         )
         # "generating" 상태를 체크포인터에 즉시 저장 (process_message_stream, extend_session_stream과 일관성)
         # 세션 최초 생성이므로 fallback_state로 초기 상태 전달 → 체크포인터에 세션이 없으면 전체 초기 상태를 포함해 저장
-        await self._set_session_status(session_id, "generating", fallback_state=initial_state)
         config = self._get_thread_config(session_id)
         accumulated_text = ""
 
         # 2. 스트리밍 진행
         try:
+            await self._set_session_status(session_id, "generating", fallback_state=initial_state)
             async for event in self._graph.astream_events(
                 initial_state, config=config, version="v2"
             ):
@@ -207,7 +230,7 @@ class InterviewService:
                 await self._set_session_status(
                     session_id,
                     "completed",
-                    fallback_state=initial_state,
+                    fallback_state=final_state,
                 )
                 final_state = {**final_state, "status": "completed"}
                 first_question = accumulated_text
@@ -254,6 +277,14 @@ class InterviewService:
                     ),
                 }
 
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await self._set_session_status(
+                    session_id,
+                    "failed",
+                    fallback_state=initial_state,
+                )
+            raise
         except Exception as e:
             with suppress(Exception):
                 await self._set_session_status(
@@ -453,6 +484,10 @@ class InterviewService:
                     ),
                 }
 
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await self._set_session_status(session_id, "failed")
+            raise
         except Exception as e:
             with suppress(Exception):
                 await self._set_session_status(session_id, "failed")
@@ -739,6 +774,10 @@ class InterviewService:
                     ),
                 }
 
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await self._set_session_status(session_id, "failed")
+            raise
         except Exception as e:
             with suppress(Exception):
                 await self._set_session_status(session_id, "failed")
