@@ -25,4 +25,8 @@ class PdfActivity(BaseModel):
 class PdfExtractionResult(BaseModel):
     """LLM Structured Output용 PDF 추출 결과"""
 
-    activities: list[PdfActivity] = Field(..., description="PDF에서 추출한 활동 목록")
+    activities: list[PdfActivity] = Field(
+        ...,
+        min_length=1,
+        description="PDF에서 추출한 활동 목록",
+    )

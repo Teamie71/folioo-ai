@@ -1,5 +1,8 @@
 """PDF 포트폴리오 구조화 스키마 테스트"""
 
+import pytest
+from pydantic import ValidationError
+
 from app.schemas.pdf_extraction import PdfExtractionAcceptedResponse
 from features.portfolio.pdf_extraction.schemas import PdfExtractionResult
 
@@ -29,6 +32,12 @@ def test_pdf_extraction_result_schema():
 
     assert result.activities[0].activity_name == "포트폴리오 개선 프로젝트"
     assert result.activities[0].problem_solving[0].no == 1
+
+
+def test_pdf_extraction_result_rejects_empty_activities():
+    """PDF 추출 성공 결과는 최소 1개의 활동을 포함해야 한다."""
+    with pytest.raises(ValidationError):
+        PdfExtractionResult.model_validate({"activities": []})
 
 
 def test_pdf_extraction_accepted_response_schema():
