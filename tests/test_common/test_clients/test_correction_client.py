@@ -30,8 +30,8 @@ async def test_complete_pdf_extraction_sends_camelcase_payload():
                     PdfActivity.model_validate(
                         {
                             "activity_name": "프로젝트명",
-                            "detail": "상세 설명",
-                            "responsibility": "담당 업무",
+                            "detail": ["상세 설명"],
+                            "responsibility": ["담당 업무"],
                             "problem_solving": [
                                 {
                                     "no": 1,
@@ -40,7 +40,7 @@ async def test_complete_pdf_extraction_sends_camelcase_payload():
                                     "reason": "선택 이유",
                                 },
                             ],
-                            "learning": "배운 점",
+                            "learning": ["배운 점"],
                         }
                     )
                 ],
@@ -49,11 +49,12 @@ async def test_complete_pdf_extraction_sends_camelcase_payload():
             mock_post.assert_awaited_once_with(
                 "/internal/corrections/174/pdf-extraction-result",
                 json={
+                    "status": "completed",
                     "activities": [
                         {
                             "activityName": "프로젝트명",
-                            "detail": "상세 설명",
-                            "responsibility": "담당 업무",
+                            "detail": ["상세 설명"],
+                            "responsibility": ["담당 업무"],
                             "problemSolving": [
                                 {
                                     "no": 1,
@@ -62,7 +63,7 @@ async def test_complete_pdf_extraction_sends_camelcase_payload():
                                     "reason": "선택 이유",
                                 }
                             ],
-                            "learning": "배운 점",
+                            "learning": ["배운 점"],
                         }
                     ],
                     "sourceType": "EXTERNAL",
@@ -84,8 +85,8 @@ async def test_complete_pdf_extraction_allows_source_type_override():
                 activities=[
                     {
                         "activity_name": "다른 프로젝트",
-                        "detail": "상세 설명",
-                        "responsibility": "담당 업무",
+                        "detail": ["상세 설명"],
+                        "responsibility": ["담당 업무"],
                         "problem_solving": [
                             {
                                 "no": 1,
@@ -94,7 +95,7 @@ async def test_complete_pdf_extraction_allows_source_type_override():
                                 "reason": "선택 이유",
                             }
                         ],
-                        "learning": "배운 점",
+                        "learning": ["배운 점"],
                     },
                 ],
                 source_type="INTERNAL",
@@ -103,11 +104,12 @@ async def test_complete_pdf_extraction_allows_source_type_override():
             mock_post.assert_awaited_once_with(
                 "/internal/corrections/175/pdf-extraction-result",
                 json={
+                    "status": "completed",
                     "activities": [
                         {
                             "activityName": "다른 프로젝트",
-                            "detail": "상세 설명",
-                            "responsibility": "담당 업무",
+                            "detail": ["상세 설명"],
+                            "responsibility": ["담당 업무"],
                             "problemSolving": [
                                 {
                                     "no": 1,
@@ -116,7 +118,7 @@ async def test_complete_pdf_extraction_allows_source_type_override():
                                     "reason": "선택 이유",
                                 }
                             ],
-                            "learning": "배운 점",
+                            "learning": ["배운 점"],
                         }
                     ],
                     "sourceType": "INTERNAL",
@@ -140,7 +142,11 @@ async def test_fail_pdf_extraction_sends_error_message_payload():
 
             mock_post.assert_awaited_once_with(
                 "/internal/corrections/174/pdf-extraction-result",
-                json={"errorMessage": "PDF 추출 중 오류가 발생했습니다."},
+                json={
+                    "status": "failed",
+                    "sourceType": "EXTERNAL",
+                    "errorMessage": "PDF 추출 중 오류가 발생했습니다.",
+                },
             )
     finally:
         await client.close()

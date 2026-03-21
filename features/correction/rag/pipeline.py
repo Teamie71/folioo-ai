@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from features.correction.config import get_correction_rag_config
 _DEFAULT_COMPANY_INSIGHT_MAX_LENGTH = 1500
 _DEFAULT_CALL_MAX_RETRIES = 3
 _DEFAULT_LENGTH_RETRY_MAX_RETRIES = 2
+
+logger = logging.getLogger(__name__)
 
 
 def _get_recent_year_ranges() -> tuple[str, str, str]:
@@ -270,19 +273,23 @@ class RAGPipeline:
 
             rewrite_feedback = self._build_length_retry_feedback(text)
 
-        raise RAGInsightGenerationError("인사이트 생성에 실패했습니다.")
-
     def _invoke_insight_prompt(self, prompt: str) -> str:
         """호출 실패 재시도 정책을 적용해 인사이트 생성"""
         last_exception: Exception | None = None
 
-        for _ in range(self._call_max_retries):
+        for attempt in range(1, self._call_max_retries + 1):
             try:
                 response = self._llm.invoke(prompt)
                 content = getattr(response, "content", response)
                 return str(content).strip()
             except Exception as exc:
                 last_exception = exc
+                logger.warning(
+                    "인사이트 생성 LLM 호출 실패 (%s/%s)",
+                    attempt,
+                    self._call_max_retries,
+                    exc_info=exc,
+                )
 
         raise RAGInsightGenerationError(f"인사이트 생성 LLM 호출 실패: {last_exception}")
 

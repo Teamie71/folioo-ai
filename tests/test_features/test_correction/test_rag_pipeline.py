@@ -421,6 +421,21 @@ def test_generate_insight_retries_after_llm_failure(monkeypatch):
     assert len(dummy_llm.prompts) == 2
 
 
+def test_invoke_insight_prompt_logs_retry_failure(monkeypatch, caplog):
+    """인사이트 호출 재시도 시 실패 로그를 남긴다."""
+    from features.correction.rag import pipeline
+
+    dummy_llm = _DummyLLM([RuntimeError("temporary"), "기업 인사이트"])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    rag_pipeline = RAGPipeline()
+
+    with caplog.at_level("WARNING"):
+        insight = rag_pipeline._invoke_insight_prompt("prompt")
+
+    assert insight == "기업 인사이트"
+    assert "인사이트 생성 LLM 호출 실패 (1/3)" in caplog.text
+
+
 def test_generate_insight_retries_with_length_feedback(monkeypatch):
     """길이 초과 시 구조 유지 피드백을 포함해 재작성한다."""
     from features.correction.rag import pipeline

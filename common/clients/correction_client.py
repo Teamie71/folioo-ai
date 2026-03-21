@@ -184,22 +184,33 @@ class CorrectionClient(BaseClient):
         return await self.post(
             f"{self._PDF_EXTRACTION_CALLBACK_PREFIX}/{correction_id}/pdf-extraction-result",
             json={
+                "status": "completed",
                 "activities": [_build_pdf_activity_payload(activity) for activity in activities],
                 "sourceType": source_type,
             },
         )
 
-    async def fail_pdf_extraction(self, correction_id: int, error_message: str) -> dict:
+    async def fail_pdf_extraction(
+        self,
+        correction_id: int,
+        error_message: str,
+        source_type: str = "EXTERNAL",
+    ) -> dict:
         """
         PDF 추출 실패 callback 전송
 
         Args:
             correction_id: 첨삭 ID
             error_message: 실패 메시지
+            source_type: 추출 소스 타입
         """
         return await self.post(
             f"{self._PDF_EXTRACTION_CALLBACK_PREFIX}/{correction_id}/pdf-extraction-result",
-            json={"errorMessage": error_message},
+            json={
+                "status": "failed",
+                "sourceType": source_type,
+                "errorMessage": error_message,
+            },
         )
 
     async def delete_correction(self, correction_id: int) -> None:
