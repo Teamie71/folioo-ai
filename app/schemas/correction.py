@@ -2,11 +2,7 @@
 
 from pydantic import BaseModel, Field
 
-from features.correction.config.loader import get_correction_rag_config
 from features.correction.schemas import CorrectionOutput, CorrectionStatus
-
-# 기업 분석 최대 길이 (설정에서 로드)
-MAX_COMPANY_INSIGHT_LENGTH = get_correction_rag_config().company_insight_max_length
 
 
 # ===== 생성 요청/응답 =====
@@ -48,12 +44,7 @@ class CorrectionResultResponse(BaseModel):
 class UpdateCompanyInsightRequest(BaseModel):
     """기업 분석 수정 요청"""
 
-    company_insight: str = Field(
-        ...,
-        min_length=1,
-        max_length=MAX_COMPANY_INSIGHT_LENGTH,
-        description="수정된 기업 분석 내용",
-    )
+    company_insight: str = Field(..., min_length=1, description="수정된 기업 분석 내용")
 
 
 # ===== 강조 포인트 수정 =====

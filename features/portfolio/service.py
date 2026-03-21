@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from fastapi import BackgroundTasks
 
 from common.main_server import PortfolioClient
-from common.utils import truncate_to_char_limit
 from features.interview import get_interview_service
 
 from .generator import PortfolioGenerator
@@ -71,7 +70,7 @@ class PortfolioService:
     @staticmethod
     def _truncate_portfolio_field(text: str | None) -> str:
         """메인 서버 제약에 맞춰 포트폴리오 필드를 400자로 제한"""
-        return truncate_to_char_limit(text, _PORTFOLIO_FIELD_MAX_LENGTH)
+        return (text or "")[:_PORTFOLIO_FIELD_MAX_LENGTH]
 
     async def start_generation(
         self,
