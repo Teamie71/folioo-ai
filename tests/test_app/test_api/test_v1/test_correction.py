@@ -1,6 +1,7 @@
 """첨삭 API 테스트 (httpx 클라이언트 기반)"""
 
-from fastapi import FastAPI
+import pytest
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.v1 import correction as correction_api
@@ -130,6 +131,51 @@ class DummyPdfExtractionGenerator:
         if self._exc is not None:
             raise self._exc
         return self._result
+
+
+class RecordingPdfService:
+    """라우터 단위 테스트용 PDF 서비스 recorder"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def start_extraction(
+        self,
+        correction_id: int,
+        file_bytes: bytes,
+        filename: str,
+        content_type: str | None,
+        background_tasks: BackgroundTasks,
+    ) -> None:
+        self.calls.append(
+            {
+                "correction_id": correction_id,
+                "file_bytes": file_bytes,
+                "filename": filename,
+                "content_type": content_type,
+                "background_tasks": background_tasks,
+            }
+        )
+
+
+class ChunkedUploadFile:
+    """chunk read 동작 검증용 UploadFile 대역"""
+
+    def __init__(self, *, filename: str, content_type: str | None, chunks: list[bytes]) -> None:
+        self.filename = filename
+        self.content_type = content_type
+        self._chunks = list(chunks)
+        self.read_sizes: list[int] = []
+        self.closed = False
+
+    async def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        if not self._chunks:
+            return b""
+        return self._chunks.pop(0)
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 def _create_pdf_extraction_service(
@@ -389,6 +435,67 @@ def test_update_company_insight_returns_200(monkeypatch):
 
     assert response.status_code == 200
     assert cc.updated_company_insight == (123, "수정 내용")
+
+
+def test_update_company_insight_openapi_documents_400_response(monkeypatch):
+    """기업 분석 수정 API는 수동 검증 400 응답을 문서화한다."""
+    cc = DummyCorrectionClient(correction={"id": 123, "status": "COMPANY_INSIGHT"})
+    client = _create_client(monkeypatch, cc)
+
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    responses = response.json()["paths"]["/api/v1/corrections/{correction_id}/company-insight"][
+        "patch"
+    ]["responses"]
+    assert responses["400"]["description"] == "요청 데이터 수동 검증 실패"
+
+
+@pytest.mark.asyncio
+async def test_start_pdf_extraction_reads_in_chunks_before_service_call(monkeypatch):
+    """PDF 업로드는 chunk 단위로 읽고 누적 bytes를 서비스에 전달한다."""
+    service = RecordingPdfService()
+    monkeypatch.setattr(correction_api, "get_pdf_extraction_service", lambda: service)
+    upload = ChunkedUploadFile(
+        filename="portfolio.pdf",
+        content_type="application/pdf",
+        chunks=[b"%PDF", b"-1.4", b"-body"],
+    )
+
+    response = await correction_api.start_pdf_extraction(
+        correction_id=CORRECTION_ID,
+        background_tasks=BackgroundTasks(),
+        file=upload,
+    )
+
+    assert response.status == "accepted"
+    assert upload.read_sizes == [1024 * 1024, 1024 * 1024, 1024 * 1024, 1024 * 1024]
+    assert upload.closed is True
+    assert service.calls[0]["file_bytes"] == b"%PDF-1.4-body"
+
+
+@pytest.mark.asyncio
+async def test_start_pdf_extraction_stops_when_chunk_limit_exceeded(monkeypatch):
+    """PDF 업로드는 제한 초과 청크에서 즉시 중단하고 서비스를 호출하지 않는다."""
+    service = RecordingPdfService()
+    monkeypatch.setattr(correction_api, "get_pdf_extraction_service", lambda: service)
+    upload = ChunkedUploadFile(
+        filename="portfolio.pdf",
+        content_type="application/pdf",
+        chunks=[b"a" * (10 * 1024 * 1024), b"b"],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await correction_api.start_pdf_extraction(
+            correction_id=CORRECTION_ID,
+            background_tasks=BackgroundTasks(),
+            file=upload,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "PDF 파일 크기는 10MB를 초과할 수 없습니다."
+    assert upload.closed is True
+    assert service.calls == []
 
 
 # ------------------------------------------------------------------
