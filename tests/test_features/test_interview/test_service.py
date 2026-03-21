@@ -1,5 +1,6 @@
 """InterviewService 유닛 테스트"""
 
+import asyncio
 import importlib
 import sys
 import types
@@ -38,16 +39,27 @@ class DummyGraph:
     def __init__(self):
         self.invocations = []
         self.invoke_result = None
+        self.invoke_error = None
         self.state_snapshot = None
         self.last_get_state_config = None
+        self.update_state_calls = []
 
     async def ainvoke(self, state, config=None):
         self.invocations.append({"state": state, "config": config})
+        if self.invoke_error is not None:
+            raise self.invoke_error
         return self.invoke_result
 
     async def aget_state(self, config=None):
         self.last_get_state_config = config
         return self.state_snapshot
+
+    async def aupdate_state(self, config, state):
+        self.update_state_calls.append({"config": config, "state": state})
+        if self.state_snapshot is None:
+            self.state_snapshot = DummyStateSnapshot(values=dict(state))
+        else:
+            self.state_snapshot.values = {**self.state_snapshot.values, **state}
 
 
 def _build_service(monkeypatch, dummy_graph):
@@ -99,6 +111,67 @@ async def test_create_session_returns_expected_payload(monkeypatch):
     assert invocation["state"]["user_id"] == "user_1"
     assert invocation["state"]["session_id"] == "session_1"
     assert invocation["state"]["experience_name"] == "프로젝트 A"
+    assert invocation["state"]["status"] == "generating"
+    assert dummy_graph.update_state_calls[-1]["state"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_create_session_marks_failed_on_exception(monkeypatch):
+    """세션 생성 실패 시 status를 failed로 정리한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.invoke_error = RuntimeError("boom")
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await service.create_session(
+            user_id="user_1",
+            session_id="session_1",
+            experience_name="프로젝트 A",
+        )
+
+    assert dummy_graph.invocations[0]["state"]["status"] == "generating"
+    assert dummy_graph.update_state_calls[-1]["state"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_create_session_marks_failed_on_cancellation(monkeypatch):
+    """세션 생성 취소 시 status를 failed로 정리하고 예외를 재전파한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.invoke_error = asyncio.CancelledError()
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.create_session(
+            user_id="user_1",
+            session_id="session_1",
+            experience_name="프로젝트 A",
+        )
+
+    assert dummy_graph.invocations[0]["state"]["status"] == "generating"
+    assert dummy_graph.update_state_calls[-1]["state"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_create_session_preserves_final_state_on_completed_fallback(monkeypatch):
+    """최종 상태 조회가 비어 있어도 completed 저장 시 그래프 결과를 보존한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.invoke_result = {
+        "messages": [AIMessage(content="첫 질문")],
+        "current_stage": 2,
+        "stage_progress": {"fixed_q_used": 1},
+    }
+    service = _build_service(monkeypatch, dummy_graph)
+
+    await service.create_session(
+        user_id="user_1",
+        session_id="session_1",
+        experience_name="프로젝트 A",
+    )
+
+    saved_state = dummy_graph.update_state_calls[-1]["state"]
+    assert saved_state["status"] == "completed"
+    assert saved_state["messages"] == dummy_graph.invoke_result["messages"]
+    assert saved_state["current_stage"] == 2
 
 
 @pytest.mark.asyncio
@@ -332,9 +405,33 @@ async def test_get_session_state_returns_values(monkeypatch):
     assert result is not None
     assert result["session_id"] == "session_1"
     assert result["turn_number"] == 1
+    assert result["status"] == "completed"
     assert result["retrieved_insights"] == []
     assert result["mentioned_insight"] is None
     assert result["insight_turn_history"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_session_status_returns_compact_payload(monkeypatch):
+    """세션 경량 상태 조회 시 status와 핵심 필드만 반환한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "current_stage": 2,
+            "all_stages_complete": False,
+        }
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    result = await service.get_session_status("session_1")
+
+    assert result == {
+        "session_id": "session_1",
+        "status": "completed",
+        "current_stage": 2,
+        "all_complete": False,
+    }
 
 
 def test_singleton_get_and_reset(monkeypatch):
