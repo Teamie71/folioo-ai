@@ -629,7 +629,7 @@ def test_start_pdf_extraction_returns_400_for_non_pdf(monkeypatch):
 
     response = client.post(
         f"/api/v1/corrections/{CORRECTION_ID}/pdf-extraction",
-        files={"file": ("portfolio.pdf", b"plain text", "text/plain")},
+        files={"file": ("portfolio.txt", b"plain text", "text/plain")},
     )
 
     assert response.status_code == 400
@@ -681,6 +681,21 @@ def test_start_pdf_extraction_allows_extension_fallback(monkeypatch):
     response = client.post(
         f"/api/v1/corrections/{CORRECTION_ID}/pdf-extraction",
         files={"file": ("portfolio.pdf", b"%PDF-1.4", "application/octet-stream")},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
+
+
+def test_start_pdf_extraction_allows_text_plain_extension_fallback(monkeypatch):
+    """MIME이 text/plain이어도 .pdf 확장자면 허용한다."""
+    cc = DummyCorrectionClient()
+    pdf_service = _create_pdf_extraction_service()
+    client = _create_client(monkeypatch, cc, pdf_service=pdf_service)
+
+    response = client.post(
+        f"/api/v1/corrections/{CORRECTION_ID}/pdf-extraction",
+        files={"file": ("portfolio.pdf", b"%PDF-1.4", "text/plain")},
     )
 
     assert response.status_code == 202
