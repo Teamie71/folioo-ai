@@ -114,3 +114,27 @@ def test_extract_uses_pdf_extraction_model_name(monkeypatch: pytest.MonkeyPatch)
     PdfExtractionGenerator().extract(b"%PDF", "resume.pdf")
 
     assert llm_calls == [{"model": "openai/gpt-4.1-mini", "temperature": 0.0}]
+
+
+def test_extract_uses_preview_model_by_default(monkeypatch: pytest.MonkeyPatch):
+    """기본 PDF 추출 모델은 preview ID를 사용한다."""
+    from features.portfolio.pdf_extraction import generator
+
+    expected = _sample_result()
+    structured_llm = DummyStructuredLlm(expected)
+    llm_calls: list[dict] = []
+
+    monkeypatch.delenv("PDF_EXTRACTION_MODEL_NAME", raising=False)
+    monkeypatch.setattr(
+        generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: (
+            llm_calls.append({"model": model, "temperature": temperature})
+            or DummyLlm(structured_llm)
+        ),
+    )
+    monkeypatch.setattr(generator, "build_pdf_extraction_messages", lambda **_: ["message"])
+
+    PdfExtractionGenerator().extract(b"%PDF", "resume.pdf")
+
+    assert llm_calls == [{"model": "google/gemini-3.1-pro-preview", "temperature": 0.0}]

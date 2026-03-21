@@ -9,7 +9,7 @@ from common.llm.client import get_llm
 from .prompts import build_pdf_extraction_messages
 from .schemas import PdfExtractionResult
 
-_DEFAULT_PDF_EXTRACTION_MODEL_NAME = "google/gemini-3.1-pro"
+_DEFAULT_PDF_EXTRACTION_MODEL_NAME = "google/gemini-3.1-pro-preview"
 
 
 class PdfExtractionGenerationError(Exception):
