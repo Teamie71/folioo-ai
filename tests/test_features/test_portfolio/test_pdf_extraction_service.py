@@ -63,8 +63,8 @@ class DummyGenerator:
             activities=[
                 PdfActivity(
                     activity_name="프로젝트 A",
-                    detail="상세 설명",
-                    responsibility="담당 업무",
+                    detail=["상세 설명"],
+                    responsibility=["담당 업무"],
                     problem_solving=[
                         PdfProblemSolvingItem(
                             no=5,
@@ -73,7 +73,7 @@ class DummyGenerator:
                             reason="이유",
                         )
                     ],
-                    learning="배운 점",
+                    learning=["배운 점"],
                 )
             ]
         )
@@ -130,8 +130,8 @@ async def test_background_extraction_success_calls_complete_callback(monkeypatch
             [
                 {
                     "activity_name": "프로젝트 A",
-                    "detail": "상세 설명",
-                    "responsibility": "담당 업무",
+                    "detail": ["상세 설명"],
+                    "responsibility": ["담당 업무"],
                     "problem_solving": [
                         {
                             "no": 1,
@@ -140,7 +140,7 @@ async def test_background_extraction_success_calls_complete_callback(monkeypatch
                             "reason": "이유",
                         }
                     ],
-                    "learning": "배운 점",
+                    "learning": ["배운 점"],
                 }
             ],
             "EXTERNAL",
@@ -191,12 +191,12 @@ def test_validate_result_truncates_deduplicates_and_reindexes():
         correction_client=DummyCorrectionClient(),
         generator=DummyGenerator(),
     )
-    result = PdfExtractionResult(
+    result = PdfExtractionResult.model_construct(
         activities=[
             PdfActivity(
                 activity_name="Alpha",
-                detail="상세 1",
-                responsibility="담당 1",
+                detail=["상세 1"],
+                responsibility=["담당 1"],
                 problem_solving=[
                     PdfProblemSolvingItem(
                         no=9,
@@ -211,42 +211,42 @@ def test_validate_result_truncates_deduplicates_and_reindexes():
                         reason="이유 2",
                     ),
                 ],
-                learning="배운 점 1",
+                learning=["배운 점 1"],
             ),
             PdfActivity(
                 activity_name=" Alpha ",
-                detail="상세 2",
-                responsibility="담당 2",
+                detail=["상세 2"],
+                responsibility=["담당 2"],
                 problem_solving=[],
-                learning="배운 점 2",
+                learning=["배운 점 2"],
             ),
             PdfActivity(
                 activity_name="Beta",
-                detail="상세 3",
-                responsibility="담당 3",
+                detail=["상세 3"],
+                responsibility=["담당 3"],
                 problem_solving=[],
-                learning="배운 점 3",
+                learning=["배운 점 3"],
             ),
             PdfActivity(
                 activity_name="Gamma",
-                detail="상세 4",
-                responsibility="담당 4",
+                detail=["상세 4"],
+                responsibility=["담당 4"],
                 problem_solving=[],
-                learning="배운 점 4",
+                learning=["배운 점 4"],
             ),
             PdfActivity(
                 activity_name="Delta",
-                detail="상세 5",
-                responsibility="담당 5",
+                detail=["상세 5"],
+                responsibility=["담당 5"],
                 problem_solving=[],
-                learning="배운 점 5",
+                learning=["배운 점 5"],
             ),
             PdfActivity(
                 activity_name="Epsilon",
-                detail="상세 6",
-                responsibility="담당 6",
+                detail=["상세 6"],
+                responsibility=["담당 6"],
                 problem_solving=[],
-                learning="배운 점 6",
+                learning=["배운 점 6"],
             ),
         ]
     )
@@ -272,17 +272,17 @@ def test_validate_result_skips_blank_activity_names_and_trims_values():
         activities=[
             PdfActivity(
                 activity_name="   ",
-                detail="상세 1",
-                responsibility="담당 1",
+                detail=["상세 1"],
+                responsibility=["담당 1"],
                 problem_solving=[],
-                learning="배운 점 1",
+                learning=["배운 점 1"],
             ),
             PdfActivity(
                 activity_name=" Project A ",
-                detail="상세 2",
-                responsibility="담당 2",
+                detail=["상세 2"],
+                responsibility=["담당 2"],
                 problem_solving=[],
-                learning="배운 점 2",
+                learning=["배운 점 2"],
             ),
         ]
     )

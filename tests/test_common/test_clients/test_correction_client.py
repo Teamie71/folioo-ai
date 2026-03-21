@@ -30,8 +30,8 @@ async def test_complete_pdf_extraction_sends_camelcase_payload():
                     PdfActivity.model_validate(
                         {
                             "activity_name": "프로젝트명",
-                            "detail": "상세 설명",
-                            "responsibility": "담당 업무",
+                            "detail": ["상세 설명"],
+                            "responsibility": ["담당 업무"],
                             "problem_solving": [
                                 {
                                     "no": 1,
@@ -40,7 +40,7 @@ async def test_complete_pdf_extraction_sends_camelcase_payload():
                                     "reason": "선택 이유",
                                 },
                             ],
-                            "learning": "배운 점",
+                            "learning": ["배운 점"],
                         }
                     )
                 ],
@@ -52,8 +52,8 @@ async def test_complete_pdf_extraction_sends_camelcase_payload():
                     "activities": [
                         {
                             "activityName": "프로젝트명",
-                            "detail": "상세 설명",
-                            "responsibility": "담당 업무",
+                            "detail": ["상세 설명"],
+                            "responsibility": ["담당 업무"],
                             "problemSolving": [
                                 {
                                     "no": 1,
@@ -62,7 +62,7 @@ async def test_complete_pdf_extraction_sends_camelcase_payload():
                                     "reason": "선택 이유",
                                 }
                             ],
-                            "learning": "배운 점",
+                            "learning": ["배운 점"],
                         }
                     ],
                     "sourceType": "EXTERNAL",
@@ -84,8 +84,8 @@ async def test_complete_pdf_extraction_allows_source_type_override():
                 activities=[
                     {
                         "activity_name": "다른 프로젝트",
-                        "detail": "상세 설명",
-                        "responsibility": "담당 업무",
+                        "detail": ["상세 설명"],
+                        "responsibility": ["담당 업무"],
                         "problem_solving": [
                             {
                                 "no": 1,
@@ -94,7 +94,7 @@ async def test_complete_pdf_extraction_allows_source_type_override():
                                 "reason": "선택 이유",
                             }
                         ],
-                        "learning": "배운 점",
+                        "learning": ["배운 점"],
                     },
                 ],
                 source_type="INTERNAL",
@@ -106,8 +106,8 @@ async def test_complete_pdf_extraction_allows_source_type_override():
                     "activities": [
                         {
                             "activityName": "다른 프로젝트",
-                            "detail": "상세 설명",
-                            "responsibility": "담당 업무",
+                            "detail": ["상세 설명"],
+                            "responsibility": ["담당 업무"],
                             "problemSolving": [
                                 {
                                     "no": 1,
@@ -116,7 +116,7 @@ async def test_complete_pdf_extraction_allows_source_type_override():
                                     "reason": "선택 이유",
                                 }
                             ],
-                            "learning": "배운 점",
+                            "learning": ["배운 점"],
                         }
                     ],
                     "sourceType": "INTERNAL",

@@ -16,10 +16,10 @@ class PdfActivity(BaseModel):
     """PDF에서 추출한 활동 스키마"""
 
     activity_name: str = Field(..., description="활동명 또는 프로젝트명")
-    detail: str = Field(..., description="활동 상세 설명")
-    responsibility: str = Field(..., description="담당 업무")
+    detail: list[str] = Field(..., description="활동 상세 설명 목록")
+    responsibility: list[str] = Field(..., description="담당 업무 목록")
     problem_solving: list[PdfProblemSolvingItem] = Field(..., description="문제 해결 내용 목록")
-    learning: str = Field(..., description="배운 점")
+    learning: list[str] = Field(..., description="배운 점 목록")
 
 
 class PdfExtractionResult(BaseModel):
@@ -28,5 +28,6 @@ class PdfExtractionResult(BaseModel):
     activities: list[PdfActivity] = Field(
         ...,
         min_length=1,
+        max_length=5,
         description="PDF에서 추출한 활동 목록",
     )

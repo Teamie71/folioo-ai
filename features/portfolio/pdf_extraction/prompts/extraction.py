@@ -10,10 +10,20 @@ from langchain_core.messages import HumanMessage, SystemMessage
 _CLASSIFICATION_PATH = Path(__file__).with_name("classification.md")
 
 
+def _strip_front_matter(content: str) -> str:
+    """YAML front matter가 있으면 제거한다."""
+    if not content.startswith("---\n"):
+        return content
+
+    _, _, remainder = content.partition("\n---\n")
+    return remainder or content
+
+
 def load_pdf_classification_criteria() -> str:
     """PDF 활동 구조화 기준 문서를 읽는다."""
     try:
-        return _CLASSIFICATION_PATH.read_text(encoding="utf-8").strip()
+        content = _CLASSIFICATION_PATH.read_text(encoding="utf-8").strip()
+        return _strip_front_matter(content).strip()
     except OSError as exc:
         raise ValueError(f"PDF 추출 기준 문서를 읽을 수 없습니다: {exc}") from exc
 
@@ -31,13 +41,7 @@ def build_pdf_extraction_messages(
     criteria = load_pdf_classification_criteria()
     pdf_data_url = encode_pdf_data_url(file_bytes)
 
-    system_message = SystemMessage(
-        content=(
-            "당신은 포트폴리오 PDF에서 활동 정보를 구조화하는 전문가입니다. "
-            "반드시 제공된 기준을 따르고, PDF에 없는 사실은 추정하지 마세요.\n\n"
-            f"{criteria}"
-        )
-    )
+    system_message = SystemMessage(content=criteria)
     human_message = HumanMessage(
         content=[
             {

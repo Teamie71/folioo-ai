@@ -40,8 +40,8 @@ def _sample_result() -> PdfExtractionResult:
         activities=[
             PdfActivity(
                 activity_name="포트폴리오 고도화",
-                detail="PDF 기반 활동 구조화",
-                responsibility="프롬프트 및 생성기 구현",
+                detail=["PDF 기반 활동 구조화"],
+                responsibility=["프롬프트 및 생성기 구현"],
                 problem_solving=[
                     PdfProblemSolvingItem(
                         no=1,
@@ -50,7 +50,7 @@ def _sample_result() -> PdfExtractionResult:
                         reason="출력 일관성을 확보하기 위해",
                     )
                 ],
-                learning="스키마와 프롬프트 기준을 함께 맞춰야 한다.",
+                learning=["스키마와 프롬프트 기준을 함께 맞춰야 한다."],
             )
         ]
     )

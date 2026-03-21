@@ -111,8 +111,8 @@ class DummyPdfExtractionGenerator:
             activities=[
                 PdfActivity(
                     activity_name="프로젝트 A",
-                    detail="상세 설명",
-                    responsibility="담당 업무",
+                    detail=["상세 설명"],
+                    responsibility=["담당 업무"],
                     problem_solving=[
                         PdfProblemSolvingItem(
                             no=3,
@@ -121,7 +121,7 @@ class DummyPdfExtractionGenerator:
                             reason="선택 이유",
                         )
                     ],
-                    learning="배운 점",
+                    learning=["배운 점"],
                 )
             ]
         )
