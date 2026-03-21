@@ -49,6 +49,7 @@ async def test_complete_pdf_extraction_sends_camelcase_payload():
             mock_post.assert_awaited_once_with(
                 "/internal/corrections/174/pdf-extraction-result",
                 json={
+                    "status": "completed",
                     "activities": [
                         {
                             "activityName": "프로젝트명",
@@ -103,6 +104,7 @@ async def test_complete_pdf_extraction_allows_source_type_override():
             mock_post.assert_awaited_once_with(
                 "/internal/corrections/175/pdf-extraction-result",
                 json={
+                    "status": "completed",
                     "activities": [
                         {
                             "activityName": "다른 프로젝트",
@@ -140,7 +142,11 @@ async def test_fail_pdf_extraction_sends_error_message_payload():
 
             mock_post.assert_awaited_once_with(
                 "/internal/corrections/174/pdf-extraction-result",
-                json={"errorMessage": "PDF 추출 중 오류가 발생했습니다."},
+                json={
+                    "status": "failed",
+                    "sourceType": "EXTERNAL",
+                    "errorMessage": "PDF 추출 중 오류가 발생했습니다.",
+                },
             )
     finally:
         await client.close()
