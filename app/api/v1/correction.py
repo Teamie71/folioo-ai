@@ -23,6 +23,9 @@ from features.portfolio.pdf_extraction.service import get_pdf_extraction_service
 router = APIRouter(prefix="/corrections", tags=["correction"])
 logger = logging.getLogger(__name__)
 
+_MAX_PDF_FILE_SIZE_BYTES = 10 * 1024 * 1024
+_PDF_UPLOAD_CHUNK_SIZE_BYTES = 1024 * 1024
+
 
 def _validate_correction_id(correction_id: str) -> int:
     """correction_id가 유효한 정수인지 검증하고 int로 반환한다."""
@@ -176,7 +179,7 @@ async def get_company_insight(correction_id: str) -> CompanyInsightResponse:
     status_code=status.HTTP_200_OK,
     summary="기업 분석 수정",
     responses={
-        422: {"model": ErrorResponse, "description": "요청 데이터 검증 실패 (길이 초과 등)"},
+        400: {"model": ErrorResponse, "description": "요청 데이터 수동 검증 실패"},
         404: {"model": ErrorResponse, "description": "첨삭이 없는 경우"},
         409: {"model": ErrorResponse, "description": "상태 전이 규칙 위반"},
         500: {"model": ErrorResponse, "description": "내부 서버 에러"},
@@ -316,10 +319,19 @@ async def start_pdf_extraction(
     service = get_pdf_extraction_service()
 
     try:
-        file_bytes = await file.read()
+        file_bytes_buffer = bytearray()
+
+        while chunk := await file.read(_PDF_UPLOAD_CHUNK_SIZE_BYTES):
+            file_bytes_buffer.extend(chunk)
+            if len(file_bytes_buffer) > _MAX_PDF_FILE_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="PDF 파일 크기는 10MB를 초과할 수 없습니다.",
+                )
+
         await service.start_extraction(
             correction_id=cid,
-            file_bytes=file_bytes,
+            file_bytes=bytes(file_bytes_buffer),
             filename=file.filename or "",
             content_type=file.content_type,
             background_tasks=background_tasks,
