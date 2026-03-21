@@ -72,12 +72,12 @@ def _print_human_summary(summary: dict[str, object]) -> None:
     """사람이 읽기 쉬운 smoke 결과 요약 출력"""
     print()
     print("=" * 70)
-    print("  PDF Extraction Smoke Test")
+    print("  PDF 추출 스모크 테스트")
     print("=" * 70)
-    print(f"  PDF Path: {summary['pdf_path']}")
-    print(f"  Filename: {summary['filename']}")
-    print(f"  Model: {summary['model_name']}")
-    print(f"  Activity Count: {summary['activity_count']}")
+    print(f"  PDF 경로: {summary['pdf_path']}")
+    print(f"  파일명: {summary['filename']}")
+    print(f"  모델: {summary['model_name']}")
+    print(f"  활동 수: {summary['activity_count']}")
 
     for index, activity in enumerate(summary["activities"], start=1):
         print(f"  [{index}] {activity['activity_name']}")

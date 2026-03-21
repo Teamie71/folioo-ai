@@ -1,4 +1,4 @@
-"""PDF extraction smoke script tests."""
+"""PDF 추출 스모크 스크립트 테스트."""
 
 import json
 from pathlib import Path
@@ -8,7 +8,7 @@ from scripts import pdf_extraction_smoke_test
 
 
 class DummyGenerator:
-    """Smoke script generator double."""
+    """스모크 스크립트용 generator 테스트 더블."""
 
     def __init__(self, result: PdfExtractionResult) -> None:
         self.result = result
@@ -34,7 +34,7 @@ def _sample_result() -> PdfExtractionResult:
 
 
 def test_parse_args_accepts_pdf_path_and_options():
-    """Smoke script는 PDF 경로와 옵션 인자를 파싱한다."""
+    """스모크 스크립트는 PDF 경로와 옵션 인자를 파싱한다."""
     args = pdf_extraction_smoke_test.parse_args(
         [
             "--pdf",
@@ -54,7 +54,7 @@ def test_parse_args_accepts_pdf_path_and_options():
 
 
 def test_run_smoke_test_reads_pdf_and_invokes_generator(tmp_path):
-    """Smoke script는 PDF bytes를 읽고 generator.extract를 호출한다."""
+    """스모크 스크립트는 PDF bytes를 읽고 generator.extract를 호출한다."""
     pdf_path = tmp_path / "portfolio.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     generator = DummyGenerator(_sample_result())
@@ -75,7 +75,7 @@ def test_run_smoke_test_reads_pdf_and_invokes_generator(tmp_path):
 
 
 def test_main_dump_json_prints_smoke_summary(tmp_path, monkeypatch, capsys):
-    """--dump-json 옵션은 smoke 결과를 JSON으로 출력한다."""
+    """--dump-json 옵션은 스모크 결과를 JSON으로 출력한다."""
     pdf_path = tmp_path / "portfolio.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
 
