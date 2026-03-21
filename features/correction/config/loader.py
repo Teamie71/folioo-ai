@@ -28,9 +28,6 @@ class CorrectionRAGConfig(BaseModel):
 
     keyword_count: int = Field(default=6, ge=1)
     max_results_per_keyword: int = Field(default=5, ge=1, le=20)
-    company_insight_max_length: int = Field(default=1500, ge=1)
-    call_max_retries: int = Field(default=3, ge=1)
-    length_retry_max_retries: int = Field(default=2, ge=0)
 
 
 class CorrectionConfig(BaseModel):

@@ -1,10 +1,8 @@
 """인터뷰 에이전트 비즈니스 로직"""
 
-import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import suppress
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -18,7 +16,6 @@ from common.sse import (
 )
 from features.interview.agents.graph import build_graph
 from features.interview.agents.state import (
-    InterviewSessionStatus,
     InterviewState,
     ensure_interview_state_defaults,
     get_initial_interview_state,
@@ -69,27 +66,6 @@ class InterviewService:
             "extension_turns_max": state.get("extension_turns_max"),
         }
 
-    @staticmethod
-    def _get_thread_config(session_id: str) -> dict[str, dict[str, str]]:
-        """세션별 LangGraph thread config를 반환"""
-        return {"configurable": {"thread_id": session_id}}
-
-    async def _set_session_status(
-        self,
-        session_id: str,
-        status: InterviewSessionStatus,
-        fallback_state: dict | None = None,
-    ) -> None:
-        """세션 상태(status)를 저장한다."""
-        state_update: dict = {"status": status}
-
-        if fallback_state is not None:
-            current_state = await self.get_session_state(session_id)
-            if current_state is None:
-                state_update = {**fallback_state, "status": status}
-
-        await self._graph.aupdate_state(self._get_thread_config(session_id), state_update)
-
     async def create_session(
         self,
         user_id: str,
@@ -124,33 +100,11 @@ class InterviewService:
             experience_name=experience_name,
         )
 
-        try:
-            # 그래프 비동기 실행 (첫 질문 생성)
-            result = await self._graph.ainvoke(
-                initial_state,
-                config={"configurable": {"thread_id": session_id}},
-            )
-            await self._set_session_status(
-                session_id,
-                "completed",
-                fallback_state={**initial_state, **result},
-            )
-        except asyncio.CancelledError:
-            with suppress(Exception):
-                await self._set_session_status(
-                    session_id,
-                    "failed",
-                    fallback_state=initial_state,
-                )
-            raise
-        except Exception:
-            with suppress(Exception):
-                await self._set_session_status(
-                    session_id,
-                    "failed",
-                    fallback_state=initial_state,
-                )
-            raise
+        # 그래프 비동기 실행 (첫 질문 생성)
+        result = await self._graph.ainvoke(
+            initial_state,
+            config={"configurable": {"thread_id": session_id}},
+        )
 
         return {
             "session_id": session_id,
@@ -185,14 +139,11 @@ class InterviewService:
             session_id=session_id,
             experience_name=experience_name,
         )
-        # "generating" 상태를 체크포인터에 즉시 저장 (process_message_stream, extend_session_stream과 일관성)
-        # 세션 최초 생성이므로 fallback_state로 초기 상태 전달 → 체크포인터에 세션이 없으면 전체 초기 상태를 포함해 저장
-        config = self._get_thread_config(session_id)
+        config = {"configurable": {"thread_id": session_id}}
         accumulated_text = ""
 
         # 2. 스트리밍 진행
         try:
-            await self._set_session_status(session_id, "generating", fallback_state=initial_state)
             async for event in self._graph.astream_events(
                 initial_state, config=config, version="v2"
             ):
@@ -227,12 +178,6 @@ class InterviewService:
             # 4. 스트리밍 완료 후 최종 상태에서 첫 질문 추출
             final_state = await self.get_session_state(session_id)
             if final_state:
-                await self._set_session_status(
-                    session_id,
-                    "completed",
-                    fallback_state=final_state,
-                )
-                final_state = {**final_state, "status": "completed"}
                 first_question = accumulated_text
                 messages = final_state.get("messages", [])
                 if not first_question and messages:
@@ -246,7 +191,6 @@ class InterviewService:
                             "message": {
                                 "session_id": session_id,
                                 "first_question": first_question,
-                                "status": final_state["status"],
                                 "current_stage": final_state["current_stage"],
                                 "stage_progress": final_state["stage_progress"],
                                 **self._build_extension_meta(final_state),
@@ -256,12 +200,6 @@ class InterviewService:
                     ),
                 }
             else:
-                with suppress(Exception):
-                    await self._set_session_status(
-                        session_id,
-                        "failed",
-                        fallback_state=initial_state,
-                    )
                 logger.error(f"세션 상태를 찾을 수 없습니다: {session_id}")
                 yield {
                     "event": SSEEventType.ERROR,
@@ -277,21 +215,7 @@ class InterviewService:
                     ),
                 }
 
-        except asyncio.CancelledError:
-            with suppress(Exception):
-                await self._set_session_status(
-                    session_id,
-                    "failed",
-                    fallback_state=initial_state,
-                )
-            raise
         except Exception as e:
-            with suppress(Exception):
-                await self._set_session_status(
-                    session_id,
-                    "failed",
-                    fallback_state=initial_state,
-                )
             logger.exception(f"SSE 스트리밍 중 예외 발생: {e}")
             yield {
                 "event": SSEEventType.ERROR,
@@ -407,11 +331,10 @@ class InterviewService:
             "extension_turns_max": global_config.extension_turns_per_session,
             "mentioned_insight": None,
         }
-        config = self._get_thread_config(session_id)
+        config = {"configurable": {"thread_id": session_id}}
         accumulated_text = ""
 
         try:
-            await self._set_session_status(session_id, "generating")
             async for event in self._graph.astream_events(input_state, config=config, version="v2"):
                 event_type = event.get("event")
                 metadata = event.get("metadata", {})
@@ -442,8 +365,6 @@ class InterviewService:
 
             final_state = await self.get_session_state(session_id)
             if final_state:
-                await self._set_session_status(session_id, "completed")
-                final_state = {**final_state, "status": "completed"}
                 ai_response = accumulated_text or self._get_latest_ai_response(
                     final_state.get("messages", [])
                 )
@@ -455,7 +376,6 @@ class InterviewService:
                             "type": SSEEventType.MESSAGE_COMPLETE,
                             "message": {
                                 "ai_response": ai_response,
-                                "status": final_state["status"],
                                 "current_stage": final_state["current_stage"],
                                 "stage_progress": final_state["stage_progress"],
                                 "overall_completion": final_state["overall_completion_percentage"],
@@ -467,8 +387,6 @@ class InterviewService:
                     ),
                 }
             else:
-                with suppress(Exception):
-                    await self._set_session_status(session_id, "failed")
                 logger.error(f"세션 상태를 찾을 수 없습니다: {session_id}")
                 yield {
                     "event": SSEEventType.ERROR,
@@ -484,13 +402,7 @@ class InterviewService:
                     ),
                 }
 
-        except asyncio.CancelledError:
-            with suppress(Exception):
-                await self._set_session_status(session_id, "failed")
-            raise
         except Exception as e:
-            with suppress(Exception):
-                await self._set_session_status(session_id, "failed")
             logger.exception(f"SSE 스트리밍 중 예외 발생: {e}")
             yield {
                 "event": SSEEventType.ERROR,
@@ -549,7 +461,7 @@ class InterviewService:
         # 그래프 비동기 실행 (Checkpointer가 이전 상태 자동 로드)
         result = await self._graph.ainvoke(
             input_state,
-            config=self._get_thread_config(session_id),
+            config={"configurable": {"thread_id": session_id}},
         )
 
         ai_response = None
@@ -576,25 +488,14 @@ class InterviewService:
             InterviewState | None: 세션 상태 (없으면 None)
         """
 
-        state_snapshot = await self._graph.aget_state(config=self._get_thread_config(session_id))
+        state_snapshot = await self._graph.aget_state(
+            config={"configurable": {"thread_id": session_id}}
+        )
 
         if state_snapshot is None or not state_snapshot.values:
             return None
 
         return ensure_interview_state_defaults(state_snapshot.values)
-
-    async def get_session_status(self, session_id: str) -> dict | None:
-        """현재 세션의 경량 status 정보를 조회한다."""
-        state = await self.get_session_state(session_id)
-        if state is None:
-            return None
-
-        return {
-            "session_id": state["session_id"],
-            "status": state["status"],
-            "current_stage": state["current_stage"],
-            "all_complete": state["all_stages_complete"],
-        }
 
     @staticmethod
     def _build_retriever_result_payload(output: dict | None) -> dict:
@@ -671,12 +572,11 @@ class InterviewService:
             "mentioned_insight": mentioned_insight,
         }
 
-        config = self._get_thread_config(session_id)
+        config = {"configurable": {"thread_id": session_id}}
         accumulated_text = ""
 
         # 3. LangGraph astream_events로 스트리밍
         try:
-            await self._set_session_status(session_id, "generating")
             async for event in self._graph.astream_events(input_state, config=config, version="v2"):
                 event_type = event.get("event")
                 metadata = event.get("metadata", {})
@@ -730,8 +630,6 @@ class InterviewService:
             # 4. 스트리밍 완료 후 최종 상태 조회 -> message_complete 전송
             final_state = await self.get_session_state(session_id)
             if final_state:
-                await self._set_session_status(session_id, "completed")
-                final_state = {**final_state, "status": "completed"}
                 ai_response: str | None = None
                 if not final_state["all_stages_complete"]:
                     ai_response = accumulated_text or self._get_latest_ai_response(
@@ -745,7 +643,6 @@ class InterviewService:
                             "type": SSEEventType.MESSAGE_COMPLETE,
                             "message": {
                                 "ai_response": ai_response,
-                                "status": final_state["status"],
                                 "current_stage": final_state["current_stage"],
                                 "stage_progress": final_state["stage_progress"],
                                 "overall_completion": final_state["overall_completion_percentage"],
@@ -757,8 +654,6 @@ class InterviewService:
                     ),
                 }
             else:
-                with suppress(Exception):
-                    await self._set_session_status(session_id, "failed")
                 logger.error(f"세션 상태를 찾을 수 없습니다: {session_id}")
                 yield {
                     "event": SSEEventType.ERROR,
@@ -774,13 +669,7 @@ class InterviewService:
                     ),
                 }
 
-        except asyncio.CancelledError:
-            with suppress(Exception):
-                await self._set_session_status(session_id, "failed")
-            raise
         except Exception as e:
-            with suppress(Exception):
-                await self._set_session_status(session_id, "failed")
             logger.exception(f"SSE 스트리밍 중 예외 발생: {e}")
             yield {
                 "event": SSEEventType.ERROR,

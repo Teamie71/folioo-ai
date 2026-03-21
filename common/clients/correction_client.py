@@ -1,39 +1,12 @@
 """첨삭 서비스용 메인 서버 API 클라이언트"""
 
 import logging
-from typing import Any
 
 from .base_client import BaseClient
 
 logger = logging.getLogger(__name__)
 
 _client: "CorrectionClient | None" = None
-
-
-def _to_pdf_extraction_activity_payload(activity: dict[str, Any]) -> dict[str, Any]:
-    """PDF 추출 활동 dict를 메인 서버 camelCase payload로 변환한다."""
-    raw_problem_solving = activity.get("problem_solving", activity.get("problemSolving", []))
-    problem_solving: list[dict[str, Any]] = []
-    if isinstance(raw_problem_solving, list):
-        for item in raw_problem_solving:
-            if not isinstance(item, dict):
-                continue
-            problem_solving.append(
-                {
-                    "no": item.get("no"),
-                    "situation": item.get("situation"),
-                    "strategy": item.get("strategy"),
-                    "reason": item.get("reason"),
-                }
-            )
-
-    return {
-        "activityName": activity.get("activity_name", activity.get("activityName", "")),
-        "detail": activity.get("detail", ""),
-        "responsibility": activity.get("responsibility", ""),
-        "problemSolving": problem_solving,
-        "learning": activity.get("learning", ""),
-    }
 
 
 class CorrectionClient(BaseClient):
@@ -122,7 +95,7 @@ class CorrectionClient(BaseClient):
         """
         return await self.patch(
             f"{self._PREFIX}/{correction_id}/company-insight",
-            json={"companyInsight": company_insight},
+            json={"companyInsight": company_insight[:1500]},
         )
 
     async def update_result(
@@ -168,31 +141,6 @@ class CorrectionClient(BaseClient):
             correction_id: 첨삭 ID
         """
         await self.delete(f"{self._PREFIX}/{correction_id}")
-
-    async def complete_pdf_extraction(
-        self,
-        correction_id: int,
-        activities: list[dict],
-        source_type: str,
-    ) -> dict:
-        """PDF 추출 완료 결과를 메인 서버에 전송한다."""
-        payload_activities = [
-            _to_pdf_extraction_activity_payload(activity) for activity in activities
-        ]
-        return await self.post(
-            f"/internal/corrections/{correction_id}/pdf-extraction-result",
-            json={
-                "activities": payload_activities,
-                "sourceType": source_type,
-            },
-        )
-
-    async def fail_pdf_extraction(self, correction_id: int, error_message: str) -> dict:
-        """PDF 추출 실패 결과를 메인 서버에 전송한다."""
-        return await self.post(
-            f"/internal/corrections/{correction_id}/pdf-extraction-result",
-            json={"errorMessage": error_message},
-        )
 
 
 def get_correction_client() -> "CorrectionClient":
