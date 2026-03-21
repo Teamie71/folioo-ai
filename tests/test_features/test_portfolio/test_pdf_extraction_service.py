@@ -2,6 +2,7 @@
 
 import pytest
 
+from features.portfolio.pdf_extraction import __all__ as pdf_extraction_exports
 from features.portfolio.pdf_extraction import service as pdf_extraction_service_module
 from features.portfolio.pdf_extraction.schemas import (
     PdfActivity,
@@ -32,6 +33,7 @@ class DummyCorrectionClient:
     def __init__(self) -> None:
         self.completed_calls: list[tuple[int, list[dict], str]] = []
         self.failed_calls: list[tuple[int, str]] = []
+        self.complete_exception: Exception | None = None
 
     async def complete_pdf_extraction(
         self,
@@ -39,6 +41,8 @@ class DummyCorrectionClient:
         activities: list[dict],
         source_type: str,
     ) -> dict:
+        if self.complete_exception is not None:
+            raise self.complete_exception
         self.completed_calls.append((correction_id, activities, source_type))
         return {"id": correction_id}
 
@@ -163,6 +167,24 @@ async def test_background_extraction_failure_calls_fail_callback(monkeypatch):
     assert client.failed_calls == [(123, "PDF 파싱 실패")]
 
 
+@pytest.mark.asyncio
+async def test_background_extraction_complete_callback_failure_does_not_call_fail(monkeypatch):
+    """완료 콜백 실패는 fail 콜백으로 전환하지 않는다."""
+    client = DummyCorrectionClient()
+    client.complete_exception = RuntimeError("callback timeout")
+    generator = DummyGenerator()
+    service = PdfExtractionService(correction_client=client, generator=generator)
+
+    async def fake_to_thread(fn, *args):
+        return fn(*args)
+
+    monkeypatch.setattr(pdf_extraction_service_module.asyncio, "to_thread", fake_to_thread)
+
+    await service._extract_background(123, b"%PDF-1.4", "portfolio.pdf")
+
+    assert client.failed_calls == []
+
+
 def test_validate_result_truncates_deduplicates_and_reindexes():
     """검증 로직은 앞 5개만 유지하고 중복 제거 후 순번을 재정렬한다."""
     service = PdfExtractionService(
@@ -238,6 +260,55 @@ def test_validate_result_truncates_deduplicates_and_reindexes():
         "Delta",
     ]
     assert [item.no for item in activities[0].problem_solving] == [1, 2]
+
+
+def test_validate_result_skips_blank_activity_names_and_trims_values():
+    """공백-only 활동명은 제거하고 남는 활동명은 trim 값으로 정규화한다."""
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    result = PdfExtractionResult(
+        activities=[
+            PdfActivity(
+                activity_name="   ",
+                detail="상세 1",
+                responsibility="담당 1",
+                problem_solving=[],
+                learning="배운 점 1",
+            ),
+            PdfActivity(
+                activity_name=" Project A ",
+                detail="상세 2",
+                responsibility="담당 2",
+                problem_solving=[],
+                learning="배운 점 2",
+            ),
+        ]
+    )
+
+    activities = service._validate_result(result)
+
+    assert [activity.activity_name for activity in activities] == ["Project A"]
+
+
+def test_validate_file_allows_pdf_extension_for_wrong_mime_type():
+    """MIME이 잘못돼도 .pdf 확장자면 fallback 허용한다."""
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+
+    service._validate_file(
+        file_bytes=b"%PDF-1.4",
+        filename="portfolio.pdf",
+        content_type="text/plain",
+    )
+
+
+def test_pdf_extraction_package_exports_are_sorted():
+    """패키지 export 목록은 정렬되어 있다."""
+    assert pdf_extraction_exports == sorted(pdf_extraction_exports)
 
 
 def test_validate_result_raises_for_empty_activities():

@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 _service: "PdfExtractionService | None" = None
 _MAX_PDF_FILE_SIZE_BYTES = 10 * 1024 * 1024
 _PDF_MIME_TYPE = "application/pdf"
-_PDF_FALLBACK_MIME_TYPES = {"", "application/octet-stream"}
 
 
 class PdfExtractionGeneratorProtocol(Protocol):
@@ -64,9 +63,6 @@ class PdfExtractionService:
         if normalized_content_type == _PDF_MIME_TYPE:
             return
 
-        if normalized_content_type not in _PDF_FALLBACK_MIME_TYPES:
-            raise ValueError("PDF 파일만 업로드할 수 있습니다.")
-
         if not filename.lower().endswith(".pdf"):
             raise ValueError("PDF 파일만 업로드할 수 있습니다.")
 
@@ -80,17 +76,22 @@ class PdfExtractionService:
         try:
             result = await asyncio.to_thread(self._generator.extract, file_bytes, filename)
             activities = self._validate_result(result)
-            await self._correction_client.complete_pdf_extraction(
-                correction_id,
-                activities=[activity.model_dump() for activity in activities],
-                source_type="EXTERNAL",
-            )
         except Exception as exc:
             logger.exception("PDF 추출 실패 (correction_id: %s): %s", correction_id, exc)
             try:
                 await self._correction_client.fail_pdf_extraction(correction_id, str(exc))
             except Exception:
                 logger.exception("PDF 추출 실패 콜백 전송 실패 (correction_id: %s)", correction_id)
+            return
+
+        try:
+            await self._correction_client.complete_pdf_extraction(
+                correction_id,
+                activities=[activity.model_dump() for activity in activities],
+                source_type="EXTERNAL",
+            )
+        except Exception:
+            logger.exception("PDF 추출 완료 콜백 전송 실패 (correction_id: %s)", correction_id)
 
     @staticmethod
     def _validate_result(result: PdfExtractionResult) -> list[PdfActivity]:
@@ -104,7 +105,7 @@ class PdfExtractionService:
 
         for activity in activities:
             dedupe_key = activity.activity_name.strip()
-            if dedupe_key in seen_names:
+            if not dedupe_key or dedupe_key in seen_names:
                 continue
 
             seen_names.add(dedupe_key)
@@ -113,7 +114,12 @@ class PdfExtractionService:
                 for index, item in enumerate(activity.problem_solving, start=1)
             ]
             normalized_activities.append(
-                activity.model_copy(update={"problem_solving": problem_solving})
+                activity.model_copy(
+                    update={
+                        "activity_name": dedupe_key,
+                        "problem_solving": problem_solving,
+                    }
+                )
             )
 
         if not normalized_activities:
