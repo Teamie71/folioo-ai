@@ -76,7 +76,7 @@ def test_interviewer_routing_with_file_attachment(initial_state):
             {
                 "filename": "portfolio.pdf",
                 "content_type": "application/pdf",
-                "data": b"pdf-data",
+                "temp_path": "/tmp/portfolio.pdf",
             }
         ],
     }

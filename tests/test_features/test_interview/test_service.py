@@ -143,12 +143,12 @@ async def test_process_message_with_files(monkeypatch):
             {
                 "filename": "portfolio.pdf",
                 "content_type": "application/pdf",
-                "data": b"pdf-data",
+                "temp_path": "/tmp/portfolio.pdf",
             },
             {
                 "filename": "image.png",
                 "content_type": "image/png",
-                "data": b"png-data",
+                "temp_path": "/tmp/image.png",
             },
         ],
     )
@@ -170,12 +170,12 @@ async def test_process_message_with_files(monkeypatch):
         {
             "filename": "portfolio.pdf",
             "content_type": "application/pdf",
-            "data": b"pdf-data",
+            "temp_path": "/tmp/portfolio.pdf",
         },
         {
             "filename": "image.png",
             "content_type": "image/png",
-            "data": b"png-data",
+            "temp_path": "/tmp/image.png",
         },
     ]
     assert invocation["state"]["file_contexts"] == []

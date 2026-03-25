@@ -29,11 +29,11 @@ class InsightTurnRecord(TypedDict):
 
 
 class FilePayload(TypedDict):
-    """현재 턴에서 업로드된 파일 페이로드"""
+    """현재 턴 업로드 파일의 임시 저장 참조"""
 
     filename: str
     content_type: str
-    data: bytes
+    temp_path: str
 
 
 class StageProgress(TypedDict):
@@ -120,7 +120,7 @@ class InterviewState(TypedDict):
 
     # ===== 파일 업로드 =====
     current_turn_files: list[FilePayload]
-    # 현재 턴에서 새로 업로드된 파일 payload들
+    # 현재 턴에서 새로 업로드된 파일 참조들
     # API 레이어가 state에 주입
     # Router가 이를 확인하여 FileProcessor로 라우팅 결정
 

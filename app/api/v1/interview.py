@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import os
+import tempfile
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -55,9 +57,29 @@ def _normalize_content_type(content_type: str | None) -> str:
     return (content_type or "").split(";", 1)[0].strip().lower()
 
 
+def _create_temp_upload_file(suffix: str) -> Path:
+    """업로드 파일을 저장할 임시 파일 경로를 생성한다."""
+    file_descriptor, temp_path = tempfile.mkstemp(prefix="interview-upload-", suffix=suffix)
+    os.close(file_descriptor)
+    return Path(temp_path)
+
+
+def _cleanup_temp_files(files: list[FilePayload] | None) -> None:
+    """임시 업로드 파일을 정리한다."""
+    for file in files or []:
+        temp_path = file.get("temp_path")
+        if temp_path:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("임시 업로드 파일 정리에 실패했습니다: %s", temp_path, exc_info=True)
+
+
 async def _read_and_validate_files(files: list[UploadFile] | None) -> list[FilePayload]:
-    """multipart 업로드 파일을 읽고 인터뷰 파일 payload로 변환한다."""
+    """multipart 업로드 파일을 읽고 인터뷰 파일 참조 payload로 변환한다."""
     upload_files = list(files or [])
+
+    payloads: list[FilePayload] = []
 
     try:
         if len(upload_files) > _MAX_FILES_PER_TURN:
@@ -66,7 +88,6 @@ async def _read_and_validate_files(files: list[UploadFile] | None) -> list[FileP
                 detail=f"파일은 한 번에 최대 {_MAX_FILES_PER_TURN}개까지 업로드할 수 있습니다.",
             )
 
-        payloads: list[FilePayload] = []
         for file in upload_files:
             normalized_content_type = _normalize_content_type(file.content_type)
             file_extension = Path(file.filename or "").suffix.lower()
@@ -83,24 +104,35 @@ async def _read_and_validate_files(files: list[UploadFile] | None) -> list[FileP
                     detail="PDF, PNG, JPG(JPEG) 파일만 업로드할 수 있습니다.",
                 )
 
-            file_bytes_buffer = bytearray()
-            while chunk := await file.read(_FILE_UPLOAD_CHUNK_SIZE_BYTES):
-                file_bytes_buffer.extend(chunk)
-                if len(file_bytes_buffer) > _MAX_FILE_SIZE_BYTES:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"{file.filename or '파일'} 크기는 10MB를 초과할 수 없습니다.",
-                    )
+            temp_path = _create_temp_upload_file(file_extension)
+            bytes_written = 0
+
+            try:
+                with temp_path.open("wb") as temp_file:
+                    while chunk := await file.read(_FILE_UPLOAD_CHUNK_SIZE_BYTES):
+                        bytes_written += len(chunk)
+                        if bytes_written > _MAX_FILE_SIZE_BYTES:
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"{file.filename or '파일'} 크기는 10MB를 초과할 수 없습니다.",
+                            )
+                        temp_file.write(chunk)
+            except Exception:
+                temp_path.unlink(missing_ok=True)
+                raise
 
             payloads.append(
                 {
                     "filename": file.filename or "",
                     "content_type": normalized_content_type,
-                    "data": bytes(file_bytes_buffer),
+                    "temp_path": str(temp_path),
                 }
             )
 
         return payloads
+    except Exception:
+        _cleanup_temp_files(payloads)
+        raise
     finally:
         for file in upload_files:
             with suppress(Exception):
@@ -317,6 +349,8 @@ async def chat(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         )
+    finally:
+        _cleanup_temp_files(validated_files)
 
     return ChatResponse(
         ai_response=result["ai_response"],
@@ -521,8 +555,11 @@ async def chat_stream(
             files=validated_files,
             mentioned_insight=mentioned_insight,
         )
-        async for event in _interleave_ping_events(stream):
-            yield event
+        try:
+            async for event in _interleave_ping_events(stream):
+                yield event
+        finally:
+            _cleanup_temp_files(validated_files)
 
     return EventSourceResponse(
         event_generator(),

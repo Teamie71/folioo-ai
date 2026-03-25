@@ -241,10 +241,12 @@ def test_get_session_status_returns_404_when_missing(monkeypatch):
     assert response.json()["detail"] == "세션을 찾을 수 없습니다: missing-session"
 
 
-def test_chat_accepts_multipart_form_and_passes_file_payloads(monkeypatch):
+def test_chat_accepts_multipart_form_and_passes_file_payloads(monkeypatch, tmp_path):
     """chat 엔드포인트는 multipart 업로드를 FilePayload 리스트로 서비스에 전달한다."""
     service = DummyInterviewService()
     client = _create_client(monkeypatch, service)
+    temp_paths = iter([tmp_path / "interview-upload-1.pdf", tmp_path / "interview-upload-2.jpg"])
+    monkeypatch.setattr(interview_api, "_create_temp_upload_file", lambda _suffix: next(temp_paths))
 
     response = client.post(
         "/api/v1/interview/sessions/session-1/chat",
@@ -262,23 +264,47 @@ def test_chat_accepts_multipart_form_and_passes_file_payloads(monkeypatch):
         {
             "filename": "portfolio.pdf",
             "content_type": "application/pdf",
-            "data": b"%PDF-1.4",
+            "temp_path": str(tmp_path / "interview-upload-1.pdf"),
         },
         {
             "filename": "image.jpg",
             "content_type": "image/jpeg",
-            "data": b"jpeg-bytes",
+            "temp_path": str(tmp_path / "interview-upload-2.jpg"),
         },
     ]
+    assert (tmp_path / "interview-upload-1.pdf").exists() is False
+    assert (tmp_path / "interview-upload-2.jpg").exists() is False
+
+
+def test_chat_cleans_up_temp_files_when_service_raises(monkeypatch, tmp_path):
+    """서비스 오류가 나도 임시 업로드 파일은 정리한다."""
+    client = _create_client(monkeypatch, DummyInterviewService({"missing-session"}))
+    temp_file_path = tmp_path / "interview-upload-1.pdf"
+    monkeypatch.setattr(interview_api, "_create_temp_upload_file", lambda _suffix: temp_file_path)
+
+    response = client.post(
+        "/api/v1/interview/sessions/missing-session/chat",
+        data={"message": "안녕하세요"},
+        files=[("files", ("portfolio.pdf", b"%PDF-1.4", "application/pdf"))],
+    )
+
+    assert response.status_code == 404
+    assert temp_file_path.exists() is False
 
 
 @pytest.mark.asyncio
-async def test_read_and_validate_files_reads_in_chunks_and_closes_files():
+async def test_read_and_validate_files_stores_temp_file_and_closes_upload(tmp_path, monkeypatch):
     """업로드 파일은 chunk 단위로 읽고 모두 close한다."""
     upload = ChunkedUploadFile(
         filename="portfolio.pdf",
         content_type="application/pdf",
         chunks=[b"%PDF", b"-1.4"],
+    )
+    temp_file_path = tmp_path / "portfolio.pdf"
+    monkeypatch.setattr(
+        interview_api,
+        "_create_temp_upload_file",
+        lambda _suffix: temp_file_path,
     )
 
     payloads = await interview_api._read_and_validate_files([upload])
@@ -287,11 +313,12 @@ async def test_read_and_validate_files_reads_in_chunks_and_closes_files():
         {
             "filename": "portfolio.pdf",
             "content_type": "application/pdf",
-            "data": b"%PDF-1.4",
+            "temp_path": str(temp_file_path),
         }
     ]
     assert upload.read_sizes == [1024 * 1024, 1024 * 1024, 1024 * 1024]
     assert upload.closed is True
+    assert temp_file_path.read_bytes() == b"%PDF-1.4"
 
 
 @pytest.mark.asyncio
@@ -347,12 +374,18 @@ async def test_read_and_validate_files_rejects_invalid_extension():
 
 
 @pytest.mark.asyncio
-async def test_read_and_validate_files_rejects_file_too_large():
+async def test_read_and_validate_files_rejects_file_too_large(tmp_path, monkeypatch):
     """10MB를 초과하면 읽기 중 즉시 400 에러를 반환한다."""
     upload = ChunkedUploadFile(
         filename="portfolio.pdf",
         content_type="application/pdf",
         chunks=[b"a" * (10 * 1024 * 1024), b"b"],
+    )
+    temp_file_path = tmp_path / "portfolio.pdf"
+    monkeypatch.setattr(
+        interview_api,
+        "_create_temp_upload_file",
+        lambda _suffix: temp_file_path,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -361,3 +394,32 @@ async def test_read_and_validate_files_rejects_file_too_large():
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "portfolio.pdf 크기는 10MB를 초과할 수 없습니다."
     assert upload.closed is True
+    assert temp_file_path.exists() is False
+
+
+@pytest.mark.asyncio
+async def test_read_and_validate_files_cleans_up_previous_temp_files_on_partial_failure(
+    tmp_path, monkeypatch
+):
+    """여러 파일 중 하나가 실패하면 앞서 저장한 임시 파일도 함께 정리한다."""
+    uploads = [
+        ChunkedUploadFile(
+            filename="portfolio.pdf",
+            content_type="application/pdf",
+            chunks=[b"%PDF-1.4"],
+        ),
+        ChunkedUploadFile(
+            filename="image.jpg",
+            content_type="image/jpeg",
+            chunks=[b"a" * (10 * 1024 * 1024), b"b"],
+        ),
+    ]
+    temp_paths = iter([tmp_path / "portfolio.pdf", tmp_path / "image.jpg"])
+    monkeypatch.setattr(interview_api, "_create_temp_upload_file", lambda _suffix: next(temp_paths))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await interview_api._read_and_validate_files(uploads)
+
+    assert exc_info.value.status_code == 400
+    assert (tmp_path / "portfolio.pdf").exists() is False
+    assert (tmp_path / "image.jpg").exists() is False
