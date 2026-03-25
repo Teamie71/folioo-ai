@@ -10,7 +10,6 @@ from .correction import (
     UpdateEmphasisPointsRequest,
 )
 from .interview import (
-    ChatRequest,
     ChatResponse,
     CreateSessionRequest,
     CreateSessionResponse,
@@ -31,7 +30,6 @@ from .portfolio import (
 __all__ = [
     "CreateSessionRequest",
     "CreateSessionResponse",
-    "ChatRequest",
     "ChatResponse",
     "ExtendSessionResponse",
     "SessionStateResponse",

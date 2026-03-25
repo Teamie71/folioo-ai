@@ -17,6 +17,7 @@ from common.sse import (
 )
 from features.interview.agents.graph import build_graph
 from features.interview.agents.state import (
+    FilePayload,
     InterviewSessionStatus,
     InterviewState,
     ensure_interview_state_defaults,
@@ -475,7 +476,7 @@ class InterviewService:
         self,
         session_id: str,
         message: str,
-        file_ids: list[str] | None = None,
+        files: list[FilePayload] | None = None,
         mentioned_insight: str | None = None,
     ) -> dict:
         """
@@ -484,7 +485,7 @@ class InterviewService:
         Args:
             session_id: 세션 ID
             message: 사용자 메시지
-            file_ids: 현재 턴에서 업로드된 파일 ID 목록 (선택)
+            files: 현재 턴에서 업로드된 파일 payload 목록 (선택)
             mentioned_insight: @ 멘션으로 참조한 인사이트 로그 ID (선택)
 
         Returns:
@@ -507,7 +508,8 @@ class InterviewService:
         # 입력 상태 구성
         input_state: dict = {
             "messages": [HumanMessage(content=message)],
-            "current_turn_files": file_ids or [],
+            "current_turn_files": files or [],
+            "file_contexts": [],
             "mentioned_insight": mentioned_insight,
         }
 
@@ -590,7 +592,7 @@ class InterviewService:
         self,
         session_id: str,
         message: str,
-        file_ids: list[str] | None = None,
+        files: list[FilePayload] | None = None,
         mentioned_insight: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """
@@ -602,7 +604,7 @@ class InterviewService:
         Args:
             session_id: 세션 ID
             message: 사용자 메시지
-            file_ids: 현재 턴에서 업로드된 파일 ID 목록 (선택)
+            files: 현재 턴에서 업로드된 파일 payload 목록 (선택)
             mentioned_insight: @ 멘션으로 참조한 인사이트 로그 ID (선택)
 
         Yields:
@@ -632,7 +634,8 @@ class InterviewService:
         # 2. 입력 상태 구성
         input_state: dict = {
             "messages": [HumanMessage(content=message)],
-            "current_turn_files": file_ids or [],
+            "current_turn_files": files or [],
+            "file_contexts": [],
             "mentioned_insight": mentioned_insight,
         }
 

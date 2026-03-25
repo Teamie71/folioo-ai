@@ -5,13 +5,13 @@ import json
 import logging
 from contextlib import suppress
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from app.schemas.interview import (
-    ChatRequest,
     ChatResponse,
     CollectedFieldSchema,
     CreateSessionRequest,
@@ -27,6 +27,7 @@ from app.schemas.interview import (
 )
 from common.sse import SSEErrorCode, SSEEventType
 from features.interview import get_interview_service
+from features.interview.agents.state import FilePayload
 
 router = APIRouter(prefix="/interview", tags=["interview"])
 logger = logging.getLogger(__name__)
@@ -34,6 +35,11 @@ logger = logging.getLogger(__name__)
 # ping 전송 간격 (초)
 _PING_INTERVAL_SECONDS = 10
 _STREAM_END = object()
+_MAX_FILES_PER_TURN = 3
+_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+_FILE_UPLOAD_CHUNK_SIZE_BYTES = 1024 * 1024
+_ALLOWED_CONTENT_TYPES = {"application/pdf", "image/png", "image/jpeg"}
+_ALLOWED_FILE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 
 
 def _map_service_error_to_http_error(message: str) -> HTTPException:
@@ -42,6 +48,63 @@ def _map_service_error_to_http_error(message: str) -> HTTPException:
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
 
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+
+def _normalize_content_type(content_type: str | None) -> str:
+    """업로드 파일 content-type을 정규화한다."""
+    return (content_type or "").split(";", 1)[0].strip().lower()
+
+
+async def _read_and_validate_files(files: list[UploadFile] | None) -> list[FilePayload]:
+    """multipart 업로드 파일을 읽고 인터뷰 파일 payload로 변환한다."""
+    upload_files = list(files or [])
+
+    try:
+        if len(upload_files) > _MAX_FILES_PER_TURN:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"파일은 한 번에 최대 {_MAX_FILES_PER_TURN}개까지 업로드할 수 있습니다.",
+            )
+
+        payloads: list[FilePayload] = []
+        for file in upload_files:
+            normalized_content_type = _normalize_content_type(file.content_type)
+            file_extension = Path(file.filename or "").suffix.lower()
+
+            if normalized_content_type not in _ALLOWED_CONTENT_TYPES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="PDF, PNG, JPG(JPEG) 파일만 업로드할 수 있습니다.",
+                )
+
+            if file_extension not in _ALLOWED_FILE_EXTENSIONS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="PDF, PNG, JPG(JPEG) 파일만 업로드할 수 있습니다.",
+                )
+
+            file_bytes_buffer = bytearray()
+            while chunk := await file.read(_FILE_UPLOAD_CHUNK_SIZE_BYTES):
+                file_bytes_buffer.extend(chunk)
+                if len(file_bytes_buffer) > _MAX_FILE_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"{file.filename or '파일'} 크기는 10MB를 초과할 수 없습니다.",
+                    )
+
+            payloads.append(
+                {
+                    "filename": file.filename or "",
+                    "content_type": normalized_content_type,
+                    "data": bytes(file_bytes_buffer),
+                }
+            )
+
+        return payloads
+    finally:
+        for file in upload_files:
+            with suppress(Exception):
+                await file.close()
 
 
 async def _interleave_ping_events(stream):
@@ -222,9 +285,17 @@ async def create_session_stream(request: CreateSessionRequest):
     status_code=status.HTTP_200_OK,
     summary="메시지 전송",
     description="사용자 메시지를 전송하고 AI 응답을 받습니다.",
-    responses={404: {"model": ErrorResponse, "description": "세션을 찾을 수 없음"}},
+    responses={
+        400: {"model": ErrorResponse, "description": "multipart 파일 검증 실패"},
+        404: {"model": ErrorResponse, "description": "세션을 찾을 수 없음"},
+    },
 )
-async def chat(session_id: str, request: ChatRequest) -> ChatResponse:
+async def chat(
+    session_id: str,
+    message: str = Form(..., min_length=1),
+    mentioned_insight: str | None = Form(None),
+    files: list[UploadFile] | None = File(None),
+) -> ChatResponse:
     """
     사용자 메시지 처리 및 AI 응답 생성
 
@@ -232,13 +303,14 @@ async def chat(session_id: str, request: ChatRequest) -> ChatResponse:
     - AI 응답과 함께 현재 진행 상황 반환
     """
     service = get_interview_service()
+    validated_files = await _read_and_validate_files(files)
 
     try:
         result = await service.process_message(
             session_id=session_id,
-            message=request.message,
-            file_ids=request.file_ids,
-            mentioned_insight=request.mentioned_insight,
+            message=message,
+            files=validated_files,
+            mentioned_insight=mentioned_insight,
         )
     except ValueError as e:
         raise HTTPException(
@@ -418,10 +490,16 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
             "description": "SSE 스트림",
             "content": {"text/event-stream": {}},
         },
+        400: {"model": ErrorResponse, "description": "multipart 파일 검증 실패"},
         404: {"model": ErrorResponse, "description": "세션을 찾을 수 없음"},
     },
 )
-async def chat_stream(session_id: str, request: ChatRequest):
+async def chat_stream(
+    session_id: str,
+    message: str = Form(..., min_length=1),
+    mentioned_insight: str | None = Form(None),
+    files: list[UploadFile] | None = File(None),
+):
     """
     사용자 메시지 처리 및 AI 응답 SSE 스트리밍
 
@@ -433,14 +511,15 @@ async def chat_stream(session_id: str, request: ChatRequest):
     """
 
     service = get_interview_service()
+    validated_files = await _read_and_validate_files(files)
 
     async def event_generator():
         """SSE 이벤트를 생성하는 비동기 제너레이터"""
         stream = service.process_message_stream(
             session_id=session_id,
-            message=request.message,
-            file_ids=request.file_ids,
-            mentioned_insight=request.mentioned_insight,
+            message=message,
+            files=validated_files,
+            mentioned_insight=mentioned_insight,
         )
         async for event in _interleave_ping_events(stream):
             yield event
