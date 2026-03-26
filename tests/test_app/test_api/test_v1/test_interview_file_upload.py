@@ -42,25 +42,34 @@ def _create_client(monkeypatch, service: DummyInterviewService) -> TestClient:
     return TestClient(app)
 
 
+def _patch_streaming_response(monkeypatch):
+    async def _passthrough_events(stream):
+        async for event in stream:
+            yield event["data"]
+
+    monkeypatch.setattr(interview_api, "_interleave_ping_events", _passthrough_events)
+    monkeypatch.setattr(interview_api, "EventSourceResponse", StreamingResponse)
+
+
 def test_chat_stream_accepts_multipart_with_files(monkeypatch, tmp_path):
     """chat_stream 엔드포인트는 multipart 파일 업로드를 서비스에 전달한다."""
     service = DummyInterviewService()
     client = _create_client(monkeypatch, service)
     temp_paths = iter([tmp_path / "interview-upload-1.pdf", tmp_path / "interview-upload-2.jpg"])
     monkeypatch.setattr(interview_api, "_create_temp_upload_file", lambda _suffix: next(temp_paths))
+    _patch_streaming_response(monkeypatch)
 
-    with client.stream(
-        "POST",
+    response = client.post(
         "/api/v1/interview/sessions/session-1/chat/stream",
         data={"message": "안녕하세요"},
         files=[
             ("files", ("portfolio.pdf", b"%PDF-1.4", "application/pdf")),
             ("files", ("image.jpg", b"jpeg-bytes", "image/jpeg")),
         ],
-    ) as response:
-        assert response.status_code == 200
-        body = "".join(response.iter_text())
+    )
 
+    assert response.status_code == 200
+    body = response.text
     assert "message_complete" in body
     assert service.stream_calls[0]["files"] == [
         {
@@ -135,13 +144,7 @@ def test_chat_stream_works_without_files(monkeypatch):
     """chat_stream 엔드포인트는 파일 없이도 정상 동작한다."""
     service = DummyInterviewService()
     client = _create_client(monkeypatch, service)
-
-    async def _passthrough_events(stream):
-        async for event in stream:
-            yield event["data"]
-
-    monkeypatch.setattr(interview_api, "_interleave_ping_events", _passthrough_events)
-    monkeypatch.setattr(interview_api, "EventSourceResponse", StreamingResponse)
+    _patch_streaming_response(monkeypatch)
 
     response = client.post(
         "/api/v1/interview/sessions/session-1/chat/stream",
