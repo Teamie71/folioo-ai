@@ -292,6 +292,33 @@ def test_chat_cleans_up_temp_files_when_service_raises(monkeypatch, tmp_path):
     assert temp_file_path.exists() is False
 
 
+def test_chat_stream_cleans_up_temp_files_after_response(monkeypatch, tmp_path):
+    """chat_stream 요청이 끝나면 임시 업로드 파일을 정리한다."""
+    service = DummyInterviewService()
+    client = _create_client(monkeypatch, service)
+    temp_file_path = tmp_path / "interview-upload-1.pdf"
+    monkeypatch.setattr(interview_api, "_create_temp_upload_file", lambda _suffix: temp_file_path)
+
+    with client.stream(
+        "POST",
+        "/api/v1/interview/sessions/session-1/chat/stream",
+        data={"message": "안녕하세요"},
+        files=[("files", ("portfolio.pdf", b"%PDF-1.4", "application/pdf"))],
+    ) as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_text())
+
+    assert '"type": "message_complete"' in body
+    assert service.stream_calls[0]["files"] == [
+        {
+            "filename": "portfolio.pdf",
+            "content_type": "application/pdf",
+            "temp_path": str(temp_file_path),
+        }
+    ]
+    assert temp_file_path.exists() is False
+
+
 @pytest.mark.asyncio
 async def test_read_and_validate_files_stores_temp_file_and_closes_upload(tmp_path, monkeypatch):
     """업로드 파일은 chunk 단위로 읽고 모두 close한다."""
