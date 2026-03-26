@@ -74,6 +74,39 @@ def test_file_processor_run_reads_temp_path_and_clears_current_turn_files(tmp_pa
     )
 
 
+def test_file_processor_run_extracts_image_text(tmp_path, monkeypatch):
+    """이미지 파일은 Vision LLM의 image_url 입력으로 전달한다."""
+    file_path = tmp_path / "architecture.png"
+    file_bytes = b"png-binary-data"
+    file_path.write_bytes(file_bytes)
+    fake_llm = _CaptureVisionLLM("추출된 이미지 텍스트")
+    monkeypatch.setattr(file_processor, "get_file_processor_llm", lambda: fake_llm)
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["current_turn_files"] = [
+        {
+            "filename": "architecture.png",
+            "content_type": "image/png",
+            "temp_path": str(file_path),
+        }
+    ]
+
+    result = file_processor.run(state)
+
+    assert result["file_contexts"] == ["[파일: architecture.png]\n추출된 이미지 텍스트"]
+    assert result["current_turn_files"] == []
+
+    human_content = fake_llm.invocations[0][1].content
+    assert human_content[1]["type"] == "image_url"
+    assert human_content[1]["image_url"]["url"] == (
+        "data:image/png;base64," + base64.b64encode(file_bytes).decode("utf-8")
+    )
+
+
 def test_file_processor_run_continues_when_one_file_fails(tmp_path, monkeypatch):
     """파일 하나가 실패해도 나머지 파일은 계속 처리한다."""
     image_path = tmp_path / "image.png"
