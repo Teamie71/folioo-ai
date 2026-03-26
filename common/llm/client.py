@@ -76,6 +76,26 @@ def get_analyst_llm(
     )
 
 
+@lru_cache(maxsize=4)
+def get_file_processor_llm(
+    model: str | None = None,
+    temperature: float = 0.0,
+) -> ChatOpenAI:
+    """FileProcessor 노드 전용 Vision LLM 클라이언트 반환"""
+
+    file_processor_model = model or os.getenv(
+        "FILE_PROCESSOR_MODEL_NAME", "google/gemini-3.1-pro-preview"
+    )
+
+    return _build_llm(
+        model=file_processor_model,
+        temperature=temperature,
+        timeout=120,
+        disable_streaming=True,
+        max_retries=0,
+    )
+
+
 def get_llm_uncached(
     model: str | None = None,
     temperature: float = 0.7,

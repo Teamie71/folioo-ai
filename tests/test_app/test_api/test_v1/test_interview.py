@@ -293,6 +293,46 @@ def test_chat_cleans_up_temp_files_when_service_raises(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_cleans_up_temp_files_after_response(monkeypatch, tmp_path):
+    """chat_stream 제너레이터 소비가 끝나면 임시 업로드 파일을 정리한다."""
+    service = DummyInterviewService()
+    temp_file_path = tmp_path / "interview-upload-1.pdf"
+    monkeypatch.setattr(interview_api, "_create_temp_upload_file", lambda _suffix: temp_file_path)
+    monkeypatch.setattr(interview_api, "get_interview_service", lambda: service)
+
+    class _FakeEventSourceResponse:
+        def __init__(self, content, headers):
+            self.content = content
+            self.headers = headers
+
+    monkeypatch.setattr(interview_api, "EventSourceResponse", _FakeEventSourceResponse)
+
+    upload = ChunkedUploadFile(
+        filename="portfolio.pdf",
+        content_type="application/pdf",
+        chunks=[b"%PDF-1.4"],
+    )
+
+    response = await interview_api.chat_stream(
+        session_id="session-1",
+        message="안녕하세요",
+        files=[upload],
+    )
+
+    events = [event async for event in response.content]
+
+    assert events
+    assert service.stream_calls[0]["files"] == [
+        {
+            "filename": "portfolio.pdf",
+            "content_type": "application/pdf",
+            "temp_path": str(temp_file_path),
+        }
+    ]
+    assert temp_file_path.exists() is False
+
+
+@pytest.mark.asyncio
 async def test_read_and_validate_files_stores_temp_file_and_closes_upload(tmp_path, monkeypatch):
     """업로드 파일은 chunk 단위로 읽고 모두 close한다."""
     upload = ChunkedUploadFile(

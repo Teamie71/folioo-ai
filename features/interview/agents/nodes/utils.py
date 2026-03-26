@@ -179,3 +179,11 @@ def _format_retrieved_insights(insights: list[InsightLog]) -> str:
         lines.append(f"  - 내용: {insight['content']}")
 
     return "\n".join(lines)
+
+
+def _format_file_contexts(file_contexts: list[str]) -> str:
+    """파일 컨텍스트를 프롬프트용 문자열로 변환"""
+    if not file_contexts:
+        return "첨부 파일 없음"
+
+    return "\n---\n".join(file_contexts)

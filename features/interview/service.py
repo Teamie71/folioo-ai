@@ -296,6 +296,8 @@ class InterviewService:
             "extension_count": current_state["extension_count"] + 1,
             "extension_turns_used": 0,
             "extension_turns_max": global_config.extension_turns_per_session,
+            "current_turn_files": [],
+            "file_contexts": [],
             "mentioned_insight": None,
         }
 
@@ -375,6 +377,8 @@ class InterviewService:
             "extension_count": current_state["extension_count"] + 1,
             "extension_turns_used": 0,
             "extension_turns_max": global_config.extension_turns_per_session,
+            "current_turn_files": [],
+            "file_contexts": [],
             "mentioned_insight": None,
         }
         config = self._get_thread_config(session_id)

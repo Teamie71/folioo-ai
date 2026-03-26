@@ -278,6 +278,8 @@ async def test_extend_session_success(monkeypatch):
     assert invocation["state"]["extension_count"] == 1
     assert invocation["state"]["extension_turns_used"] == 0
     assert invocation["state"]["extension_turns_max"] == 3
+    assert invocation["state"]["current_turn_files"] == []
+    assert invocation["state"]["file_contexts"] == []
     assert invocation["state"]["mentioned_insight"] is None
 
 
