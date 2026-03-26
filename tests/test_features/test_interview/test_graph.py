@@ -72,7 +72,13 @@ def test_interviewer_routing_with_file_attachment(initial_state):
     state = {
         **initial_state,
         "messages": [AIMessage(content="이전 질문"), HumanMessage(content="파일 포함 답변")],
-        "current_turn_files": ["file-1"],
+        "current_turn_files": [
+            {
+                "filename": "portfolio.pdf",
+                "content_type": "application/pdf",
+                "temp_path": "/tmp/portfolio.pdf",
+            }
+        ],
     }
     result = router.run(state)
     assert result["next_node"] == "file_processor"

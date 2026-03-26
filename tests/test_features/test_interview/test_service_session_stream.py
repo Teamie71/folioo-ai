@@ -106,7 +106,7 @@ async def test_create_session_stream_yields_delta_and_complete(monkeypatch):
     assert complete_payload["message"]["status"] == "completed"
     assert complete_payload["message"]["current_stage"] == 1
     assert complete_payload["message"]["is_extended_mode"] is False
-    assert dummy_graph.astream_calls[0]["state"]["status"] == "generating"
+    assert dummy_graph.update_state_calls[0]["state"]["status"] == "generating"
     assert dummy_graph.update_state_calls[-1]["state"]["status"] == "completed"
 
 
@@ -258,6 +258,7 @@ async def test_process_message_stream_resets_current_turn_files_when_no_files(mo
     ]
 
     assert dummy_graph.astream_calls[0]["state"]["current_turn_files"] == []
+    assert dummy_graph.astream_calls[0]["state"]["file_contexts"] == []
 
 
 @pytest.mark.anyio

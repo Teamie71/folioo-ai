@@ -123,7 +123,7 @@ async def test_process_message_session_not_found(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_process_message_with_files(monkeypatch):
-    """파일 ID 포함 메시지 처리 테스트"""
+    """파일 payload 포함 메시지 처리 테스트"""
     dummy_graph = DummyGraph()
     dummy_graph.state_snapshot = DummyStateSnapshot(values={"session_id": "session_1"})
     dummy_graph.invoke_result = {
@@ -139,7 +139,18 @@ async def test_process_message_with_files(monkeypatch):
     result = await service.process_message(
         session_id="session_1",
         message="답변입니다.",
-        file_ids=["file_1", "file_2"],
+        files=[
+            {
+                "filename": "portfolio.pdf",
+                "content_type": "application/pdf",
+                "temp_path": "/tmp/portfolio.pdf",
+            },
+            {
+                "filename": "image.png",
+                "content_type": "image/png",
+                "temp_path": "/tmp/image.png",
+            },
+        ],
     )
 
     assert result["ai_response"] == "응답"
@@ -155,7 +166,19 @@ async def test_process_message_with_files(monkeypatch):
     assert invocation["config"] == {"configurable": {"thread_id": "session_1"}}
     assert isinstance(invocation["state"]["messages"][0], HumanMessage)
     assert invocation["state"]["messages"][0].content == "답변입니다."
-    assert invocation["state"]["current_turn_files"] == ["file_1", "file_2"]
+    assert invocation["state"]["current_turn_files"] == [
+        {
+            "filename": "portfolio.pdf",
+            "content_type": "application/pdf",
+            "temp_path": "/tmp/portfolio.pdf",
+        },
+        {
+            "filename": "image.png",
+            "content_type": "image/png",
+            "temp_path": "/tmp/image.png",
+        },
+    ]
+    assert invocation["state"]["file_contexts"] == []
 
 
 @pytest.mark.asyncio
@@ -183,6 +206,7 @@ async def test_process_message_returns_none_when_all_complete(monkeypatch):
     assert result["is_extended_mode"] is False
     invocation = dummy_graph.invocations[0]
     assert invocation["state"]["current_turn_files"] == []
+    assert invocation["state"]["file_contexts"] == []
 
 
 @pytest.mark.asyncio
@@ -209,6 +233,7 @@ async def test_process_message_resets_current_turn_files_when_no_files(monkeypat
 
     invocation = dummy_graph.invocations[0]
     assert invocation["state"]["current_turn_files"] == []
+    assert invocation["state"]["file_contexts"] == []
 
 
 @pytest.mark.asyncio
@@ -345,6 +370,8 @@ async def test_get_session_state_returns_values(monkeypatch):
     assert result["retrieved_insights"] == []
     assert result["mentioned_insight"] is None
     assert result["insight_turn_history"] == []
+    assert result["current_turn_files"] == []
+    assert result["file_contexts"] == []
 
 
 @pytest.mark.asyncio

@@ -28,15 +28,12 @@ class InsightTurnRecord(TypedDict):
     insights: list[InsightLog]
 
 
-class FileAttachment(TypedDict):
-    """업로드된 파일 정보"""
+class FilePayload(TypedDict):
+    """현재 턴 업로드 파일의 임시 저장 참조"""
 
-    id: str
-    name: str
-    type: str  # MIME type (e.g., "image/png", "application/pdf")
-    path: str  # 파일 저장 경로 또는 URL
-    uploaded_at: str  # ISO 8601 format
-    processed: bool  # FileProcessor가 처리 완료했는지 여부
+    filename: str
+    content_type: str
+    temp_path: str
 
 
 class StageProgress(TypedDict):
@@ -122,17 +119,14 @@ class InterviewState(TypedDict):
     # retrieved_insights와 별개로 과거 턴 전체를 누적 저장
 
     # ===== 파일 업로드 =====
-    uploaded_files: list[FileAttachment]
-    # 세션 전체에서 업로드된 모든 파일 목록 (누적)
-
-    current_turn_files: list[str]
-    # 현재 턴에서 새로 업로드된 파일 ID들
+    current_turn_files: list[FilePayload]
+    # 현재 턴에서 새로 업로드된 파일 참조들
     # API 레이어가 state에 주입
     # Router가 이를 확인하여 FileProcessor로 라우팅 결정
 
     file_contexts: list[str]
-    # 파일에서 추출된 텍스트들 (세션 내내 누적)
-    # FileProcessor가 사용자 질문 기반으로 파일 요약 후 추가
+    # 현재 턴 업로드 파일에서 추출된 텍스트들 (매 턴 초기화)
+    # FileProcessor가 OCR/캡셔닝/문서 텍스트 추출 결과를 저장
 
     # ===== 라우팅 =====
     next_node: Literal["file_processor", "retriever", "analyst", "question_generator", "end"]
@@ -212,7 +206,6 @@ def get_initial_interview_state(
         "retrieved_insights": [],
         "insight_turn_history": [],
         # 파일 업로드
-        "uploaded_files": [],
         "current_turn_files": [],
         "file_contexts": [],
         # 라우팅
@@ -248,4 +241,6 @@ def ensure_interview_state_defaults(state: InterviewState | dict) -> InterviewSt
         "mentioned_insight": state.get("mentioned_insight"),
         "retrieved_insights": list(state.get("retrieved_insights") or []),
         "insight_turn_history": list(state.get("insight_turn_history") or []),
+        "current_turn_files": list(state.get("current_turn_files") or []),
+        "file_contexts": list(state.get("file_contexts") or []),
     }

@@ -81,15 +81,6 @@ class CreateSessionResponse(BaseModel):
     stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
 
 
-# ===== 채팅 =====
-class ChatRequest(BaseModel):
-    """채팅 요청"""
-
-    message: str = Field(..., min_length=1, description="사용자 메시지")
-    file_ids: list[str] | None = Field(None, description="업로드된 파일 ID 목록")
-    mentioned_insight: str | None = Field(None, description="@ 멘션으로 참조한 인사이트 로그 ID")
-
-
 class ExtendSessionResponse(BaseModel):
     """연장 시작 응답"""
 
