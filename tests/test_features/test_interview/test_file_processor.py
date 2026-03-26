@@ -109,9 +109,35 @@ def test_file_processor_run_continues_when_one_file_fails(tmp_path, monkeypatch)
     assert result["current_turn_files"] == []
     assert result["next_node"] == "retriever"
     assert result["file_contexts"] == [
-        "[파일: broken.pdf]\n파일 처리 실패: 임시 파일을 읽을 수 없습니다.",
+        "[파일: broken.pdf]\n파일 처리 실패",
         "[파일: image.png]\n이미지 설명 텍스트",
     ]
+
+
+def test_file_processor_run_does_not_expose_raw_exception_message(monkeypatch):
+    """파일 처리 실패 시 내부 예외 문자열을 file_contexts에 노출하지 않는다."""
+
+    def _extract_file_text(_file_payload):
+        raise RuntimeError("request_id=req-123 temp_path=/tmp/internal.pdf")
+
+    monkeypatch.setattr(file_processor, "_extract_file_text", _extract_file_text)
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["current_turn_files"] = [
+        {
+            "filename": "broken.pdf",
+            "content_type": "application/pdf",
+            "temp_path": "/tmp/broken.pdf",
+        }
+    ]
+
+    result = file_processor.run(state)
+
+    assert result["file_contexts"] == ["[파일: broken.pdf]\n파일 처리 실패"]
 
 
 def test_file_processor_run_returns_empty_contexts_when_no_files():
@@ -192,6 +218,45 @@ def test_file_processor_run_applies_total_context_limit(monkeypatch):
     assert len(result["file_contexts"]) == 1
     assert result["file_contexts"][0].endswith("...(전체생략)")
     assert len(result["file_contexts"][0]) == 60
+
+
+def test_file_processor_run_marks_last_context_when_total_budget_exactly_exhausted(monkeypatch):
+    """총량을 정확히 소진해도 뒤 파일이 남아 있으면 마지막 컨텍스트에 전체 생략 notice를 남긴다."""
+    monkeypatch.setattr(file_processor, "_MAX_FILE_CONTEXT_CHARS_PER_FILE", 200)
+    monkeypatch.setattr(file_processor, "_MAX_FILE_CONTEXT_CHARS_TOTAL", 25)
+    monkeypatch.setattr(file_processor, "_PER_FILE_TRUNCATION_NOTICE", "...(생략)")
+    monkeypatch.setattr(file_processor, "_TOTAL_TRUNCATION_NOTICE", "...(전체생략)")
+
+    def _extract_file_text(file_payload):
+        if file_payload["filename"] == "first.pdf":
+            return "a" * 9
+        return "b" * 30
+
+    monkeypatch.setattr(file_processor, "_extract_file_text", _extract_file_text)
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["current_turn_files"] = [
+        {
+            "filename": "first.pdf",
+            "content_type": "application/pdf",
+            "temp_path": "/tmp/first.pdf",
+        },
+        {
+            "filename": "second.pdf",
+            "content_type": "application/pdf",
+            "temp_path": "/tmp/second.pdf",
+        },
+    ]
+
+    result = file_processor.run(state)
+
+    assert len(result["file_contexts"]) == 1
+    assert result["file_contexts"][0].endswith("...(전체생략)")
+    assert len(result["file_contexts"][0]) <= 25
 
 
 def test_get_file_processor_llm_uses_dedicated_configuration(monkeypatch):

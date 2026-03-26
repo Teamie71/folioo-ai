@@ -19,6 +19,7 @@ _MAX_FILE_CONTEXT_CHARS_PER_FILE = 4000
 _MAX_FILE_CONTEXT_CHARS_TOTAL = 12000
 _PER_FILE_TRUNCATION_NOTICE = "\n...(파일 길이 제한으로 일부 생략)"
 _TOTAL_TRUNCATION_NOTICE = "\n...(전체 파일 컨텍스트 길이 제한으로 일부 생략)"
+_FILE_PROCESSING_FAILURE_MESSAGE = "파일 처리 실패"
 
 
 def _load_file_bytes(file_payload: FilePayload) -> bytes:
@@ -131,6 +132,18 @@ def _truncate_text(text: str, max_chars: int, notice: str) -> tuple[str, bool]:
     return f"{truncated}{notice}", True
 
 
+def _append_notice_within_limit(text: str, notice: str, max_chars: int) -> str:
+    """기존 길이 제한 안에서 안내 문구가 보이도록 문자열을 재구성한다."""
+    if text.endswith(notice):
+        return text
+
+    if len(text) + len(notice) <= max_chars:
+        return f"{text}{notice}"
+
+    adjusted_text, _ = _truncate_text(f"{text}{notice}", max_chars, notice)
+    return adjusted_text
+
+
 def run(state: InterviewState) -> InterviewState:
     """첨부된 파일을 순차 처리하여 file_contexts를 생성한다."""
     current_turn_files = list(state.get("current_turn_files") or [])
@@ -145,14 +158,14 @@ def run(state: InterviewState) -> InterviewState:
     file_contexts: list[str] = []
     remaining_total_chars = _MAX_FILE_CONTEXT_CHARS_TOTAL
 
-    for file_payload in current_turn_files:
+    for index, file_payload in enumerate(current_turn_files):
         filename = file_payload["filename"]
         try:
             extracted_text = _extract_file_text(file_payload)
             file_context = _format_file_context(filename, extracted_text)
-        except Exception as exc:
+        except Exception:
             logger.exception("파일 처리 실패: %s", filename)
-            file_context = _format_file_context(filename, f"파일 처리 실패: {exc}")
+            file_context = _format_file_context(filename, _FILE_PROCESSING_FAILURE_MESSAGE)
 
         file_context, _ = _truncate_text(
             file_context,
@@ -170,6 +183,15 @@ def run(state: InterviewState) -> InterviewState:
         )
         file_contexts.append(file_context)
         remaining_total_chars -= len(file_context)
+
+        has_more_files = index < len(current_turn_files) - 1
+        if remaining_total_chars == 0 and has_more_files and file_contexts:
+            file_contexts[-1] = _append_notice_within_limit(
+                file_contexts[-1],
+                _TOTAL_TRUNCATION_NOTICE,
+                len(file_contexts[-1]),
+            )
+            break
 
         if reached_total_limit:
             break
