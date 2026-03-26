@@ -23,7 +23,12 @@ from features.interview.config.loader import (
 )
 
 from ..state import CollectedField, InterviewState
-from .utils import _format_retrieved_insights, _get_conversation_context, _get_incomplete_fields
+from .utils import (
+    _format_file_contexts,
+    _format_retrieved_insights,
+    _get_conversation_context,
+    _get_incomplete_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -403,22 +408,6 @@ def _find_stage_for_field(
             return stage_number, stage_config
 
     return None
-
-
-def _format_file_contexts(file_contexts: list[str]) -> str:
-    """
-    파일 컨텍스트를 프롬프트용 문자열로 변환
-
-    Args:
-        file_contexts: 파일에서 추출된 텍스트 리스트
-
-    Returns:
-        포맷팅된 문자열
-    """
-    if not file_contexts:
-        return "첨부 파일 없음"
-
-    return "\n---\n".join(file_contexts)
 
 
 def _calculate_overall_completion_percentage(
