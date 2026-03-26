@@ -129,6 +129,71 @@ def test_file_processor_run_returns_empty_contexts_when_no_files():
     assert result["next_node"] == "retriever"
 
 
+def test_file_processor_run_truncates_long_single_file_context(monkeypatch):
+    """파일별 컨텍스트 길이 상한을 넘기면 잘라서 저장한다."""
+    monkeypatch.setattr(file_processor, "_MAX_FILE_CONTEXT_CHARS_PER_FILE", 40)
+    monkeypatch.setattr(file_processor, "_MAX_FILE_CONTEXT_CHARS_TOTAL", 200)
+    monkeypatch.setattr(file_processor, "_PER_FILE_TRUNCATION_NOTICE", "...(생략)")
+    monkeypatch.setattr(file_processor, "_TOTAL_TRUNCATION_NOTICE", "...(전체생략)")
+    monkeypatch.setattr(file_processor, "_extract_file_text", lambda _payload: "a" * 200)
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["current_turn_files"] = [
+        {
+            "filename": "portfolio.pdf",
+            "content_type": "application/pdf",
+            "temp_path": "/tmp/portfolio.pdf",
+        }
+    ]
+
+    result = file_processor.run(state)
+
+    assert len(result["file_contexts"]) == 1
+    assert result["file_contexts"][0].endswith("...(생략)")
+    assert len(result["file_contexts"][0]) == 40
+
+
+def test_file_processor_run_applies_total_context_limit(monkeypatch):
+    """여러 파일의 총합 길이가 상한을 넘기면 뒤 컨텍스트를 잘라서 중단한다."""
+    monkeypatch.setattr(file_processor, "_MAX_FILE_CONTEXT_CHARS_PER_FILE", 200)
+    monkeypatch.setattr(file_processor, "_MAX_FILE_CONTEXT_CHARS_TOTAL", 60)
+    monkeypatch.setattr(file_processor, "_PER_FILE_TRUNCATION_NOTICE", "...(생략)")
+    monkeypatch.setattr(file_processor, "_TOTAL_TRUNCATION_NOTICE", "...(전체생략)")
+
+    def _extract_file_text(file_payload):
+        return f"내용-{file_payload['filename']}-" + ("a" * 40)
+
+    monkeypatch.setattr(file_processor, "_extract_file_text", _extract_file_text)
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["current_turn_files"] = [
+        {
+            "filename": "first.pdf",
+            "content_type": "application/pdf",
+            "temp_path": "/tmp/first.pdf",
+        },
+        {
+            "filename": "second.pdf",
+            "content_type": "application/pdf",
+            "temp_path": "/tmp/second.pdf",
+        },
+    ]
+
+    result = file_processor.run(state)
+
+    assert len(result["file_contexts"]) == 1
+    assert result["file_contexts"][0].endswith("...(전체생략)")
+    assert len(result["file_contexts"][0]) == 60
+
+
 def test_get_file_processor_llm_uses_dedicated_configuration(monkeypatch):
     """FileProcessor 전용 LLM helper는 Vision 추출용 설정을 사용한다."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

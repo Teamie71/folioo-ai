@@ -15,6 +15,11 @@ from ..state import FilePayload, InterviewState
 
 logger = logging.getLogger(__name__)
 
+_MAX_FILE_CONTEXT_CHARS_PER_FILE = 4000
+_MAX_FILE_CONTEXT_CHARS_TOTAL = 12000
+_PER_FILE_TRUNCATION_NOTICE = "\n...(파일 길이 제한으로 일부 생략)"
+_TOTAL_TRUNCATION_NOTICE = "\n...(전체 파일 컨텍스트 길이 제한으로 일부 생략)"
+
 
 def _load_file_bytes(file_payload: FilePayload) -> bytes:
     """임시 파일 경로에서 파일 바이트를 읽는다."""
@@ -108,6 +113,24 @@ def _extract_file_text(file_payload: FilePayload) -> str:
     return extracted_text
 
 
+def _format_file_context(filename: str, extracted_text: str) -> str:
+    """파일명과 추출 텍스트를 컨텍스트 문자열로 포맷팅한다."""
+    return f"[파일: {filename}]\n{extracted_text}"
+
+
+def _truncate_text(text: str, max_chars: int, notice: str) -> tuple[str, bool]:
+    """문자열 길이를 제한하고 잘린 경우 안내 문구를 붙인다."""
+    if len(text) <= max_chars:
+        return text, False
+
+    available_chars = max_chars - len(notice)
+    if available_chars <= 0:
+        return notice[:max_chars], True
+
+    truncated = text[:available_chars].rstrip()
+    return f"{truncated}{notice}", True
+
+
 def run(state: InterviewState) -> InterviewState:
     """첨부된 파일을 순차 처리하여 file_contexts를 생성한다."""
     current_turn_files = list(state.get("current_turn_files") or [])
@@ -120,14 +143,36 @@ def run(state: InterviewState) -> InterviewState:
         }
 
     file_contexts: list[str] = []
+    remaining_total_chars = _MAX_FILE_CONTEXT_CHARS_TOTAL
+
     for file_payload in current_turn_files:
         filename = file_payload["filename"]
         try:
             extracted_text = _extract_file_text(file_payload)
-            file_contexts.append(f"[파일: {filename}]\n{extracted_text}")
+            file_context = _format_file_context(filename, extracted_text)
         except Exception as exc:
             logger.exception("파일 처리 실패: %s", filename)
-            file_contexts.append(f"[파일: {filename}]\n파일 처리 실패: {exc}")
+            file_context = _format_file_context(filename, f"파일 처리 실패: {exc}")
+
+        file_context, _ = _truncate_text(
+            file_context,
+            _MAX_FILE_CONTEXT_CHARS_PER_FILE,
+            _PER_FILE_TRUNCATION_NOTICE,
+        )
+
+        if remaining_total_chars <= 0:
+            break
+
+        file_context, reached_total_limit = _truncate_text(
+            file_context,
+            remaining_total_chars,
+            _TOTAL_TRUNCATION_NOTICE,
+        )
+        file_contexts.append(file_context)
+        remaining_total_chars -= len(file_context)
+
+        if reached_total_limit:
+            break
 
     return {
         **state,
