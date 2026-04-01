@@ -451,8 +451,8 @@ def test_update_company_insight_rejects_payload_over_2000_chars(monkeypatch):
     assert cc.updated_company_insight is None
 
 
-def test_update_company_insight_openapi_documents_422_response(monkeypatch):
-    """기업 분석 수정 API는 요청 검증 실패 422 응답을 문서화한다."""
+def test_update_company_insight_openapi_documents_default_422_validation_schema(monkeypatch):
+    """기업 분석 수정 API는 기본 422 검증 오류 스키마를 문서화한다."""
     cc = DummyCorrectionClient(correction={"id": 123, "status": "COMPANY_INSIGHT"})
     client = _create_client(monkeypatch, cc)
 
@@ -462,7 +462,10 @@ def test_update_company_insight_openapi_documents_422_response(monkeypatch):
     responses = response.json()["paths"]["/api/v1/corrections/{correction_id}/company-insight"][
         "patch"
     ]["responses"]
-    assert responses["422"]["description"] == "요청 본문 검증 실패"
+    assert responses["422"]["description"] == "Validation Error"
+    assert responses["422"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/HTTPValidationError"
+    }
     assert "400" not in responses
 
 
