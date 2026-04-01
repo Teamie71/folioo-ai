@@ -76,11 +76,13 @@ def test_chat_stream_accepts_multipart_with_files(monkeypatch, tmp_path):
             "filename": "portfolio.pdf",
             "content_type": "application/pdf",
             "temp_path": str(tmp_path / "interview-upload-1.pdf"),
+            "file_size": len(b"%PDF-1.4"),
         },
         {
             "filename": "image.jpg",
             "content_type": "image/jpeg",
             "temp_path": str(tmp_path / "interview-upload-2.jpg"),
+            "file_size": len(b"jpeg-bytes"),
         },
     ]
     assert (tmp_path / "interview-upload-1.pdf").exists() is False

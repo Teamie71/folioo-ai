@@ -216,6 +216,7 @@ async def test_process_message_stream_emits_retriever_events(monkeypatch):
     )
     complete_payload = json.loads(complete_event["data"])
     assert complete_payload["message"]["status"] == "completed"
+    assert "file_turn_history" not in complete_payload["message"]
     assert dummy_graph.update_state_calls[0]["state"]["status"] == "generating"
     assert dummy_graph.update_state_calls[-1]["state"]["status"] == "completed"
 

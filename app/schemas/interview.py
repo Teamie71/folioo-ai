@@ -64,6 +64,24 @@ class InsightTurnRecordSchema(BaseModel):
     )
 
 
+class FileMetadataSchema(BaseModel):
+    """파일 메타데이터 스키마"""
+
+    filename: str = Field(..., description="원본 파일명")
+    content_type: str = Field(..., description="MIME 타입")
+    file_size: int = Field(..., ge=0, description="파일 크기(바이트)")
+
+
+class FileTurnRecordSchema(BaseModel):
+    """턴별 파일 메타데이터 복원 기록 스키마"""
+
+    turn_number: int = Field(..., ge=1, description="사용자 턴 번호")
+    files: list[FileMetadataSchema] = Field(
+        default_factory=list,
+        description="해당 턴 첨부 파일 목록",
+    )
+
+
 # ===== 세션 생성 =====
 class CreateSessionRequest(BaseModel):
     """세션 생성 요청"""
@@ -134,6 +152,10 @@ class SessionStateResponse(BaseModel):
     insight_turn_history: list[InsightTurnRecordSchema] = Field(
         default_factory=list,
         description="과거 사용자 턴별 인사이트 복원 이력",
+    )
+    file_turn_history: list[FileTurnRecordSchema] = Field(
+        default_factory=list,
+        description="과거 사용자 턴별 파일 메타데이터 복원 이력",
     )
     messages: list[MessageSchema] = Field(..., description="전체 대화 기록")
 

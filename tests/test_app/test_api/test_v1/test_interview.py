@@ -123,6 +123,18 @@ class DummyInterviewService:
                     ],
                 }
             ],
+            "file_turn_history": [
+                {
+                    "turn_number": 1,
+                    "files": [
+                        {
+                            "filename": "portfolio.pdf",
+                            "content_type": "application/pdf",
+                            "file_size": 524288,
+                        }
+                    ],
+                }
+            ],
             "messages": [],
             "mentioned_insight": None,
             "retrieved_insights": [],
@@ -213,6 +225,18 @@ def test_get_session_state_includes_turn_history(monkeypatch):
     assert body["insight_turn_history"][0]["turn_number"] == 1
     assert body["insight_turn_history"][0]["user_message"] == "첫 답변"
     assert body["insight_turn_history"][0]["insights"][0]["activity_name"] == "해커톤"
+    assert body["file_turn_history"] == [
+        {
+            "turn_number": 1,
+            "files": [
+                {
+                    "filename": "portfolio.pdf",
+                    "content_type": "application/pdf",
+                    "file_size": 524288,
+                }
+            ],
+        }
+    ]
 
 
 def test_get_session_status_returns_compact_payload(monkeypatch):
@@ -265,15 +289,18 @@ def test_chat_accepts_multipart_form_and_passes_file_payloads(monkeypatch, tmp_p
             "filename": "portfolio.pdf",
             "content_type": "application/pdf",
             "temp_path": str(tmp_path / "interview-upload-1.pdf"),
+            "file_size": len(b"%PDF-1.4"),
         },
         {
             "filename": "image.jpg",
             "content_type": "image/jpeg",
             "temp_path": str(tmp_path / "interview-upload-2.jpg"),
+            "file_size": len(b"jpeg-bytes"),
         },
     ]
     assert (tmp_path / "interview-upload-1.pdf").exists() is False
     assert (tmp_path / "interview-upload-2.jpg").exists() is False
+    assert "file_turn_history" not in response.json()
 
 
 def test_chat_cleans_up_temp_files_when_service_raises(monkeypatch, tmp_path):
@@ -327,6 +354,7 @@ async def test_chat_stream_cleans_up_temp_files_after_response(monkeypatch, tmp_
             "filename": "portfolio.pdf",
             "content_type": "application/pdf",
             "temp_path": str(temp_file_path),
+            "file_size": len(b"%PDF-1.4"),
         }
     ]
     assert temp_file_path.exists() is False
@@ -354,6 +382,7 @@ async def test_read_and_validate_files_stores_temp_file_and_closes_upload(tmp_pa
             "filename": "portfolio.pdf",
             "content_type": "application/pdf",
             "temp_path": str(temp_file_path),
+            "file_size": len(b"%PDF-1.4"),
         }
     ]
     assert upload.read_sizes == [1024 * 1024, 1024 * 1024, 1024 * 1024]

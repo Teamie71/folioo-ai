@@ -20,6 +20,8 @@ from app.schemas.interview import (
     CreateSessionResponse,
     ErrorResponse,
     ExtendSessionResponse,
+    FileMetadataSchema,
+    FileTurnRecordSchema,
     InsightLogSchema,
     InsightTurnRecordSchema,
     MessageSchema,
@@ -126,6 +128,7 @@ async def _read_and_validate_files(files: list[UploadFile] | None) -> list[FileP
                     "filename": file.filename or "",
                     "content_type": normalized_content_type,
                     "temp_path": str(temp_path),
+                    "file_size": bytes_written,
                 }
             )
 
@@ -509,6 +512,13 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
                 insights=[InsightLogSchema(**insight) for insight in record["insights"]],
             )
             for record in state["insight_turn_history"]
+        ],
+        file_turn_history=[
+            FileTurnRecordSchema(
+                turn_number=record["turn_number"],
+                files=[FileMetadataSchema(**file_meta) for file_meta in record["files"]],
+            )
+            for record in state["file_turn_history"]
         ],
         messages=messages,
     )
