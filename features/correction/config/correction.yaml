@@ -16,6 +16,6 @@ validation:
 rag:
     keyword_count: 6
     max_results_per_keyword: 5
-    company_insight_max_length: 1500
+    company_insight_max_length: 2000
     call_max_retries: 3
     length_retry_max_retries: 2
