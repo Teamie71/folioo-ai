@@ -1096,6 +1096,19 @@ def test_convert_result_for_server_preserves_spacing_before_inserted_newline():
     )
 
 
+def test_convert_result_for_server_keeps_indented_already_formatted_example():
+    """개행 뒤 공백이 있는 수정 예시는 이미 포맷된 것으로 유지한다."""
+    result = _make_conversion_result_with_comments(
+        emphasize_comment="강조하세요.\n 수정 예시: 이렇게 작성하세요.",
+    )
+
+    converted = CorrectionService._convert_result_for_server(result)
+
+    assert converted[0]["responsibilities"]["lines"][0]["comment"] == (
+        "강조하세요.\n 수정 예시: 이렇게 작성하세요."
+    )
+
+
 # ------------------------------------------------------------------
 # retry
 # ------------------------------------------------------------------

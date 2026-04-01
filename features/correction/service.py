@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 
 from fastapi import BackgroundTasks
@@ -376,7 +377,7 @@ class CorrectionService:
             return comment
 
         marker_index = comment.find(marker)
-        if marker_index <= 0 or comment[marker_index - 1] == "\n":
+        if marker_index <= 0 or re.search(r"\n[ \t]*$", comment[:marker_index]):
             return comment
 
         return f"{comment[:marker_index]}\n{comment[marker_index:]}"
