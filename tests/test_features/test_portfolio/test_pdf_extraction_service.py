@@ -1,15 +1,33 @@
 """PDF 추출 서비스 테스트"""
 
+import sys
+import types
+
 import pytest
 
-from features.portfolio.pdf_extraction import __all__ as pdf_extraction_exports
-from features.portfolio.pdf_extraction import service as pdf_extraction_service_module
-from features.portfolio.pdf_extraction.schemas import (
+
+def _install_dummy_langchain_openai() -> None:
+    """패키지 import 체인 테스트용 langchain_openai 더미 모듈 설치"""
+    dummy_module = types.ModuleType("langchain_openai")
+
+    class DummyChatOpenAI:  # pragma: no cover - 간단 더미
+        def __init__(self, *args, **kwargs):
+            pass
+
+    dummy_module.ChatOpenAI = DummyChatOpenAI
+    sys.modules.setdefault("langchain_openai", dummy_module)
+
+
+_install_dummy_langchain_openai()
+
+from features.portfolio.pdf_extraction import __all__ as pdf_extraction_exports  # noqa: E402
+from features.portfolio.pdf_extraction import service as pdf_extraction_service_module  # noqa: E402
+from features.portfolio.pdf_extraction.schemas import (  # noqa: E402
     PdfActivity,
     PdfExtractionResult,
     PdfProblemSolvingItem,
 )
-from features.portfolio.pdf_extraction.service import (
+from features.portfolio.pdf_extraction.service import (  # noqa: E402
     PdfExtractionService,
     get_pdf_extraction_service,
     init_pdf_extraction_service,
@@ -290,6 +308,47 @@ def test_validate_result_skips_blank_activity_names_and_trims_values():
     activities = service._validate_result(result)
 
     assert [activity.activity_name for activity in activities] == ["Project A"]
+
+
+def test_validate_result_removes_only_leading_dash_bullets_from_structured_fields():
+    """구조화 필드에서는 선행 '- '만 제거하고 다른 마커는 유지한다."""
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    result = PdfExtractionResult(
+        activities=[
+            PdfActivity(
+                activity_name=" Project A ",
+                detail=["- 상세", "1. 유지", "• 유지"],
+                responsibility=["  - 담당 업무", "• 그대로 유지"],
+                problem_solving=[
+                    PdfProblemSolvingItem(
+                        no=9,
+                        situation="- 문제 상황",
+                        strategy="  - 대응 전략",
+                        reason="- 선택 이유",
+                    )
+                ],
+                learning=["- 배운 점", "1. 유지"],
+            )
+        ]
+    )
+
+    activities = service._validate_result(result)
+
+    assert [activity.activity_name for activity in activities] == ["Project A"]
+    assert activities[0].detail == ["상세", "1. 유지", "• 유지"]
+    assert activities[0].responsibility == ["담당 업무", "• 그대로 유지"]
+    assert activities[0].learning == ["배운 점", "1. 유지"]
+    assert activities[0].problem_solving == [
+        PdfProblemSolvingItem(
+            no=1,
+            situation="문제 상황",
+            strategy="대응 전략",
+            reason="선택 이유",
+        )
+    ]
 
 
 def test_validate_file_allows_pdf_extension_for_wrong_mime_type():

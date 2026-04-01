@@ -94,7 +94,15 @@ class PdfExtractionService:
             logger.exception("PDF 추출 완료 콜백 전송 실패 (correction_id: %s)", correction_id)
 
     @staticmethod
-    def _validate_result(result: PdfExtractionResult) -> list[PdfActivity]:
+    def _normalize_structured_text(value: str) -> str:
+        """구조화 문자열의 선행 '- ' bullet만 제거한다."""
+        stripped = value.lstrip()
+        if stripped.startswith("- "):
+            return stripped[2:]
+        return value
+
+    @classmethod
+    def _validate_result(cls, result: PdfExtractionResult) -> list[PdfActivity]:
         """추출 결과를 후처리하고 메인 서버 콜백 형식으로 정리한다."""
         activities = list(result.activities[:5])
         if not activities:
@@ -110,14 +118,30 @@ class PdfExtractionService:
 
             seen_names.add(dedupe_key)
             problem_solving = [
-                item.model_copy(update={"no": index})
+                item.model_copy(
+                    update={
+                        "no": index,
+                        "situation": cls._normalize_structured_text(item.situation),
+                        "strategy": cls._normalize_structured_text(item.strategy),
+                        "reason": cls._normalize_structured_text(item.reason),
+                    }
+                )
                 for index, item in enumerate(activity.problem_solving, start=1)
             ]
             normalized_activities.append(
                 activity.model_copy(
                     update={
                         "activity_name": dedupe_key,
+                        "detail": [
+                            cls._normalize_structured_text(item) for item in activity.detail
+                        ],
+                        "responsibility": [
+                            cls._normalize_structured_text(item) for item in activity.responsibility
+                        ],
                         "problem_solving": problem_solving,
+                        "learning": [
+                            cls._normalize_structured_text(item) for item in activity.learning
+                        ],
                     }
                 )
             )

@@ -23,7 +23,20 @@ def _install_dummy_langchain_openai():
     sys.modules.setdefault("langchain_openai", dummy_module)
 
 
+def _install_dummy_tavily():
+    """테스트용 tavily 더미 모듈 설치"""
+    dummy_module = types.ModuleType("tavily")
+
+    class DummyAsyncTavilyClient:  # pragma: no cover - 간단 더미
+        def __init__(self, *args, **kwargs):
+            pass
+
+    dummy_module.AsyncTavilyClient = DummyAsyncTavilyClient
+    sys.modules.setdefault("tavily", dummy_module)
+
+
 _install_dummy_langchain_openai()
+_install_dummy_tavily()
 
 correction_service_module = importlib.import_module("features.correction.service")
 RAGRunResult = importlib.import_module("features.correction.rag.pipeline").RAGRunResult
@@ -1001,6 +1014,86 @@ def test_convert_result_for_server_converts_multi_portfolio_format():
             },
         },
     ]
+
+
+def _make_conversion_result_with_comments(
+    *,
+    emphasize_comment: str,
+    reduce_comment: str = "줄이세요.",
+    keep_comment: str | None = None,
+) -> CorrectionOutput:
+    """서버 변환 테스트용 댓글 값을 가진 CorrectionOutput 생성."""
+    single_output = _make_single_output().model_dump()
+    single_output["fields"][0]["lines"][0]["comment"] = keep_comment
+    single_output["fields"][1]["lines"][0]["comment"] = emphasize_comment
+    single_output["fields"][2]["lines"][0]["comment"] = reduce_comment
+
+    return CorrectionOutput(
+        portfolio_corrections=[
+            PortfolioCorrectionResult(
+                portfolio_id=11,
+                fields=SingleCorrectionOutput.model_validate(single_output).fields,
+            )
+        ],
+        overall_summary="총평",
+    )
+
+
+def test_convert_result_for_server_breaks_emphasize_comment_before_example():
+    """emphasize 코멘트의 inline 수정 예시는 서버 변환 시 줄바꿈으로 정규화한다."""
+    result = _make_conversion_result_with_comments(
+        emphasize_comment="강조하세요. 수정 예시: 이렇게 작성하세요.",
+    )
+
+    converted = CorrectionService._convert_result_for_server(result)
+
+    assert converted[0]["responsibilities"]["lines"][0]["comment"] == (
+        "강조하세요. \n수정 예시: 이렇게 작성하세요."
+    )
+
+
+def test_convert_result_for_server_leaves_reduce_and_keep_comments_unchanged():
+    """reduce/keep 코멘트는 수정 예시 문구가 있어도 그대로 유지한다."""
+    result = _make_conversion_result_with_comments(
+        emphasize_comment="강조하세요.",
+        reduce_comment="줄이세요. 수정 예시: 더 짧게 작성하세요.",
+        keep_comment="유지하세요. 수정 예시: 현재 표현을 유지하세요.",
+    )
+
+    converted = CorrectionService._convert_result_for_server(result)
+
+    assert converted[0]["problemSolving"]["lines"][0]["comment"] == (
+        "줄이세요. 수정 예시: 더 짧게 작성하세요."
+    )
+    assert converted[0]["description"]["lines"][0]["comment"] == (
+        "유지하세요. 수정 예시: 현재 표현을 유지하세요."
+    )
+
+
+def test_convert_result_for_server_keeps_already_formatted_emphasize_comment():
+    """이미 줄바꿈된 emphasize 수정 예시는 그대로 유지한다."""
+    result = _make_conversion_result_with_comments(
+        emphasize_comment="강조하세요.\n수정 예시: 이렇게 작성하세요.",
+    )
+
+    converted = CorrectionService._convert_result_for_server(result)
+
+    assert converted[0]["responsibilities"]["lines"][0]["comment"] == (
+        "강조하세요.\n수정 예시: 이렇게 작성하세요."
+    )
+
+
+def test_convert_result_for_server_preserves_spacing_before_inserted_newline():
+    """inline 수정 예시 앞 공백은 유지하고 줄바꿈만 추가한다."""
+    result = _make_conversion_result_with_comments(
+        emphasize_comment="강조하세요.  수정 예시: 이렇게 작성하세요.",
+    )
+
+    converted = CorrectionService._convert_result_for_server(result)
+
+    assert converted[0]["responsibilities"]["lines"][0]["comment"] == (
+        "강조하세요.  \n수정 예시: 이렇게 작성하세요."
+    )
 
 
 # ------------------------------------------------------------------
