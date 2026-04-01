@@ -19,7 +19,6 @@ from common.utils import (
 )
 from features.correction.config import get_correction_rag_config
 
-_DEFAULT_COMPANY_INSIGHT_MAX_LENGTH = 1500
 _DEFAULT_CALL_MAX_RETRIES = 3
 _DEFAULT_LENGTH_RETRY_MAX_RETRIES = 2
 
@@ -64,11 +63,7 @@ class RAGPipeline:
 
         self._keyword_count = rag_config.keyword_count
         self._max_results_per_keyword = rag_config.max_results_per_keyword
-        self._company_insight_max_length = getattr(
-            rag_config,
-            "company_insight_max_length",
-            _DEFAULT_COMPANY_INSIGHT_MAX_LENGTH,
-        )
+        self._company_insight_max_length = rag_config.company_insight_max_length
         self._call_max_retries = getattr(rag_config, "call_max_retries", _DEFAULT_CALL_MAX_RETRIES)
         self._length_retry_max_retries = getattr(
             rag_config,
@@ -407,7 +402,7 @@ class RAGPipeline:
         )
 
     def _truncate_company_insight(self, text: str) -> str:
-        """기업 인사이트 길이를 1500자로 제한"""
+        """기업 인사이트 길이를 설정된 최대 글자 수로 제한"""
         return truncate_to_char_limit(text, self._company_insight_max_length)
 
 

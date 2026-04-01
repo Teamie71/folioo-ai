@@ -319,7 +319,11 @@ async def test_run_applies_rag_config_values(monkeypatch, mock_tavily_client):
     monkeypatch.setattr(
         pipeline,
         "get_correction_rag_config",
-        lambda: SimpleNamespace(keyword_count=2, max_results_per_keyword=3),
+        lambda: SimpleNamespace(
+            keyword_count=2,
+            max_results_per_keyword=3,
+            company_insight_max_length=2000,
+        ),
     )
     monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
 
@@ -363,7 +367,7 @@ def test_generate_insight_raises_on_llm_invoke_failure(monkeypatch):
 
 
 def test_generate_insight_prompt_contains_length_limit(monkeypatch):
-    """인사이트 생성 프롬프트에 1500자 제한이 포함된다."""
+    """인사이트 생성 프롬프트에 2000자 제한이 포함된다."""
     from features.correction.rag import pipeline
 
     dummy_llm = _DummyLLM(["기업 인사이트"])
@@ -377,7 +381,7 @@ def test_generate_insight_prompt_contains_length_limit(monkeypatch):
         job_title="백엔드",
     )
 
-    assert "1500자 이내" in dummy_llm.prompts[0]
+    assert "2000자 이내" in dummy_llm.prompts[0]
 
 
 def test_generate_insight_prompt_contains_required_report_sections(monkeypatch):
@@ -440,7 +444,7 @@ def test_generate_insight_retries_with_length_feedback(monkeypatch):
     """길이 초과 시 구조 유지 피드백을 포함해 재작성한다."""
     from features.correction.rag import pipeline
 
-    dummy_llm = _DummyLLM(["가" * 1600, "기업 인사이트"])
+    dummy_llm = _DummyLLM(["가" * 2100, "기업 인사이트"])
     monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
     rag_pipeline = RAGPipeline()
 
@@ -502,22 +506,11 @@ def test_generate_insight_prompt_uses_dynamic_recent_years(monkeypatch):
     assert f"동향({recent_years} 최신 정보 우선)" in prompt
 
 
-def test_generate_insight_truncates_result_to_1500_chars(monkeypatch):
-    """인사이트 결과는 1500자를 초과하지 않도록 제한한다."""
+def test_generate_insight_truncates_result_to_2000_chars(monkeypatch):
+    """인사이트 결과는 2000자를 초과하지 않도록 제한한다."""
     from features.correction.rag import pipeline
 
-    monkeypatch.setattr(
-        pipeline,
-        "get_correction_rag_config",
-        lambda: SimpleNamespace(
-            keyword_count=6,
-            max_results_per_keyword=5,
-            company_insight_max_length=1500,
-            call_max_retries=1,
-            length_retry_max_retries=0,
-        ),
-    )
-    dummy_llm = _DummyLLM(["가" * 1600])
+    dummy_llm = _DummyLLM(["가" * 2100, "가" * 2100, "가" * 2100])
     monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
     rag_pipeline = RAGPipeline()
 
@@ -528,4 +521,4 @@ def test_generate_insight_truncates_result_to_1500_chars(monkeypatch):
         job_title="백엔드",
     )
 
-    assert len(insight) == 1500
+    assert len(insight) == 2000

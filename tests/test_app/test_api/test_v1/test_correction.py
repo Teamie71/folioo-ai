@@ -437,8 +437,22 @@ def test_update_company_insight_returns_200(monkeypatch):
     assert cc.updated_company_insight == (123, "수정 내용")
 
 
-def test_update_company_insight_openapi_documents_400_response(monkeypatch):
-    """기업 분석 수정 API는 수동 검증 400 응답을 문서화한다."""
+def test_update_company_insight_rejects_payload_over_2000_chars(monkeypatch):
+    """기업 분석 수정은 2000자를 초과한 payload를 422로 거부한다."""
+    cc = DummyCorrectionClient(correction={"id": 123, "status": "COMPANY_INSIGHT"})
+    client = _create_client(monkeypatch, cc)
+
+    response = client.patch(
+        f"/api/v1/corrections/{CORRECTION_ID}/company-insight",
+        json={"company_insight": "가" * 2001},
+    )
+
+    assert response.status_code == 422
+    assert cc.updated_company_insight is None
+
+
+def test_update_company_insight_openapi_documents_422_response(monkeypatch):
+    """기업 분석 수정 API는 요청 검증 실패 422 응답을 문서화한다."""
     cc = DummyCorrectionClient(correction={"id": 123, "status": "COMPANY_INSIGHT"})
     client = _create_client(monkeypatch, cc)
 
@@ -448,7 +462,8 @@ def test_update_company_insight_openapi_documents_400_response(monkeypatch):
     responses = response.json()["paths"]["/api/v1/corrections/{correction_id}/company-insight"][
         "patch"
     ]["responses"]
-    assert responses["400"]["description"] == "요청 데이터 수동 검증 실패"
+    assert responses["422"]["description"] == "요청 본문 검증 실패"
+    assert "400" not in responses
 
 
 @pytest.mark.asyncio
