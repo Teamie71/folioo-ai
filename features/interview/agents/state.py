@@ -28,12 +28,28 @@ class InsightTurnRecord(TypedDict):
     insights: list[InsightLog]
 
 
+class FileMetadata(TypedDict):
+    """턴 히스토리 복원을 위한 파일 메타데이터"""
+
+    filename: str
+    content_type: str
+    file_size: int
+
+
+class FileTurnRecord(TypedDict):
+    """사용자 턴별 파일 메타데이터 복원 기록"""
+
+    turn_number: int
+    files: list[FileMetadata]
+
+
 class FilePayload(TypedDict):
     """현재 턴 업로드 파일의 임시 저장 참조"""
 
     filename: str
     content_type: str
     temp_path: str
+    file_size: int
 
 
 class StageProgress(TypedDict):
@@ -117,6 +133,10 @@ class InterviewState(TypedDict):
     insight_turn_history: list[InsightTurnRecord]
     # 사용자 턴별 인사이트 카드 복원 이력
     # retrieved_insights와 별개로 과거 턴 전체를 누적 저장
+
+    file_turn_history: list[FileTurnRecord]
+    # 사용자 턴별 파일 메타데이터 복원 이력
+    # current_turn_files와 별개로 과거 턴 전체를 누적 저장
 
     # ===== 파일 업로드 =====
     current_turn_files: list[FilePayload]
@@ -205,6 +225,7 @@ def get_initial_interview_state(
         "mentioned_insight": None,
         "retrieved_insights": [],
         "insight_turn_history": [],
+        "file_turn_history": [],
         # 파일 업로드
         "current_turn_files": [],
         "file_contexts": [],
@@ -241,6 +262,7 @@ def ensure_interview_state_defaults(state: InterviewState | dict) -> InterviewSt
         "mentioned_insight": state.get("mentioned_insight"),
         "retrieved_insights": list(state.get("retrieved_insights") or []),
         "insight_turn_history": list(state.get("insight_turn_history") or []),
+        "file_turn_history": list(state.get("file_turn_history") or []),
         "current_turn_files": list(state.get("current_turn_files") or []),
         "file_contexts": list(state.get("file_contexts") or []),
     }
