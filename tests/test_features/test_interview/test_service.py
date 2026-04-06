@@ -1,5 +1,6 @@
 """InterviewService 유닛 테스트"""
 
+import asyncio
 import importlib
 import sys
 import types
@@ -38,12 +39,15 @@ class DummyGraph:
     def __init__(self):
         self.invocations = []
         self.invoke_result = None
+        self.invoke_error = None
         self.state_snapshot = None
         self.last_get_state_config = None
         self.update_state_calls = []
 
     async def ainvoke(self, state, config=None):
         self.invocations.append({"state": state, "config": config})
+        if self.invoke_error is not None:
+            raise self.invoke_error
         return self.invoke_result
 
     async def aget_state(self, config=None):
@@ -108,6 +112,91 @@ async def test_create_session_returns_expected_payload(monkeypatch):
     assert invocation["state"]["session_id"] == "session_1"
     assert invocation["state"]["experience_name"] == "프로젝트 A"
     assert invocation["state"]["status"] == "completed"
+    assert dummy_graph.update_state_calls[-1]["config"] == {
+        "configurable": {"thread_id": "session_1"}
+    }
+    assert dummy_graph.update_state_calls[-1]["state"]["user_id"] == "user_1"
+    assert dummy_graph.update_state_calls[-1]["state"]["session_id"] == "session_1"
+    assert dummy_graph.update_state_calls[-1]["state"]["experience_name"] == "프로젝트 A"
+    assert dummy_graph.update_state_calls[-1]["state"]["messages"] == [AIMessage(content="첫 질문")]
+    assert dummy_graph.update_state_calls[-1]["state"]["current_stage"] == 1
+    assert dummy_graph.update_state_calls[-1]["state"]["stage_progress"] == {"fixed_q_used": 1}
+    assert dummy_graph.update_state_calls[-1]["state"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_create_session_sets_failed_status_when_graph_raises(monkeypatch):
+    """세션 생성 실패 시 fallback_state 기반 failed 상태를 저장한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.invoke_error = RuntimeError("boom")
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await service.create_session(
+            user_id="user_1",
+            session_id="session_1",
+            experience_name="프로젝트 A",
+        )
+
+    assert dummy_graph.update_state_calls[-1]["config"] == {
+        "configurable": {"thread_id": "session_1"}
+    }
+    assert dummy_graph.update_state_calls[-1]["state"]["user_id"] == "user_1"
+    assert dummy_graph.update_state_calls[-1]["state"]["session_id"] == "session_1"
+    assert dummy_graph.update_state_calls[-1]["state"]["experience_name"] == "프로젝트 A"
+    assert dummy_graph.update_state_calls[-1]["state"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_create_session_sets_failed_status_when_graph_is_cancelled(monkeypatch):
+    """세션 생성 취소 시 failed 상태를 저장하고 취소를 재전파한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.invoke_error = asyncio.CancelledError()
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.create_session(
+            user_id="user_1",
+            session_id="session_1",
+            experience_name="프로젝트 A",
+        )
+
+    assert dummy_graph.update_state_calls[-1]["state"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_create_session_returns_payload_even_if_completed_status_persist_fails(monkeypatch):
+    """첫 질문 생성 성공 후 completed 상태 저장 실패는 결과 반환을 막지 않는다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.invoke_result = {
+        "messages": [AIMessage(content="첫 질문")],
+        "current_stage": 1,
+        "stage_progress": {"fixed_q_used": 1},
+    }
+    service = _build_service(monkeypatch, dummy_graph)
+
+    async def _failing_set_session_status(
+        session_id: str,
+        status: str,
+        fallback_state: dict | None = None,
+    ) -> None:
+        if status == "completed":
+            raise RuntimeError("status persist failed")
+
+    monkeypatch.setattr(service, "_set_session_status", _failing_set_session_status)
+
+    result = await service.create_session(
+        user_id="user_1",
+        session_id="session_1",
+        experience_name="프로젝트 A",
+    )
+
+    assert result == {
+        "session_id": "session_1",
+        "first_question": "첫 질문",
+        "current_stage": 1,
+        "stage_progress": {"fixed_q_used": 1},
+    }
 
 
 @pytest.mark.asyncio

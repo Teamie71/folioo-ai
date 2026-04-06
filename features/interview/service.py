@@ -1,5 +1,6 @@
 """인터뷰 에이전트 비즈니스 로직"""
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
@@ -123,12 +124,44 @@ class InterviewService:
             session_id=session_id,
             experience_name=experience_name,
         )
+        config = self._get_thread_config(session_id)
 
-        # 그래프 비동기 실행 (첫 질문 생성)
-        result = await self._graph.ainvoke(
-            initial_state,
-            config={"configurable": {"thread_id": session_id}},
-        )
+        try:
+            # 그래프 비동기 실행 (첫 질문 생성)
+            result = await self._graph.ainvoke(initial_state, config=config)
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await self._set_session_status(
+                    session_id,
+                    "failed",
+                    fallback_state=initial_state,
+                )
+            raise
+        except Exception:
+            with suppress(Exception):
+                await self._set_session_status(
+                    session_id,
+                    "failed",
+                    fallback_state=initial_state,
+                )
+            raise
+
+        try:
+            success_state = {
+                **initial_state,
+                **result,
+            }
+            await self._set_session_status(
+                session_id,
+                "completed",
+                fallback_state=success_state,
+            )
+        except Exception:
+            logger.warning(
+                "세션 생성 완료 상태 저장에 실패했습니다: %s",
+                session_id,
+                exc_info=True,
+            )
 
         return {
             "session_id": session_id,
@@ -255,6 +288,14 @@ class InterviewService:
                     ),
                 }
 
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await self._set_session_status(
+                    session_id,
+                    "failed",
+                    fallback_state=initial_state,
+                )
+            raise
         except Exception as e:
             with suppress(Exception):
                 await self._set_session_status(
@@ -458,6 +499,10 @@ class InterviewService:
                     ),
                 }
 
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await self._set_session_status(session_id, "failed")
+            raise
         except Exception as e:
             with suppress(Exception):
                 await self._set_session_status(session_id, "failed")
@@ -746,6 +791,10 @@ class InterviewService:
                     ),
                 }
 
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await self._set_session_status(session_id, "failed")
+            raise
         except Exception as e:
             with suppress(Exception):
                 await self._set_session_status(session_id, "failed")
