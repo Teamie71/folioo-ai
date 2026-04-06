@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 
 from fastapi import BackgroundTasks
@@ -369,6 +370,19 @@ class CorrectionService:
     }
 
     @staticmethod
+    def _normalize_comment_for_server(line_type: str, comment: str | None) -> str | None:
+        """메인 서버 전송용 코멘트 포맷을 최소 정규화한다."""
+        marker = "수정 예시:"
+        if line_type != "emphasize" or not comment or marker not in comment:
+            return comment
+
+        marker_index = comment.find(marker)
+        if marker_index <= 0 or re.search(r"\n[ \t]*$", comment[:marker_index]):
+            return comment
+
+        return f"{comment[:marker_index]}\n{comment[marker_index:]}"
+
+    @staticmethod
     def _convert_result_for_server(result: CorrectionOutput) -> list[dict]:
         """CorrectionOutput을 메인 서버 result 배열 포맷으로 변환"""
         if hasattr(result, "model_dump"):
@@ -388,7 +402,9 @@ class CorrectionService:
                             "lineNumber": line["line_number"],
                             "originalText": line["original_text"],
                             "type": line["type"],
-                            "comment": line["comment"],
+                            "comment": CorrectionService._normalize_comment_for_server(
+                                line["type"], line["comment"]
+                            ),
                         }
                         for line in field.get("lines", [])
                     ]

@@ -28,15 +28,28 @@ class InsightTurnRecord(TypedDict):
     insights: list[InsightLog]
 
 
-class FileAttachment(TypedDict):
-    """업로드된 파일 정보"""
+class FileMetadata(TypedDict):
+    """턴 히스토리 복원을 위한 파일 메타데이터"""
 
-    id: str
-    name: str
-    type: str  # MIME type (e.g., "image/png", "application/pdf")
-    path: str  # 파일 저장 경로 또는 URL
-    uploaded_at: str  # ISO 8601 format
-    processed: bool  # FileProcessor가 처리 완료했는지 여부
+    filename: str
+    content_type: str
+    file_size: int
+
+
+class FileTurnRecord(TypedDict):
+    """사용자 턴별 파일 메타데이터 복원 기록"""
+
+    turn_number: int
+    files: list[FileMetadata]
+
+
+class FilePayload(TypedDict):
+    """현재 턴 업로드 파일의 임시 저장 참조"""
+
+    filename: str
+    content_type: str
+    temp_path: str
+    file_size: int
 
 
 class StageProgress(TypedDict):
@@ -61,6 +74,9 @@ class CollectedField(TypedDict):
 
 
 # 메인 State 정의
+InterviewSessionStatus = Literal["generating", "completed", "failed"]
+
+
 class InterviewState(TypedDict):
     """
     인터뷰 에이전트의 공유 상태
@@ -72,6 +88,7 @@ class InterviewState(TypedDict):
     user_id: str  # 사용자 고유 ID
     session_id: str  # 세션 고유 ID
     experience_name: str  # 사용자가 정리하려는 경험/프로젝트명 (세션 생성 시 입력)
+    status: InterviewSessionStatus  # 세션 생성 상태
     turn_number: int  # 현재 사용자 턴 번호 (세션 생성 직후 0, 사용자 메시지 처리 시 1부터 증가)
 
     # ===== 대화 기록 (LangGraph 메시지 리듀서 사용) =====
@@ -117,18 +134,19 @@ class InterviewState(TypedDict):
     # 사용자 턴별 인사이트 카드 복원 이력
     # retrieved_insights와 별개로 과거 턴 전체를 누적 저장
 
-    # ===== 파일 업로드 =====
-    uploaded_files: list[FileAttachment]
-    # 세션 전체에서 업로드된 모든 파일 목록 (누적)
+    file_turn_history: list[FileTurnRecord]
+    # 사용자 턴별 파일 메타데이터 복원 이력
+    # current_turn_files와 별개로 과거 턴 전체를 누적 저장
 
-    current_turn_files: list[str]
-    # 현재 턴에서 새로 업로드된 파일 ID들
+    # ===== 파일 업로드 =====
+    current_turn_files: list[FilePayload]
+    # 현재 턴에서 새로 업로드된 파일 참조들
     # API 레이어가 state에 주입
     # Router가 이를 확인하여 FileProcessor로 라우팅 결정
 
     file_contexts: list[str]
-    # 파일에서 추출된 텍스트들 (세션 내내 누적)
-    # FileProcessor가 사용자 질문 기반으로 파일 요약 후 추가
+    # 현재 턴 업로드 파일에서 추출된 텍스트들 (매 턴 초기화)
+    # FileProcessor가 OCR/캡셔닝/문서 텍스트 추출 결과를 저장
 
     # ===== 라우팅 =====
     next_node: Literal["file_processor", "retriever", "analyst", "question_generator", "end"]
@@ -184,6 +202,7 @@ def get_initial_interview_state(
         "user_id": user_id,
         "session_id": session_id,
         "experience_name": experience_name,
+        "status": "completed",
         "turn_number": 0,
         # 대화 기록
         "messages": [],
@@ -206,8 +225,8 @@ def get_initial_interview_state(
         "mentioned_insight": None,
         "retrieved_insights": [],
         "insight_turn_history": [],
+        "file_turn_history": [],
         # 파일 업로드
-        "uploaded_files": [],
         "current_turn_files": [],
         "file_contexts": [],
         # 라우팅
@@ -238,8 +257,12 @@ def ensure_interview_state_defaults(state: InterviewState | dict) -> InterviewSt
 
     return {
         **state,
+        "status": state.get("status", "completed"),
         "turn_number": state.get("turn_number", get_turn_number_from_messages(messages)),
         "mentioned_insight": state.get("mentioned_insight"),
         "retrieved_insights": list(state.get("retrieved_insights") or []),
         "insight_turn_history": list(state.get("insight_turn_history") or []),
+        "file_turn_history": list(state.get("file_turn_history") or []),
+        "current_turn_files": list(state.get("current_turn_files") or []),
+        "file_contexts": list(state.get("file_contexts") or []),
     }

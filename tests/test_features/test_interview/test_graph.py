@@ -4,7 +4,10 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from features.interview.agents import InterviewState, build_graph
-from features.interview.agents.state import get_initial_interview_state
+from features.interview.agents.state import (
+    ensure_interview_state_defaults,
+    get_initial_interview_state,
+)
 
 
 @pytest.fixture
@@ -21,6 +24,30 @@ def test_build_graph():
     """그래프가 정상적으로 빌드되는지 확인"""
     graph = build_graph()
     assert graph is not None
+
+
+def test_initial_state_starts_with_empty_file_turn_history():
+    """초기 state는 빈 파일 턴 히스토리로 시작한다."""
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+
+    assert state["file_turn_history"] == []
+
+
+def test_ensure_interview_state_defaults_adds_file_turn_history():
+    """구세션 state에도 file_turn_history 기본값을 보강한다."""
+    normalized = ensure_interview_state_defaults(
+        {
+            "messages": [],
+            "current_turn_files": [],
+            "file_contexts": [],
+        }
+    )
+
+    assert normalized["file_turn_history"] == []
 
 
 def test_graph_execution_mock(initial_state, monkeypatch):
@@ -72,11 +99,168 @@ def test_interviewer_routing_with_file_attachment(initial_state):
     state = {
         **initial_state,
         "messages": [AIMessage(content="이전 질문"), HumanMessage(content="파일 포함 답변")],
-        "current_turn_files": ["file-1"],
+        "current_turn_files": [
+            {
+                "filename": "portfolio.pdf",
+                "content_type": "application/pdf",
+                "temp_path": "/tmp/portfolio.pdf",
+            }
+        ],
     }
     result = router.run(state)
     assert result["next_node"] == "file_processor"
     assert result["turn_number"] == 1
+
+
+def test_router_records_file_turn_history_for_new_user_turn(initial_state):
+    """새 사용자 턴의 첨부 파일 메타데이터를 file_turn_history에 기록한다."""
+    from features.interview.agents.nodes import router
+
+    state = {
+        **initial_state,
+        "messages": [AIMessage(content="이전 질문"), HumanMessage(content="파일 포함 답변")],
+        "current_turn_files": [
+            {
+                "filename": "portfolio.pdf",
+                "content_type": "application/pdf",
+                "temp_path": "/tmp/portfolio.pdf",
+                "file_size": 123,
+            }
+        ],
+    }
+
+    result = router.run(state)
+
+    assert result["turn_number"] == 1
+    assert result["file_turn_history"] == [
+        {
+            "turn_number": 1,
+            "files": [
+                {
+                    "filename": "portfolio.pdf",
+                    "content_type": "application/pdf",
+                    "file_size": 123,
+                }
+            ],
+        }
+    ]
+
+
+def test_router_does_not_record_file_history_without_new_user_turn(initial_state):
+    """새 사용자 메시지가 없으면 파일 히스토리를 기록하지 않는다."""
+    from features.interview.agents.nodes import router
+
+    state = {
+        **initial_state,
+        "turn_number": 1,
+        "file_turn_history": [],
+        "messages": [AIMessage(content="이전 질문"), HumanMessage(content="이전 답변")],
+        "current_turn_files": [
+            {
+                "filename": "legacy.pdf",
+                "content_type": "application/pdf",
+                "temp_path": "/tmp/legacy.pdf",
+            }
+        ],
+    }
+
+    result = router.run(state)
+
+    assert result["file_turn_history"] == []
+
+
+def test_router_does_not_record_file_history_during_bootstrap(initial_state):
+    """bootstrap 실행에서는 파일 히스토리를 기록하지 않는다."""
+    from features.interview.agents.nodes import router
+
+    result = router.run(
+        {
+            **initial_state,
+            "current_turn_files": [
+                {
+                    "filename": "bootstrap.pdf",
+                    "content_type": "application/pdf",
+                    "temp_path": "/tmp/bootstrap.pdf",
+                    "file_size": 12,
+                }
+            ],
+        }
+    )
+
+    assert result["turn_number"] == 0
+    assert result["file_turn_history"] == []
+
+
+def test_router_uses_zero_for_legacy_file_payload_without_file_size(initial_state):
+    """레거시 payload에 file_size가 없으면 0으로 보정한다."""
+    from features.interview.agents.nodes import router
+
+    state = {
+        **initial_state,
+        "messages": [AIMessage(content="이전 질문"), HumanMessage(content="레거시 파일 답변")],
+        "current_turn_files": [
+            {
+                "filename": "legacy.pdf",
+                "content_type": "application/pdf",
+                "temp_path": "/tmp/legacy.pdf",
+            }
+        ],
+    }
+
+    result = router.run(state)
+
+    assert result["file_turn_history"] == [
+        {
+            "turn_number": 1,
+            "files": [
+                {
+                    "filename": "legacy.pdf",
+                    "content_type": "application/pdf",
+                    "file_size": 0,
+                }
+            ],
+        }
+    ]
+
+
+def test_upsert_file_turn_history_replaces_same_turn_record():
+    """같은 turn_number 기록은 append 대신 교체한다."""
+    from features.interview.agents.nodes import router
+
+    history = [
+        {
+            "turn_number": 1,
+            "files": [
+                {
+                    "filename": "old.pdf",
+                    "content_type": "application/pdf",
+                    "file_size": 10,
+                }
+            ],
+        },
+        {
+            "turn_number": 2,
+            "files": [
+                {
+                    "filename": "old2.pdf",
+                    "content_type": "application/pdf",
+                    "file_size": 20,
+                }
+            ],
+        },
+    ]
+    new_record = {
+        "turn_number": 2,
+        "files": [
+            {
+                "filename": "new.pdf",
+                "content_type": "application/pdf",
+                "file_size": 30,
+            }
+        ],
+    }
+
+    assert router._upsert_file_turn_history(history, new_record) == [history[0], new_record]
 
 
 def test_router_increments_existing_turn_number(initial_state):

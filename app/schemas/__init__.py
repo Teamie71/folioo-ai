@@ -10,7 +10,6 @@ from .correction import (
     UpdateEmphasisPointsRequest,
 )
 from .interview import (
-    ChatRequest,
     ChatResponse,
     CreateSessionRequest,
     CreateSessionResponse,
@@ -19,6 +18,7 @@ from .interview import (
     SessionStateResponse,
     StageProgressSchema,
 )
+from .pdf_extraction import PdfExtractionAcceptedResponse
 from .portfolio import (
     GeneratePortfolioRequest,
     GeneratePortfolioResponse,
@@ -30,7 +30,6 @@ from .portfolio import (
 __all__ = [
     "CreateSessionRequest",
     "CreateSessionResponse",
-    "ChatRequest",
     "ChatResponse",
     "ExtendSessionResponse",
     "SessionStateResponse",
@@ -48,4 +47,5 @@ __all__ = [
     "PortfolioResultResponse",
     "PortfolioStatusResponse",
     "UpdateContributionRateRequest",
+    "PdfExtractionAcceptedResponse",
 ]

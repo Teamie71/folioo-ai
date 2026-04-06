@@ -1,6 +1,7 @@
 """인터뷰 API 스키마 정의"""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -63,6 +64,24 @@ class InsightTurnRecordSchema(BaseModel):
     )
 
 
+class FileMetadataSchema(BaseModel):
+    """파일 메타데이터 스키마"""
+
+    filename: str = Field(..., description="원본 파일명")
+    content_type: str = Field(..., description="MIME 타입")
+    file_size: int = Field(..., ge=0, description="파일 크기(바이트)")
+
+
+class FileTurnRecordSchema(BaseModel):
+    """턴별 파일 메타데이터 복원 기록 스키마"""
+
+    turn_number: int = Field(..., ge=1, description="사용자 턴 번호")
+    files: list[FileMetadataSchema] = Field(
+        default_factory=list,
+        description="해당 턴 첨부 파일 목록",
+    )
+
+
 # ===== 세션 생성 =====
 class CreateSessionRequest(BaseModel):
     """세션 생성 요청"""
@@ -78,15 +97,6 @@ class CreateSessionResponse(BaseModel):
     first_question: str = Field(..., description="AI의 첫 질문")
     current_stage: int = Field(..., ge=1, le=4, description="현재 단계")
     stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
-
-
-# ===== 채팅 =====
-class ChatRequest(BaseModel):
-    """채팅 요청"""
-
-    message: str = Field(..., min_length=1, description="사용자 메시지")
-    file_ids: list[str] | None = Field(None, description="업로드된 파일 ID 목록")
-    mentioned_insight: str | None = Field(None, description="@ 멘션으로 참조한 인사이트 로그 ID")
 
 
 class ExtendSessionResponse(BaseModel):
@@ -125,6 +135,10 @@ class SessionStateResponse(BaseModel):
     session_id: str = Field(..., description="세션 ID")
     user_id: str = Field(..., description="사용자 ID")
     experience_name: str = Field(..., description="경험/프로젝트 이름")
+    status: Literal["generating", "completed", "failed"] = Field(
+        ...,
+        description="세션 생성 상태",
+    )
     turn_number: int = Field(..., ge=0, description="현재 사용자 턴 번호")
     current_stage: int = Field(..., ge=1, le=4, description="현재 단계")
     stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
@@ -139,7 +153,23 @@ class SessionStateResponse(BaseModel):
         default_factory=list,
         description="과거 사용자 턴별 인사이트 복원 이력",
     )
+    file_turn_history: list[FileTurnRecordSchema] = Field(
+        default_factory=list,
+        description="과거 사용자 턴별 파일 메타데이터 복원 이력",
+    )
     messages: list[MessageSchema] = Field(..., description="전체 대화 기록")
+
+
+class SessionStatusResponse(BaseModel):
+    """세션 경량 상태 조회 응답"""
+
+    session_id: str = Field(..., description="세션 ID")
+    status: Literal["generating", "completed", "failed"] = Field(
+        ...,
+        description="세션 생성 상태",
+    )
+    current_stage: int = Field(..., ge=1, le=4, description="현재 단계")
+    all_complete: bool = Field(..., description="모든 단계 완료 여부")
 
 
 # ===== 에러 응답 =====
@@ -189,6 +219,10 @@ class SSEMessagePayload(BaseModel):
     """최종 완료 메시지 내용"""
 
     ai_response: str | None = Field(None, description="전체 AI 응답 (없으면 null)")
+    status: Literal["generating", "completed", "failed"] = Field(
+        ...,
+        description="세션 생성 상태",
+    )
     current_stage: int = Field(..., ge=1, le=4, description="현재 단계")
     stage_progress: StageProgressSchema = Field(..., description="단계 진행 상황")
     overall_completion: float = Field(..., ge=0.0, le=100.0, description="전체 완료율 (%)")

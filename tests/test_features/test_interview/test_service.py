@@ -1,5 +1,6 @@
 """InterviewService 유닛 테스트"""
 
+import asyncio
 import importlib
 import sys
 import types
@@ -38,16 +39,27 @@ class DummyGraph:
     def __init__(self):
         self.invocations = []
         self.invoke_result = None
+        self.invoke_error = None
         self.state_snapshot = None
         self.last_get_state_config = None
+        self.update_state_calls = []
 
     async def ainvoke(self, state, config=None):
         self.invocations.append({"state": state, "config": config})
+        if self.invoke_error is not None:
+            raise self.invoke_error
         return self.invoke_result
 
     async def aget_state(self, config=None):
         self.last_get_state_config = config
         return self.state_snapshot
+
+    async def aupdate_state(self, config, state):
+        self.update_state_calls.append({"config": config, "state": state})
+        if self.state_snapshot is None:
+            self.state_snapshot = DummyStateSnapshot(values=dict(state))
+        else:
+            self.state_snapshot.values = {**self.state_snapshot.values, **state}
 
 
 def _build_service(monkeypatch, dummy_graph):
@@ -99,6 +111,92 @@ async def test_create_session_returns_expected_payload(monkeypatch):
     assert invocation["state"]["user_id"] == "user_1"
     assert invocation["state"]["session_id"] == "session_1"
     assert invocation["state"]["experience_name"] == "프로젝트 A"
+    assert invocation["state"]["status"] == "completed"
+    assert dummy_graph.update_state_calls[-1]["config"] == {
+        "configurable": {"thread_id": "session_1"}
+    }
+    assert dummy_graph.update_state_calls[-1]["state"]["user_id"] == "user_1"
+    assert dummy_graph.update_state_calls[-1]["state"]["session_id"] == "session_1"
+    assert dummy_graph.update_state_calls[-1]["state"]["experience_name"] == "프로젝트 A"
+    assert dummy_graph.update_state_calls[-1]["state"]["messages"] == [AIMessage(content="첫 질문")]
+    assert dummy_graph.update_state_calls[-1]["state"]["current_stage"] == 1
+    assert dummy_graph.update_state_calls[-1]["state"]["stage_progress"] == {"fixed_q_used": 1}
+    assert dummy_graph.update_state_calls[-1]["state"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_create_session_sets_failed_status_when_graph_raises(monkeypatch):
+    """세션 생성 실패 시 fallback_state 기반 failed 상태를 저장한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.invoke_error = RuntimeError("boom")
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await service.create_session(
+            user_id="user_1",
+            session_id="session_1",
+            experience_name="프로젝트 A",
+        )
+
+    assert dummy_graph.update_state_calls[-1]["config"] == {
+        "configurable": {"thread_id": "session_1"}
+    }
+    assert dummy_graph.update_state_calls[-1]["state"]["user_id"] == "user_1"
+    assert dummy_graph.update_state_calls[-1]["state"]["session_id"] == "session_1"
+    assert dummy_graph.update_state_calls[-1]["state"]["experience_name"] == "프로젝트 A"
+    assert dummy_graph.update_state_calls[-1]["state"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_create_session_sets_failed_status_when_graph_is_cancelled(monkeypatch):
+    """세션 생성 취소 시 failed 상태를 저장하고 취소를 재전파한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.invoke_error = asyncio.CancelledError()
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.create_session(
+            user_id="user_1",
+            session_id="session_1",
+            experience_name="프로젝트 A",
+        )
+
+    assert dummy_graph.update_state_calls[-1]["state"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_create_session_returns_payload_even_if_completed_status_persist_fails(monkeypatch):
+    """첫 질문 생성 성공 후 completed 상태 저장 실패는 결과 반환을 막지 않는다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.invoke_result = {
+        "messages": [AIMessage(content="첫 질문")],
+        "current_stage": 1,
+        "stage_progress": {"fixed_q_used": 1},
+    }
+    service = _build_service(monkeypatch, dummy_graph)
+
+    async def _failing_set_session_status(
+        session_id: str,
+        status: str,
+        fallback_state: dict | None = None,
+    ) -> None:
+        if status == "completed":
+            raise RuntimeError("status persist failed")
+
+    monkeypatch.setattr(service, "_set_session_status", _failing_set_session_status)
+
+    result = await service.create_session(
+        user_id="user_1",
+        session_id="session_1",
+        experience_name="프로젝트 A",
+    )
+
+    assert result == {
+        "session_id": "session_1",
+        "first_question": "첫 질문",
+        "current_stage": 1,
+        "stage_progress": {"fixed_q_used": 1},
+    }
 
 
 @pytest.mark.asyncio
@@ -114,7 +212,7 @@ async def test_process_message_session_not_found(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_process_message_with_files(monkeypatch):
-    """파일 ID 포함 메시지 처리 테스트"""
+    """파일 payload 포함 메시지 처리 테스트"""
     dummy_graph = DummyGraph()
     dummy_graph.state_snapshot = DummyStateSnapshot(values={"session_id": "session_1"})
     dummy_graph.invoke_result = {
@@ -130,7 +228,18 @@ async def test_process_message_with_files(monkeypatch):
     result = await service.process_message(
         session_id="session_1",
         message="답변입니다.",
-        file_ids=["file_1", "file_2"],
+        files=[
+            {
+                "filename": "portfolio.pdf",
+                "content_type": "application/pdf",
+                "temp_path": "/tmp/portfolio.pdf",
+            },
+            {
+                "filename": "image.png",
+                "content_type": "image/png",
+                "temp_path": "/tmp/image.png",
+            },
+        ],
     )
 
     assert result["ai_response"] == "응답"
@@ -146,7 +255,19 @@ async def test_process_message_with_files(monkeypatch):
     assert invocation["config"] == {"configurable": {"thread_id": "session_1"}}
     assert isinstance(invocation["state"]["messages"][0], HumanMessage)
     assert invocation["state"]["messages"][0].content == "답변입니다."
-    assert invocation["state"]["current_turn_files"] == ["file_1", "file_2"]
+    assert invocation["state"]["current_turn_files"] == [
+        {
+            "filename": "portfolio.pdf",
+            "content_type": "application/pdf",
+            "temp_path": "/tmp/portfolio.pdf",
+        },
+        {
+            "filename": "image.png",
+            "content_type": "image/png",
+            "temp_path": "/tmp/image.png",
+        },
+    ]
+    assert invocation["state"]["file_contexts"] == []
 
 
 @pytest.mark.asyncio
@@ -174,6 +295,7 @@ async def test_process_message_returns_none_when_all_complete(monkeypatch):
     assert result["is_extended_mode"] is False
     invocation = dummy_graph.invocations[0]
     assert invocation["state"]["current_turn_files"] == []
+    assert invocation["state"]["file_contexts"] == []
 
 
 @pytest.mark.asyncio
@@ -200,6 +322,7 @@ async def test_process_message_resets_current_turn_files_when_no_files(monkeypat
 
     invocation = dummy_graph.invocations[0]
     assert invocation["state"]["current_turn_files"] == []
+    assert invocation["state"]["file_contexts"] == []
 
 
 @pytest.mark.asyncio
@@ -244,6 +367,8 @@ async def test_extend_session_success(monkeypatch):
     assert invocation["state"]["extension_count"] == 1
     assert invocation["state"]["extension_turns_used"] == 0
     assert invocation["state"]["extension_turns_max"] == 3
+    assert invocation["state"]["current_turn_files"] == []
+    assert invocation["state"]["file_contexts"] == []
     assert invocation["state"]["mentioned_insight"] is None
 
 
@@ -332,9 +457,35 @@ async def test_get_session_state_returns_values(monkeypatch):
     assert result is not None
     assert result["session_id"] == "session_1"
     assert result["turn_number"] == 1
+    assert result["status"] == "completed"
     assert result["retrieved_insights"] == []
     assert result["mentioned_insight"] is None
     assert result["insight_turn_history"] == []
+    assert result["current_turn_files"] == []
+    assert result["file_contexts"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_session_status_returns_compact_payload(monkeypatch):
+    """세션 경량 상태 조회 시 status와 핵심 필드만 반환한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "current_stage": 2,
+            "all_stages_complete": False,
+        }
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    result = await service.get_session_status("session_1")
+
+    assert result == {
+        "session_id": "session_1",
+        "status": "completed",
+        "current_stage": 2,
+        "all_complete": False,
+    }
 
 
 def test_singleton_get_and_reset(monkeypatch):

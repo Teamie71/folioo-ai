@@ -169,6 +169,7 @@ def test_followup_fixed_question_includes_retrieved_insights_prompt_variable(
             AIMessage(content="첫 질문입니다."),
             HumanMessage(content="사용자 답변입니다."),
         ],
+        "file_contexts": ["[파일: report.pdf]\n프로젝트 요구사항 요약"],
         "retrieved_insights": [
             {
                 "id": "insight-1",
@@ -196,6 +197,7 @@ def test_followup_fixed_question_includes_retrieved_insights_prompt_variable(
         "  - 유사도: 0.91\n"
         "  - 내용: 복잡한 병목을 개선한 경험"
     )
+    assert captured["file_contexts"] == "[파일: report.pdf]\n프로젝트 요구사항 요약"
 
 
 def test_generated_question_fallback_on_llm_error(first_turn_state, monkeypatch):
@@ -254,6 +256,7 @@ def test_generated_question_includes_retrieved_insights_prompt_variable(
             AIMessage(content="질문1"),
             HumanMessage(content="답변1"),
         ],
+        "file_contexts": ["[파일: architecture.png]\n시스템 구성도가 포함된 이미지"],
         "retrieved_insights": [
             {
                 "id": "insight-1",
@@ -282,6 +285,7 @@ def test_generated_question_includes_retrieved_insights_prompt_variable(
         "  - 유사도: 없음\n"
         "  - 내용: 사용자가 직접 언급한 참고 내용"
     )
+    assert captured["file_contexts"] == "[파일: architecture.png]\n시스템 구성도가 포함된 이미지"
 
 
 def test_first_turn_uses_retry_limit_from_global_config(first_turn_state, monkeypatch):
@@ -458,6 +462,7 @@ def test_extended_mode_includes_retrieved_insights_prompt_variable(first_turn_st
             AIMessage(content="이전 질문"),
             HumanMessage(content="이전 답변"),
         ],
+        "file_contexts": ["[파일: report.pdf]\n성과 지표가 포함된 문서"],
         "retrieved_insights": [
             {
                 "id": "insight-1",
@@ -485,3 +490,4 @@ def test_extended_mode_includes_retrieved_insights_prompt_variable(first_turn_st
         "  - 유사도: 0.73\n"
         "  - 내용: 새로운 기술을 빠르게 익힌 경험"
     )
+    assert captured["file_contexts"] == "[파일: report.pdf]\n성과 지표가 포함된 문서"

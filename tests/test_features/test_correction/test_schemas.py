@@ -5,6 +5,7 @@ import pytest
 from app.schemas.correction import (
     CorrectionResultResponse,
     CreateCorrectionRequest,
+    UpdateCompanyInsightRequest,
     UpdateEmphasisPointsRequest,
 )
 from features.correction.schemas import (
@@ -152,6 +153,19 @@ def test_update_emphasis_points_request_schema():
     request = UpdateEmphasisPointsRequest(emphasis_points="핵심 역량과 성과 지표를 강조")
 
     assert request.emphasis_points == "핵심 역량과 성과 지표를 강조"
+
+
+def test_update_company_insight_request_accepts_exactly_2000_chars():
+    """UpdateCompanyInsightRequest는 2000자까지 허용한다."""
+    request = UpdateCompanyInsightRequest(company_insight="가" * 2000)
+
+    assert len(request.company_insight) == 2000
+
+
+def test_update_company_insight_request_rejects_more_than_2000_chars():
+    """UpdateCompanyInsightRequest는 2001자를 거부한다."""
+    with pytest.raises(ValueError):
+        UpdateCompanyInsightRequest(company_insight="가" * 2001)
 
 
 def test_single_correction_line_comment_allows_null_for_keep():

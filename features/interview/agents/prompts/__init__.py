@@ -5,6 +5,7 @@ from .analyst import (
     extended_analyst_prompt,
     overall_completion_prompt,
 )
+from .file_processor import FILE_EXTRACTION_SYSTEM_PROMPT
 from .question_generator import (
     contextual_fixed_question_prompt,
     extended_generated_question_prompt,
@@ -19,6 +20,7 @@ __all__ = [
     "contextual_fixed_question_prompt",
     "extended_analyst_prompt",
     "extended_generated_question_prompt",
+    "FILE_EXTRACTION_SYSTEM_PROMPT",
     "first_turn_prompt",
     "generated_question_prompt",
     "overall_completion_prompt",

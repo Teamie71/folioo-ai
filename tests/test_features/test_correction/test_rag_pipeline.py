@@ -22,7 +22,10 @@ class _DummyLLM:
 
     def invoke(self, prompt: str) -> str:
         self.prompts.append(prompt)
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class _FailingLLM:
@@ -316,7 +319,11 @@ async def test_run_applies_rag_config_values(monkeypatch, mock_tavily_client):
     monkeypatch.setattr(
         pipeline,
         "get_correction_rag_config",
-        lambda: SimpleNamespace(keyword_count=2, max_results_per_keyword=3),
+        lambda: SimpleNamespace(
+            keyword_count=2,
+            max_results_per_keyword=3,
+            company_insight_max_length=2000,
+        ),
     )
     monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
 
@@ -360,7 +367,7 @@ def test_generate_insight_raises_on_llm_invoke_failure(monkeypatch):
 
 
 def test_generate_insight_prompt_contains_length_limit(monkeypatch):
-    """인사이트 생성 프롬프트에 1500자 제한이 포함된다."""
+    """인사이트 생성 프롬프트에 2000자 제한이 포함된다."""
     from features.correction.rag import pipeline
 
     dummy_llm = _DummyLLM(["기업 인사이트"])
@@ -374,7 +381,7 @@ def test_generate_insight_prompt_contains_length_limit(monkeypatch):
         job_title="백엔드",
     )
 
-    assert "1500자 이내" in dummy_llm.prompts[0]
+    assert "2000자 이내" in dummy_llm.prompts[0]
 
 
 def test_generate_insight_prompt_contains_required_report_sections(monkeypatch):
@@ -397,6 +404,61 @@ def test_generate_insight_prompt_contains_required_report_sections(monkeypatch):
     assert "## 2. 비전과 사업 방향성" in prompt
     assert "## 3. 강점과 약점 분석" in prompt
     assert "검색 결과를 우선" in prompt
+
+
+def test_generate_insight_retries_after_llm_failure(monkeypatch):
+    """인사이트 생성은 호출 실패 시 별도 재시도 후 성공할 수 있다."""
+    from features.correction.rag import pipeline
+
+    dummy_llm = _DummyLLM([RuntimeError("temporary"), "기업 인사이트"])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    rag_pipeline = RAGPipeline()
+
+    insight = rag_pipeline._generate_insight(
+        keywords=["키워드1"],
+        search_results=[{"title": "검색 결과", "content": "본문", "url": "https://example.com"}],
+        company_name="네이버",
+        job_title="백엔드",
+    )
+
+    assert insight == "기업 인사이트"
+    assert len(dummy_llm.prompts) == 2
+
+
+def test_invoke_insight_prompt_logs_retry_failure(monkeypatch, caplog):
+    """인사이트 호출 재시도 시 실패 로그를 남긴다."""
+    from features.correction.rag import pipeline
+
+    dummy_llm = _DummyLLM([RuntimeError("temporary"), "기업 인사이트"])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    rag_pipeline = RAGPipeline()
+
+    with caplog.at_level("WARNING"):
+        insight = rag_pipeline._invoke_insight_prompt("prompt")
+
+    assert insight == "기업 인사이트"
+    assert "인사이트 생성 LLM 호출 실패 (1/3)" in caplog.text
+
+
+def test_generate_insight_retries_with_length_feedback(monkeypatch):
+    """길이 초과 시 구조 유지 피드백을 포함해 재작성한다."""
+    from features.correction.rag import pipeline
+
+    dummy_llm = _DummyLLM(["가" * 2100, "기업 인사이트"])
+    monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
+    rag_pipeline = RAGPipeline()
+
+    insight = rag_pipeline._generate_insight(
+        keywords=["키워드1"],
+        search_results=[{"title": "검색 결과", "content": "본문", "url": "https://example.com"}],
+        company_name="네이버",
+        job_title="백엔드",
+    )
+
+    assert insight == "기업 인사이트"
+    assert len(dummy_llm.prompts) == 2
+    assert "기존 섹션 제목, 순서, 구조를 유지" in dummy_llm.prompts[1]
+    assert "100자 초과" in dummy_llm.prompts[1]
 
 
 def test_keyword_prompt_uses_dynamic_recent_years(monkeypatch):
@@ -444,11 +506,11 @@ def test_generate_insight_prompt_uses_dynamic_recent_years(monkeypatch):
     assert f"동향({recent_years} 최신 정보 우선)" in prompt
 
 
-def test_generate_insight_truncates_result_to_1500_chars(monkeypatch):
-    """인사이트 결과는 1500자를 초과하지 않도록 제한한다."""
+def test_generate_insight_truncates_result_to_2000_chars(monkeypatch):
+    """인사이트 결과는 2000자를 초과하지 않도록 제한한다."""
     from features.correction.rag import pipeline
 
-    dummy_llm = _DummyLLM(["가" * 1600])
+    dummy_llm = _DummyLLM(["가" * 2100, "가" * 2100, "가" * 2100])
     monkeypatch.setattr(pipeline, "get_llm", lambda: dummy_llm)
     rag_pipeline = RAGPipeline()
 
@@ -459,4 +521,4 @@ def test_generate_insight_truncates_result_to_1500_chars(monkeypatch):
         job_title="백엔드",
     )
 
-    assert len(insight) == 1500
+    assert len(insight) == 2000

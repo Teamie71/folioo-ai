@@ -22,6 +22,7 @@ def test_contextual_fixed_question_prompt_has_retrieved_insights_variable():
         "fixed_q_used",
         "conversation_context",
         "retrieved_insights",
+        "file_contexts",
         "fixed_question_content",
     }
 
@@ -35,6 +36,7 @@ def test_generated_question_prompt_has_retrieved_insights_variable():
         "stage_name",
         "conversation_context",
         "retrieved_insights",
+        "file_contexts",
         "incomplete_fields",
         "remaining_questions",
     }
@@ -48,6 +50,7 @@ def test_extended_generated_question_prompt_has_retrieved_insights_variable():
         "experience_name",
         "conversation_context",
         "retrieved_insights",
+        "file_contexts",
         "global_incomplete_fields",
         "remaining_turns",
     }
@@ -71,9 +74,11 @@ def test_contextual_fixed_question_prompt_formats_retrieved_insights():
         fixed_q_used=1,
         conversation_context="AI: 첫 질문\n사용자: 답변",
         retrieved_insights="- [문제해결] 인사이트 제목",
+        file_contexts="[파일: report.pdf]\n요약 내용",
         fixed_question_content="다음 질문 내용",
     )
 
     assert len(messages) == 2
     assert "- [문제해결] 인사이트 제목" in messages[0].content
+    assert "[파일: report.pdf]\n요약 내용" in messages[0].content
     assert "다음 질문 내용" in messages[0].content
