@@ -271,6 +271,46 @@ async def test_process_message_with_files(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_process_message_accepts_file_only_request(monkeypatch):
+    """file-only 요청이면 빈 HumanMessage를 주입해 기존 graph 흐름을 유지한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(values={"session_id": "session_1"})
+    dummy_graph.invoke_result = {
+        "messages": [AIMessage(content="응답")],
+        "current_stage": 2,
+        "stage_progress": {"fixed_q_used": 2},
+        "overall_completion_percentage": 40.0,
+        "all_stages_complete": False,
+    }
+
+    service = _build_service(monkeypatch, dummy_graph)
+
+    await service.process_message(
+        session_id="session_1",
+        message=None,
+        files=[
+            {
+                "filename": "portfolio.pdf",
+                "content_type": "application/pdf",
+                "temp_path": "/tmp/portfolio.pdf",
+            }
+        ],
+    )
+
+    invocation = dummy_graph.invocations[0]
+    assert isinstance(invocation["state"]["messages"][0], HumanMessage)
+    assert invocation["state"]["messages"][0].content == ""
+    assert invocation["state"]["current_turn_files"] == [
+        {
+            "filename": "portfolio.pdf",
+            "content_type": "application/pdf",
+            "temp_path": "/tmp/portfolio.pdf",
+        }
+    ]
+    assert invocation["state"]["file_contexts"] == []
+
+
+@pytest.mark.asyncio
 async def test_process_message_returns_none_when_all_complete(monkeypatch):
     """모든 단계 완료 상태면 ai_response를 None으로 반환한다."""
     dummy_graph = DummyGraph()

@@ -225,6 +225,132 @@ async def test_run_appends_empty_history_when_store_is_unavailable(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_run_skips_similarity_search_for_blank_message(monkeypatch):
+    """blank 최신 사용자 메시지에 mention이 없으면 유사도 검색과 히스토리 append를 생략한다."""
+    mock_store = AsyncMock()
+    monkeypatch.setattr(retriever, "get_insight_store", lambda: mock_store)
+
+    result = await retriever.run(
+        {
+            "turn_number": 3,
+            "user_id": "user-1",
+            "messages": [HumanMessage(content="   ")],
+            "mentioned_insight": None,
+            "insight_turn_history": [],
+        }
+    )
+
+    assert result["retrieved_insights"] == []
+    assert result["insight_turn_history"] == []
+    assert result["next_node"] == "analyst"
+    mock_store.search_similar.assert_not_awaited()
+    mock_store.get_by_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_fetches_mentioned_insight_for_blank_message(monkeypatch):
+    """blank 메시지여도 mentioned_insight가 있으면 explicit mention fetch를 수행한다."""
+    mock_store = AsyncMock()
+    mock_store.get_by_id.return_value = {
+        "id": "mention-3",
+        "title": "멘션 인사이트",
+        "activity_name": "활동3",
+        "category": "문제해결",
+        "content": "멘션 내용",
+        "similarity_score": None,
+    }
+    monkeypatch.setattr(retriever, "get_insight_store", lambda: mock_store)
+
+    result = await retriever.run(
+        {
+            "turn_number": 4,
+            "user_id": "user-1",
+            "messages": [HumanMessage(content="   ")],
+            "mentioned_insight": "mention-3",
+            "insight_turn_history": [],
+        }
+    )
+
+    assert result["retrieved_insights"] == [
+        {
+            "id": "mention-3",
+            "title": "멘션 인사이트",
+            "activity_name": "활동3",
+            "category": "문제해결",
+            "content": "멘션 내용",
+            "similarity_score": None,
+            "source": "mention",
+        }
+    ]
+    assert result["insight_turn_history"] == [
+        {
+            "turn_number": 4,
+            "user_message": "",
+            "mentioned_insight": "mention-3",
+            "insights": result["retrieved_insights"],
+        }
+    ]
+    assert result["next_node"] == "analyst"
+    mock_store.search_similar.assert_not_awaited()
+    mock_store.get_by_id.assert_awaited_once_with("mention-3")
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_append_history_for_blank_message_when_store_missing(monkeypatch):
+    """스토어가 없어도 blank 메시지 턴은 bogus insight history를 남기지 않는다."""
+    monkeypatch.setattr(
+        retriever,
+        "get_insight_store",
+        lambda: (_ for _ in ()).throw(RuntimeError("store missing")),
+    )
+
+    result = await retriever.run(
+        {
+            "turn_number": 4,
+            "user_id": "user-1",
+            "messages": [HumanMessage(content="")],
+            "mentioned_insight": None,
+            "insight_turn_history": [],
+        }
+    )
+
+    assert result["retrieved_insights"] == []
+    assert result["insight_turn_history"] == []
+    assert result["next_node"] == "analyst"
+
+
+@pytest.mark.asyncio
+async def test_run_appends_empty_history_for_blank_message_with_mention_when_store_missing(monkeypatch):
+    """스토어가 없어도 blank+mention 턴은 빈 user_message로 복원 이력을 남긴다."""
+    monkeypatch.setattr(
+        retriever,
+        "get_insight_store",
+        lambda: (_ for _ in ()).throw(RuntimeError("store missing")),
+    )
+
+    result = await retriever.run(
+        {
+            "turn_number": 5,
+            "user_id": "user-1",
+            "messages": [HumanMessage(content="")],
+            "mentioned_insight": "mention-5",
+            "insight_turn_history": [],
+        }
+    )
+
+    assert result["retrieved_insights"] == []
+    assert result["insight_turn_history"] == [
+        {
+            "turn_number": 5,
+            "user_message": "",
+            "mentioned_insight": "mention-5",
+            "insights": [],
+        }
+    ]
+    assert result["next_node"] == "analyst"
+
+
 def test_upsert_insight_turn_history_replaces_same_turn_record():
     """같은 turn_number 기록은 append 대신 교체한다."""
     history = [

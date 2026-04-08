@@ -32,6 +32,13 @@ logger = logging.getLogger(__name__)
 _service: "InterviewService | None" = None
 
 
+def _normalize_user_message(message: str | None) -> str:
+    """file-only 요청을 위해 사용자 메시지를 안전하게 정규화한다."""
+    if message is None:
+        return ""
+    return message if message.strip() else ""
+
+
 class InterviewService:
     """
     인터뷰 세션 관리 및 그래프 실행 오케스트레이터
@@ -524,7 +531,7 @@ class InterviewService:
     async def process_message(
         self,
         session_id: str,
-        message: str,
+        message: str | None,
         files: list[FilePayload] | None = None,
         mentioned_insight: str | None = None,
     ) -> dict:
@@ -533,7 +540,7 @@ class InterviewService:
 
         Args:
             session_id: 세션 ID
-            message: 사용자 메시지
+            message: 사용자 메시지 (file-only 요청이면 None 가능)
             files: 현재 턴에서 업로드된 파일 payload 목록 (선택)
             mentioned_insight: @ 멘션으로 참조한 인사이트 로그 ID (선택)
 
@@ -554,9 +561,11 @@ class InterviewService:
         if current_state is None:
             raise ValueError(f"세션을 찾을 수 없습니다: {session_id}")
 
+        normalized_message = _normalize_user_message(message)
+
         # 입력 상태 구성
         input_state: dict = {
-            "messages": [HumanMessage(content=message)],
+            "messages": [HumanMessage(content=normalized_message)],
             "current_turn_files": files or [],
             "file_contexts": [],
             "mentioned_insight": mentioned_insight,
@@ -640,7 +649,7 @@ class InterviewService:
     async def process_message_stream(
         self,
         session_id: str,
-        message: str,
+        message: str | None,
         files: list[FilePayload] | None = None,
         mentioned_insight: str | None = None,
     ) -> AsyncGenerator[dict, None]:
@@ -652,7 +661,7 @@ class InterviewService:
 
         Args:
             session_id: 세션 ID
-            message: 사용자 메시지
+            message: 사용자 메시지 (file-only 요청이면 None 가능)
             files: 현재 턴에서 업로드된 파일 payload 목록 (선택)
             mentioned_insight: @ 멘션으로 참조한 인사이트 로그 ID (선택)
 
@@ -680,9 +689,11 @@ class InterviewService:
             }
             return
 
+        normalized_message = _normalize_user_message(message)
+
         # 2. 입력 상태 구성
         input_state: dict = {
-            "messages": [HumanMessage(content=message)],
+            "messages": [HumanMessage(content=normalized_message)],
             "current_turn_files": files or [],
             "file_contexts": [],
             "mentioned_insight": mentioned_insight,
