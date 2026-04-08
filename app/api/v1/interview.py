@@ -77,6 +77,24 @@ def _cleanup_temp_files(files: list[FilePayload] | None) -> None:
                 logger.warning("임시 업로드 파일 정리에 실패했습니다: %s", temp_path, exc_info=True)
 
 
+def _normalize_chat_message(message: str | None) -> str:
+    """채팅 입력 메시지를 file-only 호환 형태로 정규화한다."""
+    if message is None:
+        return ""
+    return message if message.strip() else ""
+
+
+def _validate_chat_input_presence(message: str | None, files: list[FilePayload] | None) -> str:
+    """메시지 또는 파일 중 하나는 반드시 존재하도록 검증한다."""
+    normalized_message = _normalize_chat_message(message)
+    if not normalized_message and not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="메시지 또는 파일 중 하나는 반드시 전송해야 합니다.",
+        )
+    return normalized_message
+
+
 async def _read_and_validate_files(files: list[UploadFile] | None) -> list[FilePayload]:
     """multipart 업로드 파일을 읽고 인터뷰 파일 참조 payload로 변환한다."""
     upload_files = list(files or [])
@@ -327,7 +345,7 @@ async def create_session_stream(request: CreateSessionRequest):
 )
 async def chat(
     session_id: str,
-    message: str = Form(..., min_length=1),
+    message: str | None = Form(None),
     mentioned_insight: str | None = Form(None),
     files: list[UploadFile] | None = File(None),
 ) -> ChatResponse:
@@ -339,11 +357,12 @@ async def chat(
     """
     service = get_interview_service()
     validated_files = await _read_and_validate_files(files)
+    normalized_message = _validate_chat_input_presence(message, validated_files)
 
     try:
         result = await service.process_message(
             session_id=session_id,
-            message=message,
+            message=normalized_message,
             files=validated_files,
             mentioned_insight=mentioned_insight,
         )
@@ -540,7 +559,7 @@ async def get_session_state(session_id: str) -> SessionStateResponse:
 )
 async def chat_stream(
     session_id: str,
-    message: str = Form(..., min_length=1),
+    message: str | None = Form(None),
     mentioned_insight: str | None = Form(None),
     files: list[UploadFile] | None = File(None),
 ):
@@ -556,12 +575,13 @@ async def chat_stream(
 
     service = get_interview_service()
     validated_files = await _read_and_validate_files(files)
+    normalized_message = _validate_chat_input_presence(message, validated_files)
 
     async def event_generator():
         """SSE 이벤트를 생성하는 비동기 제너레이터"""
         stream = service.process_message_stream(
             session_id=session_id,
-            message=message,
+            message=normalized_message,
             files=validated_files,
             mentioned_insight=mentioned_insight,
         )
