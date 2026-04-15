@@ -89,6 +89,63 @@ def test_chat_stream_accepts_multipart_with_files(monkeypatch, tmp_path):
     assert (tmp_path / "interview-upload-2.jpg").exists() is False
 
 
+def test_chat_stream_accepts_file_only_multipart(monkeypatch, tmp_path):
+    """chat_stream 엔드포인트는 message 없이 파일만 있어도 허용한다."""
+    service = DummyInterviewService()
+    client = _create_client(monkeypatch, service)
+    temp_file_path = tmp_path / "interview-upload-1.pdf"
+    monkeypatch.setattr(interview_api, "_create_temp_upload_file", lambda _suffix: temp_file_path)
+    _patch_streaming_response(monkeypatch)
+
+    response = client.post(
+        "/api/v1/interview/sessions/session-1/chat/stream",
+        files=[("files", ("portfolio.pdf", b"%PDF-1.4", "application/pdf"))],
+    )
+
+    assert response.status_code == 200
+    assert service.stream_calls[0]["message"] == ""
+    assert service.stream_calls[0]["files"] == [
+        {
+            "filename": "portfolio.pdf",
+            "content_type": "application/pdf",
+            "temp_path": str(temp_file_path),
+            "file_size": len(b"%PDF-1.4"),
+        }
+    ]
+    assert temp_file_path.exists() is False
+
+
+def test_chat_stream_rejects_request_without_message_and_files(monkeypatch):
+    """chat_stream 엔드포인트는 message와 files가 모두 없으면 거부한다."""
+    service = DummyInterviewService()
+    client = _create_client(monkeypatch, service)
+
+    response = client.post("/api/v1/interview/sessions/session-1/chat/stream", data={})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "메시지 또는 파일 중 하나는 반드시 전송해야 합니다."
+    assert service.stream_calls == []
+
+
+def test_chat_stream_allows_blank_message_when_files_exist(monkeypatch, tmp_path):
+    """chat_stream 엔드포인트는 공백-only message와 파일 조합을 file-only로 처리한다."""
+    service = DummyInterviewService()
+    client = _create_client(monkeypatch, service)
+    temp_file_path = tmp_path / "interview-upload-1.pdf"
+    monkeypatch.setattr(interview_api, "_create_temp_upload_file", lambda _suffix: temp_file_path)
+    _patch_streaming_response(monkeypatch)
+
+    response = client.post(
+        "/api/v1/interview/sessions/session-1/chat/stream",
+        data={"message": "   "},
+        files=[("files", ("portfolio.pdf", b"%PDF-1.4", "application/pdf"))],
+    )
+
+    assert response.status_code == 200
+    assert service.stream_calls[0]["message"] == ""
+    assert temp_file_path.exists() is False
+
+
 def test_chat_stream_rejects_more_than_3_files(monkeypatch):
     """chat_stream 엔드포인트는 4개 이상 파일 업로드를 거부한다."""
     service = DummyInterviewService()

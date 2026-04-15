@@ -303,6 +303,67 @@ def test_chat_accepts_multipart_form_and_passes_file_payloads(monkeypatch, tmp_p
     assert "file_turn_history" not in response.json()
 
 
+def test_chat_accepts_file_only_multipart_form(monkeypatch, tmp_path):
+    """chat 엔드포인트는 message 없이 파일만 있어도 허용한다."""
+    service = DummyInterviewService()
+    client = _create_client(monkeypatch, service)
+    temp_file_path = tmp_path / "interview-upload-1.pdf"
+    monkeypatch.setattr(interview_api, "_create_temp_upload_file", lambda _suffix: temp_file_path)
+
+    response = client.post(
+        "/api/v1/interview/sessions/session-1/chat",
+        files=[("files", ("portfolio.pdf", b"%PDF-1.4", "application/pdf"))],
+    )
+
+    assert response.status_code == 200
+    assert service.process_calls[0]["message"] == ""
+    assert service.process_calls[0]["files"] == [
+        {
+            "filename": "portfolio.pdf",
+            "content_type": "application/pdf",
+            "temp_path": str(temp_file_path),
+            "file_size": len(b"%PDF-1.4"),
+        }
+    ]
+    assert temp_file_path.exists() is False
+
+
+def test_chat_rejects_request_without_message_and_files(monkeypatch):
+    """chat 엔드포인트는 message와 files가 모두 없으면 400을 반환한다."""
+    service = DummyInterviewService()
+    client = _create_client(monkeypatch, service)
+
+    response = client.post("/api/v1/interview/sessions/session-1/chat", data={})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "메시지 또는 파일 중 하나는 반드시 전송해야 합니다."
+    assert service.process_calls == []
+
+
+def test_normalize_chat_message_returns_blank_for_missing_or_whitespace():
+    """채팅 입력 정규화 helper는 file-only 판정용 blank를 반환한다."""
+    assert interview_api._normalize_chat_message(None) == ""
+    assert interview_api._normalize_chat_message("") == ""
+    assert interview_api._normalize_chat_message("   ") == ""
+    assert interview_api._normalize_chat_message(" 안녕하세요 ") == " 안녕하세요 "
+
+
+def test_validate_chat_input_presence_accepts_message_or_files():
+    """채팅 입력 검증 helper는 message 또는 files 중 하나가 있으면 통과한다."""
+    assert interview_api._validate_chat_input_presence("안녕하세요", []) == "안녕하세요"
+    assert interview_api._validate_chat_input_presence(None, [{"filename": "portfolio.pdf"}]) == ""
+    assert interview_api._validate_chat_input_presence("   ", [{"filename": "portfolio.pdf"}]) == ""
+
+
+def test_validate_chat_input_presence_rejects_blank_without_files():
+    """채팅 입력 검증 helper는 blank message와 빈 파일 조합을 거부한다."""
+    with pytest.raises(HTTPException) as exc_info:
+        interview_api._validate_chat_input_presence("   ", [])
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "메시지 또는 파일 중 하나는 반드시 전송해야 합니다."
+
+
 def test_chat_cleans_up_temp_files_when_service_raises(monkeypatch, tmp_path):
     """서비스 오류가 나도 임시 업로드 파일은 정리한다."""
     client = _create_client(monkeypatch, DummyInterviewService({"missing-session"}))

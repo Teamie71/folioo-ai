@@ -264,6 +264,61 @@ async def test_process_message_stream_resets_current_turn_files_when_no_files(mo
 
 
 @pytest.mark.anyio
+async def test_process_message_stream_accepts_file_only_request(monkeypatch):
+    """스트리밍 경로도 file-only 요청이면 빈 HumanMessage를 주입한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "messages": [AIMessage(content="최종 응답")],
+            "current_stage": 1,
+            "stage_progress": {
+                "fixed_q_used": 0,
+                "fixed_q_total": 1,
+                "generated_q_used": 0,
+                "generated_q_max": 0,
+                "force_all_generated_q": False,
+                "is_complete": False,
+            },
+            "overall_completion_percentage": 25.0,
+            "all_stages_complete": False,
+        }
+    )
+    dummy_graph.stream_events = []
+
+    monkeypatch.setattr(
+        "features.interview.service.build_graph", lambda checkpointer=None: dummy_graph
+    )
+    monkeypatch.setattr("features.interview.service.get_checkpointer", lambda: object())
+    service = InterviewService()
+
+    _ = [
+        event
+        async for event in service.process_message_stream(
+            session_id="session-1",
+            message=None,
+            files=[
+                {
+                    "filename": "portfolio.pdf",
+                    "content_type": "application/pdf",
+                    "temp_path": "/tmp/portfolio.pdf",
+                }
+            ],
+        )
+    ]
+
+    invocation = dummy_graph.astream_calls[0]["state"]
+    assert invocation["messages"] == [HumanMessage(content="")]
+    assert invocation["current_turn_files"] == [
+        {
+            "filename": "portfolio.pdf",
+            "content_type": "application/pdf",
+            "temp_path": "/tmp/portfolio.pdf",
+        }
+    ]
+    assert invocation["file_contexts"] == []
+
+
+@pytest.mark.anyio
 async def test_process_message_stream_returns_none_when_all_complete(monkeypatch):
     """모든 단계 완료 상태면 message_complete의 ai_response는 null이다."""
     dummy_graph = DummyGraph()
