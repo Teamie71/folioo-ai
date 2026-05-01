@@ -1,5 +1,6 @@
 """첨삭 설정 로더"""
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -59,8 +60,22 @@ def load_correction_config() -> CorrectionConfig:
 
 
 def get_correction_llm_config() -> CorrectionLLMConfig:
-    """첨삭 LLM 설정 반환"""
-    return load_correction_config().llm
+    """첨삭 LLM 설정 반환 (환경변수 우선)"""
+    config = load_correction_config().llm
+
+    env_model = os.getenv("CORRECTION_LLM_MODEL")
+    if env_model:
+        config.model = env_model
+
+    env_temperature = os.getenv("CORRECTION_LLM_TEMPERATURE")
+    if env_temperature is not None:
+        config.temperature = float(env_temperature)
+
+    env_timeout = os.getenv("CORRECTION_LLM_TIMEOUT")
+    if env_timeout is not None:
+        config.timeout = float(env_timeout)
+
+    return config
 
 
 def get_correction_validation_config() -> CorrectionValidationConfig:
