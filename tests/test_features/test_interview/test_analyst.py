@@ -105,8 +105,8 @@ def test_format_retrieved_insights_includes_activity_source_and_similarity():
     assert "유사도: 없음" in formatted
 
 
-def test_run_moves_to_next_stage_when_questions_exhausted(monkeypatch):
-    """고정/생성 질문이 모두 소진되면 다음 단계로 전환한다."""
+def test_run_moves_to_next_stage_when_fixed_questions_exhausted(monkeypatch):
+    """고정 질문이 소진되면 생성 질문 상태와 무관하게 다음 단계로 전환한다."""
     response = AnalystResponse(
         fields=[
             AnalystFieldResult(
@@ -126,7 +126,9 @@ def test_run_moves_to_next_stage_when_questions_exhausted(monkeypatch):
         experience_name="테스트 경험",
     )
     state["stage_progress"]["fixed_q_used"] = state["stage_progress"]["fixed_q_total"]
-    state["stage_progress"]["generated_q_used"] = state["stage_progress"]["generated_q_max"]
+    state["stage_progress"]["generated_q_used"] = 0
+    state["stage_progress"]["generated_q_max"] = 99
+    state["stage_progress"]["force_all_generated_q"] = True
 
     result = analyst.run(state)
     stage_2_config = load_stage_config(2)
@@ -144,8 +146,8 @@ def test_run_moves_to_next_stage_when_questions_exhausted(monkeypatch):
     assert result["stage_progress"]["is_complete"] is False
 
 
-def test_run_moves_to_next_stage_when_dynamic_followup_disabled(monkeypatch):
-    """고정 질문 소진 후 동적 질문이 비활성화면 단계를 완료 처리한다."""
+def test_run_moves_to_next_stage_when_dynamic_followup_enabled(monkeypatch):
+    """동적 질문 설정이 켜져 있어도 고정 질문이 소진되면 단계를 완료 처리한다."""
     response = AnalystResponse(fields=[])
     monkeypatch.setattr(
         analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
@@ -153,7 +155,7 @@ def test_run_moves_to_next_stage_when_dynamic_followup_disabled(monkeypatch):
     monkeypatch.setattr(
         analyst,
         "get_global_config",
-        lambda: _DummyGlobalConfig(enable_dynamic_followup=False),
+        lambda: _DummyGlobalConfig(enable_dynamic_followup=True),
     )
 
     state = get_initial_interview_state(
@@ -163,6 +165,7 @@ def test_run_moves_to_next_stage_when_dynamic_followup_disabled(monkeypatch):
     )
     state["stage_progress"]["fixed_q_used"] = state["stage_progress"]["fixed_q_total"]
     state["stage_progress"]["generated_q_used"] = 0
+    state["stage_progress"]["generated_q_max"] = 99
 
     result = analyst.run(state)
 
@@ -170,8 +173,10 @@ def test_run_moves_to_next_stage_when_dynamic_followup_disabled(monkeypatch):
     assert result["next_node"] == "question_generator"
 
 
-def test_run_moves_to_next_stage_when_required_fields_complete(monkeypatch):
-    """고정 질문 소진 후 모든 필드가 충분하면 단계를 완료 처리한다."""
+def test_run_keeps_stage_when_fixed_questions_remain_even_if_required_fields_complete(
+    monkeypatch,
+):
+    """필수 필드가 충분해도 고정 질문이 남아 있으면 단계를 완료하지 않는다."""
     response = AnalystResponse(fields=[])
     monkeypatch.setattr(
         analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
@@ -183,9 +188,8 @@ def test_run_moves_to_next_stage_when_required_fields_complete(monkeypatch):
         experience_name="테스트 경험",
     )
     stage_1_config = load_stage_config(1)
-    state["stage_progress"]["fixed_q_used"] = state["stage_progress"]["fixed_q_total"]
-    state["stage_progress"]["generated_q_used"] = 0
-    state["stage_progress"]["force_all_generated_q"] = False
+    state["stage_progress"]["fixed_q_used"] = state["stage_progress"]["fixed_q_total"] - 1
+    state["stage_progress"]["generated_q_used"] = state["stage_progress"]["generated_q_max"]
     state["collected_data"]["stage_1"] = {
         field_name: {
             "field_name": field_name,
@@ -198,8 +202,9 @@ def test_run_moves_to_next_stage_when_required_fields_complete(monkeypatch):
 
     result = analyst.run(state)
 
-    assert result["current_stage"] == 2
+    assert result["current_stage"] == 1
     assert result["next_node"] == "question_generator"
+    assert result["stage_progress"]["is_complete"] is False
 
 
 def test_run_marks_all_complete_at_stage_4(monkeypatch):
@@ -233,7 +238,9 @@ def test_run_marks_all_complete_at_stage_4(monkeypatch):
     state["stage_progress"]["generated_q_max"] = stage_4_config.max_generated_questions
     state["stage_progress"]["force_all_generated_q"] = stage_4_config.force_all_generated_questions
     state["stage_progress"]["fixed_q_used"] = state["stage_progress"]["fixed_q_total"]
-    state["stage_progress"]["generated_q_used"] = state["stage_progress"]["generated_q_max"]
+    state["stage_progress"]["generated_q_used"] = 0
+    state["stage_progress"]["generated_q_max"] = 99
+    state["stage_progress"]["force_all_generated_q"] = True
 
     result = analyst.run(state)
 

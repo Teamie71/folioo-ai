@@ -18,6 +18,14 @@ class StageConfig(BaseModel):
     max_generated_questions: int
     force_all_generated_questions: bool
 
+    @field_validator("max_generated_questions")
+    @classmethod
+    def validate_max_generated_questions(cls, value: int) -> int:
+        """단계별 생성 질문 수는 0 이상이어야 한다."""
+        if value < 0:
+            raise ValueError("max_generated_questions는 0 이상이어야 합니다.")
+        return value
+
 
 class GlobalConfig(BaseModel):
     """전역 설정 스키마"""
