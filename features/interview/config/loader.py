@@ -41,9 +41,10 @@ class AdditionalQuestionTarget(BaseModel):
     @classmethod
     def validate_non_empty_text(cls, value: str) -> str:
         """target 설정의 문자열 필드는 비어 있을 수 없다."""
-        if not value.strip():
+        stripped = value.strip()
+        if not stripped:
             raise ValueError("추가 질문 target 문자열 필드는 비어 있을 수 없습니다.")
-        return value
+        return stripped
 
 
 class AdditionalQuestionPriorityGroup(BaseModel):
@@ -77,7 +78,7 @@ class GlobalConfig(BaseModel):
     context_window_size: int
     extension_turns_per_session: int
     max_extensions: int
-    additional_question_priorities: list[AdditionalQuestionPriorityGroup] = Field(default_factory=list)
+    additional_question_priorities: list[AdditionalQuestionPriorityGroup]
 
     @field_validator("extension_turns_per_session")
     @classmethod

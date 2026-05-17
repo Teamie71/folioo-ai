@@ -117,6 +117,41 @@ def test_additional_question_priorities_load_in_order():
     assert all(target.field_description for target in targets)
 
 
+def test_additional_question_target_text_is_trimmed(monkeypatch: pytest.MonkeyPatch):
+    """추가 질문 target 문자열은 앞뒤 공백을 제거해 로드한다."""
+    from features.interview.config import loader
+
+    loader._load_stages_yaml.cache_clear()
+    data = copy.deepcopy(_load_raw_stages_yaml())
+    target = data["global_config"]["additional_question_priorities"][0]["targets"][0]
+    target["target"] = "  stage_3_episode_1_strategy_rationale  "
+    target["label"] = "  Episode 1 해결 전략과 선택 근거  "
+    monkeypatch.setattr(loader.yaml, "safe_load", lambda _: data)
+
+    config = loader._load_stages_yaml()
+    loaded_target = config.global_config.additional_question_priorities[0].targets[0]
+
+    assert loaded_target.target == "stage_3_episode_1_strategy_rationale"
+    assert loaded_target.label == "Episode 1 해결 전략과 선택 근거"
+
+    loader._load_stages_yaml.cache_clear()
+
+
+def test_missing_additional_question_priorities_raises_error(monkeypatch: pytest.MonkeyPatch):
+    """추가 질문 target 우선순위 설정은 필수다."""
+    from features.interview.config import loader
+
+    loader._load_stages_yaml.cache_clear()
+    data = copy.deepcopy(_load_raw_stages_yaml())
+    data["global_config"].pop("additional_question_priorities")
+    monkeypatch.setattr(loader.yaml, "safe_load", lambda _: data)
+
+    with pytest.raises(ValueError, match="additional_question_priorities"):
+        loader._load_stages_yaml()
+
+    loader._load_stages_yaml.cache_clear()
+
+
 def test_invalid_yaml_type_raises_korean_error(monkeypatch: pytest.MonkeyPatch):
     """YAML 루트 타입이 잘못되면 한국어 예외 메시지를 반환한다."""
     from features.interview.config import loader
