@@ -200,54 +200,16 @@ def test_followup_fixed_question_includes_retrieved_insights_prompt_variable(
     assert captured["file_contexts"] == "[파일: report.pdf]\n프로젝트 요구사항 요약"
 
 
-def test_generated_question_fallback_on_llm_error(first_turn_state, monkeypatch):
-    """
-    생성 질문 LLM 실패 시 fallback 질문 생성 테스트
-    - 미수집 필드의 설명을 기반으로 질문이 생성되는지 확인
-    """
-    monkeypatch.setattr(
-        question_generator,
-        "get_llm",
-        lambda model=None, temperature=0.7: _mock_llm_raise(),
-    )
-
-    state = {
-        **first_turn_state,
-        "turn_number": 1,
-        "messages": [
-            AIMessage(content="질문1"),
-            HumanMessage(content="답변1"),
-        ],
-        "stage_progress": {
-            **first_turn_state["stage_progress"],
-            "fixed_q_used": first_turn_state["stage_progress"]["fixed_q_total"],
-            "generated_q_used": 0,
-        },
-    }
-
-    result = question_generator.run(state)
-
-    assert result["stage_progress"]["generated_q_used"] == 1
-    assert "이 활동을 시작하게 된 이유" in result["messages"][0].content
-
-
-def test_generated_question_includes_retrieved_insights_prompt_variable(
+def test_regular_mode_skips_dynamic_question_after_fixed_exhaustion(
     first_turn_state,
     monkeypatch,
 ):
-    """생성 질문 프롬프트에 retrieved_insights를 전달한다."""
-    captured: dict[str, object] = {}
+    """정규 모드는 legacy generated 설정이 남아 있어도 생성 질문을 만들지 않는다."""
 
-    def _capture_invoke(chain, prompt_variables, max_retries_per_question):
-        captured.update(prompt_variables)
-        return "추가 질문"
+    def _raise_if_called(*args, **kwargs):
+        raise AssertionError("정규 모드에서 생성 질문이 호출되면 안 됩니다.")
 
-    monkeypatch.setattr(question_generator, "_invoke_with_retry", _capture_invoke)
-    monkeypatch.setattr(
-        question_generator,
-        "get_llm",
-        lambda model=None, temperature=0.7: _mock_llm_return("사용되지 않는 질문"),
-    )
+    monkeypatch.setattr(question_generator, "_generate_dynamic_question", _raise_if_called)
 
     state = {
         **first_turn_state,
@@ -256,36 +218,19 @@ def test_generated_question_includes_retrieved_insights_prompt_variable(
             AIMessage(content="질문1"),
             HumanMessage(content="답변1"),
         ],
-        "file_contexts": ["[파일: architecture.png]\n시스템 구성도가 포함된 이미지"],
-        "retrieved_insights": [
-            {
-                "id": "insight-1",
-                "title": "멘션 인사이트",
-                "activity_name": "프로젝트 B",
-                "category": "기타",
-                "content": "사용자가 직접 언급한 참고 내용",
-                "similarity_score": None,
-                "source": "mention",
-            }
-        ],
         "stage_progress": {
             **first_turn_state["stage_progress"],
             "fixed_q_used": first_turn_state["stage_progress"]["fixed_q_total"],
             "generated_q_used": 0,
+            "generated_q_max": 3,
         },
     }
 
     result = question_generator.run(state)
 
-    assert result["messages"][0].content == "추가 질문"
-    assert captured["retrieved_insights"] == (
-        "- [기타] 멘션 인사이트\n"
-        "  - 활동명: 프로젝트 B\n"
-        "  - 출처: mention\n"
-        "  - 유사도: 없음\n"
-        "  - 내용: 사용자가 직접 언급한 참고 내용"
-    )
-    assert captured["file_contexts"] == "[파일: architecture.png]\n시스템 구성도가 포함된 이미지"
+    assert result["messages"][0].content == "혹시 더 추가하고 싶은 내용이 있으신가요?"
+    assert result["stage_progress"]["generated_q_used"] == 0
+    assert result["stage_progress"]["generated_q_max"] == 3
 
 
 def test_first_turn_uses_retry_limit_from_global_config(first_turn_state, monkeypatch):
@@ -323,8 +268,8 @@ def test_first_turn_uses_retry_limit_from_global_config(first_turn_state, monkey
     assert result["messages"][0].content == "재시도 성공 질문"
 
 
-def test_generated_question_ignores_dynamic_followup_switch(first_turn_state, monkeypatch):
-    """enable_dynamic_followup이 false여도 QG는 호출 시 질문을 생성한다."""
+def test_fallback_question_when_called_after_fixed_exhaustion(first_turn_state):
+    """고정 질문 소진 상태로 호출되어도 AIMessage fallback을 반환한다."""
     state = {
         **first_turn_state,
         "turn_number": 1,
@@ -336,47 +281,7 @@ def test_generated_question_ignores_dynamic_followup_switch(first_turn_state, mo
             **first_turn_state["stage_progress"],
             "fixed_q_used": first_turn_state["stage_progress"]["fixed_q_total"],
             "generated_q_used": 0,
-        },
-    }
-    monkeypatch.setattr(
-        question_generator,
-        "get_global_config",
-        lambda: type(
-            "Config",
-            (),
-            {
-                "max_retries_per_question": 1,
-                "enable_dynamic_followup": False,
-                "context_window_size": 5,
-            },
-        )(),
-    )
-    monkeypatch.setattr(
-        question_generator,
-        "get_llm",
-        lambda model=None, temperature=0.7: _mock_llm_return("추가 질문입니다."),
-    )
-
-    result = question_generator.run(state)
-
-    assert result["next_node"] == "end"
-    assert isinstance(result["messages"][0], AIMessage)
-    assert result["messages"][0].content == "추가 질문입니다."
-
-
-def test_fallback_question_when_called_after_exhaustion(first_turn_state):
-    """질문 소진 상태로 호출되어도 AIMessage fallback을 반환한다."""
-    state = {
-        **first_turn_state,
-        "turn_number": 1,
-        "messages": [
-            AIMessage(content="질문1"),
-            HumanMessage(content="답변1"),
-        ],
-        "stage_progress": {
-            **first_turn_state["stage_progress"],
-            "fixed_q_used": first_turn_state["stage_progress"]["fixed_q_total"],
-            "generated_q_used": first_turn_state["stage_progress"]["generated_q_max"],
+            "generated_q_max": 3,
         },
     }
 
@@ -385,6 +290,7 @@ def test_fallback_question_when_called_after_exhaustion(first_turn_state):
     assert result["next_node"] == "end"
     assert isinstance(result["messages"][0], AIMessage)
     assert result["messages"][0].content == "혹시 더 추가하고 싶은 내용이 있으신가요?"
+    assert result["stage_progress"]["generated_q_used"] == 0
 
 
 def test_extended_mode_generates_question_and_increments_turn(first_turn_state, monkeypatch):

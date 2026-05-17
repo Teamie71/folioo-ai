@@ -264,7 +264,6 @@ def run(state: InterviewState) -> InterviewState:
     플로우:
     - 첫 턴: 첫 고정 질문 생성
     - 고정 질문 단계: 순차적으로 고정 질문 생성
-    - 생성 질문 단계: 미수집 필드 기반 동적 질문 생성
     - 질문 소진: 안전한 fallback 질문 생성
     """
 
@@ -305,14 +304,6 @@ def run(state: InterviewState) -> InterviewState:
         updated_progress = {
             **progress,
             "fixed_q_used": progress["fixed_q_used"] + 1,
-        }
-
-    elif progress["generated_q_used"] < progress["generated_q_max"]:
-        # ===== 생성 질문 생성 =====
-        question, llm_error = _generate_dynamic_question(normalized_state, stage_config)
-        updated_progress = {
-            **progress,
-            "generated_q_used": progress["generated_q_used"] + 1,
         }
 
     else:

@@ -27,7 +27,6 @@ from .utils import (
     _format_file_contexts,
     _format_retrieved_insights,
     _get_conversation_context,
-    _get_incomplete_fields,
 )
 
 logger = logging.getLogger(__name__)
@@ -307,29 +306,7 @@ def _is_stage_complete(
 ) -> bool:
     """현재 단계 완료 여부 판단"""
     progress = state["stage_progress"]
-
-    fixed_q_exhausted = progress["fixed_q_used"] >= progress["fixed_q_total"]
-    generated_q_exhausted = progress["generated_q_used"] >= progress["generated_q_max"]
-
-    # 조건 1: 고정/생성 질문 모두 소진
-    if fixed_q_exhausted and generated_q_exhausted:
-        return True
-
-    # 조건 2: 고정 질문 소진 + 동적 질문 비활성화
-    if fixed_q_exhausted and not enable_dynamic_followup:
-        return True
-
-    # 조건 3: 고정 질문 소진 + 미수집 필드 없음 + 생성 질문 강제 소진 아님
-    if fixed_q_exhausted and not stage_config.force_all_generated_questions:
-        incomplete_fields = _get_incomplete_fields(
-            state=state,
-            stage_config=stage_config,
-            collected_data=collected_data,
-        )
-        if not incomplete_fields:
-            return True
-
-    return False
+    return progress["fixed_q_used"] >= progress["fixed_q_total"]
 
 
 def _format_required_fields(required_fields: dict[str, dict[str, str]]) -> str:
