@@ -35,7 +35,6 @@ def test_load_stage_config_stage_1():
     assert "problem_definition" in config.required_fields
     assert "project_duration" in config.required_fields
     assert config.max_generated_questions == 0
-    assert config.force_all_generated_questions is False
 
 
 def test_load_all_stages():
@@ -90,7 +89,6 @@ def test_regular_flow_disables_generated_questions(stage):
     config = load_stage_config(stage)
 
     assert config.max_generated_questions == 0
-    assert config.force_all_generated_questions is False
 
 
 def test_get_global_config():

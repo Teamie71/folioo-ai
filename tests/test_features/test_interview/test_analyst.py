@@ -235,8 +235,6 @@ def test_run_marks_all_complete_at_stage_4(monkeypatch):
     state["current_stage"] = 4
     stage_4_config = load_stage_config(4)
     state["stage_progress"]["fixed_q_total"] = len(stage_4_config.fixed_questions)
-    state["stage_progress"]["generated_q_max"] = stage_4_config.max_generated_questions
-    state["stage_progress"]["force_all_generated_q"] = stage_4_config.force_all_generated_questions
     state["stage_progress"]["fixed_q_used"] = state["stage_progress"]["fixed_q_total"]
     state["stage_progress"]["generated_q_used"] = 0
     state["stage_progress"]["generated_q_max"] = 99
