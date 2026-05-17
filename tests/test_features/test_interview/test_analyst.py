@@ -273,7 +273,7 @@ def test_run_extended_mode_routes_to_question_generator(monkeypatch):
     state["is_extended_mode"] = True
     state["all_stages_complete"] = False
     state["extension_turns_used"] = 1
-    state["extension_turns_max"] = 3
+    state["extension_turns_max"] = 18
     state["collected_data"]["stage_1"]["project_background"] = {
         "field_name": "project_background",
         "description": "이 활동을 시작하게 된 이유",
@@ -305,8 +305,70 @@ def test_run_extended_mode_finishes_when_turns_exhausted(monkeypatch):
     )
     state["is_extended_mode"] = True
     state["all_stages_complete"] = False
-    state["extension_turns_used"] = 3
-    state["extension_turns_max"] = 3
+    state["extension_turns_used"] = 18
+    state["extension_turns_max"] = 18
+
+    result = analyst.run(state)
+
+    assert result["next_node"] == "end"
+    assert result["all_stages_complete"] is True
+    assert result["is_extended_mode"] is False
+
+
+def test_run_extended_mode_finishes_when_all_additional_targets_satisfied(monkeypatch):
+    """추가 질문 target이 모두 충분하면 턴이 남아도 종료한다."""
+    response = AnalystResponse(fields=[])
+    monkeypatch.setattr(
+        analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
+    )
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["is_extended_mode"] = True
+    state["all_stages_complete"] = False
+    state["extension_turns_used"] = 1
+    state["extension_turns_max"] = 18
+    state["additional_question_target_statuses"] = {
+        target["target"]: {"asked_count": 0, "is_satisfied": True}
+        for target in analyst._flatten_additional_question_targets(
+            analyst.get_global_config(),
+            analyst.get_all_stages(),
+        )
+    }
+
+    result = analyst.run(state)
+
+    assert result["next_node"] == "end"
+    assert result["all_stages_complete"] is True
+    assert result["is_extended_mode"] is False
+
+
+def test_run_extended_mode_finishes_when_no_askable_target_remains(monkeypatch):
+    """질문 가능한 target이 없으면 미충족 target이 남아도 종료한다."""
+    response = AnalystResponse(fields=[])
+    monkeypatch.setattr(
+        analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
+    )
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["is_extended_mode"] = True
+    state["all_stages_complete"] = False
+    state["extension_turns_used"] = 10
+    state["extension_turns_max"] = 18
+    state["additional_question_target_statuses"] = {
+        target["target"]: {"asked_count": 2, "is_satisfied": False}
+        for target in analyst._flatten_additional_question_targets(
+            analyst.get_global_config(),
+            analyst.get_all_stages(),
+        )
+    }
 
     result = analyst.run(state)
 
@@ -437,7 +499,7 @@ def test_run_extended_mode_uses_protected_invoke_helper(monkeypatch):
     )
     state["is_extended_mode"] = True
     state["extension_turns_used"] = 0
-    state["extension_turns_max"] = 3
+    state["extension_turns_max"] = 18
 
     result = analyst.run(state)
 

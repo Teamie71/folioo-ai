@@ -51,7 +51,7 @@ def test_extended_generated_question_prompt_has_retrieved_insights_variable():
         "conversation_context",
         "retrieved_insights",
         "file_contexts",
-        "global_incomplete_fields",
+        "selected_target",
         "remaining_turns",
     }
 
@@ -65,6 +65,17 @@ def test_generated_question_prompt_mentions_insight_usage_rules():
     assert "보조 컨텍스트" in prompt_text
     assert "대화 맥락과 미수집 필드" in prompt_text
     assert "그대로 복붙하지 마세요" in prompt_text
+
+
+def test_extended_generated_question_prompt_focuses_on_selected_target():
+    """추가 대화 프롬프트는 선택된 target 하나만 질문하도록 지시한다."""
+    prompt_text = extended_generated_question_prompt.messages[0].prompt.template
+
+    assert "선택된 target 하나" in prompt_text
+    assert "내부 field_name이나 target id" in prompt_text
+    assert "보조 컨텍스트" in prompt_text
+    assert "낮은 completeness" not in prompt_text
+    assert "completeness가 낮은 필드" not in prompt_text
 
 
 def test_contextual_fixed_question_prompt_formats_retrieved_insights():

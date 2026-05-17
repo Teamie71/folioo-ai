@@ -385,8 +385,8 @@ async def test_extend_session_stream_yields_delta_and_complete(monkeypatch):
             "Config",
             (),
             {
-                "max_extensions": 2,
-                "extension_turns_per_session": 3,
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
             },
         )(),
     )
@@ -412,7 +412,7 @@ async def test_extend_session_stream_yields_delta_and_complete(monkeypatch):
         "all_stages_complete": False,
         "is_extended_mode": True,
         "extension_turns_used": 1,
-        "extension_turns_max": 3,
+        "extension_turns_max": 18,
         "extension_count": 1,
     }
     states = [initial_state, final_state]
@@ -427,6 +427,9 @@ async def test_extend_session_stream_yields_delta_and_complete(monkeypatch):
     events = [event async for event in service.extend_session_stream(session_id="session-1")]
 
     assert dummy_graph.astream_calls[0]["state"]["mentioned_insight"] is None
+    assert dummy_graph.astream_calls[0]["state"]["additional_question_target_statuses"] == {}
+    assert dummy_graph.astream_calls[0]["state"]["additional_question_pre_evaluated"] is False
+    assert dummy_graph.astream_calls[0]["state"]["current_additional_question_target_id"] is None
     assert dummy_graph.astream_calls[0]["state"]["current_turn_files"] == []
     assert dummy_graph.astream_calls[0]["state"]["file_contexts"] == []
 
@@ -533,8 +536,8 @@ async def test_extend_session_stream_sets_failed_status_on_cancellation(monkeypa
             "Config",
             (),
             {
-                "max_extensions": 2,
-                "extension_turns_per_session": 3,
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
             },
         )(),
     )

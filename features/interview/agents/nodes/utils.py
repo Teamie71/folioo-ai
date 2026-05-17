@@ -1,10 +1,179 @@
 """에이전트 노드 공통 유틸리티"""
 
+from typing import TypedDict
+
 from langchain_core.messages import AIMessage, HumanMessage
 
-from features.interview.config.loader import StageConfig
+from features.interview.config.loader import GlobalConfig, StageConfig
 
-from ..state import CollectedField, InsightLog, InterviewState
+from ..state import AdditionalQuestionTargetStatus, CollectedField, InsightLog, InterviewState
+
+
+class AdditionalQuestionTargetWithPriority(TypedDict):
+    """우선순위 정보를 포함한 추가 질문 target"""
+
+    target: str
+    priority: int
+    stage: int
+    field_name: str
+    label: str
+    question_hint: str
+    field_description: str
+    stage_name: str
+
+
+def _flatten_additional_question_targets(
+    global_config: GlobalConfig,
+    stages: dict[int, StageConfig],
+) -> list[AdditionalQuestionTargetWithPriority]:
+    """추가 질문 target을 priority/YAML 순서대로 평탄화한다."""
+    targets: list[AdditionalQuestionTargetWithPriority] = []
+    for group in global_config.additional_question_priorities:
+        for target in group.targets:
+            stage_config = stages[target.stage]
+            targets.append(
+                {
+                    "target": target.target,
+                    "priority": group.priority,
+                    "stage": target.stage,
+                    "field_name": target.field_name,
+                    "label": target.label,
+                    "question_hint": target.question_hint,
+                    "field_description": target.field_description,
+                    "stage_name": stage_config.name,
+                }
+            )
+    return targets
+
+
+def _ensure_additional_question_target_statuses(
+    state: InterviewState,
+    targets: list[AdditionalQuestionTargetWithPriority],
+) -> dict[str, AdditionalQuestionTargetStatus]:
+    """설정된 모든 target의 상태 기본값을 보강한다."""
+    statuses: dict[str, AdditionalQuestionTargetStatus] = {
+        key: {
+            "asked_count": int(value.get("asked_count", 0)),
+            "is_satisfied": bool(value.get("is_satisfied", False)),
+        }
+        for key, value in state.get("additional_question_target_statuses", {}).items()
+    }
+
+    for target in targets:
+        statuses.setdefault(
+            target["target"],
+            {
+                "asked_count": 0,
+                "is_satisfied": False,
+            },
+        )
+
+    return statuses
+
+
+def _select_next_additional_question_target(
+    state: InterviewState,
+    targets: list[AdditionalQuestionTargetWithPriority],
+) -> AdditionalQuestionTargetWithPriority | None:
+    """1차/2차 패스 규칙에 따라 다음 추가 질문 target을 선택한다."""
+    statuses = state.get("additional_question_target_statuses", {})
+
+    for pass_asked_count in (0, 1):
+        for target in targets:
+            status = statuses.get(target["target"])
+            if status is None:
+                continue
+            if status["is_satisfied"]:
+                continue
+            if status["asked_count"] == pass_asked_count:
+                return target
+
+    return None
+
+
+def _all_additional_question_targets_satisfied(
+    state: InterviewState,
+    targets: list[AdditionalQuestionTargetWithPriority],
+) -> bool:
+    """모든 추가 질문 target이 충분한지 확인한다."""
+    if not targets:
+        return True
+
+    statuses = state.get("additional_question_target_statuses", {})
+    return all(statuses.get(target["target"], {}).get("is_satisfied", False) for target in targets)
+
+
+def _has_askable_additional_question_target(
+    state: InterviewState,
+    targets: list[AdditionalQuestionTargetWithPriority],
+) -> bool:
+    """질문 가능한 추가 질문 target이 남아 있는지 확인한다."""
+    return _select_next_additional_question_target(state, targets) is not None
+
+
+def _increment_additional_question_target_asked_count(
+    statuses: dict[str, AdditionalQuestionTargetStatus],
+    target_id: str,
+) -> dict[str, AdditionalQuestionTargetStatus]:
+    """질문 생성 직후 해당 target의 질문 횟수를 증가한다."""
+    updated_statuses = {
+        key: {**value}
+        for key, value in statuses.items()
+    }
+    status = updated_statuses.setdefault(
+        target_id,
+        {
+            "asked_count": 0,
+            "is_satisfied": False,
+        },
+    )
+    status["asked_count"] = status["asked_count"] + 1
+    return updated_statuses
+
+
+def _format_selected_additional_question_target(
+    target: AdditionalQuestionTargetWithPriority,
+) -> str:
+    """선택된 추가 질문 target을 사용자 노출 가능한 prompt 문자열로 변환한다."""
+    return (
+        f"- 우선순위: {target['priority']}\n"
+        f"- 단계: {target['stage']}단계 {target['stage_name']}\n"
+        f"- 라벨: {target['label']}\n"
+        f"- 질문 힌트: {target['question_hint']}\n"
+        f"- 충분성 기준: {target['field_description']}"
+    )
+
+
+def _format_additional_target_sufficiency_inputs(
+    targets: list[AdditionalQuestionTargetWithPriority],
+    collected_data: dict[str, dict[str, CollectedField]],
+) -> str:
+    """사전 판정용 target 목록과 현재 수집 데이터를 prompt 문자열로 변환한다."""
+    if not targets:
+        return "판정할 추가 질문 target 없음"
+
+    lines: list[str] = []
+    for target in targets:
+        stage_key = f"stage_{target['stage']}"
+        collected_field = collected_data.get(stage_key, {}).get(target["field_name"])
+        if collected_field is None:
+            collected_text = "수집된 값 없음"
+            completeness = 0.0
+        else:
+            collected_text = str(collected_field.get("value"))
+            completeness = float(collected_field.get("completeness", 0.0))
+
+        lines.append(f"[target: {target['target']}]")
+        lines.append(f"- 우선순위: {target['priority']}")
+        lines.append(f"- 단계: {target['stage']}단계 {target['stage_name']}")
+        lines.append(f"- 라벨: {target['label']}")
+        lines.append(f"- 질문 힌트: {target['question_hint']}")
+        lines.append(f"- 충분성 기준: {target['field_description']}")
+        lines.append(f"- 현재 수집값 완성도: {completeness:.2f}")
+        lines.append(f"- 현재 수집값: {collected_text}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
 
 
 def _get_conversation_context(

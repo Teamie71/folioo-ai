@@ -2,10 +2,10 @@
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 import yaml
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 
 class StageConfig(BaseModel):
@@ -27,6 +27,48 @@ class StageConfig(BaseModel):
         return value
 
 
+class AdditionalQuestionTarget(BaseModel):
+    """추가 대화에서 보완 질문을 생성할 target 설정"""
+
+    target: str
+    stage: int
+    field_name: str
+    label: str
+    question_hint: str
+    field_description: str
+
+    @field_validator("target", "field_name", "label", "question_hint", "field_description")
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        """target 설정의 문자열 필드는 비어 있을 수 없다."""
+        if not value.strip():
+            raise ValueError("추가 질문 target 문자열 필드는 비어 있을 수 없습니다.")
+        return value
+
+
+class AdditionalQuestionPriorityGroup(BaseModel):
+    """우선순위별 추가 질문 target 묶음"""
+
+    priority: int
+    targets: list[AdditionalQuestionTarget]
+
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, value: int) -> int:
+        """추가 질문 우선순위는 1 이상이어야 한다."""
+        if value < 1:
+            raise ValueError("additional_question_priorities.priority는 1 이상이어야 합니다.")
+        return value
+
+    @field_validator("targets")
+    @classmethod
+    def validate_targets(cls, value: list[AdditionalQuestionTarget]) -> list[AdditionalQuestionTarget]:
+        """우선순위 그룹에는 target이 1개 이상 있어야 한다."""
+        if not value:
+            raise ValueError("additional_question_priorities.targets는 1개 이상이어야 합니다.")
+        return value
+
+
 class GlobalConfig(BaseModel):
     """전역 설정 스키마"""
 
@@ -35,6 +77,7 @@ class GlobalConfig(BaseModel):
     context_window_size: int
     extension_turns_per_session: int
     max_extensions: int
+    additional_question_priorities: list[AdditionalQuestionPriorityGroup] = Field(default_factory=list)
 
     @field_validator("extension_turns_per_session")
     @classmethod
@@ -58,6 +101,41 @@ class StagesConfig(BaseModel):
 
     stages: dict[int, StageConfig]
     global_config: GlobalConfig
+
+    @model_validator(mode="after")
+    def validate_additional_question_priorities(self) -> Self:
+        """추가 질문 target이 실제 stage/field 설정과 일치하는지 검증한다."""
+        priorities_seen: set[int] = set()
+        targets_seen: set[str] = set()
+        sorted_groups = sorted(
+            self.global_config.additional_question_priorities,
+            key=lambda group: group.priority,
+        )
+
+        for group in sorted_groups:
+            if group.priority in priorities_seen:
+                raise ValueError("additional_question_priorities.priority는 중복될 수 없습니다.")
+            priorities_seen.add(group.priority)
+
+            for target in group.targets:
+                if target.target in targets_seen:
+                    raise ValueError("additional_question_priorities.target은 중복될 수 없습니다.")
+                targets_seen.add(target.target)
+
+                stage_config = self.stages.get(target.stage)
+                if stage_config is None:
+                    raise ValueError(
+                        f"additional_question_priorities.stage가 존재하지 않습니다: {target.stage}"
+                    )
+
+                if target.field_name not in stage_config.required_fields:
+                    raise ValueError(
+                        "additional_question_priorities.field_name이 해당 stage에 존재하지 않습니다: "
+                        f"stage={target.stage}, field_name={target.field_name}"
+                    )
+
+        self.global_config.additional_question_priorities = sorted_groups
+        return self
 
 
 @lru_cache(maxsize=1)

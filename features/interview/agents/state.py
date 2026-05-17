@@ -63,6 +63,13 @@ class StageProgress(TypedDict):
     is_complete: bool  # 질문 소진으로 인한 단계 완료 여부
 
 
+class AdditionalQuestionTargetStatus(TypedDict):
+    """추가 질문 target별 내부 진행 상태"""
+
+    asked_count: int
+    is_satisfied: bool
+
+
 class CollectedField(TypedDict):
     """수집된 필드 정보"""
 
@@ -176,6 +183,15 @@ class InterviewState(TypedDict):
     extension_turns_max: int
     # 연장 1회당 최대 질문 횟수
 
+    additional_question_target_statuses: dict[str, AdditionalQuestionTargetStatus]
+    # 추가 질문 target별 내부 상태 (API 응답에는 노출하지 않음)
+
+    additional_question_pre_evaluated: bool
+    # 추가 대화 시작 시 기존 11개 답변 기준 target 사전 판정 완료 여부
+
+    current_additional_question_target_id: str | None
+    # 마지막으로 생성한 추가 질문이 다룬 target id
+
     # ===== 에러 추적 =====
     llm_error: str | None
     # LLM 호출 실패 시 에러 메시지 기록
@@ -239,6 +255,9 @@ def get_initial_interview_state(
         "extension_count": 0,
         "extension_turns_used": 0,
         "extension_turns_max": global_config.extension_turns_per_session,
+        "additional_question_target_statuses": {},
+        "additional_question_pre_evaluated": False,
+        "current_additional_question_target_id": None,
         # 에러 추적
         "llm_error": None,
     }
@@ -265,4 +284,13 @@ def ensure_interview_state_defaults(state: InterviewState | dict) -> InterviewSt
         "file_turn_history": list(state.get("file_turn_history") or []),
         "current_turn_files": list(state.get("current_turn_files") or []),
         "file_contexts": list(state.get("file_contexts") or []),
+        "additional_question_target_statuses": dict(
+            state.get("additional_question_target_statuses") or {}
+        ),
+        "additional_question_pre_evaluated": bool(
+            state.get("additional_question_pre_evaluated", False)
+        ),
+        "current_additional_question_target_id": state.get(
+            "current_additional_question_target_id"
+        ),
     }

@@ -1,10 +1,11 @@
 """QuestionGenerator 노드 - 인터뷰 질문 생성"""
 
+import json
 import logging
 
 from langchain_core.messages import AIMessage
 
-from common.llm.client import get_llm
+from common.llm.client import get_analyst_llm, get_llm
 from features.interview.config.loader import (
     StageConfig,
     get_all_stages,
@@ -13,6 +14,8 @@ from features.interview.config.loader import (
 )
 
 from ..prompts import (
+    AdditionalTargetSufficiencyResponse,
+    additional_target_sufficiency_prompt,
     contextual_fixed_question_prompt,
     extended_generated_question_prompt,
     first_turn_prompt,
@@ -20,16 +23,26 @@ from ..prompts import (
 )
 from ..state import InterviewState, ensure_interview_state_defaults
 from .utils import (
+    AdditionalQuestionTargetWithPriority,
+    _all_additional_question_targets_satisfied,
+    _ensure_additional_question_target_statuses,
+    _flatten_additional_question_targets,
+    _format_additional_target_sufficiency_inputs,
     _format_file_contexts,
-    _format_global_incomplete_fields,
     _format_incomplete_fields,
     _format_retrieved_insights,
-    _get_all_stage_incomplete_fields,
+    _format_selected_additional_question_target,
     _get_conversation_context,
     _get_incomplete_fields,
+    _increment_additional_question_target_asked_count,
+    _select_next_additional_question_target,
 )
 
 logger = logging.getLogger(__name__)
+
+_ADDITIONAL_CONVERSATION_COMPLETE_MESSAGE = (
+    "이미 필요한 추가 확인 사항이 충분히 정리되어 있어 추가 질문 없이 인터뷰를 마무리하겠습니다."
+)
 
 
 def _invoke_with_retry(
@@ -198,15 +211,56 @@ def _generate_dynamic_question(
     return (question, llm_error)
 
 
+def _pre_evaluate_additional_question_targets(
+    state: InterviewState,
+    targets: list[AdditionalQuestionTargetWithPriority],
+) -> tuple[dict[str, bool], str | None]:
+    """기존 정규 답변 기준으로 추가 질문 target 충분성을 한 번에 판정한다."""
+    if not targets:
+        return {}, None
+
+    targets_str = _format_additional_target_sufficiency_inputs(targets, state["collected_data"])
+    collected_data_str = json.dumps(
+        state["collected_data"],
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
+
+    try:
+        llm = get_analyst_llm(temperature=0.3)
+        structured_llm = llm.with_structured_output(AdditionalTargetSufficiencyResponse)
+        chain = additional_target_sufficiency_prompt | structured_llm
+        response: AdditionalTargetSufficiencyResponse = chain.invoke(
+            {
+                "experience_name": state["experience_name"],
+                "collected_data": collected_data_str,
+                "targets": targets_str,
+            }
+        )
+    except Exception as exc:
+        logger.exception("추가 질문 target 사전 판정 실패")
+        return {}, str(exc)
+
+    target_ids = {target["target"] for target in targets}
+    result: dict[str, bool] = {}
+    for target_result in response.targets:
+        if target_result.target not in target_ids:
+            logger.warning("LLM이 설정에 없는 추가 질문 target을 반환: %s", target_result.target)
+            continue
+        result[target_result.target] = target_result.is_satisfied
+
+    return result, None
+
+
 def _generate_extended_question(
     state: InterviewState,
+    selected_target: AdditionalQuestionTargetWithPriority,
 ) -> tuple[str, str | None]:
-    """연장 모드 질문 생성"""
+    """선택된 target 하나에 대한 추가 대화 질문 생성"""
     global_config = get_global_config()
-    all_stage_configs = get_all_stages()
     context = _get_conversation_context(state, max_messages=global_config.context_window_size)
-    incomplete_fields = _get_all_stage_incomplete_fields(state, stages=all_stage_configs)
-    global_incomplete_fields = _format_global_incomplete_fields(incomplete_fields)
+    selected_target_str = _format_selected_additional_question_target(selected_target)
     retrieved_insights_str = _format_retrieved_insights(state["retrieved_insights"])
     file_contexts_str = _format_file_contexts(state["file_contexts"])
 
@@ -222,7 +276,7 @@ def _generate_extended_question(
             prompt_variables={
                 "experience_name": state["experience_name"],
                 "conversation_context": context,
-                "global_incomplete_fields": global_incomplete_fields,
+                "selected_target": selected_target_str,
                 "retrieved_insights": retrieved_insights_str,
                 "file_contexts": file_contexts_str,
                 "remaining_turns": remaining_turns,
@@ -230,30 +284,89 @@ def _generate_extended_question(
             max_retries_per_question=global_config.max_retries_per_question,
         )
     except Exception as e:
-        logger.exception("LLM 호출 실패: 연장 질문")
-        if incomplete_fields:
-            target = incomplete_fields[0]
-            question = (
-                f"좋아요. {target['stage_name']} 단계에서 '{target['description']}'에 대해 "
-                "조금 더 자세히 말씀해 주시겠어요?"
-            )
-        else:
-            question = "좋아요. 이 경험에서 특히 더 강조하고 싶은 부분이 있을까요?"
+        logger.exception("LLM 호출 실패: 추가 대화 질문")
+        question = (
+            f"좋아요. {selected_target['label']}에 대해 조금 더 구체적으로 말씀해 주시겠어요? "
+            f"{selected_target['question_hint']}"
+        )
         llm_error = str(e)
 
     return (question, llm_error)
 
 
-def _run_extended_mode(state: InterviewState) -> InterviewState:
-    """연장 모드 분기 처리"""
-    question, llm_error = _generate_extended_question(state)
-
+def _complete_extended_mode(
+    state: InterviewState,
+    llm_error: str | None = None,
+) -> InterviewState:
+    """추가 대화를 안내 문구와 함께 종료한다."""
     return {
         **state,
-        "messages": [AIMessage(content=question)],
-        "extension_turns_used": state["extension_turns_used"] + 1,
+        "messages": [AIMessage(content=_ADDITIONAL_CONVERSATION_COMPLETE_MESSAGE)],
+        "is_extended_mode": False,
+        "all_stages_complete": True,
         "next_node": "end",
         "llm_error": llm_error,
+    }
+
+
+def _run_extended_mode(state: InterviewState) -> InterviewState:
+    """추가 대화 분기 처리"""
+    global_config = get_global_config()
+    all_stage_configs = get_all_stages()
+    targets = _flatten_additional_question_targets(global_config, all_stage_configs)
+    statuses = _ensure_additional_question_target_statuses(state, targets)
+    updated_state: InterviewState = {
+        **state,
+        "additional_question_target_statuses": statuses,
+    }
+    llm_error = None
+
+    if not updated_state["additional_question_pre_evaluated"]:
+        pre_evaluation, llm_error = _pre_evaluate_additional_question_targets(
+            updated_state,
+            targets,
+        )
+        statuses = {
+            target_id: {
+                **status,
+                "is_satisfied": pre_evaluation.get(target_id, status["is_satisfied"]),
+            }
+            for target_id, status in statuses.items()
+        }
+        updated_state = {
+            **updated_state,
+            "additional_question_target_statuses": statuses,
+            "additional_question_pre_evaluated": True,
+        }
+
+    if _all_additional_question_targets_satisfied(updated_state, targets):
+        return _complete_extended_mode(updated_state, llm_error=llm_error)
+
+    if updated_state["extension_turns_used"] >= updated_state["extension_turns_max"]:
+        return _complete_extended_mode(updated_state, llm_error=llm_error)
+
+    selected_target = _select_next_additional_question_target(updated_state, targets)
+    if selected_target is None:
+        return _complete_extended_mode(updated_state, llm_error=llm_error)
+
+    question, question_llm_error = _generate_extended_question(updated_state, selected_target)
+    merged_llm_error = llm_error
+    if question_llm_error:
+        merged_llm_error = f"{llm_error} | {question_llm_error}" if llm_error else question_llm_error
+
+    updated_statuses = _increment_additional_question_target_asked_count(
+        updated_state["additional_question_target_statuses"],
+        selected_target["target"],
+    )
+
+    return {
+        **updated_state,
+        "messages": [AIMessage(content=question)],
+        "additional_question_target_statuses": updated_statuses,
+        "current_additional_question_target_id": selected_target["target"],
+        "extension_turns_used": updated_state["extension_turns_used"] + 1,
+        "next_node": "end",
+        "llm_error": merged_llm_error,
     }
 
 

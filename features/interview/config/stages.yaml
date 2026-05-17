@@ -75,5 +75,122 @@ global_config:
     max_retries_per_question: 2 # 질문당 최대 재시도 횟수
     enable_dynamic_followup: true # 동적 후속 질문 활성화
     context_window_size: 5 # 컨텍스트로 참조할 이전 답변 개수
-    extension_turns_per_session: 3 # 연장 1회당 추가 질문 횟수
-    max_extensions: 2 # 최대 연장 횟수
+    extension_turns_per_session: 18 # 추가 대화 1회당 AI 질문 횟수
+    max_extensions: 1 # 최대 추가 대화 횟수
+    additional_question_priorities:
+        - priority: 1
+          targets:
+              - target: "stage_3_episode_1_strategy_rationale"
+                stage: 3
+                field_name: "problem_episodes"
+                label: "Episode 1 해결 전략과 선택 근거"
+                question_hint: "첫 번째 문제 상황에서 어떤 해결 전략을 선택했고 왜 그 방법을 선택했는지 구체적으로 확인한다."
+                field_description: "첫 번째 문제 에피소드의 상황, 해결 행동, 선택한 전략의 이유가 함께 드러나야 한다."
+              - target: "stage_3_episode_2_strategy_rationale"
+                stage: 3
+                field_name: "problem_episodes"
+                label: "Episode 2 해결 전략과 선택 근거"
+                question_hint: "두 번째 문제 상황에서 어떤 해결 전략을 선택했고 왜 그 방법을 선택했는지 구체적으로 확인한다."
+                field_description: "두 번째 문제 에피소드의 상황, 해결 행동, 선택한 전략의 이유가 함께 드러나야 한다."
+              - target: "stage_4_quantitative_result_1"
+                stage: 4
+                field_name: "quantitative_results"
+                label: "정량적 성과 1"
+                question_hint: "성과를 수치, 등수, 달성률, 참여자 수, 다운로드 수처럼 객관적으로 드러낼 수 있는 정보를 확인한다."
+                field_description: "첫 번째 정량 성과가 구체적인 수치와 맥락을 포함해야 한다."
+              - target: "stage_4_insight"
+                stage: 4
+                field_name: "insights_gained"
+                label: "인사이트"
+                question_hint: "이 경험을 통해 대상, 관계, 업무 또는 산업에 대해 새롭게 알게 된 관점을 확인한다."
+                field_description: "경험 이후 새롭게 얻은 관점이나 판단 기준이 구체적으로 드러나야 한다."
+        - priority: 2
+          targets:
+              - target: "stage_2_work_category_1_intent_tools"
+                stage: 2
+                field_name: "work_categories"
+                label: "업무 대분류 1 업무 의도와 사용 도구/기술"
+                question_hint: "첫 번째 핵심 업무를 왜 수행했는지와 어떤 도구나 기술을 사용했는지 확인한다."
+                field_description: "첫 번째 업무 카테고리의 수행 의도와 사용한 도구/기술이 함께 드러나야 한다."
+              - target: "stage_2_work_category_2_intent_tools"
+                stage: 2
+                field_name: "work_categories"
+                label: "업무 대분류 2 업무 의도와 사용 도구/기술"
+                question_hint: "두 번째 핵심 업무를 왜 수행했는지와 어떤 도구나 기술을 사용했는지 확인한다."
+                field_description: "두 번째 업무 카테고리의 수행 의도와 사용한 도구/기술이 함께 드러나야 한다."
+              - target: "stage_4_personal_growth"
+                stage: 4
+                field_name: "personal_growth"
+                label: "성장한 점"
+                question_hint: "경험 전후로 달라진 역량, 태도, 일하는 방식의 변화를 확인한다."
+                field_description: "사용자가 어떤 면에서 성장했는지와 그 변화가 경험과 어떻게 연결되는지 드러나야 한다."
+              - target: "stage_4_quantitative_result_2"
+                stage: 4
+                field_name: "quantitative_results"
+                label: "정량적 성과 2"
+                question_hint: "추가로 제시할 수 있는 두 번째 수치 기반 성과를 확인한다."
+                field_description: "두 번째 정량 성과가 구체적인 수치와 맥락을 포함해야 한다."
+        - priority: 3
+          targets:
+              - target: "stage_4_future_plan"
+                stage: 4
+                field_name: "future_plans"
+                label: "향후 계획"
+                question_hint: "아쉬웠던 점을 보완하기 위한 구체적인 개선 방향이나 앞으로의 학습 계획을 확인한다."
+                field_description: "향후 개선 방향이나 학습 계획이 구체적인 행동으로 드러나야 한다."
+              - target: "stage_1_problem_definition"
+                stage: 1
+                field_name: "problem_definition"
+                label: "해결하고자 한 문제 정의"
+                question_hint: "프로젝트가 해결하려던 문제나 최종 목표를 명확히 확인한다."
+                field_description: "해결하려던 문제, 목표, 미션이 명확하게 설명되어야 한다."
+              - target: "stage_1_team_role"
+                stage: 1
+                field_name: "team_composition"
+                label: "팀 구성 및 본인 역할"
+                question_hint: "팀 규모, 협업 구조, 본인이 맡은 역할과 책임 범위를 확인한다."
+                field_description: "전체 참여 인원과 사용자의 포지션, 주요 책임이 함께 드러나야 한다."
+              - target: "stage_4_qualitative_result_1"
+                stage: 4
+                field_name: "qualitative_results"
+                label: "정성적 성과 1"
+                question_hint: "타인의 평가, 피드백, 체감 반응처럼 수치가 아닌 성과를 확인한다."
+                field_description: "첫 번째 정성 성과가 구체적인 피드백이나 반응과 함께 드러나야 한다."
+              - target: "stage_2_work_category_1_core_tasks"
+                stage: 2
+                field_name: "work_categories"
+                label: "업무 대분류 1 핵심 수행 업무"
+                question_hint: "첫 번째 핵심 업무에서 실제로 수행한 세부 작업을 확인한다."
+                field_description: "첫 번째 업무 카테고리의 핵심 수행 내용이 구체적인 행동 단위로 드러나야 한다."
+              - target: "stage_2_work_category_2_core_tasks"
+                stage: 2
+                field_name: "work_categories"
+                label: "업무 대분류 2 핵심 수행 업무"
+                question_hint: "두 번째 핵심 업무에서 실제로 수행한 세부 작업을 확인한다."
+                field_description: "두 번째 업무 카테고리의 핵심 수행 내용이 구체적인 행동 단위로 드러나야 한다."
+              - target: "stage_4_qualitative_result_2"
+                stage: 4
+                field_name: "qualitative_results"
+                label: "정성적 성과 2"
+                question_hint: "추가로 제시할 수 있는 두 번째 정성적 성과나 피드백을 확인한다."
+                field_description: "두 번째 정성 성과가 구체적인 피드백이나 반응과 함께 드러나야 한다."
+        - priority: 4
+          targets:
+              - target: "stage_1_project_background"
+                stage: 1
+                field_name: "project_background"
+                label: "시작 배경 및 계기"
+                question_hint: "이 활동을 시작하게 된 배경과 계기를 확인한다."
+                field_description: "활동을 시작한 이유와 당시 맥락이 구체적으로 드러나야 한다."
+              - target: "stage_1_message_or_concept"
+                stage: 1
+                field_name: "message_or_concept"
+                label: "메시지 또는 콘셉트"
+                question_hint: "창작물이나 결과물을 통해 전달하려던 핵심 메시지 또는 콘셉트를 확인한다."
+                field_description: "결과물의 핵심 주제, 메시지, 콘셉트가 명확하게 드러나야 한다."
+              - target: "stage_4_final_deliverable"
+                stage: 4
+                field_name: "final_deliverable"
+                label: "최종 결과물 상태"
+                question_hint: "프로젝트의 최종 상태, 완성/런칭/제출/수상 여부를 확인한다."
+                field_description: "프로젝트가 어떤 상태로 마무리되었는지와 결과물의 형태가 명확해야 한다."

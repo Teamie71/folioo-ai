@@ -7,6 +7,8 @@ from .analyst import (
 )
 from .file_processor import FILE_EXTRACTION_SYSTEM_PROMPT
 from .question_generator import (
+    AdditionalTargetSufficiencyResponse,
+    additional_target_sufficiency_prompt,
     contextual_fixed_question_prompt,
     extended_generated_question_prompt,
     first_turn_prompt,
@@ -14,6 +16,8 @@ from .question_generator import (
 )
 
 __all__ = [
+    "AdditionalTargetSufficiencyResponse",
+    "additional_target_sufficiency_prompt",
     "AnalystFieldResult",
     "AnalystResponse",
     "analyst_prompt",

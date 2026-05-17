@@ -24,9 +24,13 @@ from features.interview.config.loader import (
 
 from ..state import CollectedField, InterviewState
 from .utils import (
+    _all_additional_question_targets_satisfied,
+    _ensure_additional_question_target_statuses,
+    _flatten_additional_question_targets,
     _format_file_contexts,
     _format_retrieved_insights,
     _get_conversation_context,
+    _has_askable_additional_question_target,
 )
 
 logger = logging.getLogger(__name__)
@@ -279,9 +283,22 @@ def _run_extended_mode(state: InterviewState) -> InterviewState:
         updated_collected_data = copy.deepcopy(state["collected_data"])
         llm_error = str(e)
 
-    if state["extension_turns_used"] >= state["extension_turns_max"]:
+    targets = _flatten_additional_question_targets(global_config, all_stage_configs)
+    statuses = _ensure_additional_question_target_statuses(state, targets)
+    state_with_statuses: InterviewState = {
+        **state,
+        "additional_question_target_statuses": statuses,
+    }
+
+    should_end_extended_mode = (
+        state["extension_turns_used"] >= state["extension_turns_max"]
+        or _all_additional_question_targets_satisfied(state_with_statuses, targets)
+        or not _has_askable_additional_question_target(state_with_statuses, targets)
+    )
+
+    if should_end_extended_mode:
         return {
-            **state,
+            **state_with_statuses,
             "collected_data": updated_collected_data,
             "all_stages_complete": True,
             "is_extended_mode": False,
@@ -290,7 +307,7 @@ def _run_extended_mode(state: InterviewState) -> InterviewState:
         }
 
     return {
-        **state,
+        **state_with_statuses,
         "collected_data": updated_collected_data,
         "all_stages_complete": False,
         "next_node": "question_generator",

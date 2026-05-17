@@ -1,6 +1,22 @@
 """질문 생성기 프롬프트"""
 
 from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
+
+
+class AdditionalTargetSufficiencyResult(BaseModel):
+    """추가 질문 target 사전 판정 결과"""
+
+    target: str = Field(description="판정한 추가 질문 target id")
+    is_satisfied: bool = Field(description="기존 정규 답변만으로 충분한지 여부")
+
+
+class AdditionalTargetSufficiencyResponse(BaseModel):
+    """추가 질문 target 사전 판정 전체 결과"""
+
+    targets: list[AdditionalTargetSufficiencyResult] = Field(
+        description="target별 충분성 판정 결과 목록"
+    )
 
 FIRST_TURN_TEMPLATE = """
 # 역할
@@ -134,8 +150,8 @@ EXTENDED_GENERATED_QUESTION_TEMPLATE = """
 당신은 친근하고 전문적인 포트폴리오 인터뷰 도우미입니다.
 
 # 상황
-사용자가 "{experience_name}" 경험에 대한 4단계 인터뷰를 완료한 뒤, 연장 모드로 보완 대화를 진행 중입니다.
-전체 단계의 수집 데이터 중 completeness가 낮은 정보를 보완하는 질문을 생성해야 합니다.
+사용자가 "{experience_name}" 경험에 대한 4단계 인터뷰를 완료한 뒤, 추가 대화를 진행 중입니다.
+이번 턴에서는 아래 선택된 target 하나만 보완하는 질문을 생성해야 합니다.
 
 # 이전 대화 맥락
 {conversation_context}
@@ -146,27 +162,58 @@ EXTENDED_GENERATED_QUESTION_TEMPLATE = """
 # 현재 턴 첨부 파일 참고 정보
 {file_contexts}
 
-# 보완이 필요한 정보 (낮은 completeness 우선)
-{global_incomplete_fields}
+# 선택된 보완 target
+{selected_target}
 
-# 남은 연장 질문 횟수
+# 남은 추가 질문 횟수
 {remaining_turns}회
 
 # 출력 지침
 1. 이전 답변에 대한 간단한 반응으로 시작하세요.
-2. 위 목록에서 completeness가 낮은 필드 1~2개를 우선적으로 질문하세요.
-3. 필드명을 그대로 노출하지 말고 자연스러운 대화형 질문으로 바꾸세요.
-4. 인사이트는 보조 컨텍스트로만 참고하고, 이미 언급된 경험을 더 구체화할 때만 자연스럽게 녹여내세요.
-5. 인사이트 제목이나 본문을 그대로 복붙하지 말고, 질문 의도로만 재구성하세요.
-6. 첨부 파일 정보도 보조 컨텍스트로 참고할 수 있지만, 원문을 장문으로 그대로 복붙하지 말고 질문 의도로만 활용하세요.
-7. 한 번에 너무 많은 정보를 묻지 마세요.
-8. 친근하지만 격식 있는 어조를 유지하세요.
-9. 질문만 출력하고, 다른 설명은 추가하지 마세요.
+2. 선택된 target 하나에만 집중해서 질문하세요.
+3. target의 우선순위, 단계, 라벨, 질문 힌트, 충분성 기준을 참고하세요.
+4. 내부 field_name이나 target id를 사용자에게 노출하지 마세요.
+5. 인사이트는 보조 컨텍스트로만 참고하고, 이미 언급된 경험을 더 구체화할 때만 자연스럽게 녹여내세요.
+6. 인사이트 제목이나 본문을 그대로 복붙하지 말고, 질문 의도로만 재구성하세요.
+7. 첨부 파일 정보도 보조 컨텍스트로 참고할 수 있지만, 원문을 장문으로 그대로 복붙하지 말고 질문 의도로만 활용하세요.
+8. 한 번에 여러 target을 함께 묻지 마세요.
+9. 친근하지만 격식 있는 어조를 유지하세요.
+10. 질문만 출력하고, 다른 설명은 추가하지 마세요.
 """
 
 extended_generated_question_prompt = ChatPromptTemplate.from_messages(
     [
         ("system", EXTENDED_GENERATED_QUESTION_TEMPLATE),
-        ("human", "위 지침에 따라 연장 모드 질문을 생성해주세요."),
+        ("human", "위 지침에 따라 추가 대화 질문을 생성해주세요."),
+    ]
+)
+
+
+ADDITIONAL_TARGET_SUFFICIENCY_TEMPLATE = """
+# 역할
+당신은 포트폴리오 인터뷰 답변의 충분성을 판정하는 전문가입니다.
+
+# 상황
+사용자가 "{experience_name}" 경험에 대한 정규 인터뷰를 완료했습니다.
+아래 수집 데이터와 추가 질문 target 목록을 보고, 각 target이 기존 정규 답변만으로 충분한지 판정하세요.
+
+# 전체 수집 데이터
+{collected_data}
+
+# 추가 질문 target 목록
+{targets}
+
+# 판정 지침
+1. 각 target의 라벨, 질문 힌트, 충분성 기준을 기준으로 판단하세요.
+2. 현재 수집값이 구체적이고 포트폴리오 작성에 바로 활용 가능하면 is_satisfied=true로 판단하세요.
+3. 정보가 없거나, 단편적이거나, target의 충분성 기준을 만족하지 못하면 is_satisfied=false로 판단하세요.
+4. 추가 대화 중 사용자의 종료 의도는 판단하지 마세요.
+5. target id는 입력에 있는 값을 그대로 반환하세요.
+"""
+
+additional_target_sufficiency_prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", ADDITIONAL_TARGET_SUFFICIENCY_TEMPLATE),
+        ("human", "위 지침에 따라 각 추가 질문 target의 충분성 여부를 판정해주세요."),
     ]
 )
