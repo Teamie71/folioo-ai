@@ -11,6 +11,7 @@ from httpx import ConnectError, ConnectTimeout, ReadTimeout, RemoteProtocolError
 from common.llm.client import get_analyst_llm
 from features.interview.agents.prompts.analyst import (
     AnalystResponse,
+    ExtendedAnalystResponse,
     analyst_prompt,
     extended_analyst_prompt,
     overall_completion_prompt,
@@ -28,6 +29,7 @@ from .utils import (
     _ensure_additional_question_target_statuses,
     _flatten_additional_question_targets,
     _format_file_contexts,
+    _format_last_asked_target,
     _format_retrieved_insights,
     _get_conversation_context,
     _has_askable_additional_question_target,
@@ -216,6 +218,7 @@ def _run_extended_mode(state: InterviewState) -> InterviewState:
     """연장 모드에서 전체 4단계 데이터를 분석하고 다음 라우팅을 결정"""
     global_config = get_global_config()
     all_stage_configs = get_all_stages()
+    targets = _flatten_additional_question_targets(global_config, all_stage_configs)
 
     conversation_context = _get_conversation_context(
         state, max_messages=global_config.context_window_size
@@ -228,6 +231,13 @@ def _run_extended_mode(state: InterviewState) -> InterviewState:
     retrieved_insights_str = _format_retrieved_insights(state["retrieved_insights"])
     file_contexts_str = _format_file_contexts(state["file_contexts"])
 
+    last_target_id = state["current_additional_question_target_id"]
+    last_asked_target_str = _format_last_asked_target(
+        last_target_id,
+        targets,
+        state["collected_data"],
+    )
+
     prompt_variables = {
         "experience_name": state["experience_name"],
         "conversation_context": conversation_context,
@@ -235,14 +245,20 @@ def _run_extended_mode(state: InterviewState) -> InterviewState:
         "existing_collected_data": existing_collected_str,
         "retrieved_insights": retrieved_insights_str,
         "file_contexts": file_contexts_str,
+        "last_asked_target": last_asked_target_str,
     }
+
+    should_end_from_intent = False
+    last_target_satisfied = False
 
     try:
         llm = get_analyst_llm(temperature=0.3)
-        structured_llm = llm.with_structured_output(AnalystResponse)
+        structured_llm = llm.with_structured_output(ExtendedAnalystResponse)
         chain = extended_analyst_prompt | structured_llm
 
-        response: AnalystResponse = _invoke_with_retry(chain, prompt_variables)
+        response: ExtendedAnalystResponse = _invoke_with_retry(chain, prompt_variables)
+        should_end_from_intent = response.should_end_extended_mode
+        last_target_satisfied = response.last_target_satisfied
 
         updated_collected_data = copy.deepcopy(state["collected_data"])
         for field_result in response.fields:
@@ -283,15 +299,29 @@ def _run_extended_mode(state: InterviewState) -> InterviewState:
         updated_collected_data = copy.deepcopy(state["collected_data"])
         llm_error = str(e)
 
-    targets = _flatten_additional_question_targets(global_config, all_stage_configs)
     statuses = _ensure_additional_question_target_statuses(state, targets)
+
+    # 직전 추가 질문 target 충족 여부 반영 (단조 증가: True일 때만 갱신)
+    if last_target_satisfied and last_target_id is not None:
+        if last_target_id in statuses:
+            statuses[last_target_id] = {
+                **statuses[last_target_id],
+                "is_satisfied": True,
+            }
+        else:
+            logger.warning(
+                "연장 모드 Analyst가 설정에 없는 target을 직전 질문으로 참조: %s",
+                last_target_id,
+            )
+
     state_with_statuses: InterviewState = {
         **state,
         "additional_question_target_statuses": statuses,
     }
 
     should_end_extended_mode = (
-        state["extension_turns_used"] >= state["extension_turns_max"]
+        should_end_from_intent
+        or state["extension_turns_used"] >= state["extension_turns_max"]
         or _all_additional_question_targets_satisfied(state_with_statuses, targets)
         or not _has_askable_additional_question_target(state_with_statuses, targets)
     )

@@ -7,7 +7,9 @@ from pydantic import ValidationError
 from features.interview.agents.prompts import (
     AnalystFieldResult,
     AnalystResponse,
+    ExtendedAnalystResponse,
     analyst_prompt,
+    extended_analyst_prompt,
     overall_completion_prompt,
 )
 
@@ -172,14 +174,63 @@ class TestAnalystPrompt:
         assert "`reasoning`" not in analyst_prompt.messages[0].prompt.template
 
 
+class TestExtendedAnalystResponse:
+    """ExtendedAnalystResponse 스키마 테스트"""
+
+    def test_default_flags_are_false(self):
+        """종료 의도·target 충족 플래그 기본값은 False다."""
+        response = ExtendedAnalystResponse(fields=[])
+        assert response.should_end_extended_mode is False
+        assert response.last_target_satisfied is False
+
+    def test_valid_response_with_flags(self):
+        """플래그를 명시적으로 설정할 수 있다."""
+        response = ExtendedAnalystResponse(
+            fields=[
+                AnalystFieldResult(
+                    field_name="project_background",
+                    value="보완된 배경",
+                    completeness=0.8,
+                )
+            ],
+            should_end_extended_mode=True,
+            last_target_satisfied=True,
+        )
+        assert len(response.fields) == 1
+        assert response.should_end_extended_mode is True
+        assert response.last_target_satisfied is True
+
+
 class TestExtendedAnalystPrompt:
     """연장 모드 Analyst 프롬프트 테스트"""
 
     def test_extended_prompt_does_not_request_reasoning(self):
         """연장 모드 프롬프트도 reasoning 필드를 요구하지 않는다."""
-        from features.interview.agents.prompts import extended_analyst_prompt
-
         assert "`reasoning`" not in extended_analyst_prompt.messages[0].prompt.template
+
+    def test_extended_prompt_has_last_asked_target_variable(self):
+        """연장 모드 프롬프트는 last_asked_target 입력 변수를 포함한다."""
+        assert "last_asked_target" in extended_analyst_prompt.input_variables
+
+    def test_extended_prompt_describes_end_intent_criteria(self):
+        """연장 모드 프롬프트는 종료 의도 판단 기준을 포함한다."""
+        template = extended_analyst_prompt.messages[0].prompt.template
+        assert "should_end_extended_mode" in template
+        # 추가 대화 전체 종료를 나타내는 true 예시
+        assert "이제 추가 질문 다 그만할게요" in template
+
+    def test_extended_prompt_includes_false_examples(self):
+        """경험 서술·단일 target 회피는 종료 의도가 아니라는 false 예시를 포함한다."""
+        template = extended_analyst_prompt.messages[0].prompt.template
+        # 경험 서술에 포함된 '그만' 류 표현
+        assert "그만 포기하지 않고" in template
+        # 단일 target 회피 표현
+        assert "패스" in template
+
+    def test_extended_prompt_describes_last_target_judgement(self):
+        """연장 모드 프롬프트는 last_target_satisfied 판정 지침을 포함한다."""
+        template = extended_analyst_prompt.messages[0].prompt.template
+        assert "last_target_satisfied" in template
 
 
 class TestOverallCompletionPrompt:

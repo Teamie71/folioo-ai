@@ -1,6 +1,7 @@
 from .analyst import (
     AnalystFieldResult,
     AnalystResponse,
+    ExtendedAnalystResponse,
     analyst_prompt,
     extended_analyst_prompt,
     overall_completion_prompt,
@@ -22,6 +23,7 @@ __all__ = [
     "AnalystResponse",
     "analyst_prompt",
     "contextual_fixed_question_prompt",
+    "ExtendedAnalystResponse",
     "extended_analyst_prompt",
     "extended_generated_question_prompt",
     "FILE_EXTRACTION_SYSTEM_PROMPT",

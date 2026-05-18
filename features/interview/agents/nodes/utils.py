@@ -116,10 +116,7 @@ def _increment_additional_question_target_asked_count(
     target_id: str,
 ) -> dict[str, AdditionalQuestionTargetStatus]:
     """질문 생성 직후 해당 target의 질문 횟수를 증가한다."""
-    updated_statuses = {
-        key: {**value}
-        for key, value in statuses.items()
-    }
+    updated_statuses = {key: {**value} for key, value in statuses.items()}
     status = updated_statuses.setdefault(
         target_id,
         {
@@ -174,6 +171,38 @@ def _format_additional_target_sufficiency_inputs(
         lines.append("")
 
     return "\n".join(lines).strip()
+
+
+def _format_last_asked_target(
+    last_target_id: str | None,
+    targets: list[AdditionalQuestionTargetWithPriority],
+    collected_data: dict[str, dict[str, CollectedField]],
+) -> str:
+    """직전 추가 질문이 다룬 target 정보를 prompt 문자열로 변환한다."""
+    if not last_target_id:
+        return "직전 추가 질문 없음"
+
+    target = next((item for item in targets if item["target"] == last_target_id), None)
+    if target is None:
+        return "직전 추가 질문 없음"
+
+    stage_key = f"stage_{target['stage']}"
+    collected_field = collected_data.get(stage_key, {}).get(target["field_name"])
+    if collected_field is None:
+        collected_text = "수집된 값 없음"
+        completeness = 0.0
+    else:
+        collected_text = str(collected_field.get("value"))
+        completeness = float(collected_field.get("completeness", 0.0))
+
+    return (
+        f"[target: {target['target']}]\n"
+        f"- 단계: {target['stage']}단계 {target['stage_name']}\n"
+        f"- 라벨: {target['label']}\n"
+        f"- 충분성 기준: {target['field_description']}\n"
+        f"- 현재 수집값 완성도: {completeness:.2f}\n"
+        f"- 현재 수집값: {collected_text}"
+    )
 
 
 def _get_conversation_context(
