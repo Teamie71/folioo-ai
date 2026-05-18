@@ -212,25 +212,20 @@ class TestExtendedAnalystPrompt:
         """연장 모드 프롬프트는 last_asked_target 입력 변수를 포함한다."""
         assert "last_asked_target" in extended_analyst_prompt.input_variables
 
-    def test_extended_prompt_describes_end_intent_criteria(self):
-        """연장 모드 프롬프트는 종료 의도 판단 기준을 포함한다."""
+    @pytest.mark.parametrize(
+        ("needle", "desc"),
+        [
+            ("should_end_extended_mode", "종료 의도 판단 기준"),
+            ("이제 추가 질문 다 그만할게요", "종료 의도 true 예시"),
+            ("그만 포기하지 않고", "종료 의도 false 예시(경험 서술)"),
+            ("패스", "종료 의도 false 예시(단일 target 회피)"),
+            ("last_target_satisfied", "직전 target 충족 판정 지침"),
+        ],
+    )
+    def test_extended_prompt_includes_required_instructions(self, needle, desc):
+        """연장 모드 프롬프트에 종료 의도·target 충족 판정 지침이 포함된다."""
         template = extended_analyst_prompt.messages[0].prompt.template
-        assert "should_end_extended_mode" in template
-        # 추가 대화 전체 종료를 나타내는 true 예시
-        assert "이제 추가 질문 다 그만할게요" in template
-
-    def test_extended_prompt_includes_false_examples(self):
-        """경험 서술·단일 target 회피는 종료 의도가 아니라는 false 예시를 포함한다."""
-        template = extended_analyst_prompt.messages[0].prompt.template
-        # 경험 서술에 포함된 '그만' 류 표현
-        assert "그만 포기하지 않고" in template
-        # 단일 target 회피 표현
-        assert "패스" in template
-
-    def test_extended_prompt_describes_last_target_judgement(self):
-        """연장 모드 프롬프트는 last_target_satisfied 판정 지침을 포함한다."""
-        template = extended_analyst_prompt.messages[0].prompt.template
-        assert "last_target_satisfied" in template
+        assert needle in template, f"{desc} 문구가 누락되었습니다."
 
 
 class TestOverallCompletionPrompt:
