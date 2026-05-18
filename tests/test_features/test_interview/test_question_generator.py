@@ -5,8 +5,9 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
 
 from features.interview.agents.nodes import question_generator
+from features.interview.agents.nodes.utils import _flatten_additional_question_targets
 from features.interview.agents.state import get_initial_interview_state
-from features.interview.config.loader import load_stage_config
+from features.interview.config.loader import get_all_stages, get_global_config, load_stage_config
 
 
 def _mock_llm_return(content: str):
@@ -18,6 +19,18 @@ def _mock_llm_raise():
         raise RuntimeError("LLM 호출 실패")
 
     return RunnableLambda(_raise)
+
+
+def _mark_pre_evaluation_done(state: dict) -> dict:
+    targets = _flatten_additional_question_targets(get_global_config(), get_all_stages())
+    return {
+        **state,
+        "additional_question_pre_evaluated": True,
+        "additional_question_target_statuses": {
+            target["target"]: {"asked_count": 0, "is_satisfied": False}
+            for target in targets
+        },
+    }
 
 
 @pytest.fixture
@@ -293,62 +306,198 @@ def test_fallback_question_when_called_after_fixed_exhaustion(first_turn_state):
     assert result["stage_progress"]["generated_q_used"] == 0
 
 
+def test_extended_mode_pre_evaluation_ends_when_all_targets_satisfied(
+    first_turn_state,
+    monkeypatch,
+):
+    """사전 판정에서 모든 target이 충분하면 질문 없이 안내 문구로 종료한다."""
+    targets = _flatten_additional_question_targets(get_global_config(), get_all_stages())
+    monkeypatch.setattr(
+        question_generator,
+        "_pre_evaluate_additional_question_targets",
+        lambda state, targets: ({target["target"]: True for target in targets}, None),
+    )
+
+    state = {
+        **first_turn_state,
+        "is_extended_mode": True,
+        "all_stages_complete": False,
+        "extension_turns_used": 0,
+        "extension_turns_max": 18,
+    }
+
+    result = question_generator.run(state)
+
+    assert result["is_extended_mode"] is False
+    assert result["all_stages_complete"] is True
+    assert result["extension_turns_used"] == 0
+    assert result["additional_question_pre_evaluated"] is True
+    assert result["next_node"] == "end"
+    assert "추가 질문 없이" in result["messages"][0].content
+    assert all(
+        result["additional_question_target_statuses"][target["target"]]["is_satisfied"]
+        for target in targets
+    )
+
+
+def test_extended_mode_pre_evaluation_selects_first_unsatisfied_target(
+    first_turn_state,
+    monkeypatch,
+):
+    """사전 판정 후 부족한 첫 target을 선택하고 asked_count를 증가한다."""
+    monkeypatch.setattr(
+        question_generator,
+        "_pre_evaluate_additional_question_targets",
+        lambda state, targets: ({targets[0]["target"]: True}, None),
+    )
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_return("두 번째 target 질문"),
+    )
+
+    state = {
+        **first_turn_state,
+        "is_extended_mode": True,
+        "all_stages_complete": False,
+        "extension_turns_used": 0,
+        "extension_turns_max": 18,
+    }
+
+    result = question_generator.run(state)
+
+    assert result["messages"][0].content == "두 번째 target 질문"
+    assert result["extension_turns_used"] == 1
+    assert result["current_additional_question_target_id"] == "stage_3_episode_2_strategy_rationale"
+    assert result["additional_question_target_statuses"]["stage_3_episode_1_strategy_rationale"][
+        "is_satisfied"
+    ] is True
+    assert result["additional_question_target_statuses"]["stage_3_episode_2_strategy_rationale"][
+        "asked_count"
+    ] == 1
+
+
+def test_extended_mode_uses_second_pass_after_first_pass_exhausted(
+    first_turn_state,
+    monkeypatch,
+):
+    """1차 후보가 없으면 asked_count 1인 target을 2차 패스로 선택한다."""
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_return("2차 패스 질문"),
+    )
+    state = _mark_pre_evaluation_done(
+        {
+            **first_turn_state,
+            "is_extended_mode": True,
+            "all_stages_complete": False,
+            "extension_turns_used": 17,
+            "extension_turns_max": 18,
+        }
+    )
+    state["additional_question_target_statuses"] = {
+        target_id: {"asked_count": 1, "is_satisfied": False}
+        for target_id in state["additional_question_target_statuses"]
+    }
+
+    result = question_generator.run(state)
+
+    assert result["messages"][0].content == "2차 패스 질문"
+    assert result["current_additional_question_target_id"] == "stage_3_episode_1_strategy_rationale"
+    assert result["additional_question_target_statuses"]["stage_3_episode_1_strategy_rationale"][
+        "asked_count"
+    ] == 2
+
+
+def test_extended_mode_ends_when_no_askable_target_remains(first_turn_state):
+    """모든 부족 target을 2회 질문했으면 추가 질문 없이 종료한다."""
+    state = _mark_pre_evaluation_done(
+        {
+            **first_turn_state,
+            "is_extended_mode": True,
+            "all_stages_complete": False,
+            "extension_turns_used": 10,
+            "extension_turns_max": 18,
+        }
+    )
+    state["additional_question_target_statuses"] = {
+        target_id: {"asked_count": 2, "is_satisfied": False}
+        for target_id in state["additional_question_target_statuses"]
+    }
+
+    result = question_generator.run(state)
+
+    assert result["is_extended_mode"] is False
+    assert result["all_stages_complete"] is True
+    assert result["extension_turns_used"] == 10
+    assert "추가 질문 없이" in result["messages"][0].content
+
+
 def test_extended_mode_generates_question_and_increments_turn(first_turn_state, monkeypatch):
-    """연장 모드 질문 생성 시 extension_turns_used를 증가시킨다."""
+    """추가 대화 질문 생성 시 selected target을 기록하고 턴 카운트를 증가시킨다."""
     monkeypatch.setattr(
         question_generator,
         "get_llm",
         lambda model=None, temperature=0.7: _mock_llm_return("연장 질문입니다."),
     )
 
-    state = {
-        **first_turn_state,
-        "messages": [
-            AIMessage(content="이전 질문"),
-            HumanMessage(content="이전 답변"),
-        ],
-        "is_extended_mode": True,
-        "all_stages_complete": False,
-        "extension_turns_used": 0,
-        "extension_turns_max": 3,
-    }
+    state = _mark_pre_evaluation_done(
+        {
+            **first_turn_state,
+            "messages": [
+                AIMessage(content="이전 질문"),
+                HumanMessage(content="이전 답변"),
+            ],
+            "is_extended_mode": True,
+            "all_stages_complete": False,
+            "extension_turns_used": 0,
+            "extension_turns_max": 18,
+        }
+    )
 
     result = question_generator.run(state)
 
     assert result["next_node"] == "end"
     assert result["messages"][0].content == "연장 질문입니다."
     assert result["extension_turns_used"] == 1
+    assert result["current_additional_question_target_id"] == "stage_3_episode_1_strategy_rationale"
+    assert result["additional_question_target_statuses"]["stage_3_episode_1_strategy_rationale"][
+        "asked_count"
+    ] == 1
 
 
 def test_extended_mode_fallback_increments_turn(first_turn_state, monkeypatch):
-    """연장 모드에서 LLM 실패 시 fallback 질문을 만들고 턴 카운트를 증가시킨다."""
+    """추가 대화에서 LLM 실패 시 selected target 기준 fallback을 만들고 턴 카운트를 증가시킨다."""
     monkeypatch.setattr(
         question_generator,
         "get_llm",
         lambda model=None, temperature=0.7: _mock_llm_raise(),
     )
 
-    state = {
-        **first_turn_state,
-        "messages": [
-            AIMessage(content="이전 질문"),
-            HumanMessage(content="이전 답변"),
-        ],
-        "is_extended_mode": True,
-        "all_stages_complete": False,
-        "extension_turns_used": 0,
-        "extension_turns_max": 3,
-    }
+    state = _mark_pre_evaluation_done(
+        {
+            **first_turn_state,
+            "messages": [
+                AIMessage(content="이전 질문"),
+                HumanMessage(content="이전 답변"),
+            ],
+            "is_extended_mode": True,
+            "all_stages_complete": False,
+            "extension_turns_used": 0,
+            "extension_turns_max": 18,
+        }
+    )
 
     result = question_generator.run(state)
 
     assert result["next_node"] == "end"
-    assert "이 활동을 시작하게 된 이유" in result["messages"][0].content
+    assert "Episode 1 해결 전략과 선택 근거" in result["messages"][0].content
     assert result["extension_turns_used"] == 1
 
 
 def test_extended_mode_includes_retrieved_insights_prompt_variable(first_turn_state, monkeypatch):
-    """연장 모드 질문 생성 시 retrieved_insights를 프롬프트 변수로 전달한다."""
+    """추가 대화 질문 생성 시 retrieved_insights와 selected_target을 프롬프트 변수로 전달한다."""
     captured: dict[str, object] = {}
 
     def _capture_invoke(chain, prompt_variables, max_retries_per_question):
@@ -362,29 +511,31 @@ def test_extended_mode_includes_retrieved_insights_prompt_variable(first_turn_st
         lambda model=None, temperature=0.7: _mock_llm_return("사용되지 않는 질문"),
     )
 
-    state = {
-        **first_turn_state,
-        "messages": [
-            AIMessage(content="이전 질문"),
-            HumanMessage(content="이전 답변"),
-        ],
-        "file_contexts": ["[파일: report.pdf]\n성과 지표가 포함된 문서"],
-        "retrieved_insights": [
-            {
-                "id": "insight-1",
-                "title": "학습 인사이트",
-                "activity_name": "프로젝트 C",
-                "category": "학습",
-                "content": "새로운 기술을 빠르게 익힌 경험",
-                "similarity_score": 0.73,
-                "source": "search",
-            }
-        ],
-        "is_extended_mode": True,
-        "all_stages_complete": False,
-        "extension_turns_used": 0,
-        "extension_turns_max": 3,
-    }
+    state = _mark_pre_evaluation_done(
+        {
+            **first_turn_state,
+            "messages": [
+                AIMessage(content="이전 질문"),
+                HumanMessage(content="이전 답변"),
+            ],
+            "file_contexts": ["[파일: report.pdf]\n성과 지표가 포함된 문서"],
+            "retrieved_insights": [
+                {
+                    "id": "insight-1",
+                    "title": "학습 인사이트",
+                    "activity_name": "프로젝트 C",
+                    "category": "학습",
+                    "content": "새로운 기술을 빠르게 익힌 경험",
+                    "similarity_score": 0.73,
+                    "source": "search",
+                }
+            ],
+            "is_extended_mode": True,
+            "all_stages_complete": False,
+            "extension_turns_used": 0,
+            "extension_turns_max": 18,
+        }
+    )
 
     result = question_generator.run(state)
 
@@ -397,3 +548,5 @@ def test_extended_mode_includes_retrieved_insights_prompt_variable(first_turn_st
         "  - 내용: 새로운 기술을 빠르게 익힌 경험"
     )
     assert captured["file_contexts"] == "[파일: report.pdf]\n성과 지표가 포함된 문서"
+    assert "Episode 1 해결 전략과 선택 근거" in captured["selected_target"]
+    assert "problem_episodes" not in captured["selected_target"]

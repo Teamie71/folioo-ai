@@ -98,8 +98,58 @@ def test_get_global_config():
     assert global_config.max_retries_per_question >= 0
     assert isinstance(global_config.enable_dynamic_followup, bool)
     assert global_config.context_window_size >= 1
-    assert global_config.extension_turns_per_session == 3
-    assert global_config.max_extensions == 2
+    assert global_config.extension_turns_per_session == 18
+    assert global_config.max_extensions == 1
+
+
+def test_additional_question_priorities_load_in_order():
+    """추가 질문 target 우선순위를 설정 순서대로 로드한다."""
+    global_config = get_global_config()
+    priority_groups = global_config.additional_question_priorities
+    targets = [target for group in priority_groups for target in group.targets]
+
+    assert [group.priority for group in priority_groups] == [1, 2, 3, 4]
+    assert sum(len(group.targets) for group in priority_groups) == 18
+    assert targets[0].target == "stage_3_episode_1_strategy_rationale"
+    assert targets[-1].target == "stage_4_final_deliverable"
+    assert all(target.label for target in targets)
+    assert all(target.question_hint for target in targets)
+    assert all(target.field_description for target in targets)
+
+
+def test_additional_question_target_text_is_trimmed(monkeypatch: pytest.MonkeyPatch):
+    """추가 질문 target 문자열은 앞뒤 공백을 제거해 로드한다."""
+    from features.interview.config import loader
+
+    loader._load_stages_yaml.cache_clear()
+    data = copy.deepcopy(_load_raw_stages_yaml())
+    target = data["global_config"]["additional_question_priorities"][0]["targets"][0]
+    target["target"] = "  stage_3_episode_1_strategy_rationale  "
+    target["label"] = "  Episode 1 해결 전략과 선택 근거  "
+    monkeypatch.setattr(loader.yaml, "safe_load", lambda _: data)
+
+    config = loader._load_stages_yaml()
+    loaded_target = config.global_config.additional_question_priorities[0].targets[0]
+
+    assert loaded_target.target == "stage_3_episode_1_strategy_rationale"
+    assert loaded_target.label == "Episode 1 해결 전략과 선택 근거"
+
+    loader._load_stages_yaml.cache_clear()
+
+
+def test_missing_additional_question_priorities_raises_error(monkeypatch: pytest.MonkeyPatch):
+    """추가 질문 target 우선순위 설정은 필수다."""
+    from features.interview.config import loader
+
+    loader._load_stages_yaml.cache_clear()
+    data = copy.deepcopy(_load_raw_stages_yaml())
+    data["global_config"].pop("additional_question_priorities")
+    monkeypatch.setattr(loader.yaml, "safe_load", lambda _: data)
+
+    with pytest.raises(ValueError, match="additional_question_priorities"):
+        loader._load_stages_yaml()
+
+    loader._load_stages_yaml.cache_clear()
 
 
 def test_invalid_yaml_type_raises_korean_error(monkeypatch: pytest.MonkeyPatch):
@@ -151,6 +201,66 @@ def test_invalid_extension_global_values_raise_error(
     loader._load_stages_yaml.cache_clear()
     data = copy.deepcopy(_load_raw_stages_yaml())
     data["global_config"][field_name] = invalid_value
+    monkeypatch.setattr(loader.yaml, "safe_load", lambda _: data)
+
+    with pytest.raises(ValueError, match=error_message):
+        loader._load_stages_yaml()
+
+    loader._load_stages_yaml.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("mutate", "error_message"),
+    [
+        (
+            lambda data: data["global_config"]["additional_question_priorities"][0].__setitem__(
+                "priority", 2
+            ),
+            "additional_question_priorities.priority는 중복될 수 없습니다",
+        ),
+        (
+            lambda data: data["global_config"]["additional_question_priorities"][0][
+                "targets"
+            ][0].__setitem__("target", "stage_3_episode_2_strategy_rationale"),
+            "additional_question_priorities.target은 중복될 수 없습니다",
+        ),
+        (
+            lambda data: data["global_config"]["additional_question_priorities"][0][
+                "targets"
+            ][0].__setitem__("stage", 9),
+            "additional_question_priorities.stage가 존재하지 않습니다",
+        ),
+        (
+            lambda data: data["global_config"]["additional_question_priorities"][0][
+                "targets"
+            ][0].__setitem__("field_name", "unknown_field"),
+            "additional_question_priorities.field_name이 해당 stage에 존재하지 않습니다",
+        ),
+        (
+            lambda data: data["global_config"]["additional_question_priorities"][0].__setitem__(
+                "targets", []
+            ),
+            "additional_question_priorities.targets는 1개 이상이어야 합니다",
+        ),
+        (
+            lambda data: data["global_config"]["additional_question_priorities"][0][
+                "targets"
+            ][0].__setitem__("label", ""),
+            "추가 질문 target 문자열 필드는 비어 있을 수 없습니다",
+        ),
+    ],
+)
+def test_invalid_additional_question_priorities_raise_error(
+    monkeypatch: pytest.MonkeyPatch,
+    mutate,
+    error_message: str,
+):
+    """잘못된 추가 질문 target 설정은 명확한 예외를 반환한다."""
+    from features.interview.config import loader
+
+    loader._load_stages_yaml.cache_clear()
+    data = copy.deepcopy(_load_raw_stages_yaml())
+    mutate(data)
     monkeypatch.setattr(loader.yaml, "safe_load", lambda _: data)
 
     with pytest.raises(ValueError, match=error_message):

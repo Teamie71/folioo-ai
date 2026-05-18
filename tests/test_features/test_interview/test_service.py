@@ -379,7 +379,7 @@ async def test_extend_session_success(monkeypatch):
     dummy_graph.invoke_result = {
         "messages": [AIMessage(content="연장 첫 질문")],
         "extension_count": 1,
-        "extension_turns_max": 3,
+        "extension_turns_max": 18,
     }
     monkeypatch.setattr(
         interview_service,
@@ -388,8 +388,8 @@ async def test_extend_session_success(monkeypatch):
             "Config",
             (),
             {
-                "max_extensions": 2,
-                "extension_turns_per_session": 3,
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
             },
         )(),
     )
@@ -399,14 +399,17 @@ async def test_extend_session_success(monkeypatch):
 
     assert result["ai_response"] == "연장 첫 질문"
     assert result["extension_count"] == 1
-    assert result["extension_turns_max"] == 3
+    assert result["extension_turns_max"] == 18
 
     invocation = dummy_graph.invocations[0]
     assert invocation["state"]["is_extended_mode"] is True
     assert invocation["state"]["all_stages_complete"] is False
     assert invocation["state"]["extension_count"] == 1
     assert invocation["state"]["extension_turns_used"] == 0
-    assert invocation["state"]["extension_turns_max"] == 3
+    assert invocation["state"]["extension_turns_max"] == 18
+    assert invocation["state"]["additional_question_target_statuses"] == {}
+    assert invocation["state"]["additional_question_pre_evaluated"] is False
+    assert invocation["state"]["current_additional_question_target_id"] is None
     assert invocation["state"]["current_turn_files"] == []
     assert invocation["state"]["file_contexts"] == []
     assert invocation["state"]["mentioned_insight"] is None
@@ -430,8 +433,8 @@ async def test_extend_session_raises_when_not_completed(monkeypatch):
             "Config",
             (),
             {
-                "max_extensions": 2,
-                "extension_turns_per_session": 3,
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
             },
         )(),
     )
@@ -449,7 +452,7 @@ async def test_extend_session_raises_when_max_extensions_reached(monkeypatch):
         values={
             "session_id": "session_1",
             "all_stages_complete": True,
-            "extension_count": 2,
+            "extension_count": 1,
         }
     )
     monkeypatch.setattr(
@@ -459,8 +462,8 @@ async def test_extend_session_raises_when_max_extensions_reached(monkeypatch):
             "Config",
             (),
             {
-                "max_extensions": 2,
-                "extension_turns_per_session": 3,
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
             },
         )(),
     )
