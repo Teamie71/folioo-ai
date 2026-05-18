@@ -25,5 +25,4 @@ opencode.json
 *.sqlite-shm
 *.sqlite-wal
 
-docs/
 .omx/
