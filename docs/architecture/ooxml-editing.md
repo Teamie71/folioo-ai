@@ -45,20 +45,20 @@ OOXML 직접 편집 방식:
 | 항목 분리 | 한 `<a:p>`에 몰지 말고 문단별 분리 |
 | 공백 보존 | `xml:space="preserve"` |
 | 스마트 따옴표 | XML 엔티티 참조로 처리 |
-| 항목 수 불일치 | 텍스트만 비우지 말고 도형·이미지 등 슬롯 전체 제거 |
+| 항목 수 불일치 | 텍스트만 비우지 말고 도형·이미지 등 Slot 전체 제거 |
 | 차트 | `<p:graphicFrame>` 의 차트 파트(`chartN.xml`) 캐시(`numCache`/`strCache`/`ptCount`/`c:f`)만 갱신 — 타입 고정·개수 가변, 임베디드 `.xlsx` 미동기 (§4.4.1, ADR-0003) |
 
 ### 4.4 슬라이드 XML 편집 구현
 
 > 식별자는 **`cNvPr/@id`** (PowerPoint 가 자동 부여하는 정수 ID) 를 사용한다.
-> 디자이너가 부여하는 `cNvPr/@name` 에는 의존하지 않는다 — `template-system.md` §3.7 자동 placeholder 인식 참조.
+> 디자이너가 부여하는 `cNvPr/@name` 에는 의존하지 않는다 — `template-system.md` §3.7 자동 Slot 인식 참조.
 > 슬라이드 편집은 두 단계로 나뉜다:
 >
-> 1. **`extract_slots()`** — 슬라이드 XML 을 스캔해 LLM 에 줄 슬롯 디스크립터 생성
-> 2. **`apply_fills()`** — LLM 응답(shape_id → 콘텐츠) 을 받아 XML 에 적용
+> 1. **`extract_slots()`** — 슬라이드 XML 을 스캔해 LLM 에 줄 Slot 디스크립터 생성
+> 2. **`apply_fills()`** — LLM 응답(shape_id → Fill) 을 받아 XML 에 적용
 >
 > 텍스트 도형(`<p:sp>`) 외에 **차트(`<p:graphicFrame>`)** 도 두 함수의 스캔 대상이다.
-> 차트 슬롯 처리 규칙은 §4.4.1 참조 (ADR-0003).
+> 차트 Slot 처리 규칙은 §4.4.1 참조 (ADR-0003).
 
 ```python
 from defusedxml.minidom import parse
@@ -68,20 +68,20 @@ class SlideEditor:
     """
     DrawingML 규칙을 준수하는 슬라이드 편집기.
 
-    placeholder 사전 명명 불필요 — 도형의 cNvPr/@id 와
-    위치·크기·현재 텍스트·폰트 크기로 LLM 이 동적으로 슬롯 역할을 추론한다.
+    사전 Slot 명명 불필요 — 도형의 cNvPr/@id 와
+    위치·크기·현재 텍스트·폰트 크기로 LLM 이 동적으로 Slot 역할을 추론한다.
     """
 
     PML_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
     DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
     # ─────────────────────────────────────────────────────────────
-    # 1) 슬롯 자동 추출 (LLM 입력용)
+    # 1) Slot 자동 추출 (LLM 입력용)
     # ─────────────────────────────────────────────────────────────
     def extract_slots(self, slide_xml_path: str) -> list[dict]:
         """
-        슬라이드 XML 에서 텍스트가 들어가는 도형(<p:sp>)을 모두 스캔하여
-        LLM 에 줄 슬롯 디스크립터 목록을 만든다.
+        슬라이드 XML 에서 텍스트 도형(<p:sp>)과 차트(<p:graphicFrame>)를 스캔하여
+        LLM 에 줄 Slot 디스크립터 목록을 만든다.
 
         Returns:
             [
@@ -106,6 +106,13 @@ class SlideEditor:
 
         for sp in sp_tree.getElementsByTagNameNS(self.PML_NS, "sp"):
             slot = self._describe_shape(sp)
+            if slot is not None:
+                slots.append(slot)
+
+        for graphic_frame in sp_tree.getElementsByTagNameNS(
+            self.PML_NS, "graphicFrame"
+        ):
+            slot = self._describe_graphic_frame(graphic_frame, slide_xml_path)
             if slot is not None:
                 slots.append(slot)
 
@@ -145,27 +152,42 @@ class SlideEditor:
             elif action == "text":
                 self._replace_text(sp, fill)
 
+        for graphic_frame in list(
+            sp_tree.getElementsByTagNameNS(self.PML_NS, "graphicFrame")
+        ):
+            shape_id = self._get_shape_id(graphic_frame)
+            if shape_id is None or shape_id not in fills:
+                continue
+
+            fill = fills[shape_id]
+            if fill.get("action") == "chart":
+                self._replace_chart_cache(slide_xml_path, graphic_frame, fill)
+
         with open(slide_xml_path, "w", encoding="utf-8") as f:
             doc.writexml(f, encoding="utf-8")
 
     # ─────────────────────────────────────────────────────────────
     # 도형 식별
     # ─────────────────────────────────────────────────────────────
-    def _get_shape_id(self, sp_element) -> str | None:
+    def _get_shape_id(self, element) -> str | None:
         """cNvPr/@id 추출 (네임스페이스 안전)."""
-        nvSpPr = sp_element.getElementsByTagNameNS(self.PML_NS, "nvSpPr")
-        if not nvSpPr:
+        nv_props = []
+        for tag_name in ("nvSpPr", "nvGraphicFramePr", "nvPicPr"):
+            nv_props = element.getElementsByTagNameNS(self.PML_NS, tag_name)
+            if nv_props:
+                break
+        if not nv_props:
             return None
-        cNvPr = nvSpPr[0].getElementsByTagNameNS(self.PML_NS, "cNvPr")
+        cNvPr = nv_props[0].getElementsByTagNameNS(self.PML_NS, "cNvPr")
         if not cNvPr:
-            cNvPr = nvSpPr[0].getElementsByTagNameNS(self.DRAWINGML_NS, "cNvPr")
+            cNvPr = nv_props[0].getElementsByTagNameNS(self.DRAWINGML_NS, "cNvPr")
         if cNvPr:
             value = cNvPr[0].getAttribute("id")
             return value or None
         return None
 
     def _describe_shape(self, sp_element) -> dict | None:
-        """슬롯 디스크립터 생성 (LLM 입력용)."""
+        """Slot 디스크립터 생성 (LLM 입력용)."""
         # 구현 세부는 생략 — 핵심 아이디어:
         # 1) cNvPr/@id (필수) / cNvPr/@name (참고)
         # 2) p:spPr/a:xfrm/a:off, a:ext 로 좌표·크기 (EMU)
@@ -175,6 +197,22 @@ class SlideEditor:
         # 6) 이미지(blipFill) 가 있으면 kind="image"
         ...
         return None  # 실제 구현 시 채움
+
+    def _describe_graphic_frame(self, graphic_frame, slide_xml_path: str) -> dict | None:
+        """차트 Slot 디스크립터 생성 (상세 규칙은 §4.4.1)."""
+        # 구현 세부는 생략 — 핵심 아이디어:
+        # 1) graphicFrame 의 cNvPr/@id 로 shape_id 추출
+        # 2) graphicFrame 좌표·크기와 chart rel id 추출
+        # 3) slide rels 를 통해 /ppt/charts/chartN.xml 로 이동
+        # 4) chart_type, categories, series 개요를 읽어 kind="chart" 로 반환
+        ...
+        return None  # 실제 구현 시 채움
+
+    def _replace_chart_cache(self, slide_xml_path: str, graphic_frame, fill) -> None:
+        """차트 캐시 갱신 (상세 규칙은 §4.4.1)."""
+        # chartN.xml 의 strCache/numCache/ptCount/c:f 를 일관되게 갱신한다.
+        # 임베디드 .xlsx 는 MVP 에서 동기화하지 않는다.
+        ...
 
     def _replace_text(self, sp_element, fill):
         """
@@ -245,7 +283,7 @@ class SlideEditor:
         return None
 ```
 
-### 4.4.1 차트 슬롯 처리 (네이티브 캐시 편집 — ADR-0003)
+### 4.4.1 차트 Slot 처리 (네이티브 캐시 편집 — ADR-0003)
 
 차트는 `<p:sp>` 가 아니라 `<p:graphicFrame>` 이고, 내부는 별도 차트 파트
 (`/ppt/charts/chartN.xml`) → 임베디드 엑셀(`.xlsx`) 로 이어진다. 따라서
@@ -275,5 +313,5 @@ class SlideEditor:
 | 시리즈/카테고리 개수 | 콘텐츠에 맞춰 가변 — `chartN.xml` 의 `c:ser`/`c:pt` 추가·삭제 |
 | 갱신 대상 | `<c:numCache>`/`<c:strCache>` 값 + `<c:ptCount>` + 수식 범위 `<c:f>` 문자열 (세 곳 일관) |
 | 임베디드 `.xlsx` | **MVP 미동기.** 렌더·표시는 캐시가 결정하므로 정확하나, PowerPoint "데이터 편집" 시 원본 샘플 데이터가 보인다 (한계 — 승급은 §17) |
-| 데이터 초과 | 카테고리가 템플릿 슬롯보다 많으면 LLM 이 요약/절삭해 맞춘다 (§4.3 항목 수 불일치와 동일 철학) |
+| 데이터 초과 | 카테고리가 차트 Slot 수보다 많으면 LLM 이 요약/절삭해 맞춘다 (§4.3 항목 수 불일치와 동일 철학) |
 | 텍스트 전용 필드 | `font_size_override`·`is_title` 는 차트 fill 에 적용되지 않는다 |

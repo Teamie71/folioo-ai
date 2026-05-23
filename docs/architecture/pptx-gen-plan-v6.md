@@ -195,16 +195,16 @@ pack 자체는 1회로 묶이지만, 시각 QA·프리뷰 업로드는 슬라이
 
 > **별도 문서로 분리됨 → [`template-system.md`](./template-system.md)**
 >
-> 템플릿 파일 구조, 슬라이드 카테고리 표준 Enum, `meta.json` 설계, 템플릿 등록
-> 파이프라인, 디자이너 워크플로우, 자동 placeholder 인식 원리를 다룬다.
+> 템플릿 파일 구조, Source Slide 카테고리 표준 Enum, `meta.json` 설계, 템플릿 등록
+> 파이프라인, 디자이너 워크플로우, 자동 Slot 인식 원리를 다룬다.
 > 절 번호 §3.x 는 분리 문서 안에서 그대로 유지되므로, 본 문서의 §3.x 참조는
 > `template-system.md` 의 같은 절을 가리킨다.
 
 **핵심 요약:**
-- 템플릿 1개 = 색상 조합 1종. `template.pptx`(30~40장 레이아웃 풀) + `meta.json` + `thumbnail.jpg`
-- 슬라이드 카테고리는 전 템플릿 공유 **표준 Enum** (`cover` / `overview` / `process` / `chart` / `closing` 등 10종)
-- `meta.json` 은 슬라이드 선택에 필요한 최소 정보만 — 슬라이드별 5개 필드(`slide_index` / `id` / `category` / `description` / `best_for`). placeholder 사전 명명 없음
-- placeholder 는 런타임에 시각화 워커가 슬라이드 XML 의 `cNvPr/@id` + 좌표·텍스트·폰트로 LLM 에 넘겨 동적 식별 (§5.2 Step 3)
+- Template 1개 = 색상 조합 1종. `template.pptx`(30~40장 Source Slide 풀) + `meta.json` + `thumbnail.jpg`
+- Source Slide 카테고리는 전 Template 공유 **표준 Enum** (`cover` / `overview` / `process` / `chart` / `closing` 등 10종)
+- `meta.json` 은 Source Slide 선택에 필요한 최소 정보만 — Source Slide 별 5개 필드(`slide_index` / `id` / `category` / `description` / `best_for`). 사전 Slot 명세 없음
+- Slot 은 런타임에 시각화 워커가 슬라이드 XML 의 `cNvPr/@id` + 좌표·텍스트·폰트로 LLM 에 넘겨 동적 식별 (§5.2 Step 3)
 - 템플릿 등록은 자동 추출 → LLM 초안 → 운영자 검토 → 검증 → GCS 업로드의 반자동 파이프라인
 
 ---
@@ -222,7 +222,7 @@ pack 자체는 1회로 묶이지만, 시각 QA·프리뷰 업로드는 슬라이
 - Anthropic PPTX 스킬 도구 체인 (`unpack.py` / `clean.py` / `pack.py` / `validate.py` / `soffice.py` / `markitdown` 등)
 - python-pptx 가 아닌 **OOXML 직접 편집** — 디자이너 서식을 95~99% 보존 (코드 재생성은 70~80% 유사도)
 - XML 파서는 `defusedxml.minidom`, 텍스트는 명시적 노드 조작 (일괄 치환 금지), 도형 식별자는 `cNvPr/@id`
-- `SlideEditor.extract_slots()` → 슬롯 디스크립터 추출(LLM 입력), `apply_fills()` → LLM 응답을 XML 에 적용 (원본 서식 보존)
+- `SlideEditor.extract_slots()` → Slot 디스크립터 추출(LLM 입력), `apply_fills()` → Fill 을 XML 에 적용 (원본 서식 보존)
 
 ---
 
@@ -286,14 +286,14 @@ Phase 3: 확정 & 내보내기 (한 번)
 │  Input:                                               │
 │  - 포트폴리오 텍스트 (텍스트 탭에서 생성된 내용)            │
 │  - 템플릿 meta.json (각 슬라이드의 id, category,          │
-│    description, best_for) ※ placeholder 스펙은 없음     │
+│    description, best_for) ※ 사전 Slot 스펙은 없음       │
 │  - 템플릿 썸네일 그리드 이미지 (시각적 판단용)              │
 │                                                       │
 │  하이브리드 매칭:                                        │
 │  ① Rule-based 필터링 (빠르고 확실한 것)                   │
-│     - 섹션 타입 → 해당 카테고리 템플릿만 필터링             │
-│     - 수치 데이터 없음 → 차트 템플릿 제외                   │
-│     - 이미지 없음 → 이미지 중심 템플릿 제외                 │
+│     - 섹션 타입 → 해당 Source Slide 카테고리만 필터링      │
+│     - 수치 데이터 없음 → chart Source Slide 제외           │
+│     - 이미지 없음 → visual Source Slide 제외               │
 │     - 직전 슬라이드와 같은 레이아웃 타입 제외               │
 │     → 후보 2~3개로 축소                                  │
 │                                                       │
@@ -303,7 +303,7 @@ Phase 3: 확정 & 내보내기 (한 번)
 │                                                       │
 │  Output: 슬라이드 선택 목록 + content_brief             │
 │          (어떤 슬라이드에 어떤 "내용 요지"를 담을지 까지만,   │
-│           구체적 placeholder 매핑은 Step 3 으로 미룸)      │
+│           구체적 Fill 결정은 Step 3 으로 미룸)            │
 └──────────┬───────────────────────────────────────────┘
            │
            ▼
@@ -315,13 +315,13 @@ Phase 3: 확정 & 내보내기 (한 번)
 System Prompt:
 "너는 포트폴리오 PPT 구성 전문가야.
  사용자의 포트폴리오 텍스트를 분석하고,
- 주어진 슬라이드 풀에서 최적의 조합을 선택해."
+ 주어진 Source Slide 풀에서 최적의 조합을 선택해."
 
 User Prompt:
 "[포트폴리오 텍스트]
  {portfolio_text}
 
- [사용 가능한 슬라이드 풀]
+ [사용 가능한 Source Slide 풀]
  {메타데이터에서 id, category, description, best_for만 발췌}
 
  다음 규칙을 따라서 슬라이드를 선택해:
@@ -357,9 +357,9 @@ Expected Output:
 }
 ```
 
-> Step 1 의 출력은 더 이상 **placeholder 키를 직접 채우지 않는다.**
-> 대신 슬라이드별 `content_brief` 자연어 요지만 남기고, **실제 도형 매핑은 Step 3** 에서
-> 슬라이드 XML 의 슬롯 디스크립터를 본 LLM 이 결정한다.
+> Step 1 의 출력은 더 이상 **Slot 별 Fill 을 직접 채우지 않는다.**
+> 대신 슬라이드별 `content_brief` 자연어 요지만 남기고, **실제 Fill 결정은 Step 3** 에서
+> 슬라이드 XML 의 Slot 디스크립터를 본 LLM 이 결정한다.
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -369,14 +369,15 @@ Expected Output:
 │  Headers: X-API-Key                                    │
 │  Body: {                                              │
 │    totalSlides: 8,                                    │
-│    slidePlan: [...],           // §10.2 slide_plan    │
+│    slidePlan: {...},  slides: [...]  // §11.3         │
 │    templateId: "blue",                                │
 │    idempotencyKey, schemaVersion                      │
 │  }                                                    │
 │                                                       │
 │  [메인] 처리:                                            │
 │  - visualization_slides N개 일괄 INSERT                │
-│      (status=pending, source_slide_id, slide_order)   │
+│      (status=pending, source_slide_id,                │
+│       slide_filename, slide_order)                     │
 │  - visualization_jobs.total_slides 갱신                │
 │  - EventEmitter emit → SSE: slide_plan_ready          │
 │    (프론트가 스켈레톤 N장 즉시 렌더링 가능)                  │
@@ -410,18 +411,18 @@ Expected Output:
 │                                                       │
 │  ┌─ Thread per slide ─────────────────────────────┐    │
 │  │  ① SlideEditor.extract_slots(slide1.xml)        │    │
-│  │     → 슬롯 디스크립터 목록 (§4.4) 자동 생성        │    │
+│  │     → Slot 디스크립터 목록 (§4.4) 자동 생성        │    │
 │  │       [{shape_id, x_emu, y_emu, w_emu, h_emu,    │    │
 │  │         current_text, is_title_placeholder,      │    │
 │  │         font_size_pt, kind}, ...]                │    │
 │  │                                                  │    │
-│  │  ② LLM Call #2: 슬롯 → 콘텐츠 매핑 결정             │    │
+│  │  ② LLM Call #2: Slot → Fill 결정                   │    │
 │  │     Input:                                        │    │
-│  │     - 위 슬롯 디스크립터 목록                        │    │
+│  │     - 위 Slot 디스크립터 목록                        │    │
 │  │     - content_brief (Step 1 의 해당 슬라이드 요지)   │    │
 │  │     - (선택) slide1.xml markitdown 결과             │    │
-│  │     ※ placeholder 사전 스펙은 입력하지 않는다 —      │    │
-│  │       LLM 이 슬롯의 위치·크기·현재 텍스트만 보고      │    │
+│  │     ※ 사전 Slot 스펙은 입력하지 않는다 —             │    │
+│  │       LLM 이 Slot 의 위치·크기·현재 텍스트만 보고      │    │
 │  │       역할(title/body/card_body/...) 을 스스로 판단 │    │
 │  │                                                  │    │
 │  │     Output:                                      │    │
@@ -497,7 +498,7 @@ Expected Output:
 │                                                       │
 │  ② pdftoppm → 페이지별 JPG (1회 호출, N장 출력)            │
 │     pdftoppm -jpeg -r 150 output.pdf slide             │
-│     → slide-1.jpg, slide-2.jpg, ... 동시에 떨어짐         │
+│     → slide-01.jpg, slide-02.jpg, ... 동시에 떨어짐       │
 │                                                       │
 │  ※ 이미지는 아직 사용자에게 노출 X (시각 QA 후 Step 6)        │
 └──────────┬───────────────────────────────────────────┘
@@ -513,12 +514,12 @@ Expected Output:
 │  │     체크리스트:                                  │    │
 │  │     · 텍스트 오버플로우/잘림 없는지                │    │
 │  │     · 요소 겹침 없는지                            │    │
-│  │     · 빈 placeholder 남아있지 않은지              │    │
+│  │     · 빈 Slot 이 남아있지 않은지                  │    │
 │  │     · 텍스트가 읽기 어려울 정도로 작지 않은지        │    │
 │  │                                                │    │
 │  │  ② 통과한 경우:                                  │    │
 │  │     [워커] GCS 업로드: jobs/{job_id}/previews/    │    │
-│  │            slide-{N}.jpg (IAM 직접 PUT)           │    │
+│  │            slide-{slide_order:02d}.jpg (IAM PUT)  │    │
 │  │     [워커 → 메인] POST .../slides/{slide_id}/events│  │
 │  │            Body: { event: "slide_preview_ready", │    │
 │  │                    gcsPreviewKey: "...",          │    │
@@ -646,7 +647,7 @@ Expected Output:
 │  ⑨ GCS 업로드 (IAM 직접):                               │
 │     - updated.pptx → current.pptx (덮어쓰기)           │
 │     - output.pdf   → current.pdf (덮어쓰기)             │
-│     - 새 slide-N.jpg → previews/ (덮어쓰기)            │
+│     - 새 slide-{slide_order:02d}.jpg → previews/      │
 │                                                      │
 │  ⑩ [워커 → 메인] 결과 콜백                               │
 │     POST /api/internal/visualizations/{job_id}        │
@@ -654,7 +655,7 @@ Expected Output:
 │     Body: {                                          │
 │       event: "slide_regenerated",                    │
 │       currentFills: {...},                           │
-│       gcsPreviewKey: "jobs/.../slide-N.jpg",           │
+│       gcsPreviewKey: "jobs/.../previews/slide-03.jpg", │
 │     }                                                │
 │     [메인] DB 갱신:                                     │
 │     - visualization_slides: status='completed',       │
@@ -671,8 +672,10 @@ Expected Output:
 
 **실패 시 동작:**
 - 워커가 LLM/QA/렌더링 실패 시 `POST .../events` 로 `slide_preview_error` 발신
-- 메인은 슬라이드 status 를 `completed` 로 롤백 + `regeneration_count` 도 -1 보상
-  (CAS 트랜잭션 안에서 `decrement_job_regeneration_count` SQL 호출)
+- 일반 재생성(`isRetry=false`) 실패: 메인은 슬라이드 status 를 `completed` 로 롤백 +
+  `regeneration_count` 도 -1 보상 (CAS 트랜잭션 안에서 `decrement_job_regeneration_count` SQL 호출)
+- retry(`isRetry=true`) 실패: 슬라이드는 `error` 로 되돌리고, 재생성 한도는 애초에 차감하지 않았으므로
+  카운터 보상도 하지 않는다
 - 메인 → SSE: `slide_preview_error` (사용자에게 "다시 시도" 버튼 노출)
 - Cloud Tasks 재시도 정책(지수 백오프)도 워커가 5xx 를 반환하면 자동 동작
 - 재시도가 모두 소진돼도 워커가 끝내 콜백을 못 보내면, 슬라이드는 `regenerating` 에
@@ -680,7 +683,7 @@ Expected Output:
 
 **재시도(retry) 변형 — `isRetry=true` (§11.1 `/retry`):**
 
-위 흐름과 **꼬리(unpack → 1장 수정 → pack → 해당 페이지 render → QA → 업로드 → 콜백)는 동일**하되,
+위 흐름과 **꼬리(unpack → clean → 1장 수정 → pack → 해당 페이지 render → QA → 업로드 → 콜백)는 동일**하되,
 **머리(④ "새 내용 계산")만 다르다.**
 
 | 항목 | 재생성 `isRetry=false` (사용자 불만족) | 재시도 `isRetry=true` (생성 실패 복구) |
@@ -691,6 +694,7 @@ Expected Output:
 | content_brief 출처 | (불필요) | `jobs.slide_plan` 의 해당 슬라이드 항목 (§10.2) |
 | 한도 차감 | O (CAS, §7.4.3) | **X** (§14) |
 | 결과 콜백 | `slide_regenerated` | `slide_regenerated` (동일) |
+| 실패 시 최종 상태 | 직전 `completed` 로 롤백 + 카운터 보상 | `error` 로 복귀, 카운터 보상 없음 |
 
 - retry 는 `userRequest` 대신 **저장된 `content_brief`** 를 LLM 입력으로 써서 해당 슬라이드를 다시 채운다.
 - retry 는 **`current.pptx` 가 존재하는 `partial_error` Job 에만** 적용된다. Job 전체가 `error` 라
@@ -812,7 +816,7 @@ flowchart TB
 | 역할 | 책임 | 위치 | 권장 구현 |
 |---|---|---|---|
 | Main API | 프론트 REST/SSE, Cloud Tasks enqueue, DB R/W, 한도 CAS, signed URL | **메인 백엔드 (단일 인스턴스, MVP)** | NestJS on Cloud Run / Compute Engine |
-| 메시지 큐 | 작업 분배, 재시도, 멱등성, HTTP Push | 인프라 | **GCP Cloud Tasks** (단일 큐, message_type 필드로 분기) |
+| 메시지 큐 | 작업 분배, 재시도, 멱등성, HTTP Push | 인프라 | **GCP Cloud Tasks** (단일 큐, `messageType` 필드로 분기) |
 | 시각화 워커 | Cloud Tasks push 수신 + 파이프라인 실행 (Step 1~7) | **인터뷰 챗 서비스와 별도 배포** | GCP Cloud Run Service (HTTP, concurrency=1) |
 | 이벤트 fan-out | 워커 콜백 후 같은 프로세스 SSE 핸들러로 전달 | 메인 백엔드 프로세스 내부 | NestJS EventEmitter2 또는 RxJS Subject (외부 브로커 없음) |
 | 영구 저장소 | PPTX, 프리뷰 | 인프라 | GCS (IAM 매트릭스는 §9 참조) |
@@ -824,9 +828,12 @@ flowchart TB
 {
   "messageType": "viz.generate" | "viz.regenerate",
   "jobId": "uuid",
-  "slideId": "uuid (regenerate 만)",
-  "userRequest": "...(regenerate 만)",
-  "isRetry": false,                 // regenerate 만; true = /retry(§11.1, userRequest 대신 content_brief)
+  "portfolioId": "uuid (generate 만)",
+  "userId": "uuid (generate 만)",
+  "templateId": "blue (generate 만)",
+  "slideId": "uuid (regenerate/retry 만)",
+  "userRequest": "...(regenerate 만; retry 에는 없음)",
+  "isRetry": false,                 // regenerate/retry 만; true = /retry(§11.1, userRequest 대신 content_brief)
   "idempotencyKey": "uuid-or-request-id",
   "callbackBaseUrl": "https://main.api.folioo.dev",
   "schemaVersion": 1
@@ -841,7 +848,7 @@ flowchart TB
 
 | 항목 | 권장 값 | 비고 |
 |---|---|---|
-| 큐 이름 | `viz-jobs` (단일 큐) | message_type 으로 작업 종류 구분 |
+| 큐 이름 | `viz-jobs` (단일 큐) | `messageType` 으로 작업 종류 구분 |
 | Push handler URL | `{WORKER_URL}/tasks/visualizations/generate` 와 `/regenerate` | messageType 별 2개 엔드포인트 (§11.2.1) |
 | OIDC 인증 | 활성화 | Cloud Tasks 서비스 계정의 OIDC 토큰을 워커가 검증 |
 | 최대 동시 dispatch | 20 | 워커 인스턴스 수와 LLM rate limit 고려 |
@@ -919,13 +926,17 @@ sequenceDiagram
 
 | 계층 | 페이로드 특징 | 예시 |
 |---|---|---|
-| **워커 → 메인 콜백** | **GCS key 원본** (메인이 알아야 할 메타데이터) | `{ event: "slide_preview_ready", gcsPreviewKey: "jobs/.../slide-3.jpg" }` |
-| **메인 → 프론트 SSE** | **signed URL** (프론트가 즉시 이미지 fetch 가능) | `{ event: "slide_preview_ready", previewUrl: "https://storage.googleapis.com/.../slide-3.jpg?X-Goog..." }` |
+| **워커 → 메인 콜백** | **GCS key 원본** (메인이 알아야 할 메타데이터) | `{ event: "slide_preview_ready", gcsPreviewKey: "jobs/.../previews/slide-03.jpg" }` |
+| **메인 → 프론트 SSE** | **signed URL** (프론트가 즉시 이미지 fetch 가능) | `{ event: "slide_preview_ready", previewUrl: "https://storage.googleapis.com/.../previews/slide-03.jpg?X-Goog..." }` |
 
 → 메인이 콜백 수신 후 `gcs_preview_key` 로 signed URL을 발급해 SSE 페이로드에 동봉한다.
 → 워커는 signed URL 발급 책임이 없으므로 사용자 액세스 경로 변경에 영향 없음.
 
 **메인 → 프론트 SSE 이벤트 카탈로그 (정식):**
+
+흐름도와 시퀀스 다이어그램 안의 `Body: {...}` / `SSE: event_name` 표기는 핵심 필드만 보인
+**축약 예시**다. 프론트向 SSE payload 의 정식 계약은 아래 카탈로그를 따르고, 워커→메인
+콜백 body 의 정식 계약은 §11.3 을 따른다.
 
 | 이벤트 | 페이로드 (메인이 프론트에 보내는 형태) | 발생 시점 |
 |---|---|---|
@@ -939,7 +950,7 @@ sequenceDiagram
 | `slide_regenerating` | `{ slideId, slideOrder }` | Phase 2 시작 (메인 CAS 통과 직후) |
 | `slide_regenerated` | `{ slideId, slideOrder, previewUrl, remainingRegenerations }` | Phase 2 완료 (워커 콜백 후) |
 | `regeneration_quota_exhausted` | `{}` | Job 전체 한도 소진 시 (메인이 자체 발신) |
-| `all_completed` | `{ canExport, blockingSlides, blockingReasons }` | 전체 처리 종료 (정상 또는 partial_error) |
+| `all_completed` | `{ jobStatus, canExport, blockingSlides, blockingReasons, errorCode? }` | 전체 처리 종료 (completed / partial_error / error terminal 상태) |
 | `error` | `{ code, message }` | 메인 측 SSE 오류 (예: 인증 만료) |
 
 **워커 → 메인 콜백 이벤트 (`POST /api/internal/visualizations/{job_id}/events` body):**
@@ -1081,9 +1092,9 @@ MVP 에서는 한 Job 에서 동시에 진행 가능한 Phase 2 파일 수정 �
 | Slide 단위 CAS만 사용 | 조건부 `UPDATE ... WHERE status='completed'` | 같은 Slide 중복은 막지만 서로 다른 Slide 의 파일 덮어쓰기 race 를 못 막음 |
 | 분산 락 (Redis) | Redlock 등 | 강력하나 인프라 의존성·장애 시나리오 복잡 |
 
-#### 7.4.3 권장 구현 (CAS 패턴) — 메인 백엔드 (NestJS) 측
+#### 7.4.3 권장 구현 (Job row lock + CAS 패턴) — 메인 백엔드 (NestJS) 측
 
-`POST /api/visualizations/{job_id}/slides/{slide_id}/regenerate` 핸들러 내부에서
+`POST /api/visualizations/{job_id}/slides/{slide_id}/regenerate` / `/retry` 핸들러 내부에서
 **메인 백엔드가 단일 트랜잭션**으로 수행한다 (TypeORM/Prisma 등).
 이 트랜잭션은 짧게 끝난다. 워커 처리 시간 전체를 DB lock 으로 잡는 것이 아니라,
 "이 Job 에 새 파일 수정 작업을 시작해도 되는지" 만 원자적으로 판정한다.
@@ -1146,6 +1157,13 @@ COMMIT;
 - `WHERE regeneration_count < $max_regen`(전역 상수 바인딩) 조건이 한도 게이트
 - 위 조건들은 모두 같은 트랜잭션 안에서 실행하므로 atomic
 
+**Retry 변형 (`POST /retry`, `isRetry=true`):**
+- (0) Job row lock 과 (2) 파일 수정 락은 재생성과 동일하게 적용한다.
+- (1) Slide CAS 만 `status='error' → 'generating'` 으로 바꾼다.
+- (3) 한도 차감은 건너뛴다. retry 는 사용자 재생성 한도를 소모하지 않는다.
+- retry 시작 시 `visualization_jobs.status='generating'`, `pipeline_stage='rendering'` 으로 갱신한다.
+- retry 완료 시 남은 error Slide 가 없으면 `completed`, 남아 있으면 `partial_error`, 전체 산출물이 없으면 `error` 로 마감한다.
+
 #### 7.4.4 트랜잭션 ↔ 큐 정합성 & stuck 작업 복구 (in-process cron)
 
 "작업이 멈춰 보이는" 상황은 두 가지다.
@@ -1191,20 +1209,6 @@ export class VisualizationRecoveryService {
       `);
       // status='regenerating' 였던 행 수만큼 해당 job 의
       // visualization_jobs.regeneration_count 를 보상 차감(-1)
-      if (healed.length > 0) {
-        const regenJobIds = healed
-          .filter((r) => r.status === 'regenerating')
-          .map((r) => r.job_id);
-        if (regenJobIds.length > 0) {
-          await tx.query(`
-            UPDATE visualization_jobs
-            SET    regeneration_count = GREATEST(0, regeneration_count - 1),
-                   updated_at = now()
-            WHERE  id = ANY($1)
-              AND  regeneration_count > 0
-          `, [regenJobIds]);
-        }
-      }
 
       // 잡 마감 패스: 8분 이상 갱신 없는 비-terminal job 을 슬라이드 결과로 finalize.
       //  - 무슬라이드 orphan(Step 1 크래시로 slide-plan 전 사망) → error
@@ -1287,6 +1291,7 @@ async def regenerate_handler(
 
     job_id = body["jobId"]
     slide_id = body["slideId"]
+    is_retry = body.get("isRetry", False)
     idempotency_key = body["idempotencyKey"]
 
     # ② 메인 API 호출로 멱등 체크 (DB 직접 접근 X)
@@ -1304,7 +1309,10 @@ async def regenerate_handler(
         await process_regeneration(
             job_id=job_id,
             slide_id=slide_id,
-            user_request=body.get("userRequest"),  # retry(isRetry=true)는 미포함
+            # isRetry=false 에서는 필수, isRetry=true 에서는 None 이고
+            # process_regeneration 이 slidePlan 의 content_brief 를 조회해 사용한다.
+            user_request=None if is_retry else body["userRequest"],
+            is_retry=is_retry,
             idempotency_key=idempotency_key,
         )
     except RetryableError:
@@ -1499,7 +1507,7 @@ async handleSlideEvent(jobId: string, slideId: string, body: WorkerEventBody) {
 > (예: §7.0.1 의 §8.3.x)는 `worker-spec.md` 의 같은 절을 가리킨다.
 
 **핵심 요약:**
-- 모든 파일 작업은 **무상태 샌드박스**에서 수행 후 정리 (unpack→편집→clean→pack→soffice→프리뷰→정리)
+- 모든 파일 작업은 **무상태 샌드박스**에서 수행 후 정리 (unpack→prune→clean→XML 편집→pack→soffice→프리뷰→정리)
 - 전체 수정 사이클 ~7-17초, 병목은 LLM 호출(~3-10초)·soffice 변환(~2-5초). unpack/pack 오버헤드는 무시 가능
 - 워커 사양(MVP): **4 GB / 2 vCPU**, `/tmp` 1 GB+, `concurrency=1`, min-instances 0, 요청 timeout 1800s, 변환 20회 후 인스턴스 자체 종료
 - soffice: 변환마다 `UserInstallation` 격리 + 별도 서브프로세스, 30~60초 타임아웃 후 SIGKILL+1회 재시도, 한글 폰트(Noto CJK) 사전 설치
@@ -1515,6 +1523,7 @@ async handleSlideEvent(jobId: string, slideId: string, body: WorkerEventBody) {
 |---|---|---|---|---|
 | `templates/**` | 읽기 전용 (메타 조회 필요 시) | **읽기** (PPTX/메타/썸네일 GET) | ❌ | ❌ (관여 안 함) |
 | `jobs/{job_id}/current.pptx` | **객체 읽기 + signed URL 발급** | **PUT/GET** (생성/수정) | signed URL 로만 | ❌ |
+| `jobs/{job_id}/current.pdf` | **객체 읽기 + signed URL 발급** | **PUT/GET** (생성/수정) | signed URL 로만 | ❌ |
 | `jobs/{job_id}/previews/*.jpg` | **객체 읽기 + signed URL 발급** | **PUT/GET** | signed URL 로만 | ❌ |
 
 **핵심 원칙:**
@@ -1558,6 +1567,9 @@ gs://folioo-visualizations/
             ├── slide-02.jpg
             └── ...
 ```
+
+프리뷰 이미지 GCS key 의 canonical 형식은
+`jobs/{job_id}/previews/slide-{slide_order:02d}.jpg` 이다.
 
 ### 9.2 파일 라이프사이클
 
@@ -1709,10 +1721,10 @@ CREATE INDEX idx_viz_slides_job ON visualization_slides(job_id);
 - `completed` → `regenerating` → `completed` (수정 사이클; 정상 실패도 completed 롤백 — §5.3)
 - `completed` → `regenerating` → `error` (stuck 복구 시에만 — §7.4.4)
 
-**current_fills 예시:**
+**current_fills (현재 적용된 Fill 맵) 예시:**
 
 도형 식별은 PPT 의 `cNvPr/@id` (정수) 를 키로 사용한다.
-`role` 필드는 LLM 이 슬롯 디스크립터를 보고 추론한 의미 라벨로, 디버깅·재생성 시 컨텍스트로만 활용된다 (DB 가드용은 아님).
+`role` 필드는 LLM 이 Slot 디스크립터를 보고 추론한 의미 라벨로, 디버깅·재생성 시 컨텍스트로만 활용된다 (DB 가드용은 아님).
 이 맵은 **래퍼 없이 평평하다** — `current_fills`·콜백 `currentFills`·LLM Call #2 출력·`apply_fills` 입력이 모두 `{ "<id>": {...} }` 그대로다 (`shapes`/`fills` 래퍼 폐기, §5.2 Step 3 출력도 동일).
 차트도 같은 규칙 — `graphicFrame` 의 `cNvPr/@id` 를 key 로 `action:"chart"` 로 표현한다 (최상위 별도 `chart` 키 폐기, §5.2 Step 3 출력도 이 형태로 통일). 차트는 캐시(`chartN.xml`)만 편집하고 임베디드 워크북은 MVP 에서 동기화하지 않는다 — `ooxml-editing.md` §4.4.1 / ADR-0003.
 
@@ -1801,6 +1813,12 @@ API 는 책임에 따라 **3계층**으로 분리한다.
 - Cloud Tasks payload JSON: **camelCase** (메인이 생성하므로)
 - 클라이언트 측에서 양방향 변환 (§10.0 매핑 표)
 
+예외: `slidePlan` / `currentFills` 같은 JSONB blob 내부 키는 **snake_case 를 유지**한다.
+이 값들은 워커 내부 구조와 DB JSONB 를 그대로 보존하는 데이터 덩어리이며, 최상위 envelope 필드명만
+`slidePlan` / `currentFills` 로 camelCase 변환한다. 예를 들어 `slidePlan.selected_slides[]` 의
+`source_slide_id` / `content_brief`, `currentFills[shape_id].font_size_override` / `is_title` 는
+snake_case 그대로 API 에 실린다.
+
 #### 11.0.4 재시도 / 타임아웃 정책
 
 | 호출 방향 | 타임아웃 | 재시도 | 백오프 |
@@ -1872,11 +1890,18 @@ POST   /api/visualizations/{job_id}/slides/{slide_id}/regenerate
 # 에러 슬라이드 재시도 (재생성 한도 차감 X) — content_brief 기반 재생성 (§5.3 retry 변형)
 POST   /api/visualizations/{job_id}/slides/{slide_id}/retry
        메인 처리:
+         - §7.4.3 과 같은 Job row lock + 파일 수정 락 적용 (동시 수정 있으면 409 JOB_BUSY)
          - CAS: slide.status in ('error') → 'generating' 전이
+         - job.status='generating', pipelineStage='rendering' 으로 전이
+         - 재생성 한도는 차감하지 않음
          - Cloud Tasks enqueue (viz.regenerate, isRetry=true)   // userRequest 없음
        Response: { status: "generating" }
        전제: current.pptx 가 있는 partial_error Job 에만 적용.
              Job 전체 error(current.pptx 없음)는 per-slide retry 불가 → 전체 재생성 안내(§13)
+       에러:
+         - 409 JOB_BUSY (같은 Job 의 다른 슬라이드가 처리 중 — Job 단위 직렬화, §7.4)
+         - 409 SLIDE_BUSY (대상 슬라이드가 error 상태가 아님)
+         - 409 JOB_NOT_READY (current.pptx 없음)
 
 # 내보내기 가능 여부 확인 (§11.1.1 compute_can_export 결과 그대로 반환)
 GET    /api/visualizations/{job_id}/export/status
@@ -1905,6 +1930,7 @@ POST   /api/visualizations/{job_id}/export
 
 ```python
 def compute_can_export(job_id) -> dict:
+    job = get_job(job_id)
     slides = get_slides(job_id)
 
     blocking = [
@@ -1913,12 +1939,30 @@ def compute_can_export(job_id) -> dict:
         # 차단 상태: pending, generating, regenerating, error
     ]
 
+    blocking_reasons = {str(s.slide_order): s.status for s in blocking}
+    if job.status != 'completed':
+        blocking_reasons['_job'] = job.status
+    if not job.gcs_pptx_key:
+        blocking_reasons['_pptx'] = 'missing_current_pptx'
+    if job.total_slides <= 0:
+        blocking_reasons['_slides'] = 'no_slides'
+
     return {
-        "can_export": len(blocking) == 0,
+        "can_export": (
+            job.status == 'completed'
+            and job.gcs_pptx_key is not None
+            and job.total_slides > 0
+            and len(blocking) == 0
+        ),
         "blocking_slides": [s.slide_order for s in blocking],
-        "blocking_reasons": {str(s.slide_order): s.status for s in blocking},
+        "blocking_reasons": blocking_reasons,
     }
 ```
+
+`current.pdf` 는 `jobs/{job_id}/current.pdf` 고정 규칙으로 도출한다. export/status 계산 시마다
+GCS HEAD 요청으로 실제 객체 존재를 확인하지 않는다. `job.status='completed'` 와
+`gcs_pptx_key IS NOT NULL` 은 워커가 `current.pptx` / `current.pdf` 업로드를 마친 뒤에만
+설정되는 서버 측 완료 신호다.
 
 호출 위치 (메인 백엔드 내부):
 - `GET /export/status` → 응답에 그대로 사용
@@ -2091,7 +2135,7 @@ POST   /api/internal/visualizations/{job_id}/slides/{slide_id}/events
               | "slide_regenerated",
          slideOrder: 3,
          currentFills: { ... },               // event=*_ready 시
-         gcsPreviewKey: "jobs/.../slide-03.jpg", // event=preview_ready 시
+          gcsPreviewKey: "jobs/.../previews/slide-03.jpg", // event=preview_ready 시
          message: "...",                       // event=*_error 시
          retryable: true,                      // error 시
          occurredAt: "2026-05-17T03:42:01Z",
@@ -2133,11 +2177,11 @@ POST   /api/internal/visualizations/{job_id}/events
 GET    /api/internal/visualizations/{job_id}
        Headers: X-API-Key
        Response (200):
-         {
-           id, portfolioId, portfolioText, userId, templateId, status,
-           totalSlides, regenerationCount,
-           gcsPptxKey, slidePlan, createdAt, updatedAt
-         }
+          {
+            id, portfolioId, portfolioText, userId, templateId, status,
+            pipelineStage, totalSlides, regenerationCount,
+            gcsPptxKey, slidePlan, createdAt, updatedAt
+          }
          // portfolioText: 워커가 generate Step 1 입력으로 조회 (페이로드 미포함, §11.2.1)
 
 GET    /api/internal/visualizations/{job_id}/slides/{slide_id}
@@ -2170,11 +2214,12 @@ stateDiagram-v2
     generating --> completed: 전체 성공
     generating --> partial_error: 일부 슬라이드 실패
     generating --> error: 전체 실패
-    partial_error --> completed: retry 로 마지막 error 슬라이드 복구
+    partial_error --> generating: 사용자 "다시 시도"(retry)
     completed --> [*]
 ```
 
-- 사용자가 재생성 요청해도 **job 상태는 completed 유지** (슬라이드 레벨에서만 상태 변경)
+- 사용자가 completed Job 에서 재생성 요청해도 **job 상태는 completed 유지** (Slide 레벨에서만 상태 변경)
+- partial_error Job 에서 retry 를 시작하면 **job 상태는 generating 으로 전이**한다. retry 종료 시 남은 error Slide 여부에 따라 completed 또는 partial_error 로 마감한다.
 - 즉, `job.status == 'completed'` 만으로는 내보내기 가능 여부를 판단할 수 없다
   → §11.1.1 의 `compute_can_export()` 처럼 **모든 슬라이드 상태를 종합해서 판단**
 
@@ -2201,7 +2246,7 @@ stateDiagram-v2
 | `slide_content_ready` | `pending → generating` | Step 3 콘텐츠 완료, 렌더 전 |
 | `slide_content_error` | `pending`/`generating → error` | Step 3 LLM 실패 (§13) |
 | `slide_preview_ready` | `generating → completed` | Step 6 QA 통과 + 업로드 |
-| `slide_preview_error` | Phase1 `→ error` / Phase2 `→ 직전 completed` 롤백(+카운터 보상) | §5.3 / §13 |
+| `slide_preview_error` | Phase1 `→ error` / regenerate 실패 `→ 직전 completed` 롤백(+카운터 보상) / retry 실패 `→ error`(보상 없음) | §5.3 / §13 |
 | regenerate CAS(메인) | `completed → regenerating` | §7.4.3 |
 | `slide_regenerated` | `regenerating → completed` | Phase2 완료 (§5.3) |
 | retry CAS(메인) | `error → generating` | §11.1 |
@@ -2210,6 +2255,7 @@ stateDiagram-v2
 `generating` 은 "콘텐츠는 나왔고 렌더/QA 진행 중" 을 뜻한다 — 픽업~Step 3 이전은 `pending` 이라 '아직 손대지 않은 슬라이드' 와 '진행 중' 이 구분된다.
 
 - 재생성(`regenerating`) **정상 실패는 `error` 가 아니라 이전 `completed` 로 롤백**한다 + 카운터 보상 (§5.3). 사용자는 이전 버전을 유지한 채 다시 시도한다.
+- retry(`generating`) 정상 실패는 이전 completed 가 없으므로 `error` 로 되돌린다. retry 는 한도를 차감하지 않으므로 카운터 보상도 없다.
 - `regenerating → error` 전이는 워커가 콜백조차 못 보낸 stuck 케이스를 §7.4.4 크론이 정리할 때만 발생한다.
 - `error` 슬라이드의 "다시 시도"는 retry(§11.1)가 `error → generating` 전이 후 `viz.regenerate` 로 재처리한다 (워커 가드는 `generating`·`regenerating` 모두 허용 — §7.4.5).
 
@@ -2412,13 +2458,13 @@ LLM이 단순 텍스트 교체가 아닌, 레이아웃을 이해하고 조정하
 ```
 텍스트가 긴 경우:
 ├─ 1순위: 폰트 크기 축소
-│         (Step 3 의 슬롯 디스크립터에서 추출한 원본 font_size_pt 의 60% 이상,
+│         (Step 3 의 Slot 디스크립터에서 추출한 원본 font_size_pt 의 60% 이상,
 │          하한 10pt 가드)
 ├─ 2순위: 의미를 유지하면서 텍스트 축약 (LLM 요약)
 └─ 3순위: (향후) 슬라이드 분할 제안
 
 텍스트가 짧은 경우:
-├─ 폰트 크기 확대 (원본 font_size_pt 의 ±20% 범위 내, 상한 48pt 가드)
+├─ 폰트 크기 확대 (원본 font_size_pt 의 +20% 이내, 공통 가드 10~48pt 준수)
 └─ 여백 활용한 레이아웃 조정
 ```
 
@@ -2436,4 +2482,3 @@ LLM이 단순 텍스트 교체가 아닌, 레이아웃을 이해하고 조정하
 6. **수정 이력 분석 기반 템플릿 개선**: 수정 이력 저장소를 추가해, 수정 요청이 적은 템플릿 = 잘 만든 템플릿 식별
 7. **per-job `callback_secret` 콜백 위조 방지**: 메인이 job 생성 시 랜덤 토큰을 발급해 Cloud Tasks payload 로 워커에 전달하고, 워커 콜백 시 `X-Job-Callback-Secret` 헤더로 동봉 → `X-API-Key` 외 추가 검증. 워커 자격증명이 탈취돼도 다른 job 의 콜백을 위조할 수 없음 (MVP 는 `X-API-Key` 단독)
 8. **코드 실행 모델 전환 + 강격리 샌드박스(Daytona 등)**: 현재는 LLM 이 데이터(`fills`)만 내고 결정적 `apply_fills` 가 XML 을 편집한다(§4 / §15 / §16). 임의 레이아웃·도형 생성처럼 정해진 action 어휘로 표현할 수 없는 더 자유로운 편집이 필요해지면, 원조 Anthropic PPTX 스킬처럼 **LLM 이 코드를 작성·실행하는 모델**로 전환할 수 있다. 이때는 임의 LLM 코드를 실행하므로 Cloud Run 의 프로세스 격리만으로는 부족하고, **해당 워크로드에 한해 Daytona 같은 강격리 샌드박스를 추가**한다 (Cloud Tasks → Cloud Run 골격은 그대로 유지하고, 코드 실행 단계만 격리 환경으로 위임). MVP 는 데이터 방식 단독이라 강격리가 필요 없다. — 참고: 데이터 방식의 유연성은 §5.4 수정 가능 범위를 **action 핸들러로 미리 확장**(폰트·색·위치·크기·차트·이미지 등)해 상당 부분 흡수할 수 있고, 이 한계를 넘는 자유 생성이 필요할 때가 본 항목의 전환 시점이다.
-9. **슬라이드 선택 최소 보장 (결정적 검증 / 필수 스켈레톤)**: MVP 는 cover·closing 포함과 7~12장 범위를 **Step 1 프롬프트 규칙(§5.2 규칙 1·4)에만 의존**한다 — LLM 이 규칙을 어기면 cover 없는 덱이 나올 수 있다(드묾, 의도된 한계). 안정성이 필요해지면 slide_plan 산출물을 **결정적으로 검증**(cover/closing 존재·장수 범위 확인 후 1회 교정)하거나 `cover[맨앞]/toc[옵션]/콘텐츠 N장/closing[맨끝]` **필수 스켈레톤을 코드로 강제**하는 계층을 추가한다. 콘텐츠 카테고리(overview/chart/outcome…)는 빈 슬라이드 방지를 위해 계속 LLM 자율로 둔다.

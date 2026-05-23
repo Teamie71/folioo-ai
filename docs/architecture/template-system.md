@@ -11,8 +11,8 @@
 ```
 templates/
 ├── blue/
-│   ├── template.pptx          ← 파란색 조합, 30~40장 레이아웃 풀
-│   ├── meta.json              ← 슬라이드별 메타데이터
+│   ├── template.pptx          ← 파란색 조합, 30~40장 Source Slide 풀
+│   ├── meta.json              ← Source Slide 별 메타데이터
 │   └── thumbnail.jpg          ← 그리드 썸네일 (LLM 참고용)
 ├── green/
 │   ├── template.pptx          ← 초록색 조합 (같은 레이아웃, 다른 색)
@@ -24,34 +24,34 @@ templates/
     └── ...
 ```
 
-### 3.2 하나의 템플릿 PPTX 내부
+### 3.2 하나의 Template PPTX 내부
 
 ```
-template_blue.pptx (30~40장의 레이아웃 풀)
-├── 슬라이드 1: 표지 레이아웃 A (cover_A)
-├── 슬라이드 2: 표지 레이아웃 B (cover_B)
-├── 슬라이드 3: 개요 레이아웃 A (overview_A)
-├── 슬라이드 4: 개요 레이아웃 B (overview_B)
-├── 슬라이드 5: 개요 레이아웃 C (overview_C)
-├── 슬라이드 6: 문제정의 레이아웃 A
-├── 슬라이드 7: 프로세스/타임라인 레이아웃 A
+template_blue.pptx (30~40장의 Source Slide 풀)
+├── Source Slide 1: 표지 레이아웃 A (cover_A)
+├── Source Slide 2: 표지 레이아웃 B (cover_B)
+├── Source Slide 3: 개요 레이아웃 A (overview_A)
+├── Source Slide 4: 개요 레이아웃 B (overview_B)
+├── Source Slide 5: 개요 레이아웃 C (overview_C)
+├── Source Slide 6: 문제정의 레이아웃 A
+├── Source Slide 7: 프로세스/타임라인 레이아웃 A
 ├── ...
-├── 슬라이드 30: 마무리 레이아웃 B
-└── 모든 슬라이드가 같은 마스터/테마/디자인 시스템 공유
+├── Source Slide 30: 마무리 레이아웃 B
+└── 모든 Source Slide 가 같은 마스터/테마/디자인 시스템 공유
 ```
 
-### 3.3 슬라이드 카테고리 (표준 Enum)
+### 3.3 Source Slide 카테고리 (표준 Enum)
 
-카테고리는 **모든 템플릿이 공유하는 글로벌 표준 Enum**으로 고정한다. 템플릿마다 자유롭게 정의하지 않는다.
+카테고리는 **모든 Template 이 공유하는 글로벌 표준 Enum**으로 고정한다. Template 마다 자유롭게 정의하지 않는다.
 
 **이유:**
 - LLM 프롬프트에 "cover에서 1개, closing에서 1개 포함" 같은 규칙이 일관되게 작동해야 함
-- Rule-based 사전 필터링(직전 슬라이드와 같은 카테고리 제외 등)은 카테고리 정의가 일관돼야 가능
-- 새 템플릿이 추가될 때 매핑 로직이 폭발하지 않도록
+- Rule-based 사전 필터링(직전 Source Slide 와 같은 카테고리 제외 등)은 카테고리 정의가 일관돼야 가능
+- 새 Template 이 추가될 때 매핑 로직이 폭발하지 않도록
 
 **관리 방식:**
 - `templates/_schema/categories.json` 에 표준 Enum 정의 (단일 소스 오브 트루스)
-- 모든 템플릿의 `meta.json`은 이 Enum 안의 값만 `category` 로 사용
+- 모든 Template 의 `meta.json`은 이 Enum 안의 값만 `category` 로 사용
 - 템플릿 등록 스크립트에서 카테고리 유효성 검증
 
 | 카테고리 키 | 설명 | 권장 변형 수 |
@@ -73,12 +73,12 @@ template_blue.pptx (30~40장의 레이아웃 풀)
 
 > **설계 변경 (Anthropic PPTX 스킬 방식 채택)**
 > 이전 버전에서는 디자이너가 각 도형에 표준 이름을 부여하고 `meta.json` 에
-> placeholder별 `name`, `type`, `purpose`, `max_chars` 까지 직접 적었다.
+> 이전 설계의 placeholder 별 `name`, `type`, `purpose`, `max_chars` 까지 직접 적었다.
 > **이 방식은 운영 부담이 너무 크다** (디자이너의 도형 이름 부여 + 후속 메타 수기 입력).
 >
-> Anthropic 의 PPTX 스킬이 그러하듯, **사전에 placeholder 를 일일이 명시하지 않고**
+> Anthropic 의 PPTX 스킬이 그러하듯, **사전에 Slot 을 일일이 명시하지 않고**
 > 런타임에 슬라이드 XML 자체를 LLM에게 컨텍스트로 제공해 자동 식별하는 방식으로 전환한다.
-> `meta.json` 은 LLM의 **슬라이드 선택**(템플릿 풀에서 어떤 페이지를 쓸지)에 필요한 최소 정보만 담는다.
+> `meta.json` 은 LLM의 **Source Slide 선택**(Source Slide 풀에서 어떤 페이지를 쓸지)에 필요한 최소 정보만 담는다.
 
 ```json
 {
@@ -115,21 +115,21 @@ template_blue.pptx (30~40장의 레이아웃 풀)
 }
 ```
 
-각 슬라이드 엔트리는 다음 5개 필드만 유지한다:
+각 Source Slide 엔트리는 다음 5개 필드만 유지한다:
 
 | 필드 | 용도 |
 |---|---|
-| `slide_index` | 템플릿 PPTX 내부 슬라이드 순서 (0-based) |
-| `id` | 디자이너가 부여한 슬라이드 식별자 (예: `cover_A`) |
+| `slide_index` | Template PPTX 내부 Source Slide 순서 (0-based) |
+| `id` | 디자이너가 부여한 Source Slide 식별자 (예: `cover_A`) |
 | `category` | §3.3 표준 Enum 중 하나 |
-| `description` | LLM 이 슬라이드 풀에서 선택할 때 참고하는 짧은 설명 |
+| `description` | LLM 이 Source Slide 풀에서 선택할 때 참고하는 짧은 설명 |
 | `best_for` | 어떤 콘텐츠에 적합한지 한 줄 가이드 |
 
 **제거된 항목 (이전 버전 대비):**
-- `placeholders[]` 배열 전체 — 도형 이름·max_chars·purpose 모두 사전 정의 X
+- 이전 설계의 `placeholders[]` 배열 전체 — 도형 이름·max_chars·purpose 모두 사전 정의 X
 - 디자이너의 도형 이름 부여 의무 — XML이 자동 생성하는 `cNvPr/@id` 만으로 충분
 
-LLM 이 콘텐츠를 채워 넣을 때 필요한 placeholder 정보는 `pptx-gen-plan-v6.md` §5.2 Step 3 에서
+LLM 이 콘텐츠를 채워 넣을 때 필요한 Slot 정보는 `pptx-gen-plan-v6.md` §5.2 Step 3 에서
 **시각화 워커가 슬라이드 XML 을 그 자리에서 분석해 동적으로 추출한다.**
 
 ### 3.5 템플릿 등록 파이프라인 (디자이너 ppt 완성 이후)
@@ -137,7 +137,7 @@ LLM 이 콘텐츠를 채워 넣을 때 필요한 placeholder 정보는 `pptx-gen
 > **요약 — `meta.json` 은 "완전 자동 생성" 이 아니다.**
 > `slide_index` 같은 기계적 필드는 자동 추출, `description` / `best_for` / `category` 같은
 > 의미 필드는 **LLM 이 초안을 생성하고 운영자가 검토·확정**하는 반자동 방식이다.
-> 디자이너가 도형 이름을 수기로 부여하거나 placeholder 별 max_chars 를 작성하는 작업은 없다.
+> 디자이너가 도형 이름을 수기로 부여하거나 Slot 별 max_chars 를 작성하는 작업은 없다.
 
 #### 3.5.1 전체 단계 한눈에
 
@@ -179,7 +179,7 @@ python scripts/templates/validate_template.py ./templates/blue
 
 # 검증 내용:
 #   - meta.json 스키마 (필수 필드 누락 X)
-#   - category 가 templates/_schema/categories.json 안에 있는지
+#   - category 가 templates/_schema/categories.json 안에 있는지 (unknown 이면 실패 — 운영자가 실제 카테고리로 교체해야 통과)
 #   - slide_index 가 0..N-1 연속인지, PPTX 내 슬라이드 수와 일치하는지
 #   - 같은 템플릿 내 id 중복 없는지
 
@@ -198,7 +198,7 @@ gcloud storage rsync ./templates/blue/ gs://folioo-visualizations/templates/blue
 | `slides[].slide_index` | **자동** | PPTX 파싱 |
 | `slides[].id` | **LLM 자동 부여 → 운영자 검토** | 같은 카테고리 내 알파벳 순 |
 | `slides[].category` | **LLM 초안 → 운영자 검토 필수** | §3.3 표준 Enum 한정 |
-| `slides[].description` | **LLM 초안 → 운영자 다듬기** | 한 줄, 슬라이드 풀 선택 시 LLM 참고 |
+| `slides[].description` | **LLM 초안 → 운영자 다듬기** | 한 줄, Source Slide 풀 선택 시 LLM 참고 |
 | `slides[].best_for` | **LLM 초안 → 운영자 다듬기** | 한 줄, 어떤 콘텐츠에 적합한지 |
 
 → **운영자가 절대 손대지 않는 필드: `slide_index`, `template_file`.**
@@ -234,9 +234,9 @@ User (슬라이드마다 반복):
 | 작업 | 이전 버전 | 현재 (v6) |
 |---|---|---|
 | 디자이너가 도형마다 영문 이름 부여 | 필수 | **제거** (런타임에 `cNvPr/@id` 자동 식별) |
-| placeholder 별 `max_chars` 수기 입력 | 필수 | **제거** (시각 QA 가 사후 보정, §3.7.2) |
-| placeholder 별 `name`/`type`/`purpose` JSON 작성 | 필수 | **제거** (`meta.json` 의 5개 필드만 유지) |
-| 명명 검증 스크립트 (`scripts/validate_template.py` 의 placeholder 명명 검사) | 필수 | **제거** (검증 항목은 §3.5.1 [4] 로 단순화) |
+| 이전 설계의 placeholder 별 `max_chars` 수기 입력 | 필수 | **제거** (시각 QA 가 사후 보정, §3.7.2) |
+| 이전 설계의 placeholder 별 `name`/`type`/`purpose` JSON 작성 | 필수 | **제거** (`meta.json` 의 5개 필드만 유지) |
+| 명명 검증 스크립트 (`scripts/validate_template.py` 의 이전 설계 placeholder 명명 검사) | 필수 | **제거** (검증 항목은 §3.5.1 [4] 로 단순화) |
 
 ### 3.6 디자인 일관성 보장
 
@@ -252,7 +252,7 @@ User (슬라이드마다 반복):
 디자이너가 할 일:
 1. PowerPoint에서 하나의 파일 열고
 2. 다양한 레이아웃 페이지를 쭉 만들고
-3. 각 placeholder 자리에 실제로 들어갈 콘텐츠와 비슷한 예시 텍스트 입력
+3. 각 Slot 후보 자리에 실제로 들어갈 콘텐츠와 비슷한 예시 텍스트 입력
    (예: "여기에 프로젝트명", "도구: Figma, Notion" 등 — LLM 이 의미를 이해할 단서)
 4. 색상 바꿔서 다른 이름으로 저장 → 새 템플릿 파일
 5. meta.json 에 슬라이드별 한 줄 description + best_for 추가
@@ -262,14 +262,14 @@ User (슬라이드마다 반복):
 → 코드 몰라도 됨, PPT만 잘 만들면 됨
 ```
 
-#### 3.7.1 자동 placeholder 인식 원리
+#### 3.7.1 자동 Slot 인식 원리
 
 도형 이름(`cNvPr@name`) 에 약속된 키워드를 박지 않아도 동작한다. 그 이유:
 
 - 모든 도형은 PowerPoint 가 자동 부여하는 **숫자 ID** 가 있다 — `<p:cNvPr id="3" name="..."/>`
   의 `id` 속성. **이 `id` 가 코드의 1차 식별자**.
 - 시각화 워커는 슬라이드 XML 을 unpack 한 뒤, 텍스트가 들어있는 도형들을 자동으로 스캔해
-  다음과 같은 **슬롯 디스크립터** 를 만든다:
+  다음과 같은 **Slot 디스크립터** 를 만든다:
   ```json
   {
     "shape_id": "3",
@@ -282,9 +282,9 @@ User (슬라이드마다 반복):
     "kind": "text"
   }
   ```
-- 이 슬롯 디스크립터들을 슬라이드의 placeholder 카탈로그로 LLM 에 넘긴다.
-  LLM 은 위치(좌표)·크기·현재 텍스트·폰트 크기를 보고 "이 슬롯은 제목이구나",
-  "이 4 개 슬롯은 카드 본문이구나" 같은 역할을 **스스로 파악**한다.
+- 이 Slot 디스크립터들을 슬라이드의 Slot 카탈로그로 LLM 에 넘긴다.
+  LLM 은 위치(좌표)·크기·현재 텍스트·폰트 크기를 보고 "이 Slot 은 제목이구나",
+  "이 4 개 Slot 은 카드 본문이구나" 같은 역할을 **스스로 파악**한다.
 - LLM 응답은 도형 이름이 아닌 `shape_id` 를 키로 사용한다.
 
 ```xml
@@ -308,16 +308,16 @@ User (슬라이드마다 반복):
 
 | 상황 | 처리 방식 |
 |---|---|
-| LLM 이 생성한 텍스트가 슬롯에 비해 길다 | Step 6 시각 QA 가 텍스트 잘림/오버플로우 감지 → fix-and-verify 루프에서 폰트 축소 또는 요약 |
-| LLM 이 생성한 텍스트가 슬롯에 비해 짧다 | 폰트 자동 확대 또는 그대로 유지 (`pptx-gen-plan-v6.md` §16) |
-| 도형 자체가 콘텐츠에 맞지 않음 (예: 카드 4개인데 콘텐츠는 3개) | 빈 슬롯에 해당하는 `<p:sp>` 전체 제거 (`ooxml-editing.md` §4.3 항목 수 불일치 규칙) |
+| LLM 이 생성한 텍스트가 Slot 에 비해 길다 | Step 6 시각 QA 가 텍스트 잘림/오버플로우 감지 → fix-and-verify 루프에서 폰트 축소 또는 요약 |
+| LLM 이 생성한 텍스트가 Slot 에 비해 짧다 | 폰트 자동 확대 또는 그대로 유지 (`pptx-gen-plan-v6.md` §16) |
+| 도형 자체가 콘텐츠에 맞지 않음 (예: 카드 4개인데 콘텐츠는 3개) | 빈 Slot 에 해당하는 `<p:sp>` 전체 제거 (`ooxml-editing.md` §4.3 항목 수 불일치 규칙) |
 
 → 사전 제약(`max_chars`) 으로 LLM 출력을 막는 대신, **런타임에 결과를 보고 자동 조정** 한다.
 이 방식은 Anthropic 스킬의 "완료 전 최소 한 번 시각 QA 검증" 원칙과 정확히 같은 철학이다.
 
 #### 3.7.3 디자이너 가이드 — 권장 사항 (강제 아님)
 
-LLM 이 슬롯 역할을 더 잘 추론하도록, 디자이너가 PPTX 안에 적어두는 예시 텍스트는
+LLM 이 Slot 역할을 더 잘 추론하도록, 디자이너가 PPTX 안에 적어두는 예시 텍스트는
 **실제 콘텐츠 톤에 가까운 한국어 안내문** 을 권장한다:
 
 | 안 좋은 예 | 좋은 예 |

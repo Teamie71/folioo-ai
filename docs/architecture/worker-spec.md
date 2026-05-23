@@ -17,7 +17,8 @@
 flowchart LR
     subgraph PERM["영구 저장소 (GCS)"]
         P1["current.pptx"]
-        P2["previews/*.jpg"]
+        P2["current.pdf"]
+        P3["previews/*.jpg"]
     end
     subgraph SBX["샌드박스 (임시 · 완전 무상태)"]
         direction TB
@@ -25,7 +26,8 @@ flowchart LR
     end
     P1 -->|"다운로드"| T1
     T4 -->|"업로드 (덮어쓰기)"| P1
-    T6 -->|"업로드"| P2
+    T5 -->|"업로드 (덮어쓰기)"| P2
+    T6 -->|"업로드"| P3
 ```
 
 ### 8.2 연산 비용 분석
@@ -36,8 +38,8 @@ flowchart LR
 ├────────────────────────┼──────────┤
 │ GCS 다운로드/업로드        │ ~0.5-1초 │
 │ unpack                  │ ~0.1초   │
-│ XML 편집                │ ~0.01초  │
 │ clean                   │ ~0.1초   │
+│ XML 편집                │ ~0.01초  │
 │ pack + validate         │ ~0.3초   │
 │ soffice → PDF           │ ~2-5초   │
 │ pdftoppm → JPG          │ ~0.5초   │
