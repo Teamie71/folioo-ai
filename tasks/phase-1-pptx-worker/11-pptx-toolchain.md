@@ -6,7 +6,8 @@ spec: "specs/phase-1/11-pptx-toolchain.md"
 depends_on: []
 blocks: ["1.05", "1.06"]
 estimate: "S"
-status: "todo"
+status: "done"
+completed_at: "2026-05-25"
 owner: ""
 sprint: ""
 ---
@@ -21,19 +22,19 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] Anthropic PPTX 스킬 도구 체인(`unpack`/`clean`/`pack`/`validate`) 사용 가능 여부 확인
+- [x] Anthropic PPTX 스킬 도구 체인(`unpack`/`clean`/`pack`/`validate`) 사용 가능 여부 확인
 
 ## 구현 체크리스트
 
-- [ ] `unpack`/`clean`/`pack`/`validate` 래핑 + 실패 시 `repair()` 재검증
-- [ ] `presentation.xml` 미선택 슬라이드 `sldId` 제거 → clean 연계 (Step 2)
-- [ ] 모든 작업 `/tmp` 작업 디렉터리 처리 + 잔여물 미잔존
+- [x] `unpack`/`clean`/`pack`/`validate` 래핑 + 실패 시 `repair()` 재검증
+- [x] `presentation.xml` 미선택 슬라이드 `sldId` 제거 → clean 연계 (Step 2)
+- [x] 모든 작업 `/tmp` 작업 디렉터리 처리 + 잔여물 미잔존
 
 ## Definition of Done
 
-- [ ] template.pptx unpack→미선택 제거→clean→pack 후 검증 통과·선택 슬라이드만 잔존 확인
-- [ ] `validate` 실패 시 `repair()` 후 재검증 동작
-- [ ] 작업 종료 후 `/tmp` 작업 디렉터리가 비워짐
+- [x] template.pptx unpack→미선택 제거→clean→pack 후 검증 통과·선택 슬라이드만 잔존 확인
+- [x] `validate` 실패 시 `repair()` 후 재검증 동작
+- [x] 작업 종료 후 `/tmp` 작업 디렉터리가 비워짐
 
 ## 리스크 / 메모
 
