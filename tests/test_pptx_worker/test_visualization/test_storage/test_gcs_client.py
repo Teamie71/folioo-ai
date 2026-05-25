@@ -6,6 +6,7 @@ import pytest
 
 from features.visualization.storage.gcs_client import (
     GcsClient,
+    _validate_identifier,
     job_workdir,
     pdf_key,
     pptx_key,
@@ -14,30 +15,27 @@ from features.visualization.storage.gcs_client import (
 )
 
 # ---------------------------------------------------------------------------
-# Key helpers
+# canonical key 헬퍼
 # ---------------------------------------------------------------------------
 
 
 class TestCanonicalKeys:
-    def test_preview_key_zero_padded(self):
-        assert preview_key("job-1", 3) == "jobs/job-1/previews/slide-03.jpg"
+    @pytest.mark.parametrize(
+        ("slide_order", "expected"),
+        [
+            (1, "jobs/job-1/previews/slide-01.jpg"),
+            (3, "jobs/job-1/previews/slide-03.jpg"),
+            (12, "jobs/job-1/previews/slide-12.jpg"),
+            (99, "jobs/job-1/previews/slide-99.jpg"),
+        ],
+    )
+    def test_preview_key_valid(self, slide_order, expected):
+        assert preview_key("job-1", slide_order) == expected
 
-    def test_preview_key_double_digit(self):
-        assert preview_key("job-1", 12) == "jobs/job-1/previews/slide-12.jpg"
-
-    def test_preview_key_boundary_min(self):
-        assert preview_key("job-1", 1) == "jobs/job-1/previews/slide-01.jpg"
-
-    def test_preview_key_boundary_max(self):
-        assert preview_key("job-1", 99) == "jobs/job-1/previews/slide-99.jpg"
-
-    def test_preview_key_invalid_zero(self):
+    @pytest.mark.parametrize("slide_order", [0, 100, -1])
+    def test_preview_key_invalid_order(self, slide_order):
         with pytest.raises(ValueError, match="slide_order"):
-            preview_key("job-1", 0)
-
-    def test_preview_key_invalid_over_99(self):
-        with pytest.raises(ValueError, match="slide_order"):
-            preview_key("job-1", 100)
+            preview_key("job-1", slide_order)
 
     def test_pptx_key(self):
         assert pptx_key("job-abc") == "jobs/job-abc/current.pptx"
@@ -49,8 +47,27 @@ class TestCanonicalKeys:
         assert template_pptx_key("blue") == "templates/blue/template.pptx"
 
 
+class TestValidateIdentifier:
+    @pytest.mark.parametrize("value", ["job-42", "blue", "abc_123", "JOB-ID"])
+    def test_valid(self, value):
+        assert _validate_identifier(value, "x") == value
+
+    @pytest.mark.parametrize("value", ["", "job/42", "../secret", "job 1", "job.id"])
+    def test_invalid(self, value):
+        with pytest.raises(ValueError, match="x"):
+            _validate_identifier(value, "x")
+
+    def test_key_helpers_reject_slash_in_job_id(self):
+        with pytest.raises(ValueError):
+            pptx_key("job/42")
+
+    def test_key_helpers_reject_traversal_in_template_id(self):
+        with pytest.raises(ValueError):
+            template_pptx_key("../secret")
+
+
 # ---------------------------------------------------------------------------
-# GcsClient — GCS 호출 mock
+# GcsClient — GCS 호출 모의 객체
 # ---------------------------------------------------------------------------
 
 
@@ -122,33 +139,32 @@ class TestUploadPdf:
         key = client.upload_pdf("job-42", src)
 
         assert key == "jobs/job-42/current.pdf"
+        mock_bucket.blob.assert_called_once_with("jobs/job-42/current.pdf")
         mock_blob.upload_from_filename.assert_called_once_with(
             str(src), content_type="application/pdf"
         )
 
 
 class TestUploadPreview:
-    def test_returns_canonical_key_zero_padded(self, mock_gcs, tmp_path):
+    @pytest.mark.parametrize(
+        ("job_id", "slide_order", "expected_key"),
+        [
+            ("job-42", 3, "jobs/job-42/previews/slide-03.jpg"),
+            ("job-99", 10, "jobs/job-99/previews/slide-10.jpg"),
+        ],
+    )
+    def test_returns_canonical_key(self, mock_gcs, tmp_path, job_id, slide_order, expected_key):
         client, mock_bucket, mock_blob, _ = mock_gcs
         src = tmp_path / "slide.jpg"
         src.touch()
 
-        key = client.upload_preview("job-42", 3, src)
+        key = client.upload_preview(job_id, slide_order, src)
 
-        assert key == "jobs/job-42/previews/slide-03.jpg"
-        mock_bucket.blob.assert_called_once_with("jobs/job-42/previews/slide-03.jpg")
+        assert key == expected_key
+        mock_bucket.blob.assert_called_once_with(expected_key)
         mock_blob.upload_from_filename.assert_called_once_with(
             str(src), content_type="image/jpeg"
         )
-
-    def test_returns_canonical_key_double_digit(self, mock_gcs, tmp_path):
-        client, mock_bucket, _, _ = mock_gcs
-        src = tmp_path / "slide.jpg"
-        src.touch()
-
-        key = client.upload_preview("job-99", 10, src)
-
-        assert key == "jobs/job-99/previews/slide-10.jpg"
 
 
 class TestDownloadPreview:
@@ -197,3 +213,8 @@ class TestJobWorkdir:
             captured = workdir
 
         assert not captured.exists()
+
+    def test_invalid_job_id_raises(self):
+        with pytest.raises(ValueError, match="job_id"):
+            with job_workdir("job/invalid"):
+                pass
