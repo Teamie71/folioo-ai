@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 _RETRY_MAX = 5
 _BACKOFF_BASE = 1.0  # seconds
-_JITTER_MAX = 0.5    # seconds
+_JITTER_MAX = 0.5  # seconds
 
 # camelCase(API 응답) → snake_case(워커 내부) — 최상위 키만 매핑.
 # slidePlan / currentFills JSONB 내부 키는 그대로 통과시킨다 (§11.0.3).
@@ -77,7 +77,12 @@ class VisualizationMainClient(BaseClient):
                         wait = _BACKOFF_BASE * attempt + random.uniform(0, _JITTER_MAX)
                         logger.warning(
                             "5xx/timeout retry %d/%d %.2fs: [%s %s] status=%d",
-                            attempt, _RETRY_MAX, wait, method, path, exc.status_code,
+                            attempt,
+                            _RETRY_MAX,
+                            wait,
+                            method,
+                            path,
+                            exc.status_code,
                         )
                         await asyncio.sleep(wait)
                         continue
