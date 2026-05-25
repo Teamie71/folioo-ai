@@ -16,6 +16,10 @@ _FIELD_HEADER_PATTERN = re.compile(
     r"^\[[^\]]+ - (?P<field_name>description|contributions|achievements|insights)\]$"
 )
 _NUMBERED_LINE_PATTERN = re.compile(r"^\d+\.\s+")
+_CODE_FENCE_PATTERN = re.compile(
+    r"^\s*```(?:[a-zA-Z0-9_-]+)?\s*\n(?P<body>.*?)\n?\s*```\s*$",
+    re.DOTALL,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -35,13 +39,11 @@ class CorrectionGenerator:
         self._min_lines_per_field = validation_config.min_lines_per_field
         self._allow_null_comment_for_keep = validation_config.allow_null_comment_for_keep
 
-        llm = get_llm(
+        self._llm = get_llm(
             model=llm_config.model,
             temperature=llm_config.temperature,
             timeout=llm_config.timeout,
         )
-        self._llm = llm
-        self._structured_llm = llm.with_structured_output(SingleCorrectionOutput)
 
     def generate(
         self,
@@ -101,8 +103,10 @@ class CorrectionGenerator:
 
             try:
                 logger.info("LLM 첨삭 생성 시도 %s/%s 시작", attempt, total_attempts)
-                chain = correction_generator_prompt | self._structured_llm
-                output: SingleCorrectionOutput = chain.invoke(prompt_variables)
+                chain = correction_generator_prompt | self._llm
+                raw_response = chain.invoke(prompt_variables)
+                response_text = _coerce_llm_text_response(raw_response)
+                output: SingleCorrectionOutput = _parse_single_correction_output(response_text)
                 logger.info("LLM 첨삭 생성 시도 %s/%s 완료", attempt, total_attempts)
             except Exception as exc:
                 last_error_message = f"LLM 호출/파싱 실패: {exc}"
@@ -239,6 +243,44 @@ class CorrectionGenerator:
                     )
 
         return errors
+
+
+def _strip_json_code_fence(text: str) -> str:
+    """LLM 응답을 감싼 마크다운 코드펜스(```json ... ```)를 제거한다.
+
+    OpenRouter를 통한 일부 모델(예: ``openai/gpt-oss-120b``)이 function/tool calling
+    대신 메시지 본문에 펜스로 감싼 JSON을 반환하는 사례를 흡수하기 위한 정규화 헬퍼다.
+
+    Args:
+        text: LLM이 반환한 원본 텍스트
+
+    Returns:
+        str: 펜스가 제거되고 양끝 공백이 정리된 문자열. 펜스가 없으면 원본을 strip한 값.
+    """
+    stripped = text.strip()
+    match = _CODE_FENCE_PATTERN.match(stripped)
+    if match is not None:
+        return match.group("body").strip()
+    return stripped
+
+
+def _parse_single_correction_output(text: str) -> SingleCorrectionOutput:
+    """LLM 텍스트 응답을 ``SingleCorrectionOutput``으로 파싱한다.
+
+    Args:
+        text: LLM이 반환한 JSON 문자열 (마크다운 코드펜스 포함 가능)
+
+    Returns:
+        SingleCorrectionOutput: 스키마 검증을 통과한 첨삭 결과
+
+    Raises:
+        ValueError: 응답이 비어 있는 경우
+        pydantic.ValidationError: JSON 파싱은 됐지만 스키마 검증에 실패한 경우
+    """
+    cleaned = _strip_json_code_fence(text)
+    if not cleaned:
+        raise ValueError("LLM 응답이 비어 있습니다.")
+    return SingleCorrectionOutput.model_validate_json(cleaned)
 
 
 def _get_field_line_counts(portfolio_data: dict) -> dict[str, int]:

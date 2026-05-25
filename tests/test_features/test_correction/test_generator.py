@@ -1,6 +1,7 @@
 """첨삭 생성기 테스트"""
 
 import pytest
+from pydantic import ValidationError
 
 from features.correction.config.loader import CorrectionConfig, CorrectionValidationConfig
 from features.correction.generator import (
@@ -8,6 +9,8 @@ from features.correction.generator import (
     CorrectionGenerator,
     _coerce_llm_text_response,
     _format_portfolio_corrections_for_summary,
+    _parse_single_correction_output,
+    _strip_json_code_fence,
     get_correction_generator,
     reset_correction_generator,
 )
@@ -40,10 +43,7 @@ class DummyPrompt:
 
 
 class DummyLLM:
-    """structured output 래퍼를 대체하는 LLM 모킹 객체."""
-
-    def with_structured_output(self, _: type[SingleCorrectionOutput]) -> object:
-        return object()
+    """LLM 클라이언트를 대체하는 모킹 객체."""
 
 
 def _output(line_number: int = 1, comment: str | None = "좋습니다.") -> SingleCorrectionOutput:
@@ -99,12 +99,17 @@ def _output(line_number: int = 1, comment: str | None = "좋습니다.") -> Sing
     )
 
 
+def _output_json(line_number: int = 1, comment: str | None = "좋습니다.") -> str:
+    """`_output()`을 JSON 문자열로 직렬화한다."""
+    return _output(line_number=line_number, comment=comment).model_dump_json()
+
+
 def test_generate_retry_with_validation_feedback(monkeypatch: pytest.MonkeyPatch):
     """검증 실패 시 피드백을 포함해 재시도한다."""
     from features.correction import generator
 
-    invalid = _output(line_number=2)
-    valid = _output(line_number=1)
+    invalid = _output_json(line_number=2)
+    valid = _output_json(line_number=1)
 
     chain = DummyChain([invalid, valid])
     monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
@@ -124,16 +129,69 @@ def test_generate_retry_with_validation_feedback(monkeypatch: pytest.MonkeyPatch
         emphasis_points="강조 포인트",
     )
 
-    assert result == valid
+    assert result == _output(line_number=1)
     assert len(chain.calls) == 2
     assert chain.calls[1]["validation_feedback"].startswith("이전 출력 보완 필요:")
+
+
+def test_generate_retries_on_fenced_json_then_succeeds(monkeypatch: pytest.MonkeyPatch):
+    """LLM이 ```json``` 코드펜스로 감싼 JSON을 반환해도 파싱 후 진행한다."""
+    from features.correction import generator
+
+    fenced = f"```json\n{_output_json(line_number=1)}\n```"
+    chain = DummyChain([fenced])
+    monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
+
+    result = CorrectionGenerator(max_retries=0).generate(
+        company_name="테스트 회사",
+        job_title="백엔드",
+        job_description="채용 공고",
+        company_insight="인사이트",
+        portfolio_data={
+            "description": "- 한 줄",
+            "contributions": "- 한 줄",
+            "achievements": "- 한 줄",
+            "insights": "- 한 줄",
+        },
+        emphasis_points="강조 포인트",
+    )
+
+    assert result == _output(line_number=1)
+
+
+def test_generate_retries_when_response_is_invalid_json(monkeypatch: pytest.MonkeyPatch):
+    """첫 응답이 JSON 파싱 실패하면 피드백을 포함해 재시도한다."""
+    from features.correction import generator
+
+    chain = DummyChain(["```json\n{not valid json\n```", _output_json(line_number=1)])
+    monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
+
+    result = CorrectionGenerator(max_retries=2).generate(
+        company_name="테스트 회사",
+        job_title="백엔드",
+        job_description="채용 공고",
+        company_insight="인사이트",
+        portfolio_data={
+            "description": "- 한 줄",
+            "contributions": "- 한 줄",
+            "achievements": "- 한 줄",
+            "insights": "- 한 줄",
+        },
+        emphasis_points="강조 포인트",
+    )
+
+    assert result == _output(line_number=1)
+    assert len(chain.calls) == 2
+    assert chain.calls[1]["validation_feedback"].startswith("LLM 호출/파싱 실패:")
 
 
 def test_generate_returns_last_output_when_retries_exhausted(monkeypatch: pytest.MonkeyPatch):
     """재시도 소진 시 마지막 출력을 반환한다."""
     from features.correction import generator
 
-    invalid_last = _output(line_number=3)
+    invalid_last = _output_json(line_number=3)
     chain = DummyChain([invalid_last, invalid_last, invalid_last])
     monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
     monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
@@ -152,7 +210,7 @@ def test_generate_returns_last_output_when_retries_exhausted(monkeypatch: pytest
         emphasis_points="강조 포인트",
     )
 
-    assert result == invalid_last
+    assert result == _output(line_number=3)
 
 
 def test_generate_raises_error_when_llm_fails_without_output(monkeypatch: pytest.MonkeyPatch):
@@ -470,3 +528,38 @@ def test_correction_generator_singleton(monkeypatch: pytest.MonkeyPatch):
     third = get_correction_generator()
 
     assert third is not first
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('{"fields": []}', '{"fields": []}'),
+        ('```json\n{"fields": []}\n```', '{"fields": []}'),
+        ('```\n{"fields": []}\n```', '{"fields": []}'),
+        ('  ```json\n  {"fields": []}\n  ```  ', '{"fields": []}'),
+        ('```JSON\n{"fields": []}\n```', '{"fields": []}'),
+    ],
+)
+def test_strip_json_code_fence(raw: str, expected: str):
+    """다양한 형태의 마크다운 코드펜스를 제거한다."""
+    assert _strip_json_code_fence(raw) == expected
+
+
+def test_parse_single_correction_output_accepts_fenced_json():
+    """```json``` 펜스로 감싸진 JSON도 정상 파싱된다."""
+    payload = _output_json(line_number=1)
+    parsed = _parse_single_correction_output(f"```json\n{payload}\n```")
+
+    assert parsed == _output(line_number=1)
+
+
+def test_parse_single_correction_output_raises_on_empty():
+    """공백/펜스만 들어 있으면 ValueError를 발생시킨다."""
+    with pytest.raises(ValueError, match="LLM 응답이 비어 있습니다"):
+        _parse_single_correction_output("```json\n\n```")
+
+
+def test_parse_single_correction_output_raises_on_invalid_json():
+    """깨진 JSON은 ValidationError로 전파된다."""
+    with pytest.raises(ValidationError):
+        _parse_single_correction_output("{not valid json")
