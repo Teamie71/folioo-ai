@@ -1,7 +1,5 @@
 """GCS 클라이언트 단위 테스트"""
 
-import shutil
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,7 +12,6 @@ from features.visualization.storage.gcs_client import (
     preview_key,
     template_pptx_key,
 )
-
 
 # ---------------------------------------------------------------------------
 # Key helpers
@@ -46,11 +43,11 @@ class TestCanonicalKeys:
 @pytest.fixture()
 def mock_gcs(tmp_path):
     """storage.Client 을 mock 으로 교체한 GcsClient 반환"""
-    with patch("features.visualization.storage.gcs_client.storage.Client") as MockClient:
+    with patch("features.visualization.storage.gcs_client.storage.Client") as mock_client_cls:
         mock_blob = MagicMock()
         mock_bucket = MagicMock()
         mock_bucket.blob.return_value = mock_blob
-        MockClient.return_value.bucket.return_value = mock_bucket
+        mock_client_cls.return_value.bucket.return_value = mock_bucket
 
         client = GcsClient(bucket_name="folioo-visualizations")
         yield client, mock_bucket, mock_blob, tmp_path
