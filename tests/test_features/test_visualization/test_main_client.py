@@ -1,6 +1,7 @@
 """VisualizationMainClient 단위 테스트"""
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, call, patch
 
 import pytest
@@ -217,7 +218,7 @@ class TestSubmitSlidePlan:
     async def test_slide_plan_blob_keys_not_converted(self):
         """slidePlan JSONB 내부 키 source_slide_id 는 camel 로 변환되지 않는다."""
         client = make_client()
-        captured_body: dict = {}
+        captured_body: dict[str, Any] = {}
 
         async def capture(method, path, *, json=None, params=None):
             captured_body.update(json or {})
@@ -319,7 +320,7 @@ class TestSendSlideEvent:
         """currentFills JSONB 내부 font_size_override / is_title 는 camel 변환 안 됨."""
         client = make_client()
         fills = {"shape-1": {"font_size_override": 14, "is_title": True}}
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         async def capture(method, path, *, json=None, params=None):
             captured.update(json or {})
