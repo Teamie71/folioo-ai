@@ -3,7 +3,7 @@ id: "1.06"
 phase: 1
 title: "시각 QA + Fix-and-Verify 루프 + 프리뷰 업로드"
 spec: "specs/phase-1/06-visual-qa-fix-verify.md"
-depends_on: ["1.02", "1.03", "1.04"]
+depends_on: ["1.02", "1.03", "1.04", "1.11", "1.12"]
 blocks: ["1.05"]
 estimate: "M"
 status: "todo"
@@ -17,7 +17,9 @@ sprint: ""
 
 ## 의존성
 
-- 1.04 (샌드박스/렌더/GCS) — soffice/pdftoppm 재렌더와 프리뷰 GCS PUT 에 사용
+- 1.04 (soffice 렌더) — soffice/pdftoppm 재렌더에 사용
+- 1.11 (PPTX 도구 체인) — fix-and-verify 의 pack 1회(배치) 재패키징에 사용
+- 1.12 (GCS 클라이언트) — 통과 슬라이드 프리뷰 GCS PUT 에 사용
 - 1.03 (SlideEditor) — fix-and-verify 의 XML 일괄 수정에 사용
 - 1.02 (콜백 클라이언트) — `slide_preview_ready`/`slide_preview_error` 콜백 발신에 사용
 

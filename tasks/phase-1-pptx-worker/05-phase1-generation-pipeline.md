@@ -3,7 +3,7 @@ id: "1.05"
 phase: 1
 title: "Phase 1 초기 생성 파이프라인 오케스트레이션 (Step 1~7)"
 spec: "specs/phase-1/05-phase1-generation-pipeline.md"
-depends_on: ["1.02", "1.03", "1.04", "1.06"]
+depends_on: ["1.02", "1.03", "1.04", "1.06", "1.11", "1.12"]
 blocks: ["1.07", "1.09"]
 estimate: "L"
 status: "todo"
@@ -18,7 +18,9 @@ sprint: ""
 ## 의존성
 
 - 1.03 (SlideEditor) — Step 3 `extract_slots`→`apply_fills`
-- 1.04 (샌드박스/렌더/GCS) — Step 2·4·5·7 다운로드/unpack/pack/soffice/pdftoppm/업로드
+- 1.04 (soffice 렌더) — Step 5 soffice→PDF→pdftoppm
+- 1.11 (PPTX 도구 체인) — Step 2·4 unpack/미선택 제거/clean/pack/validate
+- 1.12 (GCS 클라이언트) — Step 2·7 템플릿 다운로드 / current.pptx·pdf 업로드
 - 1.06 (시각 QA) — Step 6 QA + fix-and-verify + 프리뷰 업로드
 - 1.02 (콜백 클라이언트) — 매 단계 진행 이벤트 콜백 + portfolioText 조회
 

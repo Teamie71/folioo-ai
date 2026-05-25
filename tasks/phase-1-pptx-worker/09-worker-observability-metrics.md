@@ -17,7 +17,7 @@ sprint: ""
 
 ## 의존성
 
-- 1.04 (샌드박스/렌더/GCS) — soffice 변환 duration·RSS·실패 사유·tmp 디스크를 soffice 래퍼 수명주기에서 계측
+- 1.04 (soffice 렌더) — soffice 변환 duration·RSS·실패 사유·tmp 디스크를 soffice 래퍼 수명주기에서 계측 (PPTX 도구 체인 1.11·GCS 1.12 는 불요)
 - 1.01 (서비스 스캐폴드) — `/health`·lifetime 카운터와 `worker_jobs_processed_total` 동일 소스 공유
 - 1.05 (Phase 1 파이프라인) — 오케스트레이션 계측 훅에서 emit
 
