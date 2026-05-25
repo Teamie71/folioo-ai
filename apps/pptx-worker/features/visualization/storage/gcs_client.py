@@ -24,6 +24,8 @@ _PPTX_CONTENT_TYPE = (
 
 
 def preview_key(job_id: str, slide_order: int) -> str:
+    if not 1 <= slide_order <= 99:
+        raise ValueError(f"slide_order는 1~99 범위여야 합니다. (받은 값: {slide_order})")
     return f"jobs/{job_id}/previews/slide-{slide_order:02d}.jpg"
 
 

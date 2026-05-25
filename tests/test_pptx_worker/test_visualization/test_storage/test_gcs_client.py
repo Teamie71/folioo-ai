@@ -25,6 +25,20 @@ class TestCanonicalKeys:
     def test_preview_key_double_digit(self):
         assert preview_key("job-1", 12) == "jobs/job-1/previews/slide-12.jpg"
 
+    def test_preview_key_boundary_min(self):
+        assert preview_key("job-1", 1) == "jobs/job-1/previews/slide-01.jpg"
+
+    def test_preview_key_boundary_max(self):
+        assert preview_key("job-1", 99) == "jobs/job-1/previews/slide-99.jpg"
+
+    def test_preview_key_invalid_zero(self):
+        with pytest.raises(ValueError, match="slide_order"):
+            preview_key("job-1", 0)
+
+    def test_preview_key_invalid_over_99(self):
+        with pytest.raises(ValueError, match="slide_order"):
+            preview_key("job-1", 100)
+
     def test_pptx_key(self):
         assert pptx_key("job-abc") == "jobs/job-abc/current.pptx"
 
