@@ -134,7 +134,13 @@ class BaseClient:
                 path,
                 response.status_code,
             )
-            return response.json()
+            try:
+                return response.json()
+            except Exception as exc:
+                raise MainServerError(
+                    status_code=response.status_code,
+                    detail=f"응답 JSON 파싱 실패: {exc}",
+                ) from exc
 
         error_body: Any = None
         try:
