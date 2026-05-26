@@ -1,4 +1,6 @@
-"""PPTX 패키지 수준 도구 체인."""
+"""PPTX OOXML 편집 및 패키지 도구 체인."""
+
+from features.visualization.pptx.slide_editor import SlideEditor
 
 from .toolchain import (
     ANTHROPIC_PPTX_SKILL_ENV,
@@ -12,4 +14,5 @@ __all__ = [
     "PptxToolchain",
     "PptxToolchainError",
     "PptxToolchainResult",
+    "SlideEditor",
 ]
