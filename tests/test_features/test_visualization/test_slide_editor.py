@@ -1,6 +1,7 @@
 """SlideEditor XML 편집 테스트."""
 
 from pathlib import Path
+from xml.dom.minidom import Document, Element
 
 from defusedxml.minidom import parse
 
@@ -11,7 +12,7 @@ DRAWINGML_NS = SlideEditor.DRAWINGML_NS
 CHART_NS = SlideEditor.CHART_NS
 
 
-def make_sample_package(tmp_path: Path) -> tuple[Path, Path]:
+def _make_sample_package(tmp_path: Path) -> tuple[Path, Path]:
     """슬라이드 XML, rels, chart XML 을 포함한 최소 PPTX unpack 구조를 만든다."""
     slides_dir = tmp_path / "ppt" / "slides"
     rels_dir = slides_dir / "_rels"
@@ -175,28 +176,28 @@ def make_sample_package(tmp_path: Path) -> tuple[Path, Path]:
     return slide_path, chart_path
 
 
-def node_text(element) -> str:
+def _node_text(element: Element) -> str:
     return "".join(child.data for child in element.childNodes if child.nodeType == child.TEXT_NODE)
 
 
-def shape_by_id(doc, shape_id: str):
+def _shape_by_id(doc: Document, shape_id: str) -> Element:
     for shape in doc.getElementsByTagNameNS(PML_NS, "sp"):
         c_nv_pr = shape.getElementsByTagNameNS(PML_NS, "cNvPr")[0]
         if c_nv_pr.getAttribute("id") == shape_id:
             return shape
-    raise AssertionError(f"shape not found: {shape_id}")
+    raise AssertionError(f"도형을 찾을 수 없습니다: {shape_id}")
 
 
-def cache_values(cache) -> list[str]:
+def _cache_values(cache: Element) -> list[str]:
     values = []
     for point in cache.getElementsByTagNameNS(CHART_NS, "pt"):
-        values.append(node_text(point.getElementsByTagNameNS(CHART_NS, "v")[0]))
+        values.append(_node_text(point.getElementsByTagNameNS(CHART_NS, "v")[0]))
     return values
 
 
-def test_extract_slots_reads_text_and_chart_metadata(tmp_path):
+def test_extract_slots_reads_text_and_chart_metadata(tmp_path: Path) -> None:
     """텍스트/차트 Slot 과 EMU, 폰트 크기, 차트 캐시를 추출한다."""
-    slide_path, _ = make_sample_package(tmp_path)
+    slide_path, _ = _make_sample_package(tmp_path)
 
     slots = {slot["shape_id"]: slot for slot in SlideEditor().extract_slots(str(slide_path))}
 
@@ -221,9 +222,9 @@ def test_extract_slots_reads_text_and_chart_metadata(tmp_path):
     assert slots["8"]["h_emu"] == 2743200
 
 
-def test_apply_text_preserves_shape_and_text_style_with_overrides(tmp_path):
+def test_apply_text_preserves_shape_and_text_style_with_overrides(tmp_path: Path) -> None:
     """텍스트 교체 후 도형 서식은 보존하고 폰트 오버라이드를 반영한다."""
-    slide_path, _ = make_sample_package(tmp_path)
+    slide_path, _ = _make_sample_package(tmp_path)
 
     SlideEditor().apply_fills(
         str(slide_path),
@@ -238,14 +239,14 @@ def test_apply_text_preserves_shape_and_text_style_with_overrides(tmp_path):
     )
 
     doc = parse(str(slide_path))
-    title_shape = shape_by_id(doc, "2")
+    title_shape = _shape_by_id(doc, "2")
     shape_props = title_shape.getElementsByTagNameNS(PML_NS, "spPr")[0]
     paragraphs = title_shape.getElementsByTagNameNS(DRAWINGML_NS, "p")
     texts = title_shape.getElementsByTagNameNS(DRAWINGML_NS, "t")
 
     assert shape_props.getElementsByTagNameNS(DRAWINGML_NS, "gradFill")
     assert shape_props.getElementsByTagNameNS(DRAWINGML_NS, "outerShdw")
-    assert [node_text(text) for text in texts] == ["  새 제목", "두 번째 줄"]
+    assert [_node_text(text) for text in texts] == ["  새 제목", "두 번째 줄"]
     assert [text.getAttribute("xml:space") for text in texts] == ["preserve", "preserve"]
 
     for paragraph in paragraphs:
@@ -260,9 +261,9 @@ def test_apply_text_preserves_shape_and_text_style_with_overrides(tmp_path):
         assert color.getAttribute("val") == "123456"
 
 
-def test_apply_remove_deletes_shape_tree(tmp_path):
+def test_apply_remove_deletes_shape_tree(tmp_path: Path) -> None:
     """remove action 은 대상 p:sp 전체를 제거한다."""
-    slide_path, _ = make_sample_package(tmp_path)
+    slide_path, _ = _make_sample_package(tmp_path)
 
     SlideEditor().apply_fills(str(slide_path), {"3": {"action": "remove"}})
 
@@ -276,9 +277,9 @@ def test_apply_remove_deletes_shape_tree(tmp_path):
     assert "삭제될 본문" not in slide_path.read_text(encoding="utf-8")
 
 
-def test_apply_chart_updates_cache_formulas_and_keeps_chart_type(tmp_path):
+def test_apply_chart_updates_cache_formulas_and_keeps_chart_type(tmp_path: Path) -> None:
     """chart action 은 캐시와 수식을 함께 갱신하고 차트 타입은 유지한다."""
-    slide_path, chart_path = make_sample_package(tmp_path)
+    slide_path, chart_path = _make_sample_package(tmp_path)
 
     SlideEditor().apply_fills(
         str(slide_path),
@@ -308,13 +309,13 @@ def test_apply_chart_updates_cache_formulas_and_keeps_chart_type(tmp_path):
         CHART_NS, "strCache"
     )[0]
     num_cache = series.getElementsByTagNameNS(CHART_NS, "numCache")[0]
-    formulas = [node_text(formula) for formula in doc.getElementsByTagNameNS(CHART_NS, "f")]
+    formulas = [_node_text(formula) for formula in doc.getElementsByTagNameNS(CHART_NS, "f")]
 
-    assert cache_values(tx_cache) == ["개선 후"]
+    assert _cache_values(tx_cache) == ["개선 후"]
     assert tx_cache.getElementsByTagNameNS(CHART_NS, "ptCount")[0].getAttribute("val") == "1"
-    assert cache_values(cat_cache) == ["전환율", "이탈률", "잔존율"]
+    assert _cache_values(cat_cache) == ["전환율", "이탈률", "잔존율"]
     assert cat_cache.getElementsByTagNameNS(CHART_NS, "ptCount")[0].getAttribute("val") == "3"
-    assert cache_values(num_cache) == ["148", "32", "91"]
+    assert _cache_values(num_cache) == ["148", "32", "91"]
     assert num_cache.getElementsByTagNameNS(CHART_NS, "ptCount")[0].getAttribute("val") == "3"
     assert "Sheet1!$B$1" in formulas
     assert "Sheet1!$A$2:$A$4" in formulas

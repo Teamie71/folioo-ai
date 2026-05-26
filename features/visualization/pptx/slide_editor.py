@@ -1,4 +1,4 @@
-"""DrawingML 규칙을 준수하는 슬라이드 XML 편집기."""
+"""슬라이드 XML Slot 추출과 Fill 적용을 담당하는 OOXML 편집기."""
 
 from pathlib import Path
 from typing import Any
@@ -13,6 +13,13 @@ class SlideEditor:
     디자이너 서식을 보존하면서 텍스트와 차트 데이터만 교체하는 편집기.
 
     식별자는 PowerPoint 가 자동 부여한 `cNvPr/@id` 만 사용한다.
+
+    Attributes:
+        PML_NS: PresentationML 네임스페이스 URI
+        DRAWINGML_NS: DrawingML 네임스페이스 URI
+        CHART_NS: DrawingML Chart 네임스페이스 URI
+        REL_NS: Office relationship 네임스페이스 URI
+        PKG_REL_NS: OOXML package relationship 네임스페이스 URI
     """
 
     PML_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -21,14 +28,19 @@ class SlideEditor:
     REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
     PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
-    _TITLE_PLACEHOLDER_TYPES = {"title", "ctrTitle", "subTitle"}
+    _TITLE_PLACEHOLDER_TYPES = frozenset({"title", "ctrTitle", "subTitle"})
 
     def extract_slots(self, slide_xml_path: str) -> list[dict[str, Any]]:
         """
         슬라이드 XML 에서 텍스트 도형과 차트 Slot 디스크립터를 추출한다.
 
+        Args:
+            slide_xml_path: 편집 대상 `slideN.xml` 파일 경로
+
         Returns:
-            shape_id, 좌표/크기(EMU), 현재 텍스트, 폰트 크기, kind 를 담은 dict 목록
+            list[dict[str, Any]]: Slot 디스크립터 목록. 각 항목은 `shape_id`,
+            `shape_name`, `x_emu`, `y_emu`, `w_emu`, `h_emu`, `current_text`,
+            `is_title_placeholder`, `font_size_pt`, `kind` 를 포함한다.
         """
         doc = parse(slide_xml_path)
         sp_tree = self._first_descendant(doc, self.PML_NS, "spTree")
@@ -52,8 +64,13 @@ class SlideEditor:
         """
         평평한 shape_id -> fill 맵을 슬라이드 XML 에 적용한다.
 
-        `text` 와 `remove` 는 슬라이드 XML 을 수정하고, `chart` 는 rels 로 연결된
-        chartN.xml 의 네이티브 캐시를 수정한다.
+        Args:
+            slide_xml_path: 편집 대상 `slideN.xml` 파일 경로
+            fills: `shape_id` 를 key 로 하는 Fill 맵. 각 값은 `action`,
+                `text`, `font_size_override`, `is_title`, `data` 를 포함할 수 있다.
+
+        Raises:
+            ValueError: 차트 관계, 차트 타입, series 데이터가 유효하지 않은 경우
         """
         doc = parse(slide_xml_path)
         sp_tree = self._first_descendant(doc, self.PML_NS, "spTree")
