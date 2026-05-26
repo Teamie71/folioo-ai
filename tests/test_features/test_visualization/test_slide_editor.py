@@ -3,6 +3,7 @@
 from pathlib import Path
 from xml.dom.minidom import Document, Element
 
+import pytest
 from defusedxml.minidom import parse
 
 from features.visualization.pptx import SlideEditor
@@ -222,6 +223,63 @@ def test_extract_slots_reads_text_and_chart_metadata(tmp_path: Path) -> None:
     assert slots["8"]["h_emu"] == 2743200
 
 
+def test_extract_slots_preserves_soft_line_breaks(tmp_path: Path) -> None:
+    """같은 문단 안의 a:br 을 current_text 줄바꿈으로 보존한다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    slide_xml = slide_path.read_text(encoding="utf-8").replace(
+        "<a:t>여기에 프로젝트명</a:t>",
+        """<a:t>첫 줄</a:t>
+            </a:r>
+            <a:br/>
+            <a:r>
+              <a:t>둘째 줄</a:t>""",
+    )
+    slide_path.write_text(slide_xml, encoding="utf-8")
+
+    slots = {slot["shape_id"]: slot for slot in SlideEditor().extract_slots(str(slide_path))}
+
+    assert slots["2"]["current_text"] == "첫 줄\n둘째 줄"
+
+
+def test_extract_slots_rejects_external_chart_relationship(tmp_path: Path) -> None:
+    """외부 차트 relationship 은 읽지 않는다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    rels_path = slide_path.parent / "_rels" / "slide1.xml.rels"
+    rels_path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId7"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+                Target="https://example.com/chart.xml"
+                TargetMode="External"/>
+</Relationships>
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="외부 차트 관계"):
+        SlideEditor().extract_slots(str(slide_path))
+
+
+def test_extract_slots_rejects_chart_target_outside_package(tmp_path: Path) -> None:
+    """패키지 루트 밖으로 나가는 chart target 은 거부한다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    rels_path = slide_path.parent / "_rels" / "slide1.xml.rels"
+    rels_path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId7"
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+                Target="../../../outside/chart1.xml"/>
+</Relationships>
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="패키지 범위"):
+        SlideEditor().extract_slots(str(slide_path))
+
+
 def test_apply_text_preserves_shape_and_text_style_with_overrides(tmp_path: Path) -> None:
     """텍스트 교체 후 도형 서식은 보존하고 폰트 오버라이드를 반영한다."""
     slide_path, _ = _make_sample_package(tmp_path)
@@ -259,6 +317,48 @@ def test_apply_text_preserves_shape_and_text_style_with_overrides(tmp_path: Path
         assert run_props.getAttribute("b") == "1"
         assert latin.getAttribute("typeface") == "Pretendard"
         assert color.getAttribute("val") == "123456"
+
+
+def test_apply_text_uses_default_run_props_when_run_props_missing(tmp_path: Path) -> None:
+    """rPr 이 없으면 defRPr 서식을 a:rPr 로 정규화해 사용한다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    slide_xml = slide_path.read_text(encoding="utf-8")
+    slide_xml = slide_xml.replace(
+        '<a:pPr algn="ctr"/>',
+        """<a:pPr algn="ctr">
+              <a:defRPr sz="3600">
+                <a:solidFill><a:srgbClr val="ABCDEF"/></a:solidFill>
+                <a:latin typeface="FallbackFont"/>
+              </a:defRPr>
+            </a:pPr>""",
+        1,
+    )
+    slide_xml = slide_xml.replace(
+        """              <a:rPr lang="ko-KR" sz="4000" b="0">
+                <a:solidFill><a:srgbClr val="123456"/></a:solidFill>
+                <a:latin typeface="Pretendard"/>
+              </a:rPr>
+""",
+        "",
+        1,
+    )
+    slide_path.write_text(slide_xml, encoding="utf-8")
+
+    SlideEditor().apply_fills(
+        str(slide_path),
+        {"2": {"action": "text", "text": "기본 서식 유지"}},
+    )
+
+    doc = parse(str(slide_path))
+    title_shape = _shape_by_id(doc, "2")
+    run_props = title_shape.getElementsByTagNameNS(DRAWINGML_NS, "rPr")[0]
+    latin = run_props.getElementsByTagNameNS(DRAWINGML_NS, "latin")[0]
+    color = run_props.getElementsByTagNameNS(DRAWINGML_NS, "srgbClr")[0]
+
+    assert run_props.tagName == "a:rPr"
+    assert run_props.getAttribute("sz") == "3600"
+    assert latin.getAttribute("typeface") == "FallbackFont"
+    assert color.getAttribute("val") == "ABCDEF"
 
 
 def test_apply_remove_deletes_shape_tree(tmp_path: Path) -> None:

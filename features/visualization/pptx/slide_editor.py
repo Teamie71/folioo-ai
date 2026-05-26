@@ -347,12 +347,22 @@ class SlideEditor:
     def _text_body_content(self, tx_body: Element) -> str:
         lines = []
         for paragraph in self._children(tx_body, self.DRAWINGML_NS, "p"):
-            parts = [
-                self._node_text(text_node)
-                for text_node in self._descendants(paragraph, self.DRAWINGML_NS, "t")
-            ]
-            lines.append("".join(parts))
+            lines.append(self._text_with_breaks(paragraph))
         return "\n".join(lines)
+
+    def _text_with_breaks(self, element: Element) -> str:
+        parts = []
+        for child in element.childNodes:
+            if child.nodeType != Node.ELEMENT_NODE:
+                continue
+
+            if child.namespaceURI == self.DRAWINGML_NS and child.localName == "br":
+                parts.append("\n")
+            elif child.namespaceURI == self.DRAWINGML_NS and child.localName == "t":
+                parts.append(self._node_text(child))
+            else:
+                parts.append(self._text_with_breaks(child))
+        return "".join(parts)
 
     def _first_font_size_pt(self, tx_body: Element) -> float | None:
         for tag_name in ("rPr", "defRPr", "endParaRPr"):
@@ -374,7 +384,26 @@ class SlideEditor:
         run_props = self._first_descendant(tx_body, self.DRAWINGML_NS, "rPr")
         if run_props is not None:
             return run_props.cloneNode(deep=True)
+
+        for tag_name in ("defRPr", "endParaRPr"):
+            fallback_props = self._first_descendant(tx_body, self.DRAWINGML_NS, tag_name)
+            if fallback_props is not None:
+                return self._clone_as_run_props(fallback_props, doc)
+
         return doc.createElementNS(self.DRAWINGML_NS, "a:rPr")
+
+    def _clone_as_run_props(self, source_props: Element, doc: Document) -> Element:
+        run_props = doc.createElementNS(self.DRAWINGML_NS, "a:rPr")
+        for index in range(source_props.attributes.length):
+            attr = source_props.attributes.item(index)
+            if attr.namespaceURI:
+                run_props.setAttributeNS(attr.namespaceURI, attr.name, attr.value)
+            else:
+                run_props.setAttribute(attr.name, attr.value)
+
+        for child in source_props.childNodes:
+            run_props.appendChild(child.cloneNode(deep=True))
+        return run_props
 
     def _create_text_body(self, doc: Document) -> Element:
         tx_body = doc.createElementNS(self.PML_NS, "p:txBody")
@@ -417,22 +446,34 @@ class SlideEditor:
 
         for relationship in relationships:
             if relationship.getAttribute("Id") == rel_id:
+                if relationship.getAttribute("TargetMode") == "External":
+                    raise ValueError("외부 차트 관계는 지원하지 않습니다.")
                 return relationship.getAttribute("Target") or None
 
         return None
 
     def _resolve_part_path(self, source_xml_path: Path, target: str) -> Path:
         normalized_target = target.replace("\\", "/")
-        if not normalized_target.startswith("/"):
-            return (source_xml_path.parent / normalized_target).resolve()
+        package_root = self._package_root_for_part(source_xml_path)
+        if normalized_target.startswith("/"):
+            candidate = package_root / normalized_target.lstrip("/")
+        else:
+            candidate = source_xml_path.parent / normalized_target
 
-        package_target = normalized_target.lstrip("/")
-        for parent in (source_xml_path.parent, *source_xml_path.parents):
-            candidate = parent / package_target
-            if candidate.exists():
-                return candidate.resolve()
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(package_root):
+            raise ValueError("차트 대상 경로가 패키지 범위를 벗어났습니다.")
+        return resolved
 
-        return (source_xml_path.parent / package_target).resolve()
+    def _package_root_for_part(self, part_path: Path) -> Path:
+        resolved_part_path = part_path.resolve()
+        for parent in (resolved_part_path.parent, *resolved_part_path.parents):
+            if parent.name == "ppt":
+                return parent.parent.resolve()
+
+        if len(resolved_part_path.parents) >= 3:
+            return resolved_part_path.parents[2].resolve()
+        return resolved_part_path.parent.resolve()
 
     def _chart_summary(self, chart_path: Path) -> dict[str, Any]:
         chart_doc = parse(str(chart_path))
