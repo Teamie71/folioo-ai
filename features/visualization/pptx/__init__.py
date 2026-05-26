@@ -1,17 +1,19 @@
-"""PPTX OOXML 편집 유틸리티."""
+"""PPTX OOXML 편집, 패키징, 렌더링 유틸리티."""
 
 from importlib import import_module
-from pathlib import Path
+from pkgutil import extend_path
 
-from features.visualization import __path__ as _visualization_paths
+from features.visualization.pptx.slide_editor import SlideEditor
 
-for _visualization_path in _visualization_paths:
-    _candidate = Path(_visualization_path) / "pptx"
-    if _candidate.is_dir() and str(_candidate) not in __path__:
-        __path__.append(str(_candidate))
+from .toolchain import (
+    ANTHROPIC_PPTX_SKILL_ENV,
+    PptxToolchain,
+    PptxToolchainError,
+    PptxToolchainResult,
+    ValidationResult,
+)
 
-_slide_editor = import_module("features.visualization.pptx.slide_editor")
-SlideEditor = _slide_editor.SlideEditor
+__path__ = extend_path(__path__, __name__)
 
 _RENDER_EXPORTS = {
     "DEFAULT_MAX_CONVERSIONS_BEFORE_RECYCLE",
@@ -36,13 +38,18 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "ANTHROPIC_PPTX_SKILL_ENV",
     "DEFAULT_MAX_CONVERSIONS_BEFORE_RECYCLE",
     "InMemoryConversionCounter",
     "PptxRenderError",
     "PptxRenderer",
+    "PptxToolchain",
+    "PptxToolchainError",
+    "PptxToolchainResult",
     "RenderOptions",
     "RenderResult",
     "RenderedSlide",
     "SlideEditor",
+    "ValidationResult",
     "should_recycle_worker",
 ]

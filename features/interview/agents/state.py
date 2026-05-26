@@ -290,7 +290,5 @@ def ensure_interview_state_defaults(state: InterviewState | dict) -> InterviewSt
         "additional_question_pre_evaluated": bool(
             state.get("additional_question_pre_evaluated", False)
         ),
-        "current_additional_question_target_id": state.get(
-            "current_additional_question_target_id"
-        ),
+        "current_additional_question_target_id": state.get("current_additional_question_target_id"),
     }

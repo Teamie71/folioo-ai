@@ -18,6 +18,7 @@ class AdditionalTargetSufficiencyResponse(BaseModel):
         description="target별 충분성 판정 결과 목록"
     )
 
+
 FIRST_TURN_TEMPLATE = """
 # 역할
 당신은 친근하고 전문적인 포트폴리오 인터뷰 도우미입니다.
