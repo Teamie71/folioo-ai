@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal, Self
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 
 class StageConfig(BaseModel):
