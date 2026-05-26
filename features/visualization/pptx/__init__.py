@@ -7,6 +7,7 @@ from .toolchain import (
     PptxToolchain,
     PptxToolchainError,
     PptxToolchainResult,
+    ValidationResult,
 )
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "PptxToolchainError",
     "PptxToolchainResult",
     "SlideEditor",
+    "ValidationResult",
 ]

@@ -3,6 +3,7 @@
 import subprocess
 import tempfile
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
 
 import defusedxml.minidom
@@ -37,34 +38,47 @@ def skill_dir(tmp_path: Path) -> Path:
 class FakePptxSkillRunner:
     """테스트용 Anthropic PPTX 스크립트 대역."""
 
-    def __init__(self, validate_returncodes: list[int] | None = None) -> None:
+    def __init__(
+        self,
+        validate_returncodes: list[int] | None = None,
+        repair_returncode: int = 0,
+    ) -> None:
         self.commands: list[list[str]] = []
         self.validate_returncodes = validate_returncodes or [0]
+        self.repair_returncode = repair_returncode
 
     def __call__(
         self,
-        command: list[str],
+        command: Sequence[str],
         cwd: Path | None,
     ) -> subprocess.CompletedProcess[str]:
         del cwd
-        self.commands.append(list(command))
-        script_name = Path(command[1]).name
+        command_list = list(command)
+        self.commands.append(command_list)
+        script_name = Path(command_list[1]).name
 
         if script_name == "unpack.py":
-            _unzip(Path(command[2]), Path(command[3]))
-            return _completed(command)
+            _unzip(Path(command_list[2]), Path(command_list[3]))
+            return _completed(command_list)
         if script_name == "clean.py":
-            _clean_unreferenced_slides(Path(command[2]))
-            return _completed(command)
+            _clean_unreferenced_slides(Path(command_list[2]))
+            return _completed(command_list)
         if script_name == "pack.py":
-            _zip_dir(Path(command[2]), Path(command[3]))
-            return _completed(command)
+            _zip_dir(Path(command_list[2]), Path(command_list[3]))
+            return _completed(command_list)
         if script_name == "validate.py":
-            if "--auto-repair" in command:
-                return _completed(command, stdout="Auto-repaired 1 issue(s)")
-            returncode = self.validate_returncodes.pop(0) if self.validate_returncodes else 0
+            if "--auto-repair" in command_list:
+                return _completed(
+                    command_list,
+                    returncode=self.repair_returncode,
+                    stdout="Auto-repaired 1 issue(s)" if self.repair_returncode == 0 else "",
+                    stderr="repair crashed" if self.repair_returncode != 0 else "",
+                )
+            if not self.validate_returncodes:
+                raise AssertionError("validate_returncodes 리스트가 소진되었습니다.")
+            returncode = self.validate_returncodes.pop(0)
             stdout = "All validations PASSED!" if returncode == 0 else "FAILED - schema error"
-            return _completed(command, returncode=returncode, stdout=stdout)
+            return _completed(command_list, returncode=returncode, stdout=stdout)
 
         raise AssertionError(f"unexpected script: {script_name}")
 
@@ -154,6 +168,23 @@ def test_repair_failure_raises_after_revalidation(
 
     assert runner.count("pack.py") == 2
     assert _toolchain_tmp_dirs() == before_tmp_dirs
+
+
+def test_auto_repair_command_failure_raises_before_repack(
+    tmp_path: Path,
+    skill_dir: Path,
+):
+    template = tmp_path / "template.pptx"
+    output = tmp_path / "selected.pptx"
+    _make_template_pptx(template, slide_count=1)
+
+    runner = FakePptxSkillRunner(validate_returncodes=[1], repair_returncode=1)
+    toolchain = PptxToolchain(skill_dir, runner=runner)
+
+    with pytest.raises(PptxToolchainError, match="auto-repair 실행이 실패"):
+        toolchain.build_selected_deck(template, output, selected_slide_filenames=["slide1.xml"])
+
+    assert runner.count("pack.py") == 1
 
 
 def test_selected_slide_must_exist(tmp_path: Path, skill_dir: Path):
@@ -295,7 +326,6 @@ def _slides_in_pptx(pptx_path: Path) -> list[str]:
     with zipfile.ZipFile(pptx_path, "r") as zf:
         with tempfile.TemporaryDirectory(
             prefix="folioo-pptx-test-extract-",
-            dir="/tmp",
         ) as temp_dir:
             unpacked = Path(temp_dir)
             zf.extractall(unpacked)

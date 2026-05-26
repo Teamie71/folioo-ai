@@ -25,6 +25,7 @@ dependencies = [
     "tavily-python>=0.7.22",
     "uvicorn[standard]>=0.40.0",
     "google-cloud-storage>=3.10.1",
+    # Anthropic PPTX skill validate.py imports lxml.etree at runtime.
     "lxml>=6.0.0",
 ]
 

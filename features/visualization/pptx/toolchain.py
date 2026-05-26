@@ -39,7 +39,9 @@ class PptxToolchainResult:
 
 
 @dataclass(frozen=True)
-class _ValidationResult:
+class ValidationResult:
+    """PPTX 검증 또는 repair 스크립트 실행 결과."""
+
     success: bool
     stdout: str
     stderr: str
@@ -71,13 +73,21 @@ class PptxToolchain:
     def from_env(
         cls,
         env_var: str = ANTHROPIC_PPTX_SKILL_ENV,
-        **kwargs,
+        *,
+        python_executable: str | Path | None = None,
+        tmp_root: str | Path = _TMP_ROOT,
+        runner: CommandRunner | None = None,
     ) -> "PptxToolchain":
         """환경변수에 설정된 Anthropic PPTX 스킬 디렉터리로 어댑터 생성."""
         skill_dir = os.getenv(env_var)
         if not skill_dir:
             raise PptxToolchainError(f"{env_var} 환경변수가 설정되지 않았습니다.")
-        return cls(skill_dir, **kwargs)
+        return cls(
+            skill_dir,
+            python_executable=python_executable,
+            tmp_root=tmp_root,
+            runner=runner,
+        )
 
     def ensure_available(self) -> None:
         """필수 Anthropic PPTX 스킬 스크립트가 있는지 확인."""
@@ -113,6 +123,7 @@ class PptxToolchain:
 
         destination = Path(output_pptx)
         destination.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_tmp_root()
 
         with tempfile.TemporaryDirectory(
             prefix="folioo-pptx-toolchain-",
@@ -133,7 +144,13 @@ class PptxToolchain:
             repaired = False
             if not validation.success:
                 repaired = True
-                self.repair(unpacked_dir, original_pptx=tmp_template)
+                repair_result = self.repair(unpacked_dir, original_pptx=tmp_template)
+                if not repair_result.success:
+                    raise PptxToolchainError(
+                        "PPTX auto-repair 실행이 실패했습니다.\n"
+                        f"stdout:\n{repair_result.stdout}\n"
+                        f"stderr:\n{repair_result.stderr}"
+                    )
                 self.pack(unpacked_dir, packed_pptx, original_pptx=tmp_template)
                 validation = self.validate(unpacked_dir, original_pptx=tmp_template)
                 if not validation.success:
@@ -191,7 +208,7 @@ class PptxToolchain:
             ],
         )
 
-    def validate(self, unpacked_dir: Path, *, original_pptx: Path) -> _ValidationResult:
+    def validate(self, unpacked_dir: Path, *, original_pptx: Path) -> ValidationResult:
         """PPTX 스키마 검증."""
         completed = self._run_command(
             [
@@ -202,13 +219,13 @@ class PptxToolchain:
                 str(original_pptx),
             ]
         )
-        return _ValidationResult(
+        return ValidationResult(
             success=completed.returncode == 0,
             stdout=completed.stdout or "",
             stderr=completed.stderr or "",
         )
 
-    def repair(self, unpacked_dir: Path, *, original_pptx: Path) -> _ValidationResult:
+    def repair(self, unpacked_dir: Path, *, original_pptx: Path) -> ValidationResult:
         """검증기의 auto-repair 를 실행한다."""
         completed = self._run_command(
             [
@@ -220,7 +237,7 @@ class PptxToolchain:
                 "--auto-repair",
             ]
         )
-        return _ValidationResult(
+        return ValidationResult(
             success=completed.returncode == 0,
             stdout=completed.stdout or "",
             stderr=completed.stderr or "",
@@ -311,6 +328,9 @@ class PptxToolchain:
         tmp_root = self.tmp_root.resolve()
         if not tmp_root.is_relative_to(_TMP_ROOT):
             raise ValueError("PPTX 도구 체인 작업 디렉터리는 /tmp 하위여야 합니다.")
+
+    def _ensure_tmp_root(self) -> None:
+        tmp_root = self.tmp_root.resolve()
         tmp_root.mkdir(parents=True, exist_ok=True)
 
     def _run_checked(self, command_name: str, command: Sequence[str]) -> None:
