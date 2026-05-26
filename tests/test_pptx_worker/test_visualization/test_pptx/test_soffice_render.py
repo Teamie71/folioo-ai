@@ -1,5 +1,6 @@
 """soffice 렌더 래퍼 테스트."""
 
+import signal
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -26,11 +27,14 @@ class FakeProcess:
         factory: "FakePopenFactory",
         *,
         timeout_once: bool = False,
+        should_fail: bool = False,
     ) -> None:
         self.command = command
         self.factory = factory
         self.timeout_once = timeout_once
+        self.should_fail = should_fail
         self.killed = False
+        self.pid = 1000 + len(factory.processes)
         self.returncode = 0
 
     def communicate(self, timeout: float | None = None) -> tuple[str, str]:
@@ -39,6 +43,9 @@ class FakeProcess:
         if self.killed:
             self.returncode = -9
             return "", "timeout"
+        if self.should_fail:
+            self.returncode = 1
+            return "", f"{self.command[0]} failed"
         self.factory.complete_command(self.command)
         return "", ""
 
@@ -54,10 +61,13 @@ class FakePopenFactory:
         *,
         full_pages: list[int] | None = None,
         timeout_soffice_attempts: int = 0,
+        failing_commands: set[str] | None = None,
     ) -> None:
-        self.full_pages = full_pages or [1, 2, 3]
+        self.full_pages = [1, 2, 3] if full_pages is None else full_pages
         self.timeout_soffice_attempts = timeout_soffice_attempts
+        self.failing_commands = failing_commands or set()
         self.commands: list[list[str]] = []
+        self.popen_kwargs: list[dict] = []
         self.processes: list[FakeProcess] = []
         self._lock = Lock()
 
@@ -67,14 +77,21 @@ class FakePopenFactory:
         stdout: int,
         stderr: int,
         text: bool,
+        **kwargs,
     ) -> FakeProcess:
         del stdout, stderr, text
         with self._lock:
             timeout_once = command[0] == "soffice" and self.timeout_soffice_attempts > 0
             if timeout_once:
                 self.timeout_soffice_attempts -= 1
-            process = FakeProcess(command, self, timeout_once=timeout_once)
+            process = FakeProcess(
+                command,
+                self,
+                timeout_once=timeout_once,
+                should_fail=command[0] in self.failing_commands,
+            )
             self.commands.append(command)
+            self.popen_kwargs.append(kwargs)
             self.processes.append(process)
             return process
 
@@ -125,7 +142,9 @@ def tmp_root(tmp_path: Path) -> Path:
     return path
 
 
-def make_renderer(tmp_root: Path, counter: InMemoryConversionCounter | None = None) -> PptxRenderer:
+def _make_renderer(
+    tmp_root: Path, counter: InMemoryConversionCounter | None = None
+) -> PptxRenderer:
     """테스트용 렌더러를 만든다."""
     return PptxRenderer(
         options=RenderOptions(timeout_seconds=0.1, tmp_root=tmp_root),
@@ -133,12 +152,12 @@ def make_renderer(tmp_root: Path, counter: InMemoryConversionCounter | None = No
     )
 
 
-def user_installation_arg(command: list[str]) -> str:
+def _user_installation_arg(command: list[str]) -> str:
     """soffice 명령의 UserInstallation 인자를 반환한다."""
     return next(arg for arg in command if arg.startswith("-env:UserInstallation="))
 
 
-def assert_tmp_root_empty(tmp_root: Path) -> None:
+def _assert_tmp_root_empty(tmp_root: Path) -> None:
     """렌더러 내부 작업 디렉터리가 모두 제거됐는지 확인한다."""
     assert list(tmp_root.iterdir()) == []
 
@@ -152,7 +171,7 @@ def test_full_render_outputs_all_pages_and_omits_page_flags(
     factory = FakePopenFactory(full_pages=[1, 2, 3])
 
     with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
-        result = make_renderer(tmp_root).render(source_pptx, tmp_path / "out")
+        result = _make_renderer(tmp_root).render(source_pptx, tmp_path / "out")
 
     assert result.pdf_path == tmp_path / "out" / "deck.pdf"
     assert result.pdf_path.read_bytes() == b"%PDF-1.4"
@@ -166,7 +185,8 @@ def test_full_render_outputs_all_pages_and_omits_page_flags(
     assert "-f" not in pdftoppm_command
     assert "-l" not in pdftoppm_command
     assert result.conversion_count == 1
-    assert_tmp_root_empty(tmp_root)
+    assert factory.popen_kwargs[0]["start_new_session"] is True
+    _assert_tmp_root_empty(tmp_root)
 
 
 def test_single_page_render_uses_f_l_and_outputs_one_jpg(
@@ -178,14 +198,41 @@ def test_single_page_render_uses_f_l_and_outputs_one_jpg(
     factory = FakePopenFactory()
 
     with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
-        result = make_renderer(tmp_root).render(source_pptx, tmp_path / "out", page=2)
+        result = _make_renderer(tmp_root).render(source_pptx, tmp_path / "out", page=2)
 
     assert [slide.page for slide in result.slides] == [2]
     assert [path.name for path in result.image_paths] == ["slide-02.jpg"]
     pdftoppm_command = factory.commands_for("pdftoppm")[0]
     assert pdftoppm_command[pdftoppm_command.index("-f") + 1] == "2"
     assert pdftoppm_command[pdftoppm_command.index("-l") + 1] == "2"
-    assert_tmp_root_empty(tmp_root)
+    _assert_tmp_root_empty(tmp_root)
+
+
+def test_rerender_cleans_stale_owned_outputs(
+    source_pptx: Path,
+    tmp_root: Path,
+    tmp_path: Path,
+) -> None:
+    """같은 output_dir 재렌더링 시 이전 PDF/JPG 산출물을 제거한다."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    (output_dir / "deck.pdf").write_bytes(b"old pdf")
+    (output_dir / "slide-01.jpg").write_bytes(b"old 1")
+    (output_dir / "slide-03.jpg").write_bytes(b"old 3")
+    (output_dir / "notes.txt").write_text("keep", encoding="utf-8")
+    factory = FakePopenFactory()
+
+    with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
+        result = _make_renderer(tmp_root).render(source_pptx, output_dir, page=2)
+
+    assert [path.name for path in result.image_paths] == ["slide-02.jpg"]
+    assert sorted(path.name for path in output_dir.iterdir()) == [
+        "deck.pdf",
+        "notes.txt",
+        "slide-02.jpg",
+    ]
+    assert (output_dir / "notes.txt").read_text(encoding="utf-8") == "keep"
+    _assert_tmp_root_empty(tmp_root)
 
 
 def test_soffice_timeout_is_killed_and_retried_once(
@@ -197,7 +244,7 @@ def test_soffice_timeout_is_killed_and_retried_once(
     factory = FakePopenFactory(timeout_soffice_attempts=1)
 
     with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
-        result = make_renderer(tmp_root).render(source_pptx, tmp_path / "out")
+        result = _make_renderer(tmp_root).render(source_pptx, tmp_path / "out")
 
     soffice_processes = [
         process for process in factory.processes if process.command[0] == "soffice"
@@ -206,8 +253,37 @@ def test_soffice_timeout_is_killed_and_retried_once(
     assert len(soffice_processes) == 2
     assert soffice_processes[0].killed is True
     assert result.soffice_attempts == 2
-    assert user_installation_arg(soffice_commands[0]) != user_installation_arg(soffice_commands[1])
-    assert_tmp_root_empty(tmp_root)
+    assert _user_installation_arg(soffice_commands[0]) != _user_installation_arg(
+        soffice_commands[1]
+    )
+    _assert_tmp_root_empty(tmp_root)
+
+
+def test_timeout_kills_process_group_before_retry(
+    source_pptx: Path,
+    tmp_root: Path,
+    tmp_path: Path,
+) -> None:
+    """timeout 시 개별 프로세스가 아니라 프로세스 그룹을 SIGKILL 한다."""
+    factory = FakePopenFactory(timeout_soffice_attempts=1)
+
+    def mark_process_killed(process_group_id: int, kill_signal: int) -> None:
+        del process_group_id, kill_signal
+        factory.processes[-1].killed = True
+
+    with (
+        patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory),
+        patch("features.visualization.pptx.soffice_render.os.getpgid", return_value=1234),
+        patch(
+            "features.visualization.pptx.soffice_render.os.killpg",
+            side_effect=mark_process_killed,
+        ) as mock_killpg,
+    ):
+        _make_renderer(tmp_root).render(source_pptx, tmp_path / "out")
+
+    mock_killpg.assert_called_once_with(1234, signal.SIGKILL)
+    assert factory.popen_kwargs[0]["start_new_session"] is True
+    _assert_tmp_root_empty(tmp_root)
 
 
 def test_soffice_timeout_cleans_workdir_when_retry_fails(
@@ -221,14 +297,50 @@ def test_soffice_timeout_cleans_workdir_when_retry_fails(
 
     with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
         with pytest.raises(PptxRenderError, match="초과"):
-            make_renderer(tmp_root, counter).render(source_pptx, tmp_path / "out")
+            _make_renderer(tmp_root, counter).render(source_pptx, tmp_path / "out")
 
     soffice_processes = [
         process for process in factory.processes if process.command[0] == "soffice"
     ]
     assert [process.killed for process in soffice_processes] == [True, True]
     assert counter.value == 0
-    assert_tmp_root_empty(tmp_root)
+    _assert_tmp_root_empty(tmp_root)
+
+
+@pytest.mark.parametrize("command_name", ["soffice", "pdftoppm"])
+def test_non_zero_exit_raises_render_error(
+    source_pptx: Path,
+    tmp_root: Path,
+    tmp_path: Path,
+    command_name: str,
+) -> None:
+    """외부 명령이 non-zero exit 이면 렌더 실패로 처리한다."""
+    counter = InMemoryConversionCounter()
+    factory = FakePopenFactory(failing_commands={command_name})
+
+    with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
+        with pytest.raises(PptxRenderError, match=f"{command_name} 명령이 실패"):
+            _make_renderer(tmp_root, counter).render(source_pptx, tmp_path / "out")
+
+    assert counter.value == 0
+    _assert_tmp_root_empty(tmp_root)
+
+
+def test_empty_pdftoppm_output_raises_render_error(
+    source_pptx: Path,
+    tmp_root: Path,
+    tmp_path: Path,
+) -> None:
+    """pdftoppm 이 성공했지만 JPG를 만들지 않으면 실패로 처리한다."""
+    counter = InMemoryConversionCounter()
+    factory = FakePopenFactory(full_pages=[])
+
+    with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
+        with pytest.raises(PptxRenderError, match="JPG 산출물"):
+            _make_renderer(tmp_root, counter).render(source_pptx, tmp_path / "out")
+
+    assert counter.value == 0
+    _assert_tmp_root_empty(tmp_root)
 
 
 def test_concurrent_renders_use_distinct_user_installations_and_increment_counter(
@@ -238,7 +350,7 @@ def test_concurrent_renders_use_distinct_user_installations_and_increment_counte
 ) -> None:
     """동시 렌더링도 UserInstallation 충돌 없이 독립 프로필을 사용한다."""
     counter = InMemoryConversionCounter()
-    renderer = make_renderer(tmp_root, counter)
+    renderer = _make_renderer(tmp_root, counter)
     factory = FakePopenFactory()
 
     def render_one(index: int) -> int:
@@ -250,12 +362,12 @@ def test_concurrent_renders_use_distinct_user_installations_and_increment_counte
             counts = list(executor.map(render_one, [1, 2]))
 
     soffice_commands = factory.commands_for("soffice")
-    installations = {user_installation_arg(command) for command in soffice_commands}
+    installations = {_user_installation_arg(command) for command in soffice_commands}
     assert sorted(counts) == [1, 2]
     assert len(soffice_commands) == 2
     assert len(installations) == 2
     assert counter.value == 2
-    assert_tmp_root_empty(tmp_root)
+    _assert_tmp_root_empty(tmp_root)
 
 
 def test_conversion_counter_exposes_worker_recycle_threshold() -> None:

@@ -1,8 +1,10 @@
 """LibreOffice/Poppler 기반 PPTX 렌더 래퍼."""
 
 import logging
+import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import uuid
@@ -69,7 +71,10 @@ def should_recycle_worker(
 
 @dataclass(frozen=True)
 class RenderOptions:
-    """PPTX 렌더링 옵션."""
+    """PPTX 렌더링 옵션.
+
+    timeout_seconds 는 soffice 와 pdftoppm 외부 명령에 공통으로 적용된다.
+    """
 
     soffice_bin: str = "soffice"
     pdftoppm_bin: str = "pdftoppm"
@@ -165,6 +170,7 @@ class PptxRenderer:
             temp_images = self._render_pdf_to_jpg(temp_pdf, image_dir, page)
 
             final_pdf = final_output_dir / f"{source_path.stem}{_PDF_SUFFIX}"
+            self._clean_owned_outputs(final_output_dir, final_pdf)
             shutil.copy2(temp_pdf, final_pdf)
             slides = self._copy_images(temp_images, final_output_dir)
 
@@ -201,6 +207,8 @@ class PptxRenderer:
                 continue
             except PptxRenderError:
                 raise
+            finally:
+                shutil.rmtree(profile_dir, ignore_errors=True)
 
             pdf_path = pdf_dir / f"{input_pptx.stem}{_PDF_SUFFIX}"
             if not pdf_path.is_file():
@@ -262,11 +270,12 @@ class PptxRenderer:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            **self._process_group_kwargs(),
         )
         try:
             stdout, stderr = process.communicate(timeout=self._options.timeout_seconds)
         except subprocess.TimeoutExpired as exc:
-            process.kill()
+            self._kill_process_group(process)
             stdout, stderr = process.communicate()
             raise _CommandTimeoutError(
                 command_name=command_name,
@@ -280,6 +289,13 @@ class PptxRenderer:
                 f"{command_name} 명령이 실패했습니다. "
                 f"(exit={process.returncode}, stderr={stderr.strip()!r})"
             )
+
+    def _clean_owned_outputs(self, output_dir: Path, pdf_path: Path) -> None:
+        """이번 렌더러가 소유하는 이전 PDF/JPG 산출물을 제거한다."""
+        pdf_path.unlink(missing_ok=True)
+        for image_path in output_dir.glob(f"slide-*{_JPG_SUFFIX}"):
+            if self._is_owned_image_name(image_path.name):
+                image_path.unlink(missing_ok=True)
 
     def _copy_images(
         self,
@@ -303,6 +319,30 @@ class PptxRenderer:
                 continue
             slides.append(RenderedSlide(page=int(match.group(1)), image_path=image_path))
         return sorted(slides, key=lambda slide: slide.page)
+
+    @staticmethod
+    def _is_owned_image_name(name: str) -> bool:
+        return re.fullmatch(rf"slide-\d+{re.escape(_JPG_SUFFIX)}", name) is not None
+
+    @staticmethod
+    def _process_group_kwargs() -> dict[str, bool | int]:
+        if os.name == "posix":
+            return {"start_new_session": True}
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+
+    @staticmethod
+    def _kill_process_group(process: subprocess.Popen) -> None:
+        if os.name == "posix":
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                return
+            except (OSError, OverflowError):
+                logger.warning("failed to kill process group; falling back to process.kill()")
+
+        try:
+            process.kill()
+        except OSError:
+            pass
 
     @staticmethod
     def _validate_pptx_path(pptx_path: Path) -> Path:
