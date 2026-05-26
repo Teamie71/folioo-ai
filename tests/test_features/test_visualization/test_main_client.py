@@ -2,16 +2,16 @@
 
 import asyncio
 from typing import Any
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from common.clients.base_client import MainServerError
 from features.visualization.main_client import (
-    VisualizationMainClient,
     _JOB_FIELD_MAP,
     _RETRY_MAX,
     _SLIDE_FIELD_MAP,
+    VisualizationMainClient,
     _map_top_level,
 )
 
@@ -179,9 +179,7 @@ class TestSubmitSlidePlan:
     async def test_correct_path_and_body(self):
         client = make_client()
         slide_plan_blob = {
-            "selected_slides": [
-                {"source_slide_id": "cover_B", "content_brief": "표지"}
-            ]
+            "selected_slides": [{"source_slide_id": "cover_B", "content_brief": "표지"}]
         }
         slides = [
             {"slide_order": 1, "source_slide_id": "cover_B", "slide_filename": "slide1.xml"},
@@ -229,7 +227,9 @@ class TestSubmitSlidePlan:
                 total_slides=1,
                 template_id="blue",
                 slide_plan={"selected_slides": [{"source_slide_id": "cover_B"}]},
-                slides=[{"slide_order": 1, "source_slide_id": "cover_B", "slide_filename": "s.xml"}],
+                slides=[
+                    {"slide_order": 1, "source_slide_id": "cover_B", "slide_filename": "s.xml"}
+                ],
                 idempotency_key="k",
             )
 
@@ -420,7 +420,7 @@ class TestSendJobEvent:
 class TestExtractResult:
     """_extract_result 의 isSuccess=false 경로 검증"""
 
-    def test_isSuccess_false_with_string_error_raises(self):
+    def test_is_success_false_with_string_error_raises(self):
         client = make_client()
         raw = {"isSuccess": False, "error": "job not found"}
         with pytest.raises(MainServerError) as exc_info:
@@ -428,22 +428,25 @@ class TestExtractResult:
         assert exc_info.value.status_code == 422
         assert "job not found" in exc_info.value.detail
 
-    def test_isSuccess_false_with_structured_error_extracts_code(self):
+    def test_is_success_false_with_structured_error_extracts_code(self):
         client = make_client()
-        raw = {"isSuccess": False, "error": {"code": "TEMPLATE_NOT_FOUND", "message": "템플릿 없음"}}
+        raw = {
+            "isSuccess": False,
+            "error": {"code": "TEMPLATE_NOT_FOUND", "message": "템플릿 없음"},
+        }
         with pytest.raises(MainServerError) as exc_info:
             client._extract_result(raw)
         assert exc_info.value.detail == "템플릿 없음"
         assert exc_info.value.error_code == "TEMPLATE_NOT_FOUND"
 
-    def test_isSuccess_false_with_reason_field(self):
+    def test_is_success_false_with_reason_field(self):
         client = make_client()
         raw = {"isSuccess": False, "error": {"reason": "validation failed"}}
         with pytest.raises(MainServerError) as exc_info:
             client._extract_result(raw)
         assert "validation failed" in exc_info.value.detail
 
-    def test_isSuccess_false_with_null_error(self):
+    def test_is_success_false_with_null_error(self):
         client = make_client()
         raw = {"isSuccess": False, "error": None}
         with pytest.raises(MainServerError) as exc_info:
@@ -460,7 +463,7 @@ class TestCallbackIsSuccessFalse:
     """POST 콜백이 isSuccess=false envelope 을 MainServerError 로 전파하는지 검증"""
 
     @pytest.mark.asyncio
-    async def test_submit_slide_plan_raises_on_isSuccess_false(self):
+    async def test_submit_slide_plan_raises_on_is_success_false(self):
         client = make_client()
         envelope = {"isSuccess": False, "error": "duplicate slide plan"}
         with patch.object(
@@ -478,7 +481,7 @@ class TestCallbackIsSuccessFalse:
             assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_send_slide_event_raises_on_isSuccess_false(self):
+    async def test_send_slide_event_raises_on_is_success_false(self):
         client = make_client()
         envelope = {"isSuccess": False, "error": {"code": "JOB_NOT_FOUND", "message": "없음"}}
         with patch.object(
@@ -486,7 +489,8 @@ class TestCallbackIsSuccessFalse:
         ):
             with pytest.raises(MainServerError) as exc_info:
                 await client.send_slide_event(
-                    "job-1", "slide-1",
+                    "job-1",
+                    "slide-1",
                     event="slide_content_ready",
                     slide_order=1,
                     idempotency_key="k",
@@ -495,7 +499,7 @@ class TestCallbackIsSuccessFalse:
             assert exc_info.value.error_code == "JOB_NOT_FOUND"
 
     @pytest.mark.asyncio
-    async def test_send_job_event_raises_on_isSuccess_false(self):
+    async def test_send_job_event_raises_on_is_success_false(self):
         client = make_client()
         envelope = {"isSuccess": False, "error": "state conflict"}
         with patch.object(
@@ -513,9 +517,7 @@ class TestCallbackIsSuccessFalse:
     async def test_submit_slide_plan_ok_on_204(self):
         """204 No Content (None) 은 정상 처리된다."""
         client = make_client()
-        with patch.object(
-            client, "_request_with_retry", new_callable=AsyncMock, return_value=None
-        ):
+        with patch.object(client, "_request_with_retry", new_callable=AsyncMock, return_value=None):
             await client.submit_slide_plan(
                 "job-1",
                 total_slides=1,
@@ -567,9 +569,7 @@ class TestGetJobContext:
         """slidePlan 내부 source_slide_id / content_brief 는 snake_case 그대로."""
         client = make_client()
         slide_plan = {
-            "selected_slides": [
-                {"source_slide_id": "cover_B", "content_brief": "표지 내용"}
-            ]
+            "selected_slides": [{"source_slide_id": "cover_B", "content_brief": "표지 내용"}]
         }
         envelope = {"isSuccess": True, "result": {"slidePlan": slide_plan}}
         with patch.object(

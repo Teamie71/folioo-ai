@@ -63,7 +63,9 @@ class AdditionalQuestionPriorityGroup(BaseModel):
 
     @field_validator("targets")
     @classmethod
-    def validate_targets(cls, value: list[AdditionalQuestionTarget]) -> list[AdditionalQuestionTarget]:
+    def validate_targets(
+        cls, value: list[AdditionalQuestionTarget]
+    ) -> list[AdditionalQuestionTarget]:
         """우선순위 그룹에는 target이 1개 이상 있어야 한다."""
         if not value:
             raise ValueError("additional_question_priorities.targets는 1개 이상이어야 합니다.")

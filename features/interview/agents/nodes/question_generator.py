@@ -352,7 +352,9 @@ def _run_extended_mode(state: InterviewState) -> InterviewState:
     question, question_llm_error = _generate_extended_question(updated_state, selected_target)
     merged_llm_error = llm_error
     if question_llm_error:
-        merged_llm_error = f"{llm_error} | {question_llm_error}" if llm_error else question_llm_error
+        merged_llm_error = (
+            f"{llm_error} | {question_llm_error}" if llm_error else question_llm_error
+        )
 
     updated_statuses = _increment_additional_question_target_asked_count(
         updated_state["additional_question_target_statuses"],

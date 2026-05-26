@@ -321,7 +321,9 @@ async def test_run_does_not_append_history_for_blank_message_when_store_missing(
 
 
 @pytest.mark.asyncio
-async def test_run_appends_empty_history_for_blank_message_with_mention_when_store_missing(monkeypatch):
+async def test_run_appends_empty_history_for_blank_message_with_mention_when_store_missing(
+    monkeypatch,
+):
     """스토어가 없어도 blank+mention 턴은 빈 user_message로 복원 이력을 남긴다."""
     monkeypatch.setattr(
         retriever,

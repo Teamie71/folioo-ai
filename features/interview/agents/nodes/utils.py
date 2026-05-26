@@ -116,10 +116,7 @@ def _increment_additional_question_target_asked_count(
     target_id: str,
 ) -> dict[str, AdditionalQuestionTargetStatus]:
     """질문 생성 직후 해당 target의 질문 횟수를 증가한다."""
-    updated_statuses = {
-        key: {**value}
-        for key, value in statuses.items()
-    }
+    updated_statuses = {key: {**value} for key, value in statuses.items()}
     status = updated_statuses.setdefault(
         target_id,
         {

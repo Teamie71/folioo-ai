@@ -14,9 +14,7 @@ logger = logging.getLogger(__name__)
 
 BUCKET_NAME = "folioo-visualizations"
 
-_PPTX_CONTENT_TYPE = (
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-)
+_PPTX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 # job_id / template_id 허용 패턴 — 슬래시·경로 트래버설·공백 차단
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")

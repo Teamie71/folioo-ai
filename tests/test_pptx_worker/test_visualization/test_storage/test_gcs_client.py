@@ -162,9 +162,7 @@ class TestUploadPreview:
 
         assert key == expected_key
         mock_bucket.blob.assert_called_once_with(expected_key)
-        mock_blob.upload_from_filename.assert_called_once_with(
-            str(src), content_type="image/jpeg"
-        )
+        mock_blob.upload_from_filename.assert_called_once_with(str(src), content_type="image/jpeg")
 
 
 class TestDownloadPreview:
