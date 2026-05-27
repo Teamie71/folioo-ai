@@ -13,7 +13,7 @@ templates/
 ├── blue/
 │   ├── template.pptx          ← 파란색 조합, 30~40장 Source Slide 풀
 │   ├── meta.json              ← Source Slide 별 메타데이터
-│   └── thumbnail.jpg          ← 그리드 썸네일 (LLM 참고용)
+│   └── thumbnail.jpg          ← 그리드 썸네일 (런타임 선택 LLM/운영자 참고용)
 ├── green/
 │   ├── template.pptx          ← 초록색 조합 (같은 레이아웃, 다른 색)
 │   ├── meta.json
@@ -27,7 +27,7 @@ templates/
 ### 3.2 하나의 Template PPTX 내부
 
 ```
-template_blue.pptx (30~40장의 Source Slide 풀)
+templates/blue/template.pptx (30~40장의 Source Slide 풀)
 ├── Source Slide 1: 표지 레이아웃 A (cover_A)
 ├── Source Slide 2: 표지 레이아웃 B (cover_B)
 ├── Source Slide 3: 개요 레이아웃 A (overview_A)
@@ -115,12 +115,13 @@ template_blue.pptx (30~40장의 Source Slide 풀)
 }
 ```
 
-각 Source Slide 엔트리는 다음 5개 필드만 유지한다:
+빌더가 만든 초안에는 운영자 검토를 알리는 `_draft_notice` 가 추가될 수 있다.
+런타임 Source Slide 선택에 쓰이는 각 Source Slide 엔트리는 다음 5개 필드만 유지한다:
 
 | 필드 | 용도 |
 |---|---|
 | `slide_index` | Template PPTX 내부 Source Slide 순서 (0-based) |
-| `id` | 디자이너가 부여한 Source Slide 식별자 (예: `cover_A`) |
+| `id` | 등록 파이프라인이 자동 부여하고 운영자가 검토하는 Source Slide 식별자 (예: `cover_A`) |
 | `category` | §3.3 표준 Enum 중 하나 |
 | `description` | LLM 이 Source Slide 풀에서 선택할 때 참고하는 짧은 설명 |
 | `best_for` | 어떤 콘텐츠에 적합한지 한 줄 가이드 |
@@ -147,7 +148,7 @@ flowchart TD
     D --> S1["[1] 자동 추출 (스크립트, 운영자 1회 실행)<br/>· PPTX 슬라이드 수 / slide_index<br/>· 슬라이드별 임시 텍스트 (markitdown)<br/>· 슬라이드별 썸네일 + 그리드 썸네일"]
     S1 --> S2["[2] LLM 보조 — meta.json 초안 생성<br/>· 입력: 슬라이드별 (썸네일 + 임시 텍스트)<br/>· 출력: category 후보 + description + best_for<br/>· id 자동 부여 (같은 카테고리 내 알파벳 순)"]
     S2 --> S3["[3] 운영자 검토 (사람의 손)<br/>· category 분류 보정 (cover ↔ closing 등)<br/>· description / best_for 다듬기<br/>· id 직관성 검토<br/>· 시각적 문제 → 디자이너 회신"]
-    S3 --> S4["[4] 자동 검증 (스크립트, CI/CD)<br/>· category 표준 Enum 범위 내<br/>· slide_index ↔ 실제 슬라이드 수 일치<br/>· 같은 템플릿 내 id 중복 없음<br/>· 카테고리 분포 권장 범위 (경고만)"]
+    S3 --> S4["[4] 자동 검증 (운영자 또는 CI 잡)<br/>· template_file = template.pptx<br/>· thumbnail.jpg 존재<br/>· category 표준 Enum 범위 내<br/>· slide_index ↔ 실제 슬라이드 수 일치<br/>· 같은 템플릿 내 id 중복 없음<br/>· 카테고리 분포 권장 범위 (경고만)"]
     S4 --> S5["[5] GCS 업로드 (운영자 또는 CD 파이프라인)<br/>gs://folioo-visualizations/templates/{template_id}/<br/>template.pptx · meta.json · thumbnail.jpg"]
 ```
 
@@ -165,8 +166,9 @@ python scripts/templates/build_meta.py \
 
 # 내부적으로 수행하는 일:
 #   1) soffice 로 PDF 변환 후 pdftoppm 으로 슬라이드별 JPG 추출
+#      (기본 위치: 배포 디렉터리 밖의 work dir, --work-dir 로 override 가능)
 #   2) 그리드 썸네일 생성 (templates/blue/thumbnail.jpg)
-#   3) markitdown 으로 슬라이드별 임시 텍스트 추출
+#   3) markitdown 으로 슬라이드별 임시 텍스트 추출 (기본 위치: work dir/slide_text.md)
 #   4) LLM 에 (썸네일 + 텍스트) 묶음 입력 →
 #      슬라이드별 { category, description, best_for } 초안 생성
 #   5) 같은 카테고리끼리 묶어 id 알파벳 자동 부여
@@ -174,11 +176,13 @@ python scripts/templates/build_meta.py \
 
 # [3] 운영자가 IDE 에서 meta.json 직접 검토/수정 (사람의 손)
 
-# [4] 검증 — CI 에서도 실행
+# [4] 검증 — 운영자 또는 CI 잡에서 실행
 python scripts/templates/validate_template.py ./templates/blue
 
 # 검증 내용:
 #   - meta.json 스키마 (필수 필드 누락 X)
+#   - template_file 이 경로 없이 정확히 template.pptx 인지
+#   - thumbnail.jpg 가 존재하고 비어 있지 않은지
 #   - category 가 templates/_schema/categories.json 안에 있는지 (unknown 이면 실패 — 운영자가 실제 카테고리로 교체해야 통과)
 #   - slide_index 가 0..N-1 연속인지, PPTX 내 슬라이드 수와 일치하는지
 #   - 같은 템플릿 내 id 중복 없는지
@@ -255,7 +259,7 @@ User (슬라이드마다 반복):
 3. 각 Slot 후보 자리에 실제로 들어갈 콘텐츠와 비슷한 예시 텍스트 입력
    (예: "여기에 프로젝트명", "도구: Figma, Notion" 등 — LLM 이 의미를 이해할 단서)
 4. 색상 바꿔서 다른 이름으로 저장 → 새 템플릿 파일
-5. meta.json 에 슬라이드별 한 줄 description + best_for 추가
+5. 색상별 template.pptx 를 운영자 등록 파이프라인에 전달
 
 → 도형마다 영문 이름을 부여하는 작업 X
 → max_chars 같은 후속 메타 수기 입력 X

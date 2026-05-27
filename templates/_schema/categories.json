@@ -1,0 +1,64 @@
+{
+  "categories": [
+    {
+      "key": "cover",
+      "description": "프로젝트명, 이름, 날짜를 보여주는 표지",
+      "recommended_min": 3,
+      "recommended_max": 4
+    },
+    {
+      "key": "toc",
+      "description": "전체 구성을 한눈에 보여주는 목차",
+      "recommended_min": 2,
+      "recommended_max": 3
+    },
+    {
+      "key": "overview",
+      "description": "배경, 기간, 역할, 팀 구성을 설명하는 프로젝트 개요",
+      "recommended_min": 3,
+      "recommended_max": 4
+    },
+    {
+      "key": "problem",
+      "description": "문제 상황과 과제를 설명하는 문제 정의",
+      "recommended_min": 2,
+      "recommended_max": 3
+    },
+    {
+      "key": "process",
+      "description": "진행 과정과 단계별 흐름을 설명하는 프로세스",
+      "recommended_min": 3,
+      "recommended_max": 4
+    },
+    {
+      "key": "outcome",
+      "description": "수치, KPI, Before/After 등 성과와 결과",
+      "recommended_min": 3,
+      "recommended_max": 4
+    },
+    {
+      "key": "chart",
+      "description": "데이터 시각화, 도표, 차트 중심 슬라이드",
+      "recommended_min": 4,
+      "recommended_max": 5
+    },
+    {
+      "key": "visual",
+      "description": "스크린샷, 목업, 작업물 등 이미지 중심 슬라이드",
+      "recommended_min": 3,
+      "recommended_max": 4
+    },
+    {
+      "key": "text",
+      "description": "회고와 러닝포인트 등 텍스트 중심 슬라이드",
+      "recommended_min": 2,
+      "recommended_max": 3
+    },
+    {
+      "key": "closing",
+      "description": "감사, 연락처 등 마무리 슬라이드",
+      "recommended_min": 2,
+      "recommended_max": 3
+    }
+  ]
+}

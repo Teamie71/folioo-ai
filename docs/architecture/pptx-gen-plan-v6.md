@@ -463,7 +463,7 @@ Expected Output:
 ┌──────────────────────────────────────────────────────┐
 │  [워커] Step 4: 패킹 + 검증 (모든 슬라이드 편집 완료 후 1회)│
 │                                                       │
-│  ① pack.py --original template_blue.pptx               │
+│  ① pack.py --original template.pptx                    │
 │     - XML condense (a:t 제외)                          │
 │     - ZIP DEFLATE로 패키징                              │
 │     - 원본 대비 검증                                    │
