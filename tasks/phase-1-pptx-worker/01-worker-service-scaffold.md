@@ -6,7 +6,8 @@ spec: "specs/phase-1/01-worker-service-scaffold.md"
 depends_on: ["1.02"]
 blocks: ["1.09", "1.10"]
 estimate: "M"
-status: "todo"
+status: "done"
+completed_at: "2026-05-27"
 owner: ""
 sprint: ""
 ---
@@ -21,25 +22,25 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] `apps/pptx-worker/` 빌드 타깃 분리 (인터뷰 챗과 별도 배포, `common/` 직접 import — ADR-0001)
-- [ ] Cloud Tasks payload 스키마(`messageType`/`jobId`/`idempotencyKey`/`callbackBaseUrl`/`schemaVersion`) 확인
+- [x] `apps/pptx-worker/` 빌드 타깃 분리 (인터뷰 챗과 별도 배포, `common/` 직접 import — ADR-0001)
+- [x] Cloud Tasks payload 스키마(`messageType`/`jobId`/`idempotencyKey`/`callbackBaseUrl`/`schemaVersion`) 확인
 
 ## 구현 체크리스트
 
-- [ ] `app/main.py` FastAPI 진입점 + `app/api/tasks.py` push 핸들러 2종
-- [ ] `POST /tasks/visualizations/generate` payload 파싱 → `features/visualization/service.py` 위임 (05)
-- [ ] `POST /tasks/visualizations/regenerate` payload 파싱 → 위임 (07)
-- [ ] 패턴 A: 요청 안에서 동기 처리 후 200, 재시도 분류 503(retryable)/422·200(fatal)/200(skip)
-- [ ] §7.4.5 멱등 체크: 메인 API 로 상태 조회 후 `regenerating`/`generating` 아니면 200 ACK skip
-- [ ] OIDC 검증은 Cloud Run IAM 위임 (인앱 토큰 검증 없음)
-- [ ] `GET /health` + 누적 변환 N회(기본 20) 도달 시 인스턴스 자체 종료 lifetime 카운터
+- [x] `app/main.py` FastAPI 진입점 + `app/api/tasks.py` push 핸들러 2종
+- [x] `POST /tasks/visualizations/generate` payload 파싱 → `features/visualization/service.py` 위임 (05)
+- [x] `POST /tasks/visualizations/regenerate` payload 파싱 → 위임 (07)
+- [x] 패턴 A: 요청 안에서 동기 처리 후 200, 재시도 분류 503(retryable)/422·200(fatal)/200(skip)
+- [x] §7.4.5 멱등 체크: 메인 API 로 상태 조회 후 `regenerating`/`generating` 아니면 200 ACK skip
+- [x] OIDC 검증은 Cloud Run IAM 위임 (인앱 토큰 검증 없음)
+- [x] `GET /health` + 누적 변환 N회(기본 20) 도달 시 인스턴스 자체 종료 lifetime 카운터
 
 ## Definition of Done
 
-- [ ] generate/regenerate push 시 payload 파싱·오케스트레이션 호출·정상 200 검증
-- [ ] terminal 상태 메시지 재 push 시 재실행 없이 200 ACK
-- [ ] RetryableError→503, FatalError→에러 콜백 후 200(또는 422) 단위 테스트
-- [ ] `/health` 가 concurrent_active/lifetime_processed/ready_for_recycle 반환, N회 후 종료
+- [x] generate/regenerate push 시 payload 파싱·오케스트레이션 호출·정상 200 검증
+- [x] terminal 상태 메시지 재 push 시 재실행 없이 200 ACK
+- [x] RetryableError→503, FatalError→에러 콜백 후 200(또는 422) 단위 테스트
+- [x] `/health` 가 concurrent_active/lifetime_processed/ready_for_recycle 반환, N회 후 종료
 
 ## 리스크 / 메모
 
