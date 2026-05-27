@@ -6,7 +6,6 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from common.llm.client import get_llm
-from common.utils import count_chars, get_char_overflow
 
 from .prompts.portfolio_generator import (
     format_collected_data_for_prompt,
@@ -18,7 +17,6 @@ from .schemas import PortfolioOutput
 _DEFAULT_CALL_MAX_RETRIES = 3
 _DEFAULT_LENGTH_RETRY_MAX_RETRIES = 2
 _SECTION_FIELDS = ("description", "contributions", "achievements", "insights")
-_PORTFOLIO_FIELD_MAX_LENGTH = 400
 # min_length 제약 제거 후 LLM이 반환하는 플레이스홀더("0")와 빈 문자열을 빈 응답으로 간주한다.
 _EMPTY_TEXT_VALUES = {"", "0"}
 
@@ -57,8 +55,8 @@ class PortfolioGenerator:
         validation_feedback = "없음"
         last_failure_reason: str | None = None
 
-        max_length_attempts = self._config.llm.length_retry_max_retries + 1
-        for attempt_index in range(max_length_attempts):
+        max_validation_attempts = self._config.llm.length_retry_max_retries + 1
+        for attempt_index in range(max_validation_attempts):
             output = self._invoke_portfolio_generation(
                 collected_data=collected_data,
                 experience_name=experience_name,
@@ -66,27 +64,19 @@ class PortfolioGenerator:
             )
 
             required_errors = self._get_required_field_errors(output)
-            if required_errors:
-                last_failure_reason = "; ".join(required_errors)
-                if attempt_index == max_length_attempts - 1:
-                    break
-
-                validation_feedback = self._build_validation_feedback(required_errors)
-                continue
-
-            length_errors = self._get_length_errors(output)
-            if not length_errors:
+            if not required_errors:
                 return output
 
-            last_failure_reason = "; ".join(length_errors)
-            if attempt_index == max_length_attempts - 1:
-                return output
+            last_failure_reason = "; ".join(required_errors)
+            if attempt_index == max_validation_attempts - 1:
+                break
 
-            validation_feedback = self._build_length_retry_feedback(output)
+            validation_feedback = self._build_validation_feedback(required_errors)
 
         raise PortfolioGenerationError(
             "포트폴리오 생성에 실패했습니다. "
-            f"최대 시도({max_length_attempts}회) 후 중단: {last_failure_reason or '알 수 없는 오류'}"
+            f"최대 시도({max_validation_attempts}회) 후 중단: "
+            f"{last_failure_reason or '알 수 없는 오류'}"
         )
 
     def _invoke_portfolio_generation(
@@ -128,7 +118,7 @@ class PortfolioGenerator:
         return len(self._get_validation_errors(output)) == 0
 
     def _get_validation_errors(self, output: PortfolioOutput) -> list[str]:
-        return [*self._get_required_field_errors(output), *self._get_length_errors(output)]
+        return self._get_required_field_errors(output)
 
     def _get_required_field_errors(self, output: PortfolioOutput) -> list[str]:
         errors: list[str] = []
@@ -142,47 +132,10 @@ class PortfolioGenerator:
 
         return errors
 
-    def _get_length_errors(self, output: PortfolioOutput) -> list[str]:
-        errors: list[str] = []
-
-        for field_name in _SECTION_FIELDS:
-            text = getattr(output, field_name, "").strip()
-            current_length = count_chars(text)
-            overflow = get_char_overflow(text, _PORTFOLIO_FIELD_MAX_LENGTH)
-
-            if overflow > 0:
-                errors.append(
-                    f"{field_name} 섹션이 글자수 제한을 초과했습니다. "
-                    f"(현재 {current_length}자 / 최대 {_PORTFOLIO_FIELD_MAX_LENGTH}자)"
-                )
-
-        return errors
-
     @staticmethod
     def _build_validation_feedback(errors: list[str]) -> str:
         """일반 검증 실패 피드백 생성"""
         return "이전 출력 보완 필요:\n- " + "\n- ".join(errors)
-
-    def _build_length_retry_feedback(self, output: PortfolioOutput) -> str:
-        """길이 초과 전용 재작성 피드백 생성"""
-        lines = [
-            "이전 출력은 글자 수 제한을 초과했습니다. 초과한 섹션만 다시 축약하세요.",
-            "핵심 사실, 역할, 성과는 유지하고 수식어, 중복 표현, 부연 설명 순으로 줄이세요.",
-        ]
-
-        for field_name in _SECTION_FIELDS:
-            text = getattr(output, field_name, "").strip()
-            current_length = count_chars(text)
-            overflow = get_char_overflow(text, _PORTFOLIO_FIELD_MAX_LENGTH)
-            if overflow == 0:
-                continue
-
-            lines.append(
-                f"- {field_name}: 현재 {current_length}자, {overflow}자 초과. "
-                "항목 구조와 핵심 성과를 유지한 채 더 짧게 다시 작성하세요."
-            )
-
-        return "\n".join(lines)
 
 
 def _load_portfolio_config() -> PortfolioConfig:

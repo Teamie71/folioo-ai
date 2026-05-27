@@ -53,7 +53,7 @@ def _invalid_output() -> PortfolioOutput:
 
 
 def _too_long_output() -> PortfolioOutput:
-    """400자 제한을 초과하는 출력."""
+    """메인 서버 전송 제한보다 긴 출력."""
     long_text = "가" * 401
     return PortfolioOutput(
         description=long_text,
@@ -123,44 +123,28 @@ def test_validation_treats_zero_as_empty():
     assert "description 섹션이 비어 있습니다." in errors
 
 
-def test_validation_detects_field_length_limit():
-    """필드가 400자를 초과하면 검증 실패한다."""
+def test_validation_allows_field_length_over_400_chars():
+    """생성 단계에서는 400자를 초과해도 검증 실패로 보지 않는다."""
     errors = PortfolioGenerator()._get_validation_errors(_too_long_output())
 
-    assert "description 섹션이 글자수 제한을 초과했습니다. (현재 401자 / 최대 400자)" in errors
+    assert errors == []
 
 
-def test_generate_retry_with_length_validation_feedback(monkeypatch: pytest.MonkeyPatch):
-    """길이 초과 시 피드백을 포함해 재시도한다."""
+def test_generate_returns_long_output_without_length_retry(monkeypatch: pytest.MonkeyPatch):
+    """길이 초과만으로 재시도하지 않고 생성 결과를 그대로 반환한다."""
     from features.portfolio import generator
 
-    chain = DummyChain([_too_long_output(), _valid_output()])
+    long_output = _too_long_output()
+    chain = DummyChain([long_output])
     monkeypatch.setattr(generator, "portfolio_generator_prompt", DummyPrompt(chain))
     monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.7: DummyLLM())
     monkeypatch.setattr(generator, "format_collected_data_for_prompt", lambda data: "formatted")
 
     result = PortfolioGenerator().generate(collected_data={}, experience_name="테스트 경험")
 
-    assert result == _valid_output()
-    assert len(chain.calls) == 2
-    assert "description: 현재 401자, 1자 초과" in chain.calls[1]["validation_feedback"]
-
-
-def test_generate_returns_last_output_after_length_retries_exhausted(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """길이 초과 재시도 소진 시 마지막 출력을 반환한다."""
-    from features.portfolio import generator
-
-    chain = DummyChain([_too_long_output(), _too_long_output(), _too_long_output()])
-    monkeypatch.setattr(generator, "portfolio_generator_prompt", DummyPrompt(chain))
-    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.7: DummyLLM())
-    monkeypatch.setattr(generator, "format_collected_data_for_prompt", lambda data: "formatted")
-
-    result = PortfolioGenerator().generate(collected_data={}, experience_name="테스트 경험")
-
-    assert result.description == "가" * 401
-    assert len(chain.calls) == 3
+    assert result == long_output
+    assert len(chain.calls) == 1
+    assert chain.calls[0]["validation_feedback"] == "없음"
 
 
 def test_generate_uses_llm_settings_and_section_mapping(monkeypatch: pytest.MonkeyPatch):
