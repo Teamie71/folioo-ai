@@ -287,10 +287,16 @@ class TestSendSlideEvent:
                 idempotency_key="idem-3",
                 occurred_at="2026-05-25T10:01:00Z",
                 gcs_preview_key="jobs/job-1/previews/slide-02.jpg",
+                preview_width=1280,
+                preview_height=720,
+                preview_byte_size=123456,
             )
         body = mock_rwr.call_args.kwargs["json"]
         assert body["event"] == "slide_preview_ready"
         assert body["gcsPreviewKey"] == "jobs/job-1/previews/slide-02.jpg"
+        assert body["width"] == 1280
+        assert body["height"] == 720
+        assert body["byteSize"] == 123456
         assert "currentFills" not in body
 
     @pytest.mark.asyncio
