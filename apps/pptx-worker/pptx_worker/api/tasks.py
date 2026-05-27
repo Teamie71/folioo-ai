@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tasks/visualizations", tags=["cloud-tasks"])
 
+_GENERATE_PROCESSABLE_JOB_STATUSES = {"pending", "generating"}
+
 
 class MainClient(Protocol):
     """핸들러가 사용하는 메인 백엔드 클라이언트 프로토콜."""
@@ -182,9 +184,12 @@ def _json_response(
 
 
 async def _close_client(client: MainClient) -> None:
-    close = getattr(client, "close", None)
-    if close is not None:
-        await close()
+    try:
+        close = getattr(client, "close", None)
+        if close is not None:
+            await close()
+    except Exception:
+        logger.exception("메인 클라이언트 리소스 정리 실패")
 
 
 async def _handle_main_context_error(
@@ -299,7 +304,7 @@ async def handle_generate_task(
                 )
 
             job_status = job_context.get("status")
-            if job_status != "generating":
+            if job_status not in _GENERATE_PROCESSABLE_JOB_STATUSES:
                 logger.info(
                     "generate 작업 skip: job_id=%s status=%s idempotency_key=%s",
                     payload.job_id,
@@ -332,15 +337,25 @@ async def handle_generate_task(
                     payload.idempotency_key,
                     exc,
                 )
-                await _send_generate_fatal_callback(client, payload, exc)
-                await runtime.mark_processed()
+                try:
+                    await _send_generate_fatal_callback(client, payload, exc)
+                except Exception as callback_exc:
+                    logger.exception(
+                        "generate 치명 실패 콜백 전송 실패: job_id=%s idempotency_key=%s",
+                        payload.job_id,
+                        payload.idempotency_key,
+                    )
+                    return _json_response(
+                        {"status": "retryable_failure", "detail": str(callback_exc)},
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        background_tasks=background_tasks,
+                    )
                 await _schedule_recycle_if_needed(runtime, background_tasks)
                 return _json_response(
                     {"status": "fatal_acked", "jobId": payload.job_id},
                     background_tasks=background_tasks,
                 )
 
-            await runtime.mark_processed()
             await _schedule_recycle_if_needed(runtime, background_tasks)
             return _json_response(
                 {"status": "ok", "jobId": payload.job_id},
@@ -411,15 +426,27 @@ async def handle_regenerate_task(
                     payload.idempotency_key,
                     exc,
                 )
-                await _send_regenerate_fatal_callback(client, payload, slide_context, exc)
-                await runtime.mark_processed()
+                try:
+                    await _send_regenerate_fatal_callback(client, payload, slide_context, exc)
+                except Exception as callback_exc:
+                    logger.exception(
+                        "regenerate 치명 실패 콜백 전송 실패: job_id=%s slide_id=%s "
+                        "idempotency_key=%s",
+                        payload.job_id,
+                        payload.slide_id,
+                        payload.idempotency_key,
+                    )
+                    return _json_response(
+                        {"status": "retryable_failure", "detail": str(callback_exc)},
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        background_tasks=background_tasks,
+                    )
                 await _schedule_recycle_if_needed(runtime, background_tasks)
                 return _json_response(
                     {"status": "fatal_acked", "jobId": payload.job_id, "slideId": payload.slide_id},
                     background_tasks=background_tasks,
                 )
 
-            await runtime.mark_processed()
             await _schedule_recycle_if_needed(runtime, background_tasks)
             return _json_response(
                 {"status": "ok", "jobId": payload.job_id, "slideId": payload.slide_id},

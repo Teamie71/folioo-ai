@@ -2,10 +2,19 @@
 
 import asyncio
 import inspect
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
+
+from features.visualization.pptx.soffice_render import (
+    ConversionCounter,
+    InMemoryConversionCounter,
+    should_recycle_worker,
+)
+
+logger = logging.getLogger(__name__)
 
 ShutdownCallback = Callable[[], Any | Awaitable[Any]]
 
@@ -37,15 +46,21 @@ class WorkerRuntime:
         *,
         recycle_after: int | None = None,
         shutdown_callback: ShutdownCallback | None = None,
+        processed_counter: ConversionCounter | None = None,
     ) -> None:
         self._recycle_after = recycle_after if recycle_after is not None else _load_recycle_after()
         if self._recycle_after <= 0:
             raise ValueError("recycle_after는 1 이상이어야 합니다.")
         self._shutdown_callback = shutdown_callback or _exit_process
         self._active_count = 0
-        self._lifetime_processed = 0
+        self._processed_counter = processed_counter or InMemoryConversionCounter()
         self._shutdown_requested = False
         self._lock = asyncio.Lock()
+
+    @property
+    def processed_counter(self) -> ConversionCounter:
+        """PPTX 렌더러와 공유할 누적 변환 카운터."""
+        return self._processed_counter
 
     @asynccontextmanager
     async def track_active(self):
@@ -59,18 +74,19 @@ class WorkerRuntime:
                 self._active_count -= 1
 
     async def mark_processed(self) -> None:
-        """실제로 위임 처리가 끝난 작업 수를 증가시킨다."""
+        """실제로 완료된 soffice 변환 횟수를 증가시킨다."""
         async with self._lock:
-            self._lifetime_processed += 1
+            self._processed_counter.increment()
 
     async def snapshot(self) -> dict[str, int | bool | str]:
         """헬스체크 응답용 런타임 상태 반환."""
         async with self._lock:
-            ready_for_recycle = self._lifetime_processed >= self._recycle_after
+            lifetime_processed = self._processed_counter.value
+            ready_for_recycle = should_recycle_worker(self._processed_counter, self._recycle_after)
             return {
                 "status": "ok",
                 "concurrent_active": self._active_count,
-                "lifetime_processed": self._lifetime_processed,
+                "lifetime_processed": lifetime_processed,
                 "ready_for_recycle": ready_for_recycle,
             }
 
@@ -80,14 +96,20 @@ class WorkerRuntime:
             if (
                 self._shutdown_requested
                 or self._active_count > 0
-                or self._lifetime_processed < self._recycle_after
+                or not should_recycle_worker(self._processed_counter, self._recycle_after)
             ):
                 return False
             self._shutdown_requested = True
 
-        result = self._shutdown_callback()
-        if inspect.isawaitable(result):
-            await result
+        try:
+            result = self._shutdown_callback()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            async with self._lock:
+                self._shutdown_requested = False
+            logger.exception("워커 재활용 종료 콜백 실행 실패")
+            return False
         return True
 
 

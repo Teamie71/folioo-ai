@@ -1,4 +1,4 @@
-"""PPTX 워커 API wrapper."""
+"""PPTX 워커 API 라우터를 재노출하는 모듈."""
 
 from fastapi import APIRouter
 

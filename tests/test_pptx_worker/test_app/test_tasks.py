@@ -21,13 +21,16 @@ class FakeMainClient:
     """메인 백엔드 클라이언트 대역."""
 
     def __init__(self) -> None:
-        self.job_context: dict[str, Any] = {"status": "generating"}
+        self.job_context: dict[str, Any] = {"status": "pending"}
         self.slide_context: dict[str, Any] = {"status": "regenerating", "slide_order": 3}
         self.job_context_calls: list[str] = []
         self.slide_context_calls: list[tuple[str, str]] = []
         self.job_events: list[dict[str, Any]] = []
         self.slide_events: list[dict[str, Any]] = []
         self.closed = False
+        self.close_error: Exception | None = None
+        self.job_event_error: Exception | None = None
+        self.slide_event_error: Exception | None = None
 
     async def get_job_context(self, job_id: str) -> dict[str, Any]:
         self.job_context_calls.append(job_id)
@@ -38,45 +41,58 @@ class FakeMainClient:
         return dict(self.slide_context)
 
     async def send_job_event(self, job_id: str, **kwargs: Any) -> None:
+        if self.job_event_error is not None:
+            raise self.job_event_error
         self.job_events.append({"job_id": job_id, **kwargs})
 
     async def send_slide_event(self, job_id: str, slide_id: str, **kwargs: Any) -> None:
+        if self.slide_event_error is not None:
+            raise self.slide_event_error
         self.slide_events.append({"job_id": job_id, "slide_id": slide_id, **kwargs})
 
     async def close(self) -> None:
+        if self.close_error is not None:
+            raise self.close_error
         self.closed = True
 
 
 class FakeVisualizationTaskService(VisualizationTaskService):
     """시각화 파이프라인 서비스 대역."""
 
-    def __init__(self) -> None:
+    def __init__(self, runtime: WorkerRuntime) -> None:
+        self.runtime = runtime
         self.generate_calls: list[GenerateVisualizationTask] = []
         self.regenerate_calls: list[RegenerateVisualizationTask] = []
         self.generate_error: Exception | None = None
         self.regenerate_error: Exception | None = None
+        self.generate_conversion_count = 0
+        self.regenerate_conversion_count = 0
 
     async def generate(self, task: GenerateVisualizationTask) -> None:
         self.generate_calls.append(task)
         if self.generate_error is not None:
             raise self.generate_error
+        for _ in range(self.generate_conversion_count):
+            await self.runtime.mark_processed()
 
     async def regenerate(self, task: RegenerateVisualizationTask) -> None:
         self.regenerate_calls.append(task)
         if self.regenerate_error is not None:
             raise self.regenerate_error
+        for _ in range(self.regenerate_conversion_count):
+            await self.runtime.mark_processed()
 
 
 @pytest.fixture()
 def worker_client(monkeypatch):
     """테스트용 워커 앱과 fake 의존성을 구성한다."""
     main_client = FakeMainClient()
-    service = FakeVisualizationTaskService()
     shutdown_calls: list[str] = []
     runtime = WorkerRuntime(
         recycle_after=2,
         shutdown_callback=lambda: shutdown_calls.append("shutdown"),
     )
+    service = FakeVisualizationTaskService(runtime)
 
     tasks_api.set_main_client_factory(lambda callback_base_url: main_client)
     monkeypatch.setattr(tasks_api, "_get_task_service", lambda: service)
@@ -220,7 +236,7 @@ def test_fatal_generate_error_sends_job_callback_then_acks(worker_client):
             "occurred_at": main_client.job_events[0]["occurred_at"],
         }
     ]
-    assert client.get("/health").json()["lifetime_processed"] == 1
+    assert client.get("/health").json()["lifetime_processed"] == 0
 
 
 def test_fatal_regenerate_error_sends_slide_callback_then_acks(worker_client):
@@ -244,11 +260,34 @@ def test_fatal_regenerate_error_sends_slide_callback_then_acks(worker_client):
             "occurred_at": main_client.slide_events[0]["occurred_at"],
         }
     ]
-    assert client.get("/health").json()["lifetime_processed"] == 1
+    assert client.get("/health").json()["lifetime_processed"] == 0
+
+
+def test_fatal_callback_failure_returns_503_for_retry(worker_client):
+    client, main_client, service, _, _ = worker_client
+    service.generate_error = FatalError("템플릿 없음")
+    main_client.job_event_error = RuntimeError("callback timeout")
+
+    response = client.post("/tasks/visualizations/generate", json=generate_payload())
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "retryable_failure"
+
+
+def test_close_failure_does_not_override_ack_response(worker_client):
+    client, main_client, service, _, _ = worker_client
+    main_client.close_error = RuntimeError("close failed")
+
+    response = client.post("/tasks/visualizations/generate", json=generate_payload())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert len(service.generate_calls) == 1
 
 
 def test_health_reports_runtime_counters_and_recycle_readiness(worker_client):
-    client, _, _, _, shutdown_calls = worker_client
+    client, _, service, _, shutdown_calls = worker_client
+    service.generate_conversion_count = 1
 
     initial = client.get("/health")
     assert initial.status_code == 200
@@ -281,3 +320,21 @@ async def test_runtime_snapshot_reports_active_count():
 
     assert snapshot["concurrent_active"] == 1
     assert (await runtime.snapshot())["concurrent_active"] == 0
+
+
+@pytest.mark.asyncio
+async def test_runtime_shutdown_failure_allows_later_retry():
+    calls = 0
+
+    def shutdown_callback() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("shutdown failed")
+
+    runtime = WorkerRuntime(recycle_after=1, shutdown_callback=shutdown_callback)
+    await runtime.mark_processed()
+
+    assert await runtime.shutdown_if_ready() is False
+    assert await runtime.shutdown_if_ready() is True
+    assert calls == 2
