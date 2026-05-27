@@ -287,7 +287,8 @@ Phase 3: 확정 & 내보내기 (한 번)
 │  - 포트폴리오 텍스트 (텍스트 탭에서 생성된 내용)            │
 │  - 템플릿 meta.json (각 슬라이드의 id, category,          │
 │    description, best_for) ※ 사전 Slot 스펙은 없음       │
-│  - 템플릿 썸네일 그리드 이미지 (시각적 판단용)              │
+│  - Phase 1 구현은 텍스트 메타만 사용한다. 템플릿 썸네일      │
+│    multimodal 입력은 모델/비용/지연 정책 확정 뒤 후속 처리  │
 │                                                       │
 │  하이브리드 매칭:                                        │
 │  ① Rule-based 필터링 (빠르고 확실한 것)                   │
@@ -457,6 +458,13 @@ Expected Output:
 │                Body: { event: "slide_content_ready",     │
 │                        currentFills: {...} }             │
 │  [메인] DB 갱신 + EventEmitter emit → SSE                  │
+│                                                          │
+│  특정 슬라이드의 Call #2 가 1회 timeout 재시도 후에도 실패하면 │
+│  템플릿 예시 문구가 노출되지 않도록 해당 슬라이드 XML 의 콘텐츠 │
+│  도형을 모두 제거해 완전 빈 페이지로 만든다. 이 슬라이드는       │
+│  `slide_content_error` 로 보고하고 QA/preview 대상에서 제외   │
+│  하되, slideOrder 와 PDF page 번호가 어긋나지 않도록 deck 에는 │
+│  그대로 남긴다.                                            │
 └──────────┬─────────────────────────────────────────────┘
            │
            ▼
@@ -2123,7 +2131,16 @@ POST   /api/internal/visualizations/{job_id}/slide-plan
            UPDATE visualization_jobs SET total_slides=8, slide_plan=...
            INSERT INTO visualization_slides (...) × N  (ON CONFLICT DO NOTHING)
          - EventEmitter emit: `visualizations.{job_id}` → slide_plan_ready
-       Response: 204 No Content (또는 envelope { isSuccess: true })
+       Response:
+          {
+            slides: [
+              { id, slideOrder, sourceSlideId, slideFilename },
+              ...
+            ]
+          }
+          (또는 envelope { isSuccess: true, result: { slides: [...] } })
+          워커는 이 응답으로 slide_order → slide_id 매핑을 구성한다.
+          Phase 1 초기 생성 파이프라인에서는 204 No Content 를 계약 오류로 본다.
 
 # 슬라이드별 이벤트 (가장 빈번하게 호출되는 엔드포인트)
 POST   /api/internal/visualizations/{job_id}/slides/{slide_id}/events
@@ -2152,6 +2169,9 @@ POST   /api/internal/visualizations/{job_id}/slides/{slide_id}/events
            job.status→'completed' 재평가 (retry 성공 시 이벤트 기반 finalize, 크론 아님)
        Response: 204 No Content
 
+       idempotencyKey 는 Cloud Tasks payload key 를 그대로 재사용하지 않고
+       `{job_id}:slide:{slide_id}:{event}` 형태의 이벤트 단위 안정 키로 만든다.
+
 # Job 레벨 이벤트
 POST   /api/internal/visualizations/{job_id}/events
        Headers: X-API-Key
@@ -2172,6 +2192,9 @@ POST   /api/internal/visualizations/{job_id}/events
             (둘 다 고정값 UPDATE — 중복 콜백도 무해)
          - all_completed 시 compute_can_export() 결과 동봉해 EventEmitter emit
        Response: 204 No Content
+
+       idempotencyKey 는 `{job_id}:job:{event}:{pipelineStage}` 또는
+       `{job_id}:job:all_completed` 형태의 이벤트 단위 안정 키로 만든다.
 
 # 워커 측 컨텍스트 조회 (Phase 2 시작 시)
 GET    /api/internal/visualizations/{job_id}

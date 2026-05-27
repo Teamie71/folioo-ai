@@ -112,6 +112,38 @@ def template_pptx_key(template_id: str) -> str:
     return f"templates/{template_id}/template.pptx"
 
 
+def template_meta_key(template_id: str) -> str:
+    """템플릿 meta.json 의 canonical GCS 키를 반환한다.
+
+    Args:
+        template_id: 템플릿 ID. 영문/숫자, `_`, `-` 만 허용한다.
+
+    Returns:
+        ``templates/{template_id}/meta.json`` 형식의 GCS 키.
+
+    Raises:
+        ValueError: template_id가 허용 패턴을 벗어난 경우.
+    """
+    _validate_identifier(template_id, "template_id")
+    return f"templates/{template_id}/meta.json"
+
+
+def template_thumbnail_key(template_id: str) -> str:
+    """템플릿 썸네일 이미지의 canonical GCS 키를 반환한다.
+
+    Args:
+        template_id: 템플릿 ID. 영문/숫자, `_`, `-` 만 허용한다.
+
+    Returns:
+        ``templates/{template_id}/thumbnail.jpg`` 형식의 GCS 키.
+
+    Raises:
+        ValueError: template_id가 허용 패턴을 벗어난 경우.
+    """
+    _validate_identifier(template_id, "template_id")
+    return f"templates/{template_id}/thumbnail.jpg"
+
+
 # ---------------------------------------------------------------------------
 # 클라이언트
 # ---------------------------------------------------------------------------
@@ -135,6 +167,36 @@ class GcsClient:
     def download_template(self, template_id: str, dest: Path) -> None:
         """템플릿 PPTX를 GCS에서 로컬 경로로 다운로드한다."""
         key = template_pptx_key(template_id)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        self._bucket.blob(key).download_to_filename(str(dest))
+        logger.debug("gcs download %s -> %s", key, dest)
+
+    def download_template_meta(self, template_id: str, dest: Path) -> None:
+        """템플릿 meta.json 을 GCS에서 로컬 경로로 다운로드한다.
+
+        Args:
+            template_id: 다운로드할 템플릿 ID. 영문/숫자, `_`, `-` 만 허용한다.
+            dest: 다운로드 대상 로컬 파일 경로.
+
+        Raises:
+            ValueError: template_id가 허용 패턴을 벗어난 경우.
+        """
+        key = template_meta_key(template_id)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        self._bucket.blob(key).download_to_filename(str(dest))
+        logger.debug("gcs download %s -> %s", key, dest)
+
+    def download_template_thumbnail(self, template_id: str, dest: Path) -> None:
+        """템플릿 thumbnail.jpg 를 GCS에서 로컬 경로로 다운로드한다.
+
+        Args:
+            template_id: 다운로드할 템플릿 ID. 영문/숫자, `_`, `-` 만 허용한다.
+            dest: 다운로드 대상 로컬 파일 경로.
+
+        Raises:
+            ValueError: template_id가 허용 패턴을 벗어난 경우.
+        """
+        key = template_thumbnail_key(template_id)
         dest.parent.mkdir(parents=True, exist_ok=True)
         self._bucket.blob(key).download_to_filename(str(dest))
         logger.debug("gcs download %s -> %s", key, dest)

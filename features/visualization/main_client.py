@@ -48,6 +48,26 @@ def _map_top_level(data: dict[str, Any], field_map: dict[str, str]) -> dict[str,
     return {field_map.get(k, k): v for k, v in data.items()}
 
 
+def _extract_slide_plan_response_slides(result: Any) -> list[dict[str, Any]]:
+    """slide-plan 응답에서 slide rows 를 워커 내부 snake_case 로 추출한다."""
+    if result is None:
+        raise MainServerError(status_code=502, detail="slide-plan 응답이 비어 있습니다.")
+    raw_slides = result.get("slides") if isinstance(result, dict) else result
+    if not isinstance(raw_slides, list):
+        raise MainServerError(
+            status_code=502,
+            detail=(
+                f"slide-plan 응답 형식 오류: slides(list) 예상, {type(raw_slides).__name__} 수신"
+            ),
+        )
+
+    slides: list[dict[str, Any]] = []
+    for raw_slide in raw_slides:
+        if isinstance(raw_slide, dict):
+            slides.append(_map_top_level(raw_slide, _SLIDE_FIELD_MAP))
+    return slides
+
+
 class VisualizationMainClient(BaseClient):
     """
     시각화 워커 → 메인 백엔드 전용 HTTP 클라이언트.
@@ -117,11 +137,12 @@ class VisualizationMainClient(BaseClient):
         slides: list[dict[str, Any]],
         idempotency_key: str,
         schema_version: int = 1,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         """Step 1 직후 슬라이드 구성 계획 제출 (POST /{job_id}/slide-plan).
 
         slides 각 항목: { slide_order, source_slide_id, slide_filename }
         slide_plan 내부 키는 snake_case 그대로 전송 (§11.0.3).
+        반환값은 메인이 생성/조회한 slide row 목록이다.
         """
         body: dict[str, Any] = {
             "totalSlides": total_slides,
@@ -139,7 +160,8 @@ class VisualizationMainClient(BaseClient):
             "schemaVersion": schema_version,
         }
         raw = await self._request_with_retry("POST", f"{_BASE}/{job_id}/slide-plan", json=body)
-        self._extract_result(raw)
+        result = self._extract_result(raw)
+        return _extract_slide_plan_response_slides(result)
 
     async def send_slide_event(
         self,

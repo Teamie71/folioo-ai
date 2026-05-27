@@ -103,6 +103,29 @@ class SlideEditor:
 
         self._write_document(Path(slide_xml_path), doc)
 
+    def clear_content(self, slide_xml_path: str) -> None:
+        """
+        슬라이드의 가시 콘텐츠 도형을 모두 제거해 빈 페이지로 만든다.
+
+        마스터/배경은 보존하고 `spTree` 의 기본 그룹 속성(`nvGrpSpPr`, `grpSpPr`)은
+        남긴다. 콘텐츠 생성 실패 슬라이드가 템플릿 예시 문구를 노출하지 않도록
+        만드는 용도다.
+        """
+        doc = parse(slide_xml_path)
+        sp_tree = self._first_descendant(doc, self.PML_NS, "spTree")
+        if sp_tree is None:
+            return
+
+        removable = {"sp", "pic", "graphicFrame", "cxnSp", "grpSp"}
+        for child in list(sp_tree.childNodes):
+            if child.nodeType != Node.ELEMENT_NODE:
+                continue
+            if child.namespaceURI == self.PML_NS and child.localName in removable:
+                sp_tree.removeChild(child)
+                child.unlink()
+
+        self._write_document(Path(slide_xml_path), doc)
+
     def _get_shape_id(self, element: Element) -> str | None:
         """cNvPr/@id 값을 추출한다."""
         cnv_pr = self._get_cnv_pr(element)

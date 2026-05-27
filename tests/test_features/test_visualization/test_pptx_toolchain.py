@@ -122,6 +122,28 @@ def test_build_selected_deck_removes_unselected_slides_and_cleans_tmp(
     assert _toolchain_tmp_dirs() == before_tmp_dirs
 
 
+def test_build_selected_deck_reorders_slides_by_selected_sequence(
+    tmp_path: Path,
+    skill_dir: Path,
+):
+    """선택 슬라이드 순서가 최종 presentation.xml 순서가 된다."""
+    template = tmp_path / "template.pptx"
+    output = tmp_path / "selected.pptx"
+    _make_template_pptx(template, slide_count=3)
+
+    runner = FakePptxSkillRunner()
+    toolchain = PptxToolchain(skill_dir, runner=runner)
+
+    result = toolchain.build_selected_deck(
+        template,
+        output,
+        selected_slide_filenames=["slide3.xml", "slide1.xml"],
+    )
+
+    assert result.remaining_slide_filenames == ("slide3.xml", "slide1.xml")
+    assert _slides_in_pptx(output) == ["slide3.xml", "slide1.xml"]
+
+
 def test_validate_failure_runs_repair_then_revalidates(
     tmp_path: Path,
     skill_dir: Path,
