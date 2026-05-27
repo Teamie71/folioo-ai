@@ -12,6 +12,7 @@ from features.visualization.main_client import (
     _RETRY_MAX,
     _SLIDE_FIELD_MAP,
     VisualizationMainClient,
+    _extract_slide_plan_response_slides,
     _map_top_level,
 )
 
@@ -236,6 +237,51 @@ class TestSubmitSlidePlan:
         blob = captured_body["slidePlan"]
         assert blob["selected_slides"][0]["source_slide_id"] == "cover_B"
         assert "sourceSlideId" not in blob["selected_slides"][0]
+
+    @pytest.mark.asyncio
+    async def test_returns_created_slide_rows_from_response(self):
+        """slide-plan 응답의 DB slide id 를 snake_case 로 반환한다."""
+        client = make_client()
+        envelope = {
+            "isSuccess": True,
+            "result": {
+                "slides": [
+                    {
+                        "id": "slide-1",
+                        "slideOrder": 1,
+                        "sourceSlideId": "cover_B",
+                        "slideFilename": "slide1.xml",
+                    }
+                ]
+            },
+        }
+        with patch.object(
+            client, "_request_with_retry", new_callable=AsyncMock, return_value=envelope
+        ):
+            result = await client.submit_slide_plan(
+                "job-abc",
+                total_slides=1,
+                template_id="blue",
+                slide_plan={},
+                slides=[
+                    {"slide_order": 1, "source_slide_id": "cover_B", "slide_filename": "s.xml"}
+                ],
+                idempotency_key="idem-1",
+            )
+
+        assert result == [
+            {
+                "id": "slide-1",
+                "slide_order": 1,
+                "source_slide_id": "cover_B",
+                "slide_filename": "slide1.xml",
+            }
+        ]
+
+
+def test_extract_slide_plan_response_slides_handles_204_compatibility() -> None:
+    """구버전 204 응답은 빈 목록으로 보존해 파이프라인에서 계약 오류로 판단한다."""
+    assert _extract_slide_plan_response_slides(None) == []
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,9 @@ from features.visualization.storage.gcs_client import (
     pdf_key,
     pptx_key,
     preview_key,
+    template_meta_key,
     template_pptx_key,
+    template_thumbnail_key,
 )
 
 # ---------------------------------------------------------------------------
@@ -45,6 +47,12 @@ class TestCanonicalKeys:
 
     def test_template_pptx_key(self):
         assert template_pptx_key("blue") == "templates/blue/template.pptx"
+
+    def test_template_meta_key(self):
+        assert template_meta_key("blue") == "templates/blue/meta.json"
+
+    def test_template_thumbnail_key(self):
+        assert template_thumbnail_key("blue") == "templates/blue/thumbnail.jpg"
 
 
 class TestValidateIdentifier:
@@ -101,6 +109,28 @@ class TestDownloadTemplate:
         client.download_template("green", dest)
 
         assert dest.parent.exists()
+
+
+class TestDownloadTemplateMeta:
+    def test_calls_correct_key(self, mock_gcs):
+        client, mock_bucket, mock_blob, tmp_path = mock_gcs
+        dest = tmp_path / "meta.json"
+
+        client.download_template_meta("blue", dest)
+
+        mock_bucket.blob.assert_called_once_with("templates/blue/meta.json")
+        mock_blob.download_to_filename.assert_called_once_with(str(dest))
+
+
+class TestDownloadTemplateThumbnail:
+    def test_calls_correct_key(self, mock_gcs):
+        client, mock_bucket, mock_blob, tmp_path = mock_gcs
+        dest = tmp_path / "thumbnail.jpg"
+
+        client.download_template_thumbnail("blue", dest)
+
+        mock_bucket.blob.assert_called_once_with("templates/blue/thumbnail.jpg")
+        mock_blob.download_to_filename.assert_called_once_with(str(dest))
 
 
 class TestDownloadPptx:

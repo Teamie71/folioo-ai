@@ -9,6 +9,7 @@ import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from xml.dom.minidom import Element
 
 import defusedxml.minidom
 
@@ -252,10 +253,16 @@ class PptxToolchain:
         `ppt/presentation.xml` 의 `p:sldIdLst` 에서 미선택 슬라이드를 제거.
 
         실제 슬라이드 파트와 rels, Content_Types 정리는 뒤이어 실행되는 `clean`이 담당한다.
+        남길 슬라이드는 `selected_slide_filenames` 순서대로 재배치한다.
         """
-        selected = {_normalize_slide_filename(name) for name in selected_slide_filenames}
+        selected_sequence = tuple(
+            _normalize_slide_filename(name) for name in selected_slide_filenames
+        )
+        selected = set(selected_sequence)
         if not selected:
             raise ValueError("선택된 슬라이드가 없습니다.")
+        if len(selected) != len(selected_sequence):
+            raise ValueError("선택 슬라이드에 중복이 있습니다.")
 
         root_dir = Path(unpacked_dir)
         presentation_path = root_dir / "ppt" / "presentation.xml"
@@ -288,17 +295,20 @@ class PptxToolchain:
         if missing:
             raise ValueError(f"선택 슬라이드를 찾을 수 없습니다: {', '.join(missing)}")
 
-        remaining: list[str] = []
+        slide_id_by_filename: dict[str, Element] = {}
         for slide_id in slide_ids:
             slide_filename = rid_to_slide.get(_relationship_id(slide_id))
-            if slide_filename in selected:
-                remaining.append(slide_filename)
-                continue
             slide_id_list.removeChild(slide_id)
-            slide_id.unlink()
+            if slide_filename in selected:
+                slide_id_by_filename[slide_filename] = slide_id
+            else:
+                slide_id.unlink()
+
+        for slide_filename in selected_sequence:
+            slide_id_list.appendChild(slide_id_by_filename[slide_filename])
 
         presentation_path.write_bytes(dom.toxml(encoding="UTF-8"))
-        return tuple(remaining)
+        return selected_sequence
 
     @property
     def _unpack_script(self) -> Path:

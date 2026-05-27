@@ -377,6 +377,21 @@ def test_apply_remove_deletes_shape_tree(tmp_path: Path) -> None:
     assert "삭제될 본문" not in slide_path.read_text(encoding="utf-8")
 
 
+def test_clear_content_removes_visible_shapes_and_keeps_blank_slide(tmp_path: Path) -> None:
+    """콘텐츠 생성 실패 시 템플릿 예시 문구가 보이지 않도록 빈 페이지로 만든다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+
+    SlideEditor().clear_content(str(slide_path))
+
+    doc = parse(str(slide_path))
+    assert doc.getElementsByTagNameNS(PML_NS, "spTree")
+    assert doc.getElementsByTagNameNS(PML_NS, "sp") == []
+    assert doc.getElementsByTagNameNS(PML_NS, "graphicFrame") == []
+    xml = slide_path.read_text(encoding="utf-8")
+    assert "여기에 프로젝트명" not in xml
+    assert "삭제될 본문" not in xml
+
+
 def test_apply_chart_updates_cache_formulas_and_keeps_chart_type(tmp_path: Path) -> None:
     """chart action 은 캐시와 수식을 함께 갱신하고 차트 타입은 유지한다."""
     slide_path, chart_path = _make_sample_package(tmp_path)
