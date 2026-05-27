@@ -6,7 +6,8 @@ spec: "specs/phase-1/04-soffice-render.md"
 depends_on: []
 blocks: ["1.05", "1.06", "1.08", "1.09"]
 estimate: "M"
-status: "todo"
+status: "done"
+completed_at: "2026-05-26"
 owner: ""
 sprint: ""
 ---
@@ -25,16 +26,16 @@ sprint: ""
 
 ## 구현 체크리스트
 
-- [ ] soffice 래퍼: `--headless` + 변환마다 `UserInstallation` 격리 + 별도 서브프로세스, 30~60s 타임아웃 후 SIGKILL+1회 재시도, 종료 시 임시 디렉터리 정리
-- [ ] `pdftoppm` JPG(`-r 150`): 전체(`-f`/`-l` 없이) / 단일 페이지(`-f N -l N`) 모드
-- [ ] 모든 임시 파일 `/tmp` 작업 디렉터리 처리 + 종료 시 전부 삭제 (완전 무상태)
-- [ ] 누적 변환 카운터를 1.01 인스턴스 재활용 로직과 연동 (worker-spec.md §8.3)
+- [x] soffice 래퍼: `--headless` + 변환마다 `UserInstallation` 격리 + 별도 서브프로세스, 30~60s 타임아웃 후 SIGKILL+1회 재시도, 종료 시 임시 디렉터리 정리
+- [x] `pdftoppm` JPG(`-r 150`): 전체(`-f`/`-l` 없이) / 단일 페이지(`-f N -l N`) 모드
+- [x] 모든 임시 파일 `/tmp` 작업 디렉터리 처리 + 종료 시 전부 삭제 (완전 무상태)
+- [x] 누적 변환 카운터를 1.01 인스턴스 재활용 로직과 연동 (worker-spec.md §8.3)
 
 ## Definition of Done
 
-- [ ] soffice 동시 호출에도 `UserInstallation` 충돌 없이 PDF 생성, 타임아웃 시 SIGKILL+재시도 동작
-- [ ] `pdftoppm` 전체/단일 모드가 N장/1장 산출
-- [ ] 변환 종료 후 `/tmp` 작업 디렉터리가 비워짐
+- [x] soffice 동시 호출에도 `UserInstallation` 충돌 없이 PDF 생성, 타임아웃 시 SIGKILL+재시도 동작
+- [x] `pdftoppm` 전체/단일 모드가 N장/1장 산출
+- [x] 변환 종료 후 `/tmp` 작업 디렉터리가 비워짐
 
 ## 리스크 / 메모
 
