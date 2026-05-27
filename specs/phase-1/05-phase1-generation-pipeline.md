@@ -15,7 +15,7 @@ generate push 한 건을 받아 LLM 구조 분석·Slot Fill 결정·편집·렌
 - 진행/최종 이벤트의 idempotency key 는 Cloud Tasks payload 의 key 를 그대로 재사용하지 않고 `{job_id}:slide:{slide_id}:{event}` 또는 `{job_id}:job:{event}:{stage}` 형태의 이벤트 단위 안정 키로 만든다.
 
 ## Approach
-`apps/pptx-worker/features/visualization/service.py` 가 오케스트레이션을 맡고 LLM 노드는 `features/visualization/agents/`(LangGraph)에 둔다. LLM 입력은 meta.json(id/category/description/best_for)·썸네일·Slot 디스크립터이며 사전 Slot 스펙은 넣지 않는다(template-system.md §3.7). Step 5/6 분리는 soffice 가 파일 1회 변환이 효율적인 반면 QA 는 슬라이드별 병렬 이득이 크기 때문이다(§5.2). 이 파이프라인은 spec 03(SlideEditor)·11(PPTX 도구 체인)·04(soffice 렌더)·12(GCS 클라이언트)·06(시각 QA)·02(콜백 클라이언트)를 조합하며, 텍스트 길이 적응(폰트 축소 60%/하한 10pt, 요약)은 §16 정책을 따른다.
+`apps/pptx-worker/features/visualization/service.py` 가 오케스트레이션을 맡고 LLM 노드는 `features/visualization/agents/`(LangGraph)에 둔다. Phase 1 Call #1 은 meta.json(id/category/description/best_for) 텍스트 메타데이터만 사용하고, 템플릿 썸네일의 multimodal 입력은 모델/비용/응답 지연 정책 확정 뒤 후속 작업으로 둔다. Call #2 는 Slot 디스크립터를 입력으로 사용하며 사전 Slot 스펙은 넣지 않는다(template-system.md §3.7). Step 5/6 분리는 soffice 가 파일 1회 변환이 효율적인 반면 QA 는 슬라이드별 병렬 이득이 크기 때문이다(§5.2). 이 파이프라인은 spec 03(SlideEditor)·11(PPTX 도구 체인)·04(soffice 렌더)·12(GCS 클라이언트)·06(시각 QA)·02(콜백 클라이언트)를 조합하며, 텍스트 길이 적응(폰트 축소 60%/하한 10pt, 요약)은 §16 정책을 따른다.
 
 ## Verification
 - 포트폴리오 텍스트를 입력하면 cover/closing 포함·7~12장 범위·연속 카테고리 회피 규칙을 지킨 slide_plan 이 나오는지 검증한다.

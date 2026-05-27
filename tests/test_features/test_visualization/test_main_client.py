@@ -186,8 +186,14 @@ class TestSubmitSlidePlan:
             {"slide_order": 1, "source_slide_id": "cover_B", "slide_filename": "slide1.xml"},
             {"slide_order": 2, "source_slide_id": "skills_A", "slide_filename": "slide2.xml"},
         ]
+        response = {
+            "slides": [
+                {"id": "slide-1", "slideOrder": 1},
+                {"id": "slide-2", "slideOrder": 2},
+            ]
+        }
         with patch.object(
-            client, "_request_with_retry", new_callable=AsyncMock, return_value=None
+            client, "_request_with_retry", new_callable=AsyncMock, return_value=response
         ) as mock_rwr:
             await client.submit_slide_plan(
                 "job-abc",
@@ -220,7 +226,9 @@ class TestSubmitSlidePlan:
         captured_body: dict[str, Any] = {}
 
         async def capture(method, path, *, json=None, params=None):
+            del method, path, params
             captured_body.update(json or {})
+            return {"slides": [{"id": "slide-1", "slideOrder": 1}]}
 
         with patch.object(client, "_request_with_retry", side_effect=capture):
             await client.submit_slide_plan(
@@ -279,9 +287,13 @@ class TestSubmitSlidePlan:
         ]
 
 
-def test_extract_slide_plan_response_slides_handles_204_compatibility() -> None:
-    """구버전 204 응답은 빈 목록으로 보존해 파이프라인에서 계약 오류로 판단한다."""
-    assert _extract_slide_plan_response_slides(None) == []
+@pytest.mark.parametrize("result", [None, {}, {"slides": None}, {"slides": "bad"}])
+def test_extract_slide_plan_response_slides_rejects_invalid_contract(result: Any) -> None:
+    """slide-plan 응답에 slides 배열이 없으면 계약 오류로 실패한다."""
+    with pytest.raises(MainServerError) as exc_info:
+        _extract_slide_plan_response_slides(result)
+
+    assert exc_info.value.status_code == 502
 
 
 # ---------------------------------------------------------------------------
@@ -566,18 +578,21 @@ class TestCallbackIsSuccessFalse:
                 )
 
     @pytest.mark.asyncio
-    async def test_submit_slide_plan_ok_on_204(self):
-        """204 No Content (None) 은 정상 처리된다."""
+    async def test_submit_slide_plan_rejects_204_without_slide_rows(self):
+        """초기 생성 slide-plan 은 메인 DB slide row 응답이 필요하다."""
         client = make_client()
         with patch.object(client, "_request_with_retry", new_callable=AsyncMock, return_value=None):
-            await client.submit_slide_plan(
-                "job-1",
-                total_slides=1,
-                template_id="blue",
-                slide_plan={},
-                slides=[{"slide_order": 1, "source_slide_id": "c", "slide_filename": "s.xml"}],
-                idempotency_key="k",
-            )
+            with pytest.raises(MainServerError) as exc_info:
+                await client.submit_slide_plan(
+                    "job-1",
+                    total_slides=1,
+                    template_id="blue",
+                    slide_plan={},
+                    slides=[{"slide_order": 1, "source_slide_id": "c", "slide_filename": "s.xml"}],
+                    idempotency_key="k",
+                )
+
+        assert exc_info.value.status_code == 502
 
 
 class TestGetJobContext:

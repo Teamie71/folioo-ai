@@ -31,6 +31,7 @@ _FILL_SYSTEM_PROMPT = """PPTX 슬라이드 Slot 을 채우는 편집 데이터 �
 - 제공된 shape_id 만 key 로 사용하세요.
 - 텍스트가 길면 먼저 폰트를 줄이되 원본의 60% 미만이나 10pt 미만으로 내리지 마세요.
 - 텍스트 요약이 필요하면 고유명사, 수치, 기술 스택을 보존하세요.
+- 제공된 모든 shape_id 에 대해 text/remove/chart 중 하나를 반환하세요.
 """
 
 
@@ -299,6 +300,11 @@ def _parse_plan_payload(
     llm_model: str | None,
 ) -> SlidePlan:
     output = SlidePlanOutput.model_validate(payload)
+    if output.total_slides is not None and output.total_slides != len(output.items):
+        raise ValueError(
+            "total_slides 와 slide_plan 항목 수가 일치해야 합니다. "
+            f"(total_slides={output.total_slides}, items={len(output.items)})"
+        )
     source_by_id = {slide.source_slide_id: slide for slide in source_slides}
     planned: list[PlannedSlide] = []
     for raw_item in output.items:
@@ -335,6 +341,10 @@ def _validate_slide_plan(plan: SlidePlan) -> None:
     if "closing" not in categories:
         raise ValueError("slide_plan 에 closing 카테고리가 필요합니다.")
 
+    source_slide_ids = [slide.source_slide_id for slide in plan.selected_slides]
+    if len(set(source_slide_ids)) != len(source_slide_ids):
+        raise ValueError("같은 source_slide_id 를 중복 선택할 수 없습니다.")
+
     for previous, current in zip(categories, categories[1:], strict=False):
         if previous == current:
             raise ValueError(f"같은 카테고리를 연속 선택할 수 없습니다: {current}")
@@ -361,6 +371,10 @@ def _parse_fills_payload(
                 slots_by_id[shape_key].get("font_size_pt"),
             )
         normalized[shape_key] = fill
+
+    missing_shape_ids = sorted(set(slots_by_id) - set(normalized))
+    if missing_shape_ids:
+        raise ValueError(f"fills 에 누락된 shape_id 가 있습니다: {', '.join(missing_shape_ids)}")
 
     return normalized
 
@@ -400,15 +414,20 @@ def _guard_font_size(value: Any, base_font_size: Any) -> float:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"font_size_override 는 숫자여야 합니다: {value!r}") from exc
 
-    lower = 10.0
-    upper = 48.0
     try:
         base = float(base_font_size)
     except (TypeError, ValueError):
         base = 0.0
+
+    lower = 10.0
+    upper = 48.0
     if base > 0:
-        lower = max(lower, base * 0.6)
-        upper = min(upper, base * 1.2)
+        base_lower = base * 0.6
+        base_upper = base * 1.2
+        lower = max(base_lower, 10.0)
+        upper = min(base_upper, 48.0)
+        if upper < lower:
+            upper = lower
     return min(max(size, lower), upper)
 
 

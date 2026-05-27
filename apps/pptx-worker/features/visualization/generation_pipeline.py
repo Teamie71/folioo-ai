@@ -285,8 +285,16 @@ class VisualizationTaskService:
 
     async def regenerate(self, task: RegenerateVisualizationTask) -> None:
         """단일 슬라이드 재생성 파이프라인으로 위임한다."""
-        del task
-        raise RetryableError("PPTX 슬라이드 재생성 파이프라인이 아직 연결되지 않았습니다.")
+        logger.warning(
+            "RegenerateVisualizationTask regenerate unsupported: job_id=%s slide_id=%s is_retry=%s",
+            task.job_id,
+            task.slide_id,
+            task.is_retry,
+        )
+        raise FatalError(
+            "PPTX 슬라이드 재생성 파이프라인이 아직 연결되지 않았습니다.",
+            error_code="VISUALIZATION_REGENERATE_UNSUPPORTED",
+        )
 
     async def _generate_with_client(
         self,
@@ -317,7 +325,8 @@ class VisualizationTaskService:
                 template_metadata = _load_json_object(template_meta_path)
 
                 try:
-                    slide_plan = self._slide_plan_generator.create_plan(
+                    slide_plan = await asyncio.to_thread(
+                        self._slide_plan_generator.create_plan,
                         portfolio_text=portfolio_text,
                         template_metadata=template_metadata,
                     )
@@ -534,9 +543,15 @@ class VisualizationTaskService:
             for planned_slide in planned_slides
         ]
         outcomes: list[_ContentOutcome] = []
-        for future in asyncio.as_completed(tasks):
-            outcomes.append(await future)
-        return outcomes
+        try:
+            for future in asyncio.as_completed(tasks):
+                outcomes.append(await future)
+            return outcomes
+        except Exception:
+            for pending in tasks:
+                pending.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     async def _generate_one_slide_content(
         self,
@@ -558,26 +573,6 @@ class VisualizationTaskService:
                     slots=slots,
                 )
                 await asyncio.to_thread(editor.apply_fills, str(slide_xml_path), fills)
-                await main_client.send_slide_event(
-                    task.job_id,
-                    registered_slide.slide_id,
-                    event="slide_content_ready",
-                    slide_order=registered_slide.slide_order,
-                    idempotency_key=_slide_event_key(
-                        task.job_id,
-                        registered_slide.slide_id,
-                        "slide_content_ready",
-                    ),
-                    occurred_at=self._now_iso(),
-                    schema_version=task.schema_version,
-                    current_fills=fills,
-                )
-                return _ContentOutcome(
-                    registered_slide=registered_slide,
-                    planned_slide=planned_slide,
-                    status="ready",
-                    current_fills=fills,
-                )
             except Exception as exc:
                 logger.warning(
                     "slide content generation failed: job_id=%s slide_order=%s error=%s",
@@ -608,6 +603,34 @@ class VisualizationTaskService:
                     status="error",
                     message=message,
                 )
+            try:
+                await main_client.send_slide_event(
+                    task.job_id,
+                    registered_slide.slide_id,
+                    event="slide_content_ready",
+                    slide_order=registered_slide.slide_order,
+                    idempotency_key=_slide_event_key(
+                        task.job_id,
+                        registered_slide.slide_id,
+                        "slide_content_ready",
+                    ),
+                    occurred_at=self._now_iso(),
+                    schema_version=task.schema_version,
+                    current_fills=fills,
+                )
+            except Exception:
+                logger.exception(
+                    "slide_content_ready callback failed: job_id=%s slide_order=%s",
+                    task.job_id,
+                    registered_slide.slide_order,
+                )
+                raise
+            return _ContentOutcome(
+                registered_slide=registered_slide,
+                planned_slide=planned_slide,
+                status="ready",
+                current_fills=fills,
+            )
 
     async def _create_fills_with_timeout_retry(
         self,

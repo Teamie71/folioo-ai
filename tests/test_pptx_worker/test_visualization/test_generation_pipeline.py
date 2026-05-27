@@ -10,8 +10,15 @@ from typing import Any
 
 import pytest
 
+from common.clients.base_client import MainServerError
 from features.visualization.agents import PlannedSlide, SlidePlan
-from features.visualization.service import GenerateVisualizationTask, VisualizationTaskService
+from features.visualization.service import (
+    FatalError,
+    GenerateVisualizationTask,
+    RegenerateVisualizationTask,
+    RetryableError,
+    VisualizationTaskService,
+)
 
 
 @dataclass(frozen=True)
@@ -59,8 +66,14 @@ class FakeQAResult:
 class FakeMainClient:
     """메인 콜백 클라이언트 대역."""
 
-    def __init__(self, *, return_slide_rows: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        return_slide_rows: bool = True,
+        fail_slide_events: set[str] | None = None,
+    ) -> None:
         self.return_slide_rows = return_slide_rows
+        self.fail_slide_events = fail_slide_events or set()
         self.job_context = {"status": "pending", "portfolio_text": "Folioo KPI 42% 개선"}
         self.slide_plan_requests: list[dict[str, Any]] = []
         self.slide_events: list[dict[str, Any]] = []
@@ -86,6 +99,8 @@ class FakeMainClient:
         ]
 
     async def send_slide_event(self, job_id: str, slide_id: str, **kwargs: Any) -> None:
+        if kwargs["event"] in self.fail_slide_events:
+            raise MainServerError(status_code=503, detail="callback failed")
         self.slide_events.append({"job_id": job_id, "slide_id": slide_id, **kwargs})
 
     async def send_job_event(self, job_id: str, **kwargs: Any) -> None:
@@ -404,6 +419,44 @@ async def test_slide_plan_response_must_return_slide_ids() -> None:
     assert context.toolchain.unpack_calls == []
 
 
+@pytest.mark.asyncio
+async def test_slide_content_ready_callback_failure_does_not_blank_generated_slide() -> None:
+    """ready 콜백 실패는 콘텐츠 실패로 뒤집지 않고 Cloud Tasks 재시도로 넘긴다."""
+    context = PipelineContext(
+        main_client=FakeMainClient(fail_slide_events={"slide_content_ready"}),
+        max_content_concurrency=1,
+    )
+
+    with pytest.raises(RetryableError):
+        await context.service.generate(_task())
+
+    assert context.editor.applied
+    assert context.editor.cleared == []
+    assert _events(context.main_client, "slide_content_error") == []
+
+
+@pytest.mark.asyncio
+async def test_regenerate_unsupported_is_fatal_not_retryable() -> None:
+    """미구현 regenerate 는 무한 재시도 없이 fatal 로 ACK 대상이 된다."""
+    service = VisualizationTaskService()
+
+    with pytest.raises(FatalError) as exc_info:
+        await service.regenerate(
+            RegenerateVisualizationTask(
+                message_type="viz.regenerate",
+                job_id="job-1",
+                slide_id="slide-1",
+                user_request=None,
+                is_retry=False,
+                idempotency_key="task-key",
+                callback_base_url="http://main.local",
+                schema_version=1,
+            )
+        )
+
+    assert exc_info.value.error_code == "VISUALIZATION_REGENERATE_UNSUPPORTED"
+
+
 class PipelineContext:
     """파이프라인 테스트 의존성 묶음."""
 
@@ -413,6 +466,7 @@ class PipelineContext:
         main_client: FakeMainClient | None = None,
         filler: FakeFillGenerator | None = None,
         qa_step: FakeQAStep | None = None,
+        max_content_concurrency: int = 4,
     ) -> None:
         self.main_client = main_client or FakeMainClient()
         self.storage = FakeStorage()
@@ -433,6 +487,7 @@ class PipelineContext:
             content_fill_generator=self.filler,
             qa_step_factory=lambda storage, main, editor, toolchain, renderer: self.qa_step,
             clock=lambda: datetime(2026, 5, 27, tzinfo=UTC),
+            max_content_concurrency=max_content_concurrency,
         )
 
 

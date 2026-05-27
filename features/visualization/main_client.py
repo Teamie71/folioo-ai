@@ -51,10 +51,15 @@ def _map_top_level(data: dict[str, Any], field_map: dict[str, str]) -> dict[str,
 def _extract_slide_plan_response_slides(result: Any) -> list[dict[str, Any]]:
     """slide-plan 응답에서 slide rows 를 워커 내부 snake_case 로 추출한다."""
     if result is None:
-        return []
+        raise MainServerError(status_code=502, detail="slide-plan 응답이 비어 있습니다.")
     raw_slides = result.get("slides") if isinstance(result, dict) else result
     if not isinstance(raw_slides, list):
-        return []
+        raise MainServerError(
+            status_code=502,
+            detail=(
+                f"slide-plan 응답 형식 오류: slides(list) 예상, {type(raw_slides).__name__} 수신"
+            ),
+        )
 
     slides: list[dict[str, Any]] = []
     for raw_slide in raw_slides:

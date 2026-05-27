@@ -10,6 +10,7 @@ from features.visualization.agents import (
     parse_template_metadata,
     prefilter_source_slides,
 )
+from features.visualization.agents.schemas import SlidePlanOutput
 
 
 @dataclass
@@ -92,6 +93,53 @@ def test_slide_plan_generator_rejects_consecutive_categories() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("source_slide_ids", "total_slides", "match"),
+    [
+        (
+            ["cover_A", "overview_A", "process_A", "outcome_A", "chart_A", "text_A", "closing_A"],
+            8,
+            "total_slides",
+        ),
+        (
+            [
+                "cover_A",
+                "overview_A",
+                "process_A",
+                "overview_A",
+                "outcome_A",
+                "text_A",
+                "closing_A",
+            ],
+            None,
+            "source_slide_id",
+        ),
+    ],
+)
+def test_slide_plan_generator_rejects_structural_contract_errors(
+    source_slide_ids: list[str],
+    total_slides: int | None,
+    match: str,
+) -> None:
+    """LLM slide_plan 의 항목 수와 source slide 중복을 검증한다."""
+    response: dict[str, object] = {
+        "slide_plan": [
+            _plan_item(index, source_slide_id)
+            for index, source_slide_id in enumerate(source_slide_ids, start=1)
+        ]
+    }
+    if total_slides is not None:
+        response["total_slides"] = total_slides
+    llm = FakeLLM([response])
+    generator = LLMSlidePlanGenerator(llm=llm)
+
+    with pytest.raises(ValueError, match=match):
+        generator.create_plan(
+            portfolio_text="프로젝트 내용",
+            template_metadata=_template_meta(),
+        )
+
+
 def test_content_fill_generator_clamps_font_size_to_spec_floor() -> None:
     """font_size_override 는 원본 60%와 10pt 하한을 지킨다."""
     llm = FakeLLM(
@@ -117,6 +165,31 @@ def test_content_fill_generator_clamps_font_size_to_spec_floor() -> None:
     assert fills["2"]["font_size_override"] == 12
 
 
+def test_content_fill_generator_keeps_global_font_floor_when_base_is_small() -> None:
+    """원본 폰트가 작아도 font_size_override 는 10pt 미만으로 내려가지 않는다."""
+    llm = FakeLLM(
+        [
+            {
+                "fills": {
+                    "2": {
+                        "action": "text",
+                        "text": "작은 텍스트",
+                        "font_size_override": 1,
+                    }
+                }
+            }
+        ]
+    )
+    generator = LLMContentFillGenerator(llm=llm)
+
+    fills = generator.create_fills(
+        content_brief="요약",
+        slots=[{"shape_id": "2", "font_size_pt": 8, "kind": "text"}],
+    )
+
+    assert fills["2"]["font_size_override"] == 10
+
+
 def test_content_fill_generator_rejects_unknown_shape_id() -> None:
     """LLM 이 제공받지 않은 shape_id 를 쓰면 적용 전에 거부한다."""
     llm = FakeLLM([{"fills": {"999": {"action": "text", "text": "오류"}}}])
@@ -126,6 +199,21 @@ def test_content_fill_generator_rejects_unknown_shape_id() -> None:
         generator.create_fills(
             content_brief="요약",
             slots=[{"shape_id": "2", "font_size_pt": 20, "kind": "text"}],
+        )
+
+
+def test_content_fill_generator_rejects_missing_slot_fill() -> None:
+    """LLM 이 제공받은 slot 일부를 누락하면 템플릿 문구 노출 방지를 위해 거부한다."""
+    llm = FakeLLM([{"fills": {"2": {"action": "text", "text": "요약"}}}])
+    generator = LLMContentFillGenerator(llm=llm)
+
+    with pytest.raises(ValueError, match="누락"):
+        generator.create_fills(
+            content_brief="요약",
+            slots=[
+                {"shape_id": "2", "font_size_pt": 20, "kind": "text"},
+                {"shape_id": "3", "font_size_pt": 18, "kind": "text"},
+            ],
         )
 
 
@@ -173,6 +261,12 @@ def test_rule_prefilter_keeps_chart_and_visual_with_signals() -> None:
 
     assert "chart" in {slide.category for slide in filtered}
     assert "visual" in {slide.category for slide in filtered}
+
+
+def test_slide_plan_output_error_message_lists_supported_keys() -> None:
+    """slide_plan/selected_slides 둘 다 없을 때 허용 입력을 안내한다."""
+    with pytest.raises(ValueError, match="selected_slides"):
+        SlidePlanOutput.model_validate({"total_slides": 7})
 
 
 def test_parse_template_metadata_derives_slide_filenames() -> None:

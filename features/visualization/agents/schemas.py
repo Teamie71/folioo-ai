@@ -38,7 +38,7 @@ class SlidePlanOutput(BaseModel):
     def validate_items(self) -> "SlidePlanOutput":
         """slide_plan 또는 selected_slides 중 하나를 요구한다."""
         if not self.items:
-            raise ValueError("slide_plan 배열이 필요합니다.")
+            raise ValueError("slide_plan 또는 selected_slides 배열이 필요합니다.")
         return self
 
     @property

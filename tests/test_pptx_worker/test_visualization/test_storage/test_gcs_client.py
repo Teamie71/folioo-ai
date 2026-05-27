@@ -69,9 +69,14 @@ class TestValidateIdentifier:
         with pytest.raises(ValueError):
             pptx_key("job/42")
 
-    def test_key_helpers_reject_traversal_in_template_id(self):
+    @pytest.mark.parametrize(
+        "helper",
+        [template_pptx_key, template_meta_key, template_thumbnail_key],
+    )
+    @pytest.mark.parametrize("template_id", ["../secret", "../../etc/passwd", "/abs/path"])
+    def test_template_key_helpers_reject_traversal_in_template_id(self, helper, template_id):
         with pytest.raises(ValueError):
-            template_pptx_key("../secret")
+            helper(template_id)
 
 
 # ---------------------------------------------------------------------------

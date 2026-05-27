@@ -27,7 +27,8 @@ sprint: ""
 ## 사전 준비
 
 - [ ] `features/visualization/agents/`(LangGraph) LLM 노드 골격
-- [ ] LLM Call #1/#2 프롬프트(meta.json·썸네일·Slot 디스크립터 입력) 초안
+- [ ] LLM Call #1/#2 프롬프트(meta.json·Slot 디스크립터 입력) 초안
+- [ ] 템플릿 썸네일 multimodal 입력은 모델/비용/응답 지연 정책 확정 뒤 후속 작업으로 defer
 
 ## 구현 체크리스트
 
