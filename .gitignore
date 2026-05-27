@@ -26,3 +26,4 @@ opencode.json
 *.sqlite-wal
 
 .omx/
+.claude/

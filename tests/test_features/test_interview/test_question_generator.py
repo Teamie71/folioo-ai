@@ -27,8 +27,7 @@ def _mark_pre_evaluation_done(state: dict) -> dict:
         **state,
         "additional_question_pre_evaluated": True,
         "additional_question_target_statuses": {
-            target["target"]: {"asked_count": 0, "is_satisfied": False}
-            for target in targets
+            target["target"]: {"asked_count": 0, "is_satisfied": False} for target in targets
         },
     }
 
@@ -438,12 +437,18 @@ def test_extended_mode_pre_evaluation_selects_first_unsatisfied_target(
     assert result["messages"][0].content == "두 번째 target 질문"
     assert result["extension_turns_used"] == 1
     assert result["current_additional_question_target_id"] == "stage_3_episode_2_strategy_rationale"
-    assert result["additional_question_target_statuses"]["stage_3_episode_1_strategy_rationale"][
-        "is_satisfied"
-    ] is True
-    assert result["additional_question_target_statuses"]["stage_3_episode_2_strategy_rationale"][
-        "asked_count"
-    ] == 1
+    assert (
+        result["additional_question_target_statuses"]["stage_3_episode_1_strategy_rationale"][
+            "is_satisfied"
+        ]
+        is True
+    )
+    assert (
+        result["additional_question_target_statuses"]["stage_3_episode_2_strategy_rationale"][
+            "asked_count"
+        ]
+        == 1
+    )
 
 
 def test_extended_mode_uses_second_pass_after_first_pass_exhausted(
@@ -474,9 +479,12 @@ def test_extended_mode_uses_second_pass_after_first_pass_exhausted(
 
     assert result["messages"][0].content == "2차 패스 질문"
     assert result["current_additional_question_target_id"] == "stage_3_episode_1_strategy_rationale"
-    assert result["additional_question_target_statuses"]["stage_3_episode_1_strategy_rationale"][
-        "asked_count"
-    ] == 2
+    assert (
+        result["additional_question_target_statuses"]["stage_3_episode_1_strategy_rationale"][
+            "asked_count"
+        ]
+        == 2
+    )
 
 
 def test_extended_mode_ends_when_no_askable_target_remains(first_turn_state):
@@ -531,9 +539,12 @@ def test_extended_mode_generates_question_and_increments_turn(first_turn_state, 
     assert result["messages"][0].content == "연장 질문입니다."
     assert result["extension_turns_used"] == 1
     assert result["current_additional_question_target_id"] == "stage_3_episode_1_strategy_rationale"
-    assert result["additional_question_target_statuses"]["stage_3_episode_1_strategy_rationale"][
-        "asked_count"
-    ] == 1
+    assert (
+        result["additional_question_target_statuses"]["stage_3_episode_1_strategy_rationale"][
+            "asked_count"
+        ]
+        == 1
+    )
 
 
 def test_extended_mode_fallback_increments_turn(first_turn_state, monkeypatch):

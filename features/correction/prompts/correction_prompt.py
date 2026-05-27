@@ -59,6 +59,10 @@ CORRECTION_SYSTEM_PROMPT = """
 - 출력은 SingleCorrectionOutput 스키마에 정확히 맞춰야 합니다.
 - 각 field 객체는 반드시 1개씩만 반환하세요.
 - type은 reduce, keep, emphasize만 사용하세요.
+- 응답은 추가 설명이나 마크다운 코드펜스(```) 없이, 유효한 JSON object 하나만 반환하세요.
+- 모든 line 객체는 line_number, original_text, type, comment 키를 모두 포함해야 하며, keep 타입은 comment를 null로 설정하세요.
+- JSON 구조 예시:
+  {{"fields": [{{"field_name": "description", "lines": [{{"line_number": 1, "original_text": "...", "type": "keep", "comment": null}}]}}]}}
 """.strip()
 
 CORRECTION_GENERATOR_SYSTEM_TEMPLATE = f"""

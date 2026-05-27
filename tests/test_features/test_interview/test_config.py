@@ -79,7 +79,9 @@ def test_regular_flow_fixed_question_counts():
     stages = get_all_stages()
     expected_counts = {1: 3, 2: 2, 3: 3, 4: 3}
 
-    assert {stage: len(config.fixed_questions) for stage, config in stages.items()} == expected_counts
+    assert {
+        stage: len(config.fixed_questions) for stage, config in stages.items()
+    } == expected_counts
     assert sum(len(config.fixed_questions) for config in stages.values()) == 11
 
 
@@ -219,21 +221,21 @@ def test_invalid_extension_global_values_raise_error(
             "additional_question_priorities.priority는 중복될 수 없습니다",
         ),
         (
-            lambda data: data["global_config"]["additional_question_priorities"][0][
-                "targets"
-            ][0].__setitem__("target", "stage_3_episode_2_strategy_rationale"),
+            lambda data: data["global_config"]["additional_question_priorities"][0]["targets"][
+                0
+            ].__setitem__("target", "stage_3_episode_2_strategy_rationale"),
             "additional_question_priorities.target은 중복될 수 없습니다",
         ),
         (
-            lambda data: data["global_config"]["additional_question_priorities"][0][
-                "targets"
-            ][0].__setitem__("stage", 9),
+            lambda data: data["global_config"]["additional_question_priorities"][0]["targets"][
+                0
+            ].__setitem__("stage", 9),
             "additional_question_priorities.stage가 존재하지 않습니다",
         ),
         (
-            lambda data: data["global_config"]["additional_question_priorities"][0][
-                "targets"
-            ][0].__setitem__("field_name", "unknown_field"),
+            lambda data: data["global_config"]["additional_question_priorities"][0]["targets"][
+                0
+            ].__setitem__("field_name", "unknown_field"),
             "additional_question_priorities.field_name이 해당 stage에 존재하지 않습니다",
         ),
         (
@@ -243,9 +245,9 @@ def test_invalid_extension_global_values_raise_error(
             "additional_question_priorities.targets는 1개 이상이어야 합니다",
         ),
         (
-            lambda data: data["global_config"]["additional_question_priorities"][0][
-                "targets"
-            ][0].__setitem__("label", ""),
+            lambda data: data["global_config"]["additional_question_priorities"][0]["targets"][
+                0
+            ].__setitem__("label", ""),
             "추가 질문 target 문자열 필드는 비어 있을 수 없습니다",
         ),
     ],

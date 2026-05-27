@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "asyncpg>=0.31.0",
+    "defusedxml>=0.7.1",
     "fastapi>=0.128.0",
     "httpx>=0.28.1",
     "langchain>=1.2.3",
@@ -23,6 +24,9 @@ dependencies = [
     "sse-starlette>=2.1.3",
     "tavily-python>=0.7.22",
     "uvicorn[standard]>=0.40.0",
+    "google-cloud-storage>=3.10.1",
+    # Anthropic PPTX skill validate.py imports lxml.etree at runtime.
+    "lxml>=6.0.0",
 ]
 
 [dependency-groups]
@@ -32,10 +36,14 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "ruff>=0.14.11",
 ]
+template-tools = [
+    "markitdown[pptx]>=0.1.3",
+    "pillow>=11.0.0",
+]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
-pythonpath = "."      # Python 경로 설정
+pythonpath = [".", "apps/pptx-worker"]
 testpaths = ["tests"] # 테스트 탐색 디렉토리
 
 [tool.ruff]
