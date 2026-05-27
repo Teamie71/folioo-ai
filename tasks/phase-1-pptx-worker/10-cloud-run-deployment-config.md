@@ -6,7 +6,8 @@ spec: "specs/phase-1/10-cloud-run-deployment-config.md"
 depends_on: ["1.01"]
 blocks: []
 estimate: "S"
-status: "todo"
+status: "done"
+completed_at: "2026-05-27"
 owner: ""
 sprint: ""
 ---
@@ -26,17 +27,17 @@ sprint: ""
 
 ## 구현 체크리스트
 
-- [ ] Cloud Run Service 사양: 메모리 4GB(limit 5GB)·2 vCPU·`/tmp` 1GB+·`concurrency=1`·min 0(민감 시 1)·max 20·timeout 1800s
-- [ ] `JAVA_TOOL_OPTIONS=-Xmx512m` (LibreOffice 내부 JVM 힙 캡)
-- [ ] Dockerfile(§8.3.5): ubuntu 22.04 + libreoffice-impress/core + poppler-utils + fonts-noto-cjk(+extra) + python + 필수 pip 패키지
-- [ ] require-authentication + OIDC 검증 Cloud Run IAM 위임, Cloud Tasks SA 에 `roles/run.invoker`
-- [ ] 인터뷰 챗과 빌드/배포 분리, `common/` 직접 import (ADR-0001) — Docker 빌드는 필요한 모듈만 COPY
+- [x] Cloud Run Service 사양: 메모리 4GB(limit 5GB)·2 vCPU·`/tmp` 1GB+·`concurrency=1`·min 0(민감 시 1)·max 20·timeout 1800s
+- [x] `JAVA_TOOL_OPTIONS=-Xmx512m` (LibreOffice 내부 JVM 힙 캡)
+- [x] Dockerfile(§8.3.5): ubuntu 22.04 + libreoffice-impress/core + poppler-utils + fonts-noto-cjk(+extra) + python + 필수 pip 패키지
+- [x] require-authentication + OIDC 검증 Cloud Run IAM 위임, Cloud Tasks SA 에 `roles/run.invoker`
+- [x] 인터뷰 챗과 빌드/배포 분리, `common/` 직접 import (ADR-0001) — Docker 빌드는 필요한 모듈만 COPY
 
 ## Definition of Done
 
-- [ ] 배포 서비스가 4GB/limit 5GB·2 vCPU·concurrency=1·timeout 1800s·max 20 으로 기동, JAVA 힙 캡 적용 확인
-- [ ] 이미지에 soffice·pdftoppm·Noto CJK·markitdown·필수 pip 설치 + `common/` import 가능 검증
-- [ ] `roles/run.invoker` Cloud Tasks SA OIDC 호출만 통과, 권한 없는 호출 IAM 거부 검증
+- [x] 배포 서비스가 4GB/limit 5GB·2 vCPU·concurrency=1·timeout 1800s·max 20 으로 기동, JAVA 힙 캡 적용 확인
+- [x] 이미지에 soffice·pdftoppm·Noto CJK·markitdown·필수 pip 설치 + `common/` import 가능 검증
+- [x] `roles/run.invoker` Cloud Tasks SA OIDC 호출만 통과, 권한 없는 호출 IAM 거부 검증
 
 ## 리스크 / 메모
 

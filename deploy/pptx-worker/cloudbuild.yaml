@@ -1,0 +1,15 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - apps/pptx-worker/Dockerfile
+      - -t
+      - ${_IMAGE_URI}
+      - .
+images:
+  - ${_IMAGE_URI}
+substitutions:
+  _IMAGE_URI: us-docker.pkg.dev/$PROJECT_ID/folioo-ai/pptx-worker:latest
+options:
+  logging: CLOUD_LOGGING_ONLY
