@@ -95,16 +95,15 @@ def _validate_required_schema(metadata: dict[str, Any], errors: list[str]) -> No
         errors.append("theme 필드는 객체여야 합니다.")
     elif isinstance(theme, dict):
         for field in _REQUIRED_THEME_FIELDS:
-            if not _has_non_empty_value(theme.get(field)):
-                errors.append(f"필수 필드 누락: theme.{field}")
+            _validate_required_string(theme.get(field), f"theme.{field}", errors)
 
     slides = metadata.get("slides")
     if "slides" in metadata and not isinstance(slides, list):
         errors.append("slides 필드는 배열이어야 합니다.")
 
     for field in ("template_id", "template_file"):
-        if field in metadata and not _has_non_empty_value(metadata.get(field)):
-            errors.append(f"필수 필드 누락: {field}")
+        if field in metadata:
+            _validate_required_string(metadata.get(field), field, errors)
 
 
 def _validate_slides(
@@ -125,8 +124,11 @@ def _validate_slides(
             continue
 
         for field in _REQUIRED_SLIDE_FIELDS:
-            if field not in raw_slide or not _has_non_empty_value(raw_slide.get(field)):
+            if field not in raw_slide or raw_slide.get(field) is None:
                 errors.append(f"필수 필드 누락: {label}.{field}")
+
+        for field in ("id", "category", "description", "best_for"):
+            _validate_required_string(raw_slide.get(field), f"{label}.{field}", errors)
 
         slide_index = raw_slide.get("slide_index")
         if isinstance(slide_index, bool) or not isinstance(slide_index, int):
@@ -186,7 +188,6 @@ def _append_distribution_warnings(
             )
 
 
-def _has_non_empty_value(value: Any) -> bool:
-    if isinstance(value, str):
-        return bool(value.strip())
-    return value is not None
+def _validate_required_string(value: Any, label: str, errors: list[str]) -> None:
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{label}는 비어 있지 않은 문자열이어야 합니다.")

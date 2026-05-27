@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -141,16 +141,13 @@ class LlmSlideDraftGenerator:
     def __init__(self, *, model: str | None = None, temperature: float = 0.1) -> None:
         self.model = model
         self.temperature = temperature
+        self._structured_llm: Any | None = None
 
     def generate(self, slide: SlideDraftInput, categories: CategorySchema) -> SlideDraft:
         """썸네일과 임시 텍스트를 LLM에 입력해 Source Slide 초안을 생성한다."""
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        from common.llm.client import get_llm_uncached
-
-        llm = get_llm_uncached(model=self.model, temperature=self.temperature, timeout=120)
-        structured_llm = llm.with_structured_output(_SlideDraftOutput)
-        output = structured_llm.invoke(
+        output = self._get_structured_llm().invoke(
             [
                 SystemMessage(
                     content=(
@@ -179,6 +176,15 @@ class LlmSlideDraftGenerator:
             description=output.description.strip(),
             best_for=output.best_for.strip(),
         )
+
+    def _get_structured_llm(self) -> Any:
+        """구조화 출력 LLM을 지연 생성해 슬라이드별 재사용한다."""
+        if self._structured_llm is None:
+            from common.llm.client import get_llm_uncached
+
+            llm = get_llm_uncached(model=self.model, temperature=self.temperature, timeout=120)
+            self._structured_llm = llm.with_structured_output(_SlideDraftOutput)
+        return self._structured_llm
 
 
 def build_template_metadata(
@@ -238,10 +244,11 @@ def build_template_metadata(
             ),
             schema,
         )
+        category = _category_for_metadata(draft.category, slide_index, schema)
         slide_entries.append(
             {
                 "slide_index": slide_index,
-                "category": draft.category,
+                "category": category,
                 "description": draft.description,
                 "best_for": draft.best_for,
             }
@@ -295,17 +302,33 @@ def _assign_ids(slide_entries: list[dict[str, object]]) -> list[dict[str, object
     entries_with_ids: list[dict[str, object]] = []
     for entry in slide_entries:
         category = str(entry["category"])
-        category_counts[category] += 1
+        prefix = _id_prefix(category)
+        category_counts[prefix] += 1
         entries_with_ids.append(
             {
                 "slide_index": entry["slide_index"],
-                "id": f"{_id_prefix(category)}_{_alphabetic_suffix(category_counts[category])}",
+                "id": f"{prefix}_{_alphabetic_suffix(category_counts[prefix])}",
                 "category": entry["category"],
                 "description": entry["description"],
                 "best_for": entry["best_for"],
             }
         )
     return entries_with_ids
+
+
+def _category_for_metadata(
+    raw_category: str,
+    slide_index: int,
+    schema: CategorySchema,
+) -> str:
+    category = raw_category.strip().lower()
+    if category == "unknown" or category not in schema.key_set:
+        logger.warning(
+            "Source Slide %s category 초안 검토 필요: %r",
+            slide_index + 1,
+            raw_category,
+        )
+    return category
 
 
 def _id_prefix(category: str) -> str:

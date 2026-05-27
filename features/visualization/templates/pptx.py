@@ -1,13 +1,13 @@
 """PPTX 패키지에서 슬라이드 순서와 텍스트를 추출하는 유틸리티."""
 
 import posixpath
-import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from xml.etree.ElementTree import Element, ParseError
 
 from defusedxml import ElementTree
+from defusedxml.common import DefusedXmlException
 
 _PRESENTATION_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 _DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -16,7 +16,6 @@ _PACKAGE_RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/package/2006/rela
 _SLIDE_RELATIONSHIP_TYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
 )
-_SLIDE_FILE_PATTERN = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
 
 
 @dataclass(frozen=True)
@@ -87,7 +86,7 @@ def _ordered_slide_part_names(pptx_path: Path) -> tuple[str, ...]:
         if slide_names:
             return tuple(slide_names)
 
-        return tuple(sorted(_fallback_slide_part_names(names), key=_slide_number))
+        raise ValueError("PPTX 슬라이드 순서를 확인할 presentation relationship이 없습니다.")
 
 
 def _load_slide_relationships(
@@ -113,15 +112,6 @@ def _normalize_presentation_target(target: str) -> str:
     return posixpath.normpath(posixpath.join("ppt", target))
 
 
-def _fallback_slide_part_names(names: set[str]) -> list[str]:
-    return [name for name in names if _SLIDE_FILE_PATTERN.fullmatch(name)]
-
-
-def _slide_number(name: str) -> int:
-    match = _SLIDE_FILE_PATTERN.fullmatch(name)
-    return int(match.group(1)) if match else 0
-
-
 def _open_pptx(path: Path) -> zipfile.ZipFile:
     if not path.is_file():
         raise ValueError(f"PPTX 파일을 찾을 수 없습니다: {path}")
@@ -134,5 +124,5 @@ def _open_pptx(path: Path) -> zipfile.ZipFile:
 def _parse_xml(data: bytes, label: str) -> Element:
     try:
         return ElementTree.fromstring(data)
-    except ParseError as exc:
+    except (ParseError, DefusedXmlException) as exc:
         raise ValueError(f"XML 파싱에 실패했습니다: {label}") from exc

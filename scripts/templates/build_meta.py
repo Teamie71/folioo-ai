@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import tempfile
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+# 운영자 CLI는 repo root에서 `python scripts/...`로 직접 실행될 수 있어 import path를 보정한다.
 sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_REPO_ROOT / "apps" / "pptx-worker"))
 _DEFAULT_CATEGORY_SCHEMA_PATH = _REPO_ROOT / "templates" / "_schema" / "categories.json"
@@ -38,7 +40,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pdftoppm-bin", default="pdftoppm", help="pdftoppm 실행 파일")
     parser.add_argument("--timeout-seconds", type=float, default=60.0, help="외부 명령 타임아웃")
     parser.add_argument("--dpi", type=int, default=150, help="슬라이드 JPG 렌더링 DPI")
-    parser.add_argument("--tmp-root", type=Path, default=Path("/tmp"), help="렌더링 임시 디렉터리")
+    parser.add_argument(
+        "--tmp-root",
+        type=Path,
+        default=Path(tempfile.gettempdir()),
+        help="렌더링 임시 디렉터리",
+    )
     return parser.parse_args(argv)
 
 

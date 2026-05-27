@@ -20,6 +20,7 @@ from features.visualization.templates import (
     extract_slide_texts,
     validate_template_directory,
 )
+from features.visualization.templates.thumbnail import PillowThumbnailBuilder
 from scripts.templates.validate_template import main as validate_template_main
 
 _PRESENTATION_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -117,9 +118,9 @@ def test_build_template_metadata_writes_assets_and_meta_draft(tmp_path: Path) ->
     thumbnail_builder = FakeThumbnailBuilder()
     draft_generator = FakeDraftGenerator(
         [
-            SlideDraft(category="cover", description="중앙 표지", best_for="짧은 프로젝트명"),
+            SlideDraft(category="Cover", description="중앙 표지", best_for="짧은 프로젝트명"),
             SlideDraft(category="overview", description="카드형 개요", best_for="역할과 기간"),
-            SlideDraft(category="cover", description="이미지 표지", best_for="시각적 첫인상"),
+            SlideDraft(category="cover ", description="이미지 표지", best_for="시각적 첫인상"),
         ]
     )
 
@@ -199,6 +200,11 @@ def test_validate_template_directory_accepts_valid_meta_with_distribution_warnin
             "표준 Enum 밖",
         ),
         (
+            "non_string_category",
+            lambda slides: slides[0].update(category=123),
+            "slides[0].category는 비어 있지 않은 문자열",
+        ),
+        (
             "unknown_category",
             lambda slides: slides[0].update(category="unknown"),
             "unknown일 수 없습니다",
@@ -262,6 +268,62 @@ def test_validate_template_directory_rejects_pptx_slide_count_mismatch(
     assert any("PPTX 슬라이드 수와 일치하지 않습니다" in error for error in result.errors)
 
 
+@pytest.mark.parametrize(
+    ("mutator", "expected_error"),
+    [
+        (lambda metadata: metadata.update(template_id=123), "template_id는 비어 있지 않은 문자열"),
+        (
+            lambda metadata: metadata["theme"].update(primary_color=False),
+            "theme.primary_color는 비어 있지 않은 문자열",
+        ),
+    ],
+)
+def test_validate_template_directory_rejects_non_string_metadata_fields(
+    tmp_path: Path,
+    mutator,
+    expected_error: str,
+) -> None:
+    """검증기는 필수 문자열 필드의 타입 오류를 실패 처리한다."""
+    template_dir = tmp_path / "blue"
+    _make_template_pptx(template_dir / "template.pptx", slide_texts=["Cover", "Overview"])
+    _write_meta(template_dir, slides=_valid_slides())
+    metadata = json.loads((template_dir / "meta.json").read_text(encoding="utf-8"))
+    mutator(metadata)
+    (template_dir / "meta.json").write_text(
+        json.dumps(metadata, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is False
+    assert any(expected_error in error for error in result.errors)
+
+
+def test_count_pptx_slides_rejects_missing_presentation_relationships(tmp_path: Path) -> None:
+    """PPTX slide relationship이 없으면 파일명 순서 fallback 없이 실패한다."""
+    pptx_path = tmp_path / "template.pptx"
+    _make_template_pptx(pptx_path, slide_texts=["Cover"], include_relationships=False)
+
+    with pytest.raises(ValueError, match="presentation relationship"):
+        count_pptx_slides(pptx_path)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"cell_width": 0},
+        {"cell_height": 0},
+        {"gap": -1},
+        {"max_columns": 0},
+    ],
+)
+def test_pillow_thumbnail_builder_rejects_invalid_dimensions(kwargs: dict[str, int]) -> None:
+    """썸네일 생성기는 잘못된 치수 옵션을 즉시 실패 처리한다."""
+    with pytest.raises(ValueError):
+        PillowThumbnailBuilder(**kwargs)
+
+
 def test_validate_template_cli_returns_nonzero_on_validation_errors(tmp_path: Path) -> None:
     """validate_template.py CLI는 검증 실패 시 non-zero를 반환한다."""
     template_dir = tmp_path / "blue"
@@ -274,6 +336,11 @@ def test_validate_template_cli_returns_nonzero_on_validation_errors(tmp_path: Pa
 
 
 def _valid_slides() -> list[dict[str, object]]:
+    """유효한 meta.json slides fixture를 만든다.
+
+    Returns:
+        list[dict[str, object]]: 검증을 통과하는 Source Slide 메타데이터 목록.
+    """
     return [
         {
             "slide_index": 0,
@@ -293,6 +360,15 @@ def _valid_slides() -> list[dict[str, object]]:
 
 
 def _write_meta(template_dir: Path, *, slides: list[dict[str, object]]) -> None:
+    """테스트용 meta.json 파일을 작성한다.
+
+    Args:
+        template_dir: meta.json을 생성할 템플릿 디렉터리.
+        slides: meta.json의 slides 배열에 넣을 Source Slide 메타데이터.
+
+    Returns:
+        None: 파일 생성 부작용만 수행한다.
+    """
     template_dir.mkdir(parents=True, exist_ok=True)
     metadata = {
         "_draft_notice": "운영자 검토 필요",
@@ -307,7 +383,22 @@ def _write_meta(template_dir: Path, *, slides: list[dict[str, object]]) -> None:
     )
 
 
-def _make_template_pptx(path: Path, *, slide_texts: list[str]) -> None:
+def _make_template_pptx(
+    path: Path,
+    *,
+    slide_texts: list[str],
+    include_relationships: bool = True,
+) -> None:
+    """테스트용 최소 PPTX 패키지를 생성한다.
+
+    Args:
+        path: 생성할 PPTX 파일 경로.
+        slide_texts: 각 슬라이드 XML에 넣을 텍스트 목록.
+        include_relationships: presentation relationship 파일 포함 여부.
+
+    Returns:
+        None: PPTX ZIP 파일 생성 부작용만 수행한다.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     slide_count = len(slide_texts)
     entries: dict[str, str] = {
@@ -321,8 +412,9 @@ def _make_template_pptx(path: Path, *, slide_texts: list[str]) -> None:
             "</Relationships>"
         ),
         "ppt/presentation.xml": _presentation(slide_count),
-        "ppt/_rels/presentation.xml.rels": _presentation_rels(slide_count),
     }
+    if include_relationships:
+        entries["ppt/_rels/presentation.xml.rels"] = _presentation_rels(slide_count)
     for index, slide_text in enumerate(slide_texts, start=1):
         entries[f"ppt/slides/slide{index}.xml"] = _slide_xml(index, slide_text)
         entries[f"ppt/slides/_rels/slide{index}.xml.rels"] = (
@@ -335,6 +427,14 @@ def _make_template_pptx(path: Path, *, slide_texts: list[str]) -> None:
 
 
 def _content_types(slide_count: int) -> str:
+    """PPTX Content_Types XML을 만든다.
+
+    Args:
+        slide_count: 포함할 슬라이드 개수.
+
+    Returns:
+        str: `[Content_Types].xml`에 쓸 XML 문자열.
+    """
     overrides = [
         '<Override PartName="/ppt/presentation.xml" '
         'ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>'
@@ -354,6 +454,14 @@ def _content_types(slide_count: int) -> str:
 
 
 def _presentation(slide_count: int) -> str:
+    """presentation.xml 내용을 만든다.
+
+    Args:
+        slide_count: 포함할 슬라이드 개수.
+
+    Returns:
+        str: `ppt/presentation.xml`에 쓸 XML 문자열.
+    """
     slide_ids = "".join(
         f'<p:sldId id="{255 + index}" r:id="rId{index}"/>' for index in range(1, slide_count + 1)
     )
@@ -366,6 +474,14 @@ def _presentation(slide_count: int) -> str:
 
 
 def _presentation_rels(slide_count: int) -> str:
+    """presentation.xml.rels 내용을 만든다.
+
+    Args:
+        slide_count: 포함할 슬라이드 relationship 개수.
+
+    Returns:
+        str: `ppt/_rels/presentation.xml.rels`에 쓸 XML 문자열.
+    """
     relationships = "".join(
         f'<Relationship Id="rId{index}" Type="{_SLIDE_RELATIONSHIP_TYPE}" '
         f'Target="slides/slide{index}.xml"/>'
@@ -378,6 +494,15 @@ def _presentation_rels(slide_count: int) -> str:
 
 
 def _slide_xml(index: int, text: str) -> str:
+    """단일 슬라이드 XML 내용을 만든다.
+
+    Args:
+        index: 1부터 시작하는 슬라이드 번호.
+        text: 슬라이드 텍스트 도형에 넣을 텍스트.
+
+    Returns:
+        str: `ppt/slides/slideN.xml`에 쓸 XML 문자열.
+    """
     paragraphs = "".join(f"<a:p><a:r><a:t>{line}</a:t></a:r></a:p>" for line in text.split("\n"))
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'

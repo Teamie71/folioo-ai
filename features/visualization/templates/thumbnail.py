@@ -16,6 +16,14 @@ class PillowThumbnailBuilder:
         gap: int = 16,
         max_columns: int = 4,
     ) -> None:
+        if not isinstance(cell_width, int) or not isinstance(cell_height, int):
+            raise ValueError("cell_width와 cell_height는 정수여야 합니다.")
+        if cell_width <= 0 or cell_height <= 0:
+            raise ValueError("cell_width와 cell_height는 1 이상이어야 합니다.")
+        if not isinstance(gap, int) or gap < 0:
+            raise ValueError("gap은 0 이상의 정수여야 합니다.")
+        if not isinstance(max_columns, int) or max_columns <= 0:
+            raise ValueError("max_columns는 1 이상의 정수여야 합니다.")
         self.cell_width = cell_width
         self.cell_height = cell_height
         self.gap = gap
