@@ -305,6 +305,75 @@ def test_fallback_question_when_called_after_fixed_exhaustion(first_turn_state):
     assert result["stage_progress"]["generated_q_used"] == 0
 
 
+def test_extended_mode_generates_end_guide_without_incrementing_turn(
+    first_turn_state,
+    monkeypatch,
+):
+    """종료 의도 안내 대기 상태면 LLM으로 안내 문구를 생성하고 연장 턴을 소모하지 않는다."""
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_return(
+            "좋아요. 입력창 왼쪽의 꽃잎 모양에 커서를 올리면 종료 버튼이 나타나요!"
+        ),
+    )
+    monkeypatch.setattr(
+        question_generator,
+        "_pre_evaluate_additional_question_targets",
+        lambda state, targets: (_ for _ in ()).throw(AssertionError("사전 판정 호출 금지")),
+    )
+
+    state = {
+        **first_turn_state,
+        "is_extended_mode": True,
+        "all_stages_complete": False,
+        "extension_turns_used": 3,
+        "extension_turns_max": 18,
+        "pending_extended_end_guide": True,
+    }
+
+    result = question_generator.run(state)
+
+    assert result["messages"][0].content == (
+        "좋아요. 입력창 왼쪽의 꽃잎 모양에 커서를 올리면 종료 버튼이 나타나요!"
+    )
+    assert result["extension_turns_used"] == 3
+    assert result["pending_extended_end_guide"] is False
+    assert result["is_extended_mode"] is True
+    assert result["all_stages_complete"] is False
+    assert result["next_node"] == "end"
+
+
+def test_extended_mode_end_guide_fallback_without_incrementing_turn(
+    first_turn_state,
+    monkeypatch,
+):
+    """종료 버튼 안내 LLM 호출 실패 시 fallback 문구를 반환하고 연장 턴을 소모하지 않는다."""
+    monkeypatch.setattr(
+        question_generator,
+        "get_llm",
+        lambda model=None, temperature=0.7: _mock_llm_raise(),
+    )
+
+    state = {
+        **first_turn_state,
+        "is_extended_mode": True,
+        "all_stages_complete": False,
+        "extension_turns_used": 3,
+        "extension_turns_max": 18,
+        "pending_extended_end_guide": True,
+    }
+
+    result = question_generator.run(state)
+
+    assert result["messages"][0].content == (
+        "좋아요. 입력창 왼쪽의 꽃잎 모양에 커서를 올리면 종료 버튼이 나타나요!"
+    )
+    assert result["extension_turns_used"] == 3
+    assert result["pending_extended_end_guide"] is False
+    assert result["llm_error"] == "LLM 호출 실패"
+
+
 def test_extended_mode_pre_evaluation_ends_when_all_targets_satisfied(
     first_turn_state,
     monkeypatch,

@@ -192,6 +192,9 @@ class InterviewState(TypedDict):
     current_additional_question_target_id: str | None
     # 마지막으로 생성한 추가 질문이 다룬 target id
 
+    pending_extended_end_guide: bool
+    # 사용자가 추가 대화 종료 의도를 보였을 때 종료 버튼 안내 생성을 대기하는지 여부
+
     # ===== 에러 추적 =====
     llm_error: str | None
     # LLM 호출 실패 시 에러 메시지 기록
@@ -258,6 +261,7 @@ def get_initial_interview_state(
         "additional_question_target_statuses": {},
         "additional_question_pre_evaluated": False,
         "current_additional_question_target_id": None,
+        "pending_extended_end_guide": False,
         # 에러 추적
         "llm_error": None,
     }
@@ -291,4 +295,5 @@ def ensure_interview_state_defaults(state: InterviewState | dict) -> InterviewSt
             state.get("additional_question_pre_evaluated", False)
         ),
         "current_additional_question_target_id": state.get("current_additional_question_target_id"),
+        "pending_extended_end_guide": bool(state.get("pending_extended_end_guide", False)),
     }

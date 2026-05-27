@@ -7,7 +7,11 @@ from common.llm import client as llm_client
 from common.llm import get_analyst_llm
 from features.interview.agents.nodes import analyst
 from features.interview.agents.nodes.utils import _format_retrieved_insights
-from features.interview.agents.prompts.analyst import AnalystFieldResult, AnalystResponse
+from features.interview.agents.prompts.analyst import (
+    AnalystFieldResult,
+    AnalystResponse,
+    ExtendedAnalystResponse,
+)
 from features.interview.agents.state import get_initial_interview_state
 from features.interview.config.loader import load_stage_config
 
@@ -252,7 +256,7 @@ def test_run_marks_all_complete_at_stage_4(monkeypatch):
 
 def test_run_extended_mode_routes_to_question_generator(monkeypatch):
     """연장 모드에서 턴이 남아있으면 question_generator로 라우팅한다."""
-    response = AnalystResponse(
+    response = ExtendedAnalystResponse(
         fields=[
             AnalystFieldResult(
                 field_name="project_background",
@@ -293,7 +297,7 @@ def test_run_extended_mode_routes_to_question_generator(monkeypatch):
 
 def test_run_extended_mode_finishes_when_turns_exhausted(monkeypatch):
     """연장 모드에서 사용 턴이 최대치에 도달하면 종료 상태로 복귀한다."""
-    response = AnalystResponse(fields=[])
+    response = ExtendedAnalystResponse(fields=[])
     monkeypatch.setattr(
         analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
     )
@@ -317,7 +321,7 @@ def test_run_extended_mode_finishes_when_turns_exhausted(monkeypatch):
 
 def test_run_extended_mode_finishes_when_all_additional_targets_satisfied(monkeypatch):
     """추가 질문 target이 모두 충분하면 턴이 남아도 종료한다."""
-    response = AnalystResponse(fields=[])
+    response = ExtendedAnalystResponse(fields=[])
     monkeypatch.setattr(
         analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
     )
@@ -348,7 +352,7 @@ def test_run_extended_mode_finishes_when_all_additional_targets_satisfied(monkey
 
 def test_run_extended_mode_finishes_when_no_askable_target_remains(monkeypatch):
     """질문 가능한 target이 없으면 미충족 target이 남아도 종료한다."""
-    response = AnalystResponse(fields=[])
+    response = ExtendedAnalystResponse(fields=[])
     monkeypatch.setattr(
         analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
     )
@@ -375,6 +379,157 @@ def test_run_extended_mode_finishes_when_no_askable_target_remains(monkeypatch):
     assert result["next_node"] == "end"
     assert result["all_stages_complete"] is True
     assert result["is_extended_mode"] is False
+
+
+def test_run_extended_mode_routes_to_question_generator_on_end_intent(monkeypatch):
+    """사용자가 추가 대화 종료 의도를 표현하면 안내 생성을 위해 QG로 라우팅한다."""
+    response = ExtendedAnalystResponse(fields=[], should_end_extended_mode=True)
+    monkeypatch.setattr(
+        analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
+    )
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["is_extended_mode"] = True
+    state["all_stages_complete"] = False
+    state["extension_turns_used"] = 3
+    state["extension_turns_max"] = 18
+
+    result = analyst.run(state)
+
+    assert result["next_node"] == "question_generator"
+    assert result["all_stages_complete"] is False
+    assert result["is_extended_mode"] is True
+    assert result["pending_extended_end_guide"] is True
+    assert result["extension_turns_used"] == 3
+
+
+def test_run_extended_mode_marks_last_target_satisfied(monkeypatch):
+    """last_target_satisfied=True면 직전 질문 target 상태가 충족으로 갱신된다."""
+    response = ExtendedAnalystResponse(fields=[], last_target_satisfied=True)
+    monkeypatch.setattr(
+        analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
+    )
+
+    targets = analyst._flatten_additional_question_targets(
+        analyst.get_global_config(),
+        analyst.get_all_stages(),
+    )
+    first_target = targets[0]["target"]
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["is_extended_mode"] = True
+    state["all_stages_complete"] = False
+    state["extension_turns_used"] = 2
+    state["extension_turns_max"] = 18
+    state["current_additional_question_target_id"] = first_target
+    state["additional_question_target_statuses"] = {
+        first_target: {"asked_count": 2, "is_satisfied": False}
+    }
+
+    result = analyst.run(state)
+
+    statuses = result["additional_question_target_statuses"]
+    assert statuses[first_target]["is_satisfied"] is True
+    # asked_count는 보존된다
+    assert statuses[first_target]["asked_count"] == 2
+
+
+def test_run_extended_mode_keeps_status_when_last_target_not_satisfied(monkeypatch):
+    """last_target_satisfied=False는 기존 is_satisfied 값을 되돌리지 않는다 (단조 증가)."""
+    response = ExtendedAnalystResponse(fields=[], last_target_satisfied=False)
+    monkeypatch.setattr(
+        analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
+    )
+
+    targets = analyst._flatten_additional_question_targets(
+        analyst.get_global_config(),
+        analyst.get_all_stages(),
+    )
+    first_target = targets[0]["target"]
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["is_extended_mode"] = True
+    state["all_stages_complete"] = False
+    state["extension_turns_used"] = 2
+    state["extension_turns_max"] = 18
+    state["current_additional_question_target_id"] = first_target
+    state["additional_question_target_statuses"] = {
+        first_target: {"asked_count": 1, "is_satisfied": True}
+    }
+
+    result = analyst.run(state)
+
+    statuses = result["additional_question_target_statuses"]
+    assert statuses[first_target]["is_satisfied"] is True
+    assert statuses[first_target]["asked_count"] == 1
+
+
+def test_run_extended_mode_ignores_target_status_without_last_target(monkeypatch):
+    """직전 추가 질문 target이 없으면 상태 갱신을 건너뛰고 오류 없이 진행한다."""
+    response = ExtendedAnalystResponse(fields=[], last_target_satisfied=True)
+    monkeypatch.setattr(
+        analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
+    )
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["is_extended_mode"] = True
+    state["all_stages_complete"] = False
+    state["extension_turns_used"] = 1
+    state["extension_turns_max"] = 18
+    state["current_additional_question_target_id"] = None
+
+    result = analyst.run(state)
+
+    assert result["next_node"] == "question_generator"
+    statuses = result["additional_question_target_statuses"]
+    assert all(status["is_satisfied"] is False for status in statuses.values())
+
+
+def test_run_extended_mode_defaults_end_intent_false_on_llm_failure(monkeypatch):
+    """연장 모드 LLM 호출 실패 시 종료 의도는 기본값 False로 동작을 보존한다."""
+
+    class _ProtectedLLM:
+        def with_structured_output(self, _schema):
+            return RunnableLambda(lambda payload: payload)
+
+    def _raise(_chain, _payload):
+        raise RuntimeError("연장 모드 LLM 실패")
+
+    monkeypatch.setattr(analyst, "get_analyst_llm", lambda temperature=0.3: _ProtectedLLM())
+    monkeypatch.setattr(analyst, "_invoke_with_retry", _raise)
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["is_extended_mode"] = True
+    state["all_stages_complete"] = False
+    state["extension_turns_used"] = 1
+    state["extension_turns_max"] = 18
+
+    result = analyst.run(state)
+
+    assert result["next_node"] == "question_generator"
+    assert result["all_stages_complete"] is False
+    assert result["is_extended_mode"] is True
+    assert result["llm_error"] == "연장 모드 LLM 실패"
 
 
 def test_invoke_with_retry_retries_retryable_errors(monkeypatch):
@@ -470,7 +625,7 @@ def test_run_preserves_state_and_records_error_when_retries_exhausted(monkeypatc
 
 def test_run_extended_mode_uses_protected_invoke_helper(monkeypatch):
     """연장 모드 분석은 보호된 invoke 헬퍼를 사용한다."""
-    response = AnalystResponse(
+    response = ExtendedAnalystResponse(
         fields=[
             AnalystFieldResult(
                 field_name="project_background",

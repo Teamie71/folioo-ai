@@ -95,11 +95,13 @@ class PortfolioService:
         if session_state is None:
             raise ValueError(f"세션을 찾을 수 없습니다: {session_id}")
 
-        if not session_state.get("all_stages_complete"):
-            raise ValueError("인터뷰가 완료되지 않아 포트폴리오를 생성할 수 없습니다.")
-
         if session_state.get("user_id") != user_id:
             raise ValueError("세션 사용자와 요청 사용자가 일치하지 않습니다.")
+
+        if not session_state.get("all_stages_complete"):
+            if not session_state.get("is_extended_mode"):
+                raise ValueError("인터뷰가 완료되지 않아 포트폴리오를 생성할 수 없습니다.")
+            session_state = await self._interview_service.complete_extended_session(session_id)
 
         collected_data = session_state.get("collected_data") or {}
         experience_name = session_state.get("experience_name") or ""

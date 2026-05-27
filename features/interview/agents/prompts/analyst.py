@@ -22,6 +22,20 @@ class AnalystResponse(BaseModel):
     fields: list[AnalystFieldResult] = Field(description="각 필드별 분석 결과 목록")
 
 
+class ExtendedAnalystResponse(BaseModel):
+    """연장(추가 대화) 모드 Analyst 노드의 LLM 응답"""
+
+    fields: list[AnalystFieldResult] = Field(description="각 필드별 분석 결과 목록")
+    should_end_extended_mode: bool = Field(
+        default=False,
+        description="사용자가 추가 대화 '전체'를 종료할 의도를 명확히 표현했는지 여부",
+    )
+    last_target_satisfied: bool = Field(
+        default=False,
+        description="직전 추가 질문이 다룬 target이 이번 답변으로 충분히 다뤄졌는지 여부",
+    )
+
+
 # ===== Analyst 프롬프트 템플릿 =====
 
 ANALYST_SYSTEM_TEMPLATE = """
@@ -108,6 +122,9 @@ EXTENDED_ANALYST_SYSTEM_TEMPLATE = """
 # 파일에서 추출된 텍스트
 {file_contexts}
 
+# 직전 추가 질문 정보
+{last_asked_target}
+
 # 분석 지침
 1. 전체 4단계 required_field를 기준으로 필요한 정보를 추출하세요.
 2. 기존에 수집된 데이터가 있으면, 새로운 정보를 보완/병합하여 더 풍부한 값을 만드세요.
@@ -119,6 +136,27 @@ EXTENDED_ANALYST_SYSTEM_TEMPLATE = """
 6. 기존 데이터도 없고 대화에서도 언급되지 않은 필드는 value를 null, completeness를 0.0으로 설정하세요.
 7. 한국어로 내용을 작성하세요.
 
+# 추가 대화 종료 의도 판단 (`should_end_extended_mode`)
+'가장 최근 사용자 메시지'를 기준으로, 사용자가 추가 대화 '전체'를 끝내려는 의도를
+명확히 표현했는지 판단하세요. 과거 정규 인터뷰 대화 내용에 휘둘리지 마세요.
+
+- `true`로 판단해야 하는 예시 (추가 대화 전체 종료):
+  - "이제 추가 질문 다 그만할게요"
+  - "추가 질문은 안 할래요"
+  - "여기까지 할게요", "그만 마무리할게요"
+- `false`로 판단해야 하는 예시:
+  - 경험을 서술하는 문장에 포함된 "그만" 류 표현
+    예) "그만 포기하지 않고 끝까지 해냈어요" → 종료 의도 아님
+  - 특정 질문 하나만 넘기려는 표현 (대화 전체 종료가 아님)
+    예) "그건 잘 모르겠어요", "이 질문은 패스할게요"
+- 의도가 애매하면 `false`로 두세요 (대화를 보수적으로 유지).
+
+# 직전 target 충족 판단 (`last_target_satisfied`)
+'# 직전 추가 질문 정보'에 명시된 target 하나에 대해서만 판단하세요.
+이번 사용자 답변과 수집 데이터를 근거로, 해당 target의 충분성 기준이 충족되었으면
+`true`, 아니면 `false`로 설정하세요.
+'# 직전 추가 질문 정보'가 비어 있거나 직전 질문이 없으면 `false`로 두세요.
+
 # 출력 형식
 반드시 아래 JSON 구조로 응답하세요:
 {{
@@ -128,7 +166,9 @@ EXTENDED_ANALYST_SYSTEM_TEMPLATE = """
       "value": "추출된 값 또는 리스트",
       "completeness": 0.0~1.0
     }}
-  ]
+  ],
+  "should_end_extended_mode": true 또는 false,
+  "last_target_satisfied": true 또는 false
 }}
 """
 
