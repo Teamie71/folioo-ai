@@ -132,6 +132,25 @@ class FakeFixer:
         }
 
 
+class FailingFixer:
+    """자동 수정 지시 생성 실패 대역."""
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    def build_fills(
+        self,
+        slide: SlidePreview,
+        qa_result: VisualQAResult,
+        *,
+        slide_xml_path: Path,
+        attempt: int,
+    ) -> dict[str, dict[str, Any]]:
+        del qa_result, slide_xml_path, attempt
+        self.calls.append(slide.slide_order)
+        raise ValueError("LLM JSON 파싱 실패")
+
+
 class FakeToolchain:
     """PPTX pack 대역."""
 
@@ -197,6 +216,26 @@ def test_visual_qa_classifies_passed_and_issue_slides(tmp_path: Path) -> None:
     assert failed.issues[0].code == "placeholder"
     assert failed.issues[0].message == "안내 문구 잔존"
     assert len(llm.messages) == 2
+
+
+def test_visual_qa_parses_first_json_object_from_wrapped_response(tmp_path: Path) -> None:
+    """설명 텍스트와 여러 JSON 블록이 있어도 첫 JSON 객체를 안전하게 파싱한다."""
+    image_path = tmp_path / "slide-01.jpg"
+    _write_jpeg(image_path, width=800, height=450)
+    llm = FakeLLM(
+        [
+            (
+                '검사 결과입니다.\n{"passed": true, "issues": []}\n'
+                '{"passed": false, "issues": [{"code": "wrong"}]}'
+            )
+        ]
+    )
+    qa = VisualQA(llm=llm)
+
+    result = qa.check_slide(image_path, {"brief": "표지"})
+
+    assert result.passed is True
+    assert result.issues == ()
 
 
 def test_llm_visual_fixer_preserves_guardrails_in_prompt(tmp_path: Path) -> None:
@@ -354,6 +393,74 @@ async def test_failed_after_max_attempts_sends_retryable_preview_error(tmp_path:
     assert result.fix_attempts == 2
 
 
+@pytest.mark.asyncio
+async def test_failed_after_max_attempts_preserves_non_retryable_issue(
+    tmp_path: Path,
+) -> None:
+    """QA 이슈가 retryable=false 이면 preview error 콜백도 false 로 보낸다."""
+    context = _make_step_context(tmp_path, slide_orders=[1])
+    qa = FakeQA(
+        {
+            1: [
+                _failed("fatal_layout", retryable=False),
+                _failed("fatal_layout", retryable=False),
+            ]
+        }
+    )
+    step = context.make_step(qa=qa, renderer=FakeRenderer(pages=[1]), max_fix_attempts=1)
+
+    result = await step.process(
+        job_id="job-1",
+        slides=context.slides,
+        unpacked_dir=context.unpacked_dir,
+        working_pptx_path=context.working_pptx,
+        fixed_pptx_path=context.fixed_pptx,
+        render_output_dir=context.render_dir,
+    )
+
+    event = context.main_client.events[0]
+    assert event["event"] == "slide_preview_error"
+    assert event["retryable"] is False
+    assert result.outcomes[0].issues[0].retryable is False
+
+
+@pytest.mark.asyncio
+async def test_fix_failure_reports_slide_error_without_aborting_job(tmp_path: Path) -> None:
+    """자동 수정 응답 파싱 실패는 전체 job 중단 대신 해당 슬라이드 error 로 보고한다."""
+    context = _make_step_context(tmp_path, slide_orders=[1, 2])
+    context.fixer = FailingFixer()
+    qa = FakeQA(
+        {
+            1: [_failed("overflow")],
+            2: [_passed()],
+        }
+    )
+    renderer = FakeRenderer(pages=[1, 2])
+    step = context.make_step(qa=qa, renderer=renderer, max_fix_attempts=1)
+
+    result = await step.process(
+        job_id="job-1",
+        slides=context.slides,
+        unpacked_dir=context.unpacked_dir,
+        working_pptx_path=context.working_pptx,
+        fixed_pptx_path=context.fixed_pptx,
+        render_output_dir=context.render_dir,
+    )
+
+    assert context.fixer.calls == [1]
+    assert context.toolchain.pack_calls == []
+    assert renderer.calls == []
+    assert [event["event"] for event in context.main_client.events] == [
+        "slide_preview_ready",
+        "slide_preview_error",
+    ]
+    error_event = context.main_client.events[1]
+    assert error_event["slide_order"] == 1
+    assert error_event["retryable"] is True
+    assert "fix_failed" in error_event["message"]
+    assert [outcome.status for outcome in result.outcomes] == ["error", "ready"]
+
+
 def test_preview_metadata_reads_jpeg_dimensions_and_size(tmp_path: Path) -> None:
     """프리뷰 콜백용 이미지 메타데이터를 JPEG에서 읽는다."""
     image_path = tmp_path / "slide-01.jpg"
@@ -381,7 +488,13 @@ class StepContext:
     fixer: FakeFixer
     toolchain: FakeToolchain
 
-    def make_step(self, *, qa: FakeQA, renderer: FakeRenderer) -> VisualQAFixVerifyStep:
+    def make_step(
+        self,
+        *,
+        qa: FakeQA,
+        renderer: FakeRenderer,
+        max_fix_attempts: int = 2,
+    ) -> VisualQAFixVerifyStep:
         return VisualQAFixVerifyStep(
             qa=qa,
             storage=self.storage,
@@ -390,6 +503,7 @@ class StepContext:
             toolchain=self.toolchain,
             renderer=renderer,
             fixer=self.fixer,
+            max_fix_attempts=max_fix_attempts,
             clock=lambda: datetime(2026, 5, 27, 3, 0, tzinfo=UTC),
         )
 
@@ -437,10 +551,10 @@ def _passed() -> VisualQAResult:
     return VisualQAResult(passed=True)
 
 
-def _failed(code: str) -> VisualQAResult:
+def _failed(code: str, *, retryable: bool = True) -> VisualQAResult:
     return VisualQAResult(
         passed=False,
-        issues=(VisualQAIssue(code=code, message=f"{code} issue"),),
+        issues=(VisualQAIssue(code=code, message=f"{code} issue", retryable=retryable),),
     )
 
 

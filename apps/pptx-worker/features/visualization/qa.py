@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import logging
 import mimetypes
 import re
 from collections.abc import Mapping
@@ -18,6 +20,8 @@ from common.llm.client import get_file_processor_llm
 from features.visualization.main_client import VisualizationMainClient
 from features.visualization.pptx import PptxRenderer, PptxToolchain, SlideEditor
 from features.visualization.storage.gcs_client import GcsClient
+
+logger = logging.getLogger(__name__)
 
 IssueSeverity = Literal["warning", "error"]
 OutcomeStatus = Literal["ready", "error"]
@@ -312,35 +316,43 @@ class VisualQAFixVerifyStep:
         while failed_orders and fix_attempts < self._max_fix_attempts:
             fix_attempts += 1
             affected_orders = tuple(failed_orders)
-            self._apply_fixes(
+            fixed_orders = await self._apply_fixes(
                 pending=pending,
                 affected_orders=affected_orders,
                 unpacked_root=unpacked_root,
                 attempt=fix_attempts,
             )
-            fixed_pptx.parent.mkdir(parents=True, exist_ok=True)
-            self._toolchain.pack(unpacked_root, fixed_pptx, original_pptx=working_pptx)
-            pack_count += 1
+            unfixed_orders = [
+                slide_order for slide_order in affected_orders if slide_order not in fixed_orders
+            ]
+            recheck_failed_orders: list[int] = []
 
-            render_result = self._renderer.render(fixed_pptx, render_dir)
-            render_count += 1
-            rendered_by_page = {
-                rendered.page: rendered.image_path for rendered in render_result.slides
-            }
-            for slide_order in affected_orders:
-                if slide_order not in rendered_by_page:
-                    raise RuntimeError(
-                        f"재렌더 결과에 slide_order={slide_order} 이미지가 없습니다."
-                    )
-                pending[slide_order].image_path = rendered_by_page[slide_order]
+            if fixed_orders:
+                fixed_pptx.parent.mkdir(parents=True, exist_ok=True)
+                self._toolchain.pack(unpacked_root, fixed_pptx, original_pptx=working_pptx)
+                pack_count += 1
 
-            failed_orders = await self._check_and_publish_passes(
-                job_id=job_id,
-                pending=pending,
-                candidate_orders=affected_orders,
-                outcomes=outcomes,
-                checked_orders=checked_orders,
-            )
+                render_result = self._renderer.render(fixed_pptx, render_dir)
+                render_count += 1
+                rendered_by_page = {
+                    rendered.page: rendered.image_path for rendered in render_result.slides
+                }
+                for slide_order in fixed_orders:
+                    if slide_order not in rendered_by_page:
+                        raise RuntimeError(
+                            f"재렌더 결과에 slide_order={slide_order} 이미지가 없습니다."
+                        )
+                    pending[slide_order].image_path = rendered_by_page[slide_order]
+
+                recheck_failed_orders = await self._check_and_publish_passes(
+                    job_id=job_id,
+                    pending=pending,
+                    candidate_orders=fixed_orders,
+                    outcomes=outcomes,
+                    checked_orders=checked_orders,
+                )
+
+            failed_orders = [*unfixed_orders, *recheck_failed_orders]
 
         for slide_order in failed_orders:
             pending_slide = pending[slide_order]
@@ -349,7 +361,12 @@ class VisualQAFixVerifyStep:
                 issues=(VisualQAIssue(code="visual_qa_failed", message="시각 QA에 실패했습니다."),),
             )
             message = _format_issue_message(qa_result.issues)
-            await self._send_preview_error(job_id, pending_slide.slide, message=message)
+            await self._send_preview_error(
+                job_id,
+                pending_slide.slide,
+                message=message,
+                retryable=_issues_retryable(qa_result.issues),
+            )
             outcomes[slide_order] = SlidePreviewOutcome(
                 slide_id=pending_slide.slide.slide_id,
                 slide_order=slide_order,
@@ -382,7 +399,8 @@ class VisualQAFixVerifyStep:
             if slide_order in outcomes:
                 continue
             pending_slide = pending[slide_order]
-            qa_result = self._qa.check_slide(
+            qa_result = await asyncio.to_thread(
+                self._qa.check_slide,
                 pending_slide.image_path,
                 _expected_content(pending_slide.slide),
             )
@@ -402,29 +420,52 @@ class VisualQAFixVerifyStep:
             failed_orders.append(slide_order)
         return failed_orders
 
-    def _apply_fixes(
+    async def _apply_fixes(
         self,
         *,
         pending: dict[int, _PendingSlide],
         affected_orders: tuple[int, ...],
         unpacked_root: Path,
         attempt: int,
-    ) -> None:
+    ) -> tuple[int, ...]:
+        fixed_orders: list[int] = []
         for slide_order in affected_orders:
             pending_slide = pending[slide_order]
             qa_result = pending_slide.last_result
             if qa_result is None:
                 raise RuntimeError(f"slide_order={slide_order} 의 QA 결과가 없습니다.")
             slide_xml_path = _slide_xml_path(unpacked_root, pending_slide.slide.slide_filename)
-            fills = self._fixer.build_fills(
-                pending_slide.slide,
-                qa_result,
-                slide_xml_path=slide_xml_path,
-                attempt=attempt,
-            )
-            if not fills:
-                raise RuntimeError(f"slide_order={slide_order} 자동 수정 fill 이 비어 있습니다.")
-            self._editor.apply_fills(str(slide_xml_path), fills)
+            try:
+                fills = await asyncio.to_thread(
+                    self._fixer.build_fills,
+                    pending_slide.slide,
+                    qa_result,
+                    slide_xml_path=slide_xml_path,
+                    attempt=attempt,
+                )
+                if not fills:
+                    raise ValueError("자동 수정 fill 이 비어 있습니다.")
+                await asyncio.to_thread(self._editor.apply_fills, str(slide_xml_path), fills)
+            except Exception as exc:
+                logger.warning(
+                    "visual QA fix failed: slide_order=%s attempt=%s error=%s",
+                    slide_order,
+                    attempt,
+                    exc,
+                )
+                pending_slide.last_result = VisualQAResult(
+                    passed=False,
+                    issues=(
+                        VisualQAIssue(
+                            code="fix_failed",
+                            message=f"자동 수정에 실패했습니다: {exc}",
+                            retryable=True,
+                        ),
+                    ),
+                )
+                continue
+            fixed_orders.append(slide_order)
+        return tuple(fixed_orders)
 
     async def _upload_and_send_ready(self, job_id: str, pending_slide: _PendingSlide) -> str:
         slide = pending_slide.slide
@@ -450,6 +491,7 @@ class VisualQAFixVerifyStep:
         slide: SlidePreview,
         *,
         message: str,
+        retryable: bool,
     ) -> None:
         await self._main_client.send_slide_event(
             job_id,
@@ -459,7 +501,7 @@ class VisualQAFixVerifyStep:
             idempotency_key=_idempotency_key(job_id, slide, "slide_preview_error"),
             occurred_at=self._now_iso(),
             message=message,
-            retryable=True,
+            retryable=retryable,
         )
 
     def _now_iso(self) -> str:
@@ -615,16 +657,20 @@ def _parse_fix_response(response_text: str) -> dict[str, dict[str, Any]]:
 
 def _loads_json_object(response_text: str) -> dict[str, Any]:
     cleaned = _strip_json_fence(response_text)
-    try:
-        payload = json.loads(cleaned)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
-        if match is None:
-            raise ValueError("JSON 객체를 찾을 수 없습니다.") from None
-        payload = json.loads(match.group(0))
-    if not isinstance(payload, dict):
-        raise ValueError("JSON 객체가 아닙니다.")
-    return payload
+    decoder = json.JSONDecoder()
+    starts = [index for index, char in enumerate(cleaned) if char == "{"]
+    if cleaned.startswith("{") and 0 not in starts:
+        starts.insert(0, 0)
+
+    for start in starts:
+        try:
+            payload, _ = decoder.raw_decode(cleaned, idx=start)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+
+    raise ValueError("JSON 객체를 찾을 수 없습니다.")
 
 
 def _strip_json_fence(text: str) -> str:
@@ -640,6 +686,12 @@ def _format_issue_message(issues: tuple[VisualQAIssue, ...]) -> str:
     if not issues:
         return "시각 QA를 통과하지 못했습니다."
     return "; ".join(f"{issue.code}: {issue.message}" for issue in issues)
+
+
+def _issues_retryable(issues: tuple[VisualQAIssue, ...]) -> bool:
+    if not issues:
+        return True
+    return any(issue.retryable for issue in issues)
 
 
 def _slide_xml_path(unpacked_root: Path, slide_filename: str) -> Path:
