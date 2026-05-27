@@ -12,8 +12,7 @@ export SERVICE="folioo-pptx-worker"
 export IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/folioo-ai/pptx-worker:latest"
 export WORKER_RUNTIME_SERVICE_ACCOUNT="folioo-pptx-worker@${PROJECT_ID}.iam.gserviceaccount.com"
 export CLOUD_TASKS_SERVICE_ACCOUNT="folioo-cloud-tasks@${PROJECT_ID}.iam.gserviceaccount.com"
-export PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format 'value(projectNumber)')"
-export CLOUD_TASKS_SERVICE_AGENT="service-${PROJECT_NUMBER}@gcp-sa-cloudtasks.iam.gserviceaccount.com"
+export TASK_ENQUEUER_PRINCIPAL="serviceAccount:main-backend@${PROJECT_ID}.iam.gserviceaccount.com"
 ```
 
 ## Build
@@ -75,12 +74,14 @@ gcloud run services remove-iam-policy-binding "$SERVICE" \
 
 gcloud iam service-accounts add-iam-policy-binding "$CLOUD_TASKS_SERVICE_ACCOUNT" \
   --project "$PROJECT_ID" \
-  --member "serviceAccount:${CLOUD_TASKS_SERVICE_AGENT}" \
+  --member "$TASK_ENQUEUER_PRINCIPAL" \
   --role "roles/iam.serviceAccountUser"
 ```
 
 Cloud Tasks enqueue 쪽 HTTP target은 `oidc_token.service_account_email`에
 `$CLOUD_TASKS_SERVICE_ACCOUNT`를 넣고, audience는 Cloud Run service URL로 맞춘다.
+Task 를 생성하는 메인 백엔드 런타임 주체는 `$CLOUD_TASKS_SERVICE_ACCOUNT`에 대한
+`iam.serviceAccounts.actAs` 권한(`roles/iam.serviceAccountUser`)이 필요하다.
 
 ## Verify
 
