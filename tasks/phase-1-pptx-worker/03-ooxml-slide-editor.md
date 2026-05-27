@@ -6,7 +6,8 @@ spec: "specs/phase-1/03-ooxml-slide-editor.md"
 depends_on: []
 blocks: ["1.05", "1.06"]
 estimate: "M"
-status: "todo"
+status: "done"
+completed_at: "2026-05-26"
 owner: ""
 sprint: ""
 ---
@@ -21,22 +22,22 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] 샘플 슬라이드 XML(텍스트 도형 + 차트 graphicFrame 포함) 픽스처 확보
-- [ ] `defusedxml.minidom` 의존성 확인
+- [x] 샘플 슬라이드 XML(텍스트 도형 + 차트 graphicFrame 포함) 픽스처 확보
+- [x] `defusedxml.minidom` 의존성 확인
 
 ## 구현 체크리스트
 
-- [ ] `extract_slots()` — `<p:sp>`/`<p:graphicFrame>` 스캔 → shape_id(`cNvPr/@id`)·EMU 좌표/크기·current_text·is_title_placeholder·font_size_pt·kind
-- [ ] `apply_fills()` — 평평한 `{ "<shape_id>": {...} }` 맵의 `text`/`remove`/`chart` action 적용 (래퍼 없음)
-- [ ] `_replace_text()` — 첫 rPr/pPr 서식 보존, `<a:p>` 단위 줄바꿈, `xml:space="preserve"`, sz=pt×100, is_title→b="1"
-- [ ] 차트 `_replace_chart_cache()` — `numCache`/`strCache`/`ptCount`/`c:f` 일관 갱신, 타입 고정, `.xlsx` 미동기 (ADR-0003)
-- [ ] 식별자는 `cNvPr/@id` 의존 (`@name` 비의존)
+- [x] `extract_slots()` — `<p:sp>`/`<p:graphicFrame>` 스캔 → shape_id(`cNvPr/@id`)·EMU 좌표/크기·current_text·is_title_placeholder·font_size_pt·kind
+- [x] `apply_fills()` — 평평한 `{ "<shape_id>": {...} }` 맵의 `text`/`remove`/`chart` action 적용 (래퍼 없음)
+- [x] `_replace_text()` — 첫 rPr/pPr 서식 보존, `<a:p>` 단위 줄바꿈, `xml:space="preserve"`, sz=pt×100, is_title→b="1"
+- [x] 차트 `_replace_chart_cache()` — `numCache`/`strCache`/`ptCount`/`c:f` 일관 갱신, 타입 고정, `.xlsx` 미동기 (ADR-0003)
+- [x] 식별자는 `cNvPr/@id` 의존 (`@name` 비의존)
 
 ## Definition of Done
 
-- [ ] `extract_slots()` 가 텍스트/차트 Slot 을 모두 잡고 EMU·폰트 정확 추출 검증
-- [ ] `text` 적용 후 그림자/그라데이션/정렬 등 원본 서식 보존 + 폰트 오버라이드 반영 검증
-- [ ] `remove` 가 `<p:sp>` 트리 제거, 차트 캐시 3곳 일관·타입 불변 검증
+- [x] `extract_slots()` 가 텍스트/차트 Slot 을 모두 잡고 EMU·폰트 정확 추출 검증
+- [x] `text` 적용 후 그림자/그라데이션/정렬 등 원본 서식 보존 + 폰트 오버라이드 반영 검증
+- [x] `remove` 가 `<p:sp>` 트리 제거, 차트 캐시 3곳 일관·타입 불변 검증
 
 ## 리스크 / 메모
 
