@@ -77,11 +77,11 @@ def _ordered_slide_part_names(pptx_path: Path) -> tuple[str, ...]:
         for slide_id in presentation_root.findall(f".//{{{_PRESENTATION_NS}}}sldId"):
             rid = slide_id.attrib.get(f"{{{_REL_NS}}}id")
             if not rid:
-                continue
+                raise ValueError("PPTX slide id에 relationship id가 없습니다.")
             target = rid_to_target.get(rid)
             if target is None:
-                continue
-            slide_names.append(_normalize_presentation_target(target))
+                raise ValueError(f"PPTX presentation relationship을 찾을 수 없습니다: {rid}")
+            slide_names.append(_resolve_slide_part_name(target, names))
 
         if slide_names:
             return tuple(slide_names)
@@ -110,6 +110,24 @@ def _normalize_presentation_target(target: str) -> str:
     if target.startswith("/"):
         return posixpath.normpath(target.lstrip("/"))
     return posixpath.normpath(posixpath.join("ppt", target))
+
+
+def _resolve_slide_part_name(target: str, names: set[str]) -> str:
+    slide_name = _normalize_presentation_target(target)
+    if not _is_slide_part_name(slide_name):
+        raise ValueError(
+            f"PPTX slide relationship target은 ppt/slides/*.xml이어야 합니다: {target}"
+        )
+    if slide_name not in names:
+        raise ValueError(f"PPTX 슬라이드 XML을 찾을 수 없습니다: {slide_name}")
+    return slide_name
+
+
+def _is_slide_part_name(part_name: str) -> bool:
+    if not part_name.startswith("ppt/slides/"):
+        return False
+    slide_file_name = part_name.removeprefix("ppt/slides/")
+    return bool(slide_file_name) and "/" not in slide_file_name and slide_file_name.endswith(".xml")
 
 
 def _open_pptx(path: Path) -> zipfile.ZipFile:

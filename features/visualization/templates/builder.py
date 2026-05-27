@@ -1,9 +1,11 @@
 """템플릿 PPTX에서 meta.json 초안을 생성하는 오프라인 빌더."""
 
 import base64
+import hashlib
 import json
 import logging
 import re
+import tempfile
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -24,6 +26,8 @@ _DRAFT_NOTICE = (
 )
 _LLM_IMAGE_MAX_SIZE = (1024, 1024)
 _LLM_IMAGE_QUALITY = 72
+_TEMPLATE_FILE_NAME = "template.pptx"
+_DEFAULT_WORK_ROOT_NAME = "folioo-template-registration"
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +44,7 @@ class BuildMetaOptions:
     slides_dir: Path | None = None
     thumbnail_path: Path | None = None
     text_output_path: Path | None = None
+    work_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -200,9 +205,10 @@ def build_template_metadata(
 
     output_path = options.output_path
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    slides_dir = options.slides_dir or output_path.parent / "slides"
+    work_dir = options.work_dir or _default_work_dir(options)
+    slides_dir = options.slides_dir or work_dir / "slides"
     thumbnail_path = options.thumbnail_path or output_path.parent / "thumbnail.jpg"
-    text_output_path = options.text_output_path or output_path.parent / "slide_text.md"
+    text_output_path = options.text_output_path or work_dir / "slide_text.md"
 
     schema = load_category_schema(options.category_schema_path or DEFAULT_CATEGORY_SCHEMA_PATH)
     slide_count = count_pptx_slides(options.pptx_path)
@@ -258,7 +264,7 @@ def build_template_metadata(
     metadata = {
         "_draft_notice": _DRAFT_NOTICE,
         "template_id": options.template_id,
-        "template_file": options.pptx_path.name,
+        "template_file": _TEMPLATE_FILE_NAME,
         "theme": {
             "primary_color": options.primary_color,
             "name": options.theme_name or options.template_id,
@@ -295,6 +301,17 @@ def _default_renderer() -> Renderer:
     except ImportError as exc:
         raise RuntimeError("PPTX 렌더러를 불러올 수 없습니다.") from exc
     return PptxRenderer()
+
+
+def _default_work_dir(options: BuildMetaOptions) -> Path:
+    parent_key = str(options.output_path.parent.resolve())
+    digest = hashlib.sha1(parent_key.encode("utf-8")).hexdigest()[:12]
+    template_segment = re.sub(r"[^a-zA-Z0-9_-]+", "_", options.template_id).strip("_")
+    return (
+        Path(tempfile.gettempdir())
+        / _DEFAULT_WORK_ROOT_NAME
+        / f"{template_segment or 'template'}-{digest}"
+    )
 
 
 def _assign_ids(slide_entries: list[dict[str, object]]) -> list[dict[str, object]]:

@@ -165,8 +165,9 @@ python scripts/templates/build_meta.py \
 
 # 내부적으로 수행하는 일:
 #   1) soffice 로 PDF 변환 후 pdftoppm 으로 슬라이드별 JPG 추출
+#      (기본 위치: 배포 디렉터리 밖의 work dir, --work-dir 로 override 가능)
 #   2) 그리드 썸네일 생성 (templates/blue/thumbnail.jpg)
-#   3) markitdown 으로 슬라이드별 임시 텍스트 추출
+#   3) markitdown 으로 슬라이드별 임시 텍스트 추출 (기본 위치: work dir/slide_text.md)
 #   4) LLM 에 (썸네일 + 텍스트) 묶음 입력 →
 #      슬라이드별 { category, description, best_for } 초안 생성
 #   5) 같은 카테고리끼리 묶어 id 알파벳 자동 부여
@@ -179,6 +180,8 @@ python scripts/templates/validate_template.py ./templates/blue
 
 # 검증 내용:
 #   - meta.json 스키마 (필수 필드 누락 X)
+#   - template_file 이 경로 없이 정확히 template.pptx 인지
+#   - thumbnail.jpg 가 존재하고 비어 있지 않은지
 #   - category 가 templates/_schema/categories.json 안에 있는지 (unknown 이면 실패 — 운영자가 실제 카테고리로 교체해야 통과)
 #   - slide_index 가 0..N-1 연속인지, PPTX 내 슬라이드 수와 일치하는지
 #   - 같은 템플릿 내 id 중복 없는지

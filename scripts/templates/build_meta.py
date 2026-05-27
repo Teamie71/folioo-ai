@@ -34,6 +34,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--slides-dir", type=Path, help="슬라이드 JPG 출력 디렉터리")
     parser.add_argument("--thumbnail", type=Path, help="그리드 thumbnail.jpg 출력 경로")
     parser.add_argument("--text-output", type=Path, help="임시 텍스트 markdown 출력 경로")
+    parser.add_argument("--work-dir", type=Path, help="중간 산출물 기본 출력 디렉터리")
     parser.add_argument("--model", help="LLM 모델명 override")
     parser.add_argument("--temperature", type=float, default=0.1, help="LLM temperature")
     parser.add_argument("--soffice-bin", default="soffice", help="LibreOffice 실행 파일")
@@ -81,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             slides_dir=args.slides_dir,
             thumbnail_path=args.thumbnail,
             text_output_path=args.text_output,
+            work_dir=args.work_dir,
         ),
         renderer=renderer,
         draft_generator=LlmSlideDraftGenerator(model=args.model, temperature=args.temperature),

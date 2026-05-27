@@ -12,6 +12,8 @@ from .pptx import count_pptx_slides
 _REQUIRED_TOP_LEVEL_FIELDS = ("template_id", "template_file", "theme", "slides")
 _REQUIRED_THEME_FIELDS = ("primary_color", "name")
 _REQUIRED_SLIDE_FIELDS = ("slide_index", "id", "category", "description", "best_for")
+_TEMPLATE_FILE_NAME = "template.pptx"
+_THUMBNAIL_FILE_NAME = "thumbnail.jpg"
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,8 @@ def validate_template_directory(
     errors: list[str] = []
     warnings: list[str] = []
 
+    _validate_non_empty_file(root / _THUMBNAIL_FILE_NAME, _THUMBNAIL_FILE_NAME, errors)
+
     meta_path = root / "meta.json"
     metadata = _load_meta_json(meta_path, errors)
     schema = _load_schema(category_schema_path, errors)
@@ -48,11 +52,13 @@ def validate_template_directory(
     template_file = metadata.get("template_file")
     pptx_slide_count: int | None = None
     if isinstance(template_file, str) and template_file.strip():
-        pptx_path = root / template_file
-        try:
-            pptx_slide_count = count_pptx_slides(pptx_path)
-        except ValueError as exc:
-            errors.append(str(exc))
+        _validate_template_file(template_file, errors)
+        if template_file == _TEMPLATE_FILE_NAME:
+            pptx_path = root / _TEMPLATE_FILE_NAME
+            try:
+                pptx_slide_count = count_pptx_slides(pptx_path)
+            except ValueError as exc:
+                errors.append(str(exc))
 
     slides = metadata.get("slides")
     if isinstance(slides, list):
@@ -85,6 +91,17 @@ def _load_schema(path: Path | str, errors: list[str]) -> CategorySchema | None:
         return None
 
 
+def _validate_non_empty_file(path: Path, label: str, errors: list[str]) -> None:
+    try:
+        if not path.is_file():
+            errors.append(f"{label} 파일을 찾을 수 없습니다: {path}")
+            return
+        if path.stat().st_size == 0:
+            errors.append(f"{label} 파일이 비어 있습니다: {path}")
+    except OSError as exc:
+        errors.append(f"{label} 파일을 확인할 수 없습니다: {exc}")
+
+
 def _validate_required_schema(metadata: dict[str, Any], errors: list[str]) -> None:
     for field in _REQUIRED_TOP_LEVEL_FIELDS:
         if field not in metadata:
@@ -104,6 +121,11 @@ def _validate_required_schema(metadata: dict[str, Any], errors: list[str]) -> No
     for field in ("template_id", "template_file"):
         if field in metadata:
             _validate_required_string(metadata.get(field), field, errors)
+
+
+def _validate_template_file(value: str, errors: list[str]) -> None:
+    if value != _TEMPLATE_FILE_NAME:
+        errors.append("template_file은 경로 없이 template.pptx여야 합니다.")
 
 
 def _validate_slides(

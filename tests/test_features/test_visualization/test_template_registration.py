@@ -110,7 +110,7 @@ def test_count_pptx_slides_and_extract_slide_texts(tmp_path: Path) -> None:
 
 
 def test_build_template_metadata_writes_assets_and_meta_draft(tmp_path: Path) -> None:
-    """build 흐름은 슬라이드 JPG, 썸네일, 임시 텍스트, meta.json 초안을 작성한다."""
+    """build 흐름은 배포 산출물과 중간 산출물을 분리해 작성한다."""
     template_dir = tmp_path / "blue"
     pptx_path = template_dir / "template.pptx"
     _make_template_pptx(pptx_path, slide_texts=["Cover", "Overview", "Second cover"])
@@ -165,8 +165,13 @@ def test_build_template_metadata_writes_assets_and_meta_draft(tmp_path: Path) ->
         "slide-02.jpg",
         "slide-03.jpg",
     ]
+    assert result.thumbnail_path == template_dir / "thumbnail.jpg"
     assert result.thumbnail_path.read_bytes() == b"thumbnail"
     assert "### Slide 2" in result.text_output_path.read_text(encoding="utf-8")
+    assert not result.text_output_path.is_relative_to(template_dir)
+    assert all(not path.is_relative_to(template_dir) for path in result.slide_image_paths)
+    assert not (template_dir / "slides").exists()
+    assert not (template_dir / "slide_text.md").exists()
     assert thumbnail_builder.slide_images == result.slide_image_paths
     assert [slide.text for slide in draft_generator.inputs] == ["Cover", "Overview", "Second cover"]
 
@@ -269,6 +274,26 @@ def test_validate_template_directory_rejects_pptx_slide_count_mismatch(
 
 
 @pytest.mark.parametrize(
+    "template_file",
+    ["ppt-for-test.pptx", "../shared.pptx", "/tmp/shared.pptx", "nested\\template.pptx"],
+)
+def test_validate_template_directory_rejects_invalid_template_file(
+    tmp_path: Path,
+    template_file: str,
+) -> None:
+    """검증기는 template_file을 경로 없는 template.pptx로 강제한다."""
+    template_dir = tmp_path / "blue"
+    _make_template_pptx(template_dir / "template.pptx", slide_texts=["Cover", "Overview"])
+    _make_template_pptx(tmp_path / "shared.pptx", slide_texts=["Cover", "Overview"])
+    _write_meta(template_dir, slides=_valid_slides(), template_file=template_file)
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is False
+    assert any("template_file은 경로 없이 template.pptx" in error for error in result.errors)
+
+
+@pytest.mark.parametrize(
     ("mutator", "expected_error"),
     [
         (lambda metadata: metadata.update(template_id=123), "template_id는 비어 있지 않은 문자열"),
@@ -300,6 +325,29 @@ def test_validate_template_directory_rejects_non_string_metadata_fields(
     assert any(expected_error in error for error in result.errors)
 
 
+@pytest.mark.parametrize(
+    ("thumbnail_content", "expected_error"),
+    [
+        (None, "thumbnail.jpg 파일을 찾을 수 없습니다"),
+        (b"", "thumbnail.jpg 파일이 비어 있습니다"),
+    ],
+)
+def test_validate_template_directory_rejects_missing_or_empty_thumbnail(
+    tmp_path: Path,
+    thumbnail_content: bytes | None,
+    expected_error: str,
+) -> None:
+    """검증기는 배포 산출물 thumbnail.jpg 누락과 빈 파일을 실패 처리한다."""
+    template_dir = tmp_path / "blue"
+    _make_template_pptx(template_dir / "template.pptx", slide_texts=["Cover", "Overview"])
+    _write_meta(template_dir, slides=_valid_slides(), thumbnail_content=thumbnail_content)
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is False
+    assert any(expected_error in error for error in result.errors)
+
+
 def test_count_pptx_slides_rejects_missing_presentation_relationships(tmp_path: Path) -> None:
     """PPTX slide relationship이 없으면 파일명 순서 fallback 없이 실패한다."""
     pptx_path = tmp_path / "template.pptx"
@@ -307,6 +355,39 @@ def test_count_pptx_slides_rejects_missing_presentation_relationships(tmp_path: 
 
     with pytest.raises(ValueError, match="presentation relationship"):
         count_pptx_slides(pptx_path)
+
+
+def test_count_pptx_slides_rejects_relationship_target_outside_slide_parts(
+    tmp_path: Path,
+) -> None:
+    """PPTX slide relationship target이 ppt/slides/*.xml 밖이면 실패한다."""
+    pptx_path = tmp_path / "template.pptx"
+    _make_template_pptx(
+        pptx_path,
+        slide_texts=["Cover"],
+        relationship_targets=["../media/image1.xml"],
+    )
+
+    with pytest.raises(ValueError, match=r"ppt/slides/\*\.xml"):
+        count_pptx_slides(pptx_path)
+
+
+def test_validate_template_directory_rejects_missing_slide_relationship_target(
+    tmp_path: Path,
+) -> None:
+    """검증기는 relationship이 가리키는 슬라이드 XML 누락을 실패 처리한다."""
+    template_dir = tmp_path / "blue"
+    _make_template_pptx(
+        template_dir / "template.pptx",
+        slide_texts=["Cover"],
+        relationship_targets=["slides/missing.xml"],
+    )
+    _write_meta(template_dir, slides=[_valid_slides()[0]])
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is False
+    assert any("PPTX 슬라이드 XML을 찾을 수 없습니다" in error for error in result.errors)
 
 
 @pytest.mark.parametrize(
@@ -359,12 +440,20 @@ def _valid_slides() -> list[dict[str, object]]:
     ]
 
 
-def _write_meta(template_dir: Path, *, slides: list[dict[str, object]]) -> None:
+def _write_meta(
+    template_dir: Path,
+    *,
+    slides: list[dict[str, object]],
+    template_file: str = "template.pptx",
+    thumbnail_content: bytes | None = b"thumbnail",
+) -> None:
     """테스트용 meta.json 파일을 작성한다.
 
     Args:
         template_dir: meta.json을 생성할 템플릿 디렉터리.
         slides: meta.json의 slides 배열에 넣을 Source Slide 메타데이터.
+        template_file: meta.json의 template_file 값.
+        thumbnail_content: thumbnail.jpg에 쓸 바이트. None이면 파일을 만들지 않는다.
 
     Returns:
         None: 파일 생성 부작용만 수행한다.
@@ -373,7 +462,7 @@ def _write_meta(template_dir: Path, *, slides: list[dict[str, object]]) -> None:
     metadata = {
         "_draft_notice": "운영자 검토 필요",
         "template_id": "blue",
-        "template_file": "template.pptx",
+        "template_file": template_file,
         "theme": {"primary_color": "#4A6CF7", "name": "블루 클린"},
         "slides": copy.deepcopy(slides),
     }
@@ -381,6 +470,8 @@ def _write_meta(template_dir: Path, *, slides: list[dict[str, object]]) -> None:
         json.dumps(metadata, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    if thumbnail_content is not None:
+        (template_dir / "thumbnail.jpg").write_bytes(thumbnail_content)
 
 
 def _make_template_pptx(
@@ -388,6 +479,7 @@ def _make_template_pptx(
     *,
     slide_texts: list[str],
     include_relationships: bool = True,
+    relationship_targets: list[str] | None = None,
 ) -> None:
     """테스트용 최소 PPTX 패키지를 생성한다.
 
@@ -395,6 +487,7 @@ def _make_template_pptx(
         path: 생성할 PPTX 파일 경로.
         slide_texts: 각 슬라이드 XML에 넣을 텍스트 목록.
         include_relationships: presentation relationship 파일 포함 여부.
+        relationship_targets: 각 슬라이드 relationship Target 값. 생략하면 기본 slideN.xml을 쓴다.
 
     Returns:
         None: PPTX ZIP 파일 생성 부작용만 수행한다.
@@ -414,7 +507,10 @@ def _make_template_pptx(
         "ppt/presentation.xml": _presentation(slide_count),
     }
     if include_relationships:
-        entries["ppt/_rels/presentation.xml.rels"] = _presentation_rels(slide_count)
+        entries["ppt/_rels/presentation.xml.rels"] = _presentation_rels(
+            slide_count,
+            relationship_targets=relationship_targets,
+        )
     for index, slide_text in enumerate(slide_texts, start=1):
         entries[f"ppt/slides/slide{index}.xml"] = _slide_xml(index, slide_text)
         entries[f"ppt/slides/_rels/slide{index}.xml.rels"] = (
@@ -473,18 +569,26 @@ def _presentation(slide_count: int) -> str:
     )
 
 
-def _presentation_rels(slide_count: int) -> str:
+def _presentation_rels(
+    slide_count: int,
+    *,
+    relationship_targets: list[str] | None = None,
+) -> str:
     """presentation.xml.rels 내용을 만든다.
 
     Args:
         slide_count: 포함할 슬라이드 relationship 개수.
+        relationship_targets: 각 relationship의 Target 값.
 
     Returns:
         str: `ppt/_rels/presentation.xml.rels`에 쓸 XML 문자열.
     """
+    targets = relationship_targets or [
+        f"slides/slide{index}.xml" for index in range(1, slide_count + 1)
+    ]
     relationships = "".join(
         f'<Relationship Id="rId{index}" Type="{_SLIDE_RELATIONSHIP_TYPE}" '
-        f'Target="slides/slide{index}.xml"/>'
+        f'Target="{targets[index - 1]}"/>'
         for index in range(1, slide_count + 1)
     )
     return (
