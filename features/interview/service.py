@@ -347,6 +347,7 @@ class InterviewService:
             "additional_question_target_statuses": {},
             "additional_question_pre_evaluated": False,
             "current_additional_question_target_id": None,
+            "pending_extended_end_guide": False,
             "current_turn_files": [],
             "file_contexts": [],
             "mentioned_insight": None,
@@ -431,6 +432,7 @@ class InterviewService:
             "additional_question_target_statuses": {},
             "additional_question_pre_evaluated": False,
             "current_additional_question_target_id": None,
+            "pending_extended_end_guide": False,
             "current_turn_files": [],
             "file_contexts": [],
             "mentioned_insight": None,
@@ -533,6 +535,33 @@ class InterviewService:
                     ensure_ascii=False,
                 ),
             }
+
+    async def complete_extended_session(self, session_id: str) -> InterviewState:
+        """연장 모드를 사용자 선택으로 종료하고 포트폴리오 생성 가능한 완료 상태로 전환한다."""
+        current_state = await self.get_session_state(session_id)
+        if current_state is None:
+            raise ValueError(f"세션을 찾을 수 없습니다: {session_id}")
+
+        if not current_state["is_extended_mode"]:
+            if current_state["all_stages_complete"]:
+                return current_state
+            raise ValueError("연장 모드가 아닌 세션은 완료 처리할 수 없습니다.")
+
+        state_update = {
+            "all_stages_complete": True,
+            "is_extended_mode": False,
+            "pending_extended_end_guide": False,
+            "current_additional_question_target_id": None,
+            "current_turn_files": [],
+            "file_contexts": [],
+            "mentioned_insight": None,
+            "status": "completed",
+        }
+        await self._graph.aupdate_state(self._get_thread_config(session_id), state_update)
+        return {
+            **current_state,
+            **state_update,
+        }
 
     async def process_message(
         self,

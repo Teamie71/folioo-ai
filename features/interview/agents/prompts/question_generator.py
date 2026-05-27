@@ -189,6 +189,37 @@ extended_generated_question_prompt = ChatPromptTemplate.from_messages(
 )
 
 
+EXTENDED_END_GUIDE_TEMPLATE = """
+# 역할
+당신은 친근하고 전문적인 포트폴리오 인터뷰 도우미입니다.
+
+# 상황
+사용자가 "{experience_name}" 경험의 추가 대화를 끝내고 싶다는 의도를 표현했습니다.
+하지만 대화 입력만으로 바로 종료하지 않고, 사용자가 화면의 종료 버튼을 직접 누르도록 안내해야 합니다.
+
+# 이전 대화 맥락
+{conversation_context}
+
+# 반드시 전달해야 할 핵심 안내
+입력창 왼쪽의 꽃잎 모양에 커서를 올리면 종료 버튼이 나타나요.
+
+# 출력 지침
+1. 사용자의 종료 의도를 자연스럽게 받아주세요.
+2. 위 핵심 안내를 빠뜨리지 말고 포함하세요.
+3. 추가 질문을 하지 마세요.
+4. 종료를 직접 처리했다고 말하지 마세요.
+5. 한두 문장으로 짧고 부드럽게 작성하세요.
+6. 안내 문구만 출력하고, 다른 설명은 추가하지 마세요.
+"""
+
+extended_end_guide_prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", EXTENDED_END_GUIDE_TEMPLATE),
+        ("human", "위 지침에 따라 종료 버튼 안내 문구를 작성해주세요."),
+    ]
+)
+
+
 ADDITIONAL_TARGET_SUFFICIENCY_TEMPLATE = """
 # 역할
 당신은 포트폴리오 인터뷰 답변의 충분성을 판정하는 전문가입니다.

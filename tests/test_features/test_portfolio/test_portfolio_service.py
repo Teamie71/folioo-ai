@@ -11,8 +11,20 @@ from features.portfolio.service import PortfolioService
 class DummyInterviewService:
     def __init__(self, state: dict | None):
         self._state = state
+        self.completed_session_ids: list[str] = []
 
     async def get_session_state(self, _session_id: str) -> dict | None:
+        return self._state
+
+    async def complete_extended_session(self, session_id: str) -> dict:
+        self.completed_session_ids.append(session_id)
+        if self._state is None:
+            raise ValueError(f"세션을 찾을 수 없습니다: {session_id}")
+        self._state = {
+            **self._state,
+            "all_stages_complete": True,
+            "is_extended_mode": False,
+        }
         return self._state
 
 
@@ -65,6 +77,38 @@ async def test_start_generation_schedules_background_task():
     )
 
     assert portfolio_id == 123
+    assert len(tasks.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_start_generation_completes_extended_session_before_scheduling():
+    """연장 모드 세션은 완료 상태로 전환한 뒤 포트폴리오 생성을 시작한다."""
+    state = {
+        "all_stages_complete": False,
+        "is_extended_mode": True,
+        "collected_data": {"stage_1": {}},
+        "experience_name": "프로젝트A",
+        "user_id": "user-1",
+    }
+    interview_service = DummyInterviewService(state)
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=interview_service,
+        portfolio_client=AsyncMock(),
+    )
+
+    tasks = DummyBackgroundTasks()
+    portfolio_id = await service.start_generation(
+        portfolio_id=123,
+        session_id="session-1",
+        user_id="user-1",
+        background_tasks=tasks,
+    )
+
+    assert portfolio_id == 123
+    assert interview_service.completed_session_ids == ["session-1"]
+    assert interview_service._state["all_stages_complete"] is True
+    assert interview_service._state["is_extended_mode"] is False
     assert len(tasks.calls) == 1
 
 
@@ -132,6 +176,34 @@ async def test_start_generation_raises_for_user_mismatch():
             user_id="user-b",
             background_tasks=DummyBackgroundTasks(),
         )
+
+
+@pytest.mark.asyncio
+async def test_start_generation_checks_user_before_completing_extended_session():
+    """사용자가 불일치하면 연장 모드 완료 처리 전에 차단한다."""
+    state = {
+        "all_stages_complete": False,
+        "is_extended_mode": True,
+        "collected_data": {},
+        "experience_name": "x",
+        "user_id": "user-a",
+    }
+    interview_service = DummyInterviewService(state)
+    service = PortfolioService(
+        generator=DummyGenerator(),
+        interview_service=interview_service,
+        portfolio_client=AsyncMock(),
+    )
+
+    with pytest.raises(ValueError, match="사용자가 일치하지 않습니다"):
+        await service.start_generation(
+            portfolio_id=1,
+            session_id="session-1",
+            user_id="user-b",
+            background_tasks=DummyBackgroundTasks(),
+        )
+
+    assert interview_service.completed_session_ids == []
 
 
 @pytest.mark.asyncio

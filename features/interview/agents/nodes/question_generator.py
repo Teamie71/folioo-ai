@@ -17,6 +17,7 @@ from ..prompts import (
     AdditionalTargetSufficiencyResponse,
     additional_target_sufficiency_prompt,
     contextual_fixed_question_prompt,
+    extended_end_guide_prompt,
     extended_generated_question_prompt,
     first_turn_prompt,
     generated_question_prompt,
@@ -42,6 +43,9 @@ logger = logging.getLogger(__name__)
 
 _ADDITIONAL_CONVERSATION_COMPLETE_MESSAGE = (
     "이미 필요한 추가 확인 사항이 충분히 정리되어 있어 추가 질문 없이 인터뷰를 마무리하겠습니다."
+)
+_EXTENDED_END_GUIDE_FALLBACK_MESSAGE = (
+    "좋아요. 입력창 왼쪽의 꽃잎 모양에 커서를 올리면 종료 버튼이 나타나요!"
 )
 
 
@@ -294,6 +298,32 @@ def _generate_extended_question(
     return (question, llm_error)
 
 
+def _generate_extended_end_guide(state: InterviewState) -> tuple[str, str | None]:
+    """사용자의 종료 의도에 대해 종료 버튼 안내 문구를 생성한다."""
+    global_config = get_global_config()
+    context = _get_conversation_context(state, max_messages=global_config.context_window_size)
+
+    llm = get_llm(temperature=0.7)
+    chain = extended_end_guide_prompt | llm
+    llm_error = None
+
+    try:
+        guide_message = _invoke_with_retry(
+            chain=chain,
+            prompt_variables={
+                "experience_name": state["experience_name"],
+                "conversation_context": context,
+            },
+            max_retries_per_question=global_config.max_retries_per_question,
+        )
+    except Exception as e:
+        logger.exception("LLM 호출 실패: 추가 대화 종료 버튼 안내")
+        guide_message = _EXTENDED_END_GUIDE_FALLBACK_MESSAGE
+        llm_error = str(e)
+
+    return (guide_message, llm_error)
+
+
 def _complete_extended_mode(
     state: InterviewState,
     llm_error: str | None = None,
@@ -320,6 +350,18 @@ def _run_extended_mode(state: InterviewState) -> InterviewState:
         "additional_question_target_statuses": statuses,
     }
     llm_error = None
+
+    if updated_state["pending_extended_end_guide"]:
+        guide_message, llm_error = _generate_extended_end_guide(updated_state)
+        return {
+            **updated_state,
+            "messages": [AIMessage(content=guide_message)],
+            "all_stages_complete": False,
+            "is_extended_mode": True,
+            "pending_extended_end_guide": False,
+            "next_node": "end",
+            "llm_error": llm_error,
+        }
 
     if not updated_state["additional_question_pre_evaluated"]:
         pre_evaluation, llm_error = _pre_evaluate_additional_question_targets(

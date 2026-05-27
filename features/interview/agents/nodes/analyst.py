@@ -319,9 +319,19 @@ def _run_extended_mode(state: InterviewState) -> InterviewState:
         "additional_question_target_statuses": statuses,
     }
 
+    if should_end_from_intent:
+        return {
+            **state_with_statuses,
+            "collected_data": updated_collected_data,
+            "all_stages_complete": False,
+            "is_extended_mode": True,
+            "pending_extended_end_guide": True,
+            "next_node": "question_generator",
+            "llm_error": llm_error,
+        }
+
     should_end_extended_mode = (
-        should_end_from_intent
-        or state["extension_turns_used"] >= state["extension_turns_max"]
+        state["extension_turns_used"] >= state["extension_turns_max"]
         or _all_additional_question_targets_satisfied(state_with_statuses, targets)
         or not _has_askable_additional_question_target(state_with_statuses, targets)
     )

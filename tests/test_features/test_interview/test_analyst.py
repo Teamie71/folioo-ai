@@ -381,8 +381,8 @@ def test_run_extended_mode_finishes_when_no_askable_target_remains(monkeypatch):
     assert result["is_extended_mode"] is False
 
 
-def test_run_extended_mode_finishes_on_end_intent(monkeypatch):
-    """사용자가 추가 대화 종료 의도를 표현하면 턴이 남아도 조기 종료한다."""
+def test_run_extended_mode_routes_to_question_generator_on_end_intent(monkeypatch):
+    """사용자가 추가 대화 종료 의도를 표현하면 안내 생성을 위해 QG로 라우팅한다."""
     response = ExtendedAnalystResponse(fields=[], should_end_extended_mode=True)
     monkeypatch.setattr(
         analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
@@ -400,9 +400,11 @@ def test_run_extended_mode_finishes_on_end_intent(monkeypatch):
 
     result = analyst.run(state)
 
-    assert result["next_node"] == "end"
-    assert result["all_stages_complete"] is True
-    assert result["is_extended_mode"] is False
+    assert result["next_node"] == "question_generator"
+    assert result["all_stages_complete"] is False
+    assert result["is_extended_mode"] is True
+    assert result["pending_extended_end_guide"] is True
+    assert result["extension_turns_used"] == 3
 
 
 def test_run_extended_mode_marks_last_target_satisfied(monkeypatch):

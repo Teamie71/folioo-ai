@@ -17,6 +17,7 @@ def test_initial_state_has_additional_question_defaults():
     assert state["additional_question_target_statuses"] == {}
     assert state["additional_question_pre_evaluated"] is False
     assert state["current_additional_question_target_id"] is None
+    assert state["pending_extended_end_guide"] is False
 
 
 def test_ensure_interview_state_defaults_adds_additional_question_fields():
@@ -33,3 +34,4 @@ def test_ensure_interview_state_defaults_adds_additional_question_fields():
     assert state["additional_question_target_statuses"] == {}
     assert state["additional_question_pre_evaluated"] is False
     assert state["current_additional_question_target_id"] is None
+    assert state["pending_extended_end_guide"] is False

@@ -474,6 +474,78 @@ async def test_extend_session_raises_when_max_extensions_reached(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_complete_extended_session_updates_state(monkeypatch):
+    """연장 모드 세션을 포트폴리오 생성 가능한 완료 상태로 전환한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "all_stages_complete": False,
+            "is_extended_mode": True,
+            "pending_extended_end_guide": True,
+        }
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    result = await service.complete_extended_session("session_1")
+
+    assert result["all_stages_complete"] is True
+    assert result["is_extended_mode"] is False
+    assert result["pending_extended_end_guide"] is False
+    assert result["current_additional_question_target_id"] is None
+    assert dummy_graph.update_state_calls[-1]["config"] == {
+        "configurable": {"thread_id": "session_1"}
+    }
+    assert dummy_graph.update_state_calls[-1]["state"] == {
+        "all_stages_complete": True,
+        "is_extended_mode": False,
+        "pending_extended_end_guide": False,
+        "current_additional_question_target_id": None,
+        "current_turn_files": [],
+        "file_contexts": [],
+        "mentioned_insight": None,
+        "status": "completed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_complete_extended_session_returns_completed_state_without_update(monkeypatch):
+    """이미 완료된 세션이면 추가 상태 업데이트 없이 현재 상태를 반환한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "all_stages_complete": True,
+            "is_extended_mode": False,
+        }
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    result = await service.complete_extended_session("session_1")
+
+    assert result["all_stages_complete"] is True
+    assert result["is_extended_mode"] is False
+    assert dummy_graph.update_state_calls == []
+
+
+@pytest.mark.asyncio
+async def test_complete_extended_session_raises_when_not_extended_or_complete(monkeypatch):
+    """미완료 일반 세션은 연장 완료 처리 대상이 아니다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "all_stages_complete": False,
+            "is_extended_mode": False,
+        }
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(ValueError, match="연장 모드가 아닌 세션"):
+        await service.complete_extended_session("session_1")
+
+
+@pytest.mark.asyncio
 async def test_get_session_state_returns_none_on_empty_snapshot(monkeypatch):
     """스냅샷이 없거나 비어있을 때 None 반환 테스트"""
     dummy_graph = DummyGraph()
