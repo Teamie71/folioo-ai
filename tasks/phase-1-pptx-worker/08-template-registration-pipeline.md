@@ -28,15 +28,15 @@ sprint: ""
 ## 구현 체크리스트
 
 - [x] `templates/_schema/categories.json` — §3.3 표준 Enum 단일 소스(cover/toc/overview/problem/process/outcome/chart/visual/text/closing)
-- [x] `scripts/templates/build_meta.py` — soffice/pdftoppm JPG+그리드 thumbnail → markitdown 임시 텍스트 → LLM 초안{category,description,best_for} + 카테고리 내 알파벳 id → meta.json 초안
-- [x] `scripts/templates/validate_template.py` — 필수 필드 스키마·category Enum(unknown 실패)·slide_index 0..N-1 연속 & PPTX 수 일치·id 중복 검증 (CI 실행)
+- [x] `scripts/templates/build_meta.py` — soffice/pdftoppm JPG+그리드 thumbnail → markitdown 임시 텍스트 → LLM 초안{category,description,best_for} + 카테고리 내 알파벳 id → meta.json 초안, 중간 산출물은 기본적으로 배포 디렉터리 밖에 생성
+- [x] `scripts/templates/validate_template.py` — 필수 필드 스키마·template_file 고정·thumbnail 존재·category Enum(unknown 실패)·slide_index 0..N-1 연속 & PPTX 수 일치·id 중복 검증 (운영자/CI 잡 실행용)
 - [x] 카테고리 분포 권장 범위는 경고만(실패 아님)
 - [x] `slide_index`/`template_file` 자동(운영자 미수정), 의미 필드는 LLM 초안 후 운영자 검토
 
 ## Definition of Done
 
 - [x] `build_meta.py` 가 JPG·그리드 썸네일·임시 텍스트 생성 + 알파벳 id 채운 meta.json 초안 작성 검증
-- [x] `validate_template.py` 가 필수누락·Enum 밖·slide_index 불연속/불일치·중복 id 를 각각 실패로 잡음 검증
+- [x] `validate_template.py` 가 필수누락·template_file 오류·thumbnail 누락/빈 파일·Enum 밖·slide_index 불연속/불일치·중복 id 를 각각 실패로 잡음 검증
 - [x] Enum 미확장 신규 category 가 실패하는지 검증
 
 ## 리스크 / 메모
