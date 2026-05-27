@@ -153,6 +153,9 @@ class VisualizationMainClient(BaseClient):
         schema_version: int = 1,
         current_fills: dict[str, Any] | None = None,
         gcs_preview_key: str | None = None,
+        preview_width: int | None = None,
+        preview_height: int | None = None,
+        preview_byte_size: int | None = None,
         message: str | None = None,
         retryable: bool | None = None,
     ) -> None:
@@ -160,6 +163,7 @@ class VisualizationMainClient(BaseClient):
 
         event: slide_content_ready | slide_content_error |
                slide_preview_ready | slide_preview_error | slide_regenerated
+        preview_width / preview_height / preview_byte_size: preview_ready 메타데이터
         current_fills 내부 키는 snake_case 그대로 전송 (§11.0.3).
         """
         body: dict[str, Any] = {
@@ -173,6 +177,12 @@ class VisualizationMainClient(BaseClient):
             body["currentFills"] = current_fills
         if gcs_preview_key is not None:
             body["gcsPreviewKey"] = gcs_preview_key
+        if preview_width is not None:
+            body["width"] = preview_width
+        if preview_height is not None:
+            body["height"] = preview_height
+        if preview_byte_size is not None:
+            body["byteSize"] = preview_byte_size
         if message is not None:
             body["message"] = message
         if retryable is not None:
