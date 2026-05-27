@@ -78,4 +78,9 @@ def test_portfolio_prompt_formatting_contains_guidelines():
     assert "명사 종결" in messages[0].content
     assert '"~다" 종결' in messages[0].content
     assert "**굵게**만 사용" in messages[0].content
-    assert "400자 이내" in messages[0].content
+    assert "출력 예시는 분량 기준이 아니라 구조 참고용" in messages[0].content
+    assert "수집된 데이터의 사실, 행동, 수치, 판단 근거" in messages[0].content
+    assert "work_categories에 수집된 업무 항목" in messages[0].content
+    assert "problem_episodes에 수집된 각 에피소드" in messages[0].content
+    assert "중요도가 높은 항목을 각 섹션 앞쪽에 배치" in messages[0].content
+    assert "400자 이내" not in messages[0].content
