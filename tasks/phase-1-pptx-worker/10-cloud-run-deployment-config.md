@@ -22,8 +22,8 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] GCP 프로젝트/리전·Cloud Run 배포 권한 확인
-- [ ] Cloud Tasks 서비스 계정 식별(`roles/run.invoker` 부여 대상)
+- [x] GCP 프로젝트/리전·Cloud Run 배포 권한 확인
+- [x] Cloud Tasks 서비스 계정 식별(`roles/run.invoker` 부여 대상)
 
 ## 구현 체크리스트
 

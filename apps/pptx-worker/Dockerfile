@@ -31,10 +31,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-dev --group template-tools
+RUN uv sync --frozen --no-dev --only-group pptx-worker
 
 COPY common/ ./common/
-COPY features/ ./features/
+COPY features/visualization/ ./features/visualization/
 COPY templates/ ./templates/
 COPY apps/pptx-worker/ ./apps/pptx-worker/
 
@@ -42,4 +42,9 @@ RUN mkdir -p /tmp \
     && chmod 1777 /tmp \
     && bash apps/pptx-worker/scripts/verify_runtime_image.sh
 
-CMD ["uvicorn", "pptx_worker.main:app", "--host", "0.0.0.0", "--port", "8080"]
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app
+
+USER appuser
+
+CMD ["sh", "-c", "exec uvicorn pptx_worker.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

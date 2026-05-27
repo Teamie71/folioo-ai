@@ -10,6 +10,6 @@ steps:
 images:
   - ${_IMAGE_URI}
 substitutions:
-  _IMAGE_URI: us-docker.pkg.dev/$PROJECT_ID/folioo-ai/pptx-worker:latest
+  _IMAGE_URI: asia-northeast3-docker.pkg.dev/$PROJECT_ID/folioo-ai/pptx-worker:latest
 options:
   logging: CLOUD_LOGGING_ONLY

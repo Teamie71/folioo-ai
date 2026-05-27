@@ -25,7 +25,6 @@ dependencies = [
     "tavily-python>=0.7.22",
     "uvicorn[standard]>=0.40.0",
     "google-cloud-storage>=3.10.1",
-    "google-cloud-tasks>=2.18.0",
     # Anthropic PPTX skill validate.py imports lxml.etree at runtime.
     "lxml>=6.0.0",
 ]
@@ -40,6 +39,17 @@ dev = [
 template-tools = [
     "markitdown[pptx]>=0.1.3",
     "pillow>=11.0.0",
+]
+pptx-worker = [
+    "defusedxml>=0.7.1",
+    "fastapi>=0.128.0",
+    "google-cloud-storage>=3.10.1",
+    "google-cloud-tasks>=2.18.0",
+    "httpx>=0.28.1",
+    "lxml>=6.0.0",
+    "markitdown[pptx]>=0.1.3",
+    "pillow>=11.0.0",
+    "uvicorn[standard]>=0.40.0",
 ]
 
 [tool.pytest.ini_options]

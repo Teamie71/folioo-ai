@@ -401,7 +401,6 @@ dependencies = [
     { name = "defusedxml" },
     { name = "fastapi" },
     { name = "google-cloud-storage" },
-    { name = "google-cloud-tasks" },
     { name = "httpx" },
     { name = "langchain" },
     { name = "langchain-openai" },
@@ -428,6 +427,17 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
+pptx-worker = [
+    { name = "defusedxml" },
+    { name = "fastapi" },
+    { name = "google-cloud-storage" },
+    { name = "google-cloud-tasks" },
+    { name = "httpx" },
+    { name = "lxml" },
+    { name = "markitdown", extra = ["pptx"] },
+    { name = "pillow" },
+    { name = "uvicorn", extra = ["standard"] },
+]
 template-tools = [
     { name = "markitdown", extra = ["pptx"] },
     { name = "pillow" },
@@ -439,7 +449,6 @@ requires-dist = [
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "fastapi", specifier = ">=0.128.0" },
     { name = "google-cloud-storage", specifier = ">=3.10.1" },
-    { name = "google-cloud-tasks", specifier = ">=2.18.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "langchain", specifier = ">=1.2.3" },
     { name = "langchain-openai", specifier = ">=1.1.7" },
@@ -465,6 +474,17 @@ dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "ruff", specifier = ">=0.14.11" },
+]
+pptx-worker = [
+    { name = "defusedxml", specifier = ">=0.7.1" },
+    { name = "fastapi", specifier = ">=0.128.0" },
+    { name = "google-cloud-storage", specifier = ">=3.10.1" },
+    { name = "google-cloud-tasks", specifier = ">=2.18.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "lxml", specifier = ">=6.0.0" },
+    { name = "markitdown", extras = ["pptx"], specifier = ">=0.1.3" },
+    { name = "pillow", specifier = ">=11.0.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.40.0" },
 ]
 template-tools = [
     { name = "markitdown", extras = ["pptx"], specifier = ">=0.1.3" },
