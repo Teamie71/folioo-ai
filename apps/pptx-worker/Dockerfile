@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV UV_LINK_MODE=copy
 ENV UV_PYTHON=3.12
 ENV UV_PYTHON_DOWNLOADS=automatic
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 ENV PORT=8080
 ENV JAVA_TOOL_OPTIONS=-Xmx512m
 ENV PPTX_WORKER_RECYCLE_AFTER=20
@@ -43,7 +44,7 @@ RUN mkdir -p /tmp \
     && bash apps/pptx-worker/scripts/verify_runtime_image.sh
 
 RUN useradd --create-home --uid 10001 appuser \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appuser /app /opt/uv-python
 
 USER appuser
 

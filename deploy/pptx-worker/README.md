@@ -34,6 +34,11 @@ docker run --rm \
   apps/pptx-worker/scripts/verify_runtime_image.sh
 ```
 
+이미지 build smoke는 `ANTHROPIC_PPTX_SKILL_DIR` 미설정 시 빠르게 실패하는 경로만
+검증한다. 실제 skill directory를 Secret/volume/env로 runtime에 주입하는 배포에서는
+동일한 스크립트를 runtime 환경에서 실행해 `PptxToolchain.ensure_available()`까지
+확인한다.
+
 ## Deploy
 
 Cloud Run 서비스는 `concurrency=1`, `timeout=1800s`, max instances 20, 2 vCPU,

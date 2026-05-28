@@ -1,5 +1,6 @@
 """PPTX 워커 Cloud Run 배포 설정 테스트."""
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ SERVICE_YAML = ROOT / "deploy" / "pptx-worker" / "cloud-run-service.yaml"
 CLOUDBUILD_YAML = ROOT / "deploy" / "pptx-worker" / "cloudbuild.yaml"
 README = ROOT / "deploy" / "pptx-worker" / "README.md"
 VERIFY_SCRIPT = ROOT / "apps" / "pptx-worker" / "scripts" / "verify_runtime_image.sh"
+PYPROJECT = ROOT / "pyproject.toml"
 
 
 def _load_service() -> dict:
@@ -74,9 +76,11 @@ def test_cloud_run_service_caps_java_heap_and_tmp_volume() -> None:
         "COPY common/ ./common/",
         "COPY features/visualization/ ./features/visualization/",
         "COPY apps/pptx-worker/ ./apps/pptx-worker/",
+        "UV_PYTHON_INSTALL_DIR=/opt/uv-python",
         "PYTHONPATH=/app:/app/apps/pptx-worker",
         "JAVA_TOOL_OPTIONS=-Xmx512m",
         "useradd --create-home --uid 10001 appuser",
+        "chown -R appuser:appuser /app /opt/uv-python",
         "USER appuser",
         "PORT:-8080",
         "pptx_worker.main:app",
@@ -102,18 +106,57 @@ def test_worker_dockerfile_excludes_unrelated_application_units() -> None:
 @pytest.mark.parametrize(
     "expected",
     [
+        "defusedxml>=0.7.1",
+        "fastapi>=0.128.0",
+        "google-cloud-storage>=3.10.1",
+        "google-cloud-tasks>=2.18.0",
+        "httpx>=0.28.1",
+        "langchain-core>=1.2.3",
+        "langchain-openai>=1.1.7",
+        "lxml>=6.0.0",
+        "markitdown[pptx]>=0.1.3",
+        "pillow>=11.0.0",
+        "python-dotenv>=1.2.1",
+        "uvicorn[standard]>=0.40.0",
+    ],
+)
+def test_pptx_worker_dependency_group_includes_runtime_imports(expected: str) -> None:
+    """워커 전용 dependency group 이 실제 앱 import 의존성을 포함한다."""
+    pyproject = tomllib.loads(PYPROJECT.read_text())
+
+    assert expected in pyproject["dependency-groups"]["pptx-worker"]
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [
         "command -v soffice",
         "command -v pdftoppm",
         'fc-match "Noto Sans CJK KR"',
+        "PYTHON_BIN",
+        "/app/.venv/bin/python",
+        "python3",
         "import defusedxml",
         "import fastapi",
+        "import langchain_openai",
         "import lxml.etree",
         "import markitdown",
         "import PIL",
         "import uvicorn",
+        "from dotenv import load_dotenv",
         "from google.cloud import storage, tasks_v2",
+        "from langchain_core.messages import HumanMessage, SystemMessage",
         "import common",
         "import pptx_worker",
+        "ANTHROPIC_PPTX_SKILL_ENV",
+        "PptxToolchain.from_env",
+        "PptxToolchainError",
+        "ensure_available()",
+        "pptx_worker.main",
+        "main.create_app()",
+        "/tasks/visualizations/generate",
+        "/tasks/visualizations/regenerate",
+        "subprocess.run",
     ],
 )
 def test_runtime_image_smoke_script_checks_required_binaries_and_imports(
@@ -162,6 +205,21 @@ def test_cloudbuild_uses_worker_dockerfile() -> None:
 )
 def test_deployment_readme_documents_required_auth_checks(expected: str) -> None:
     """운영 확인 절차가 require-authentication 과 Cloud Tasks SA 호출을 다룬다."""
+    readme = README.read_text()
+
+    assert expected in readme
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [
+        "이미지 build smoke는 `ANTHROPIC_PPTX_SKILL_DIR` 미설정 시 빠르게 실패하는 경로만",
+        "Secret/volume/env로 runtime에 주입",
+        "`PptxToolchain.ensure_available()`까지",
+    ],
+)
+def test_deployment_readme_documents_runtime_skill_smoke_scope(expected: str) -> None:
+    """PPTX skill directory smoke 범위가 build/runtime 경계를 설명한다."""
     readme = README.read_text()
 
     assert expected in readme

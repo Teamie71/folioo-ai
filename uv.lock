@@ -433,9 +433,12 @@ pptx-worker = [
     { name = "google-cloud-storage" },
     { name = "google-cloud-tasks" },
     { name = "httpx" },
+    { name = "langchain-core" },
+    { name = "langchain-openai" },
     { name = "lxml" },
     { name = "markitdown", extra = ["pptx"] },
     { name = "pillow" },
+    { name = "python-dotenv" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 template-tools = [
@@ -481,9 +484,12 @@ pptx-worker = [
     { name = "google-cloud-storage", specifier = ">=3.10.1" },
     { name = "google-cloud-tasks", specifier = ">=2.18.0" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "langchain-core", specifier = ">=1.2.3" },
+    { name = "langchain-openai", specifier = ">=1.1.7" },
     { name = "lxml", specifier = ">=6.0.0" },
     { name = "markitdown", extras = ["pptx"], specifier = ">=0.1.3" },
     { name = "pillow", specifier = ">=11.0.0" },
+    { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.40.0" },
 ]
 template-tools = [
