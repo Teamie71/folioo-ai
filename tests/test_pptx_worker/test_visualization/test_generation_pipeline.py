@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -600,61 +601,87 @@ async def test_regenerate_failure_sends_preview_error_without_output_upload() ->
     assert context.storage.uploaded_previews == []
 
 
-@pytest.mark.asyncio
-async def test_regenerate_qa_failure_sends_error_without_current_upload() -> None:
-    """재생성 QA 실패는 기존 preview error 만 남기고 current 산출물을 업로드하지 않는다."""
+def _regenerate_qa_failure_context() -> PipelineContext:
     qa_step = FakeQAStep(main_client=FakeMainClient(), statuses={3: "error"})
-    context = PipelineContext(qa_step=qa_step)
+    return PipelineContext(qa_step=qa_step)
+
+
+def _regenerate_invalid_slide_order_context() -> PipelineContext:
+    main_client = FakeMainClient()
+    main_client.slide_context["slide_order"] = "3"
+    return PipelineContext(main_client=main_client)
+
+
+def _regenerate_download_error_context() -> PipelineContext:
+    context = PipelineContext()
+    context.storage.download_error = OSError("gcs unavailable")
+    return context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "context_factory",
+        "expected_slide_order",
+        "expected_retryable",
+        "expected_message",
+        "expected_downloaded",
+        "expected_rendered",
+    ),
+    [
+        pytest.param(
+            _regenerate_qa_failure_context,
+            3,
+            True,
+            "qa failed",
+            True,
+            True,
+            id="qa-failure",
+        ),
+        pytest.param(
+            _regenerate_invalid_slide_order_context,
+            0,
+            False,
+            "slide_order",
+            False,
+            False,
+            id="invalid-slide-order",
+        ),
+        pytest.param(
+            _regenerate_download_error_context,
+            3,
+            True,
+            "gcs unavailable",
+            False,
+            False,
+            id="download-error",
+        ),
+    ],
+)
+async def test_regenerate_error_scenarios_send_preview_error_without_current_upload(
+    context_factory: Callable[[], PipelineContext],
+    expected_slide_order: int,
+    expected_retryable: bool,
+    expected_message: str,
+    expected_downloaded: bool,
+    expected_rendered: bool,
+) -> None:
+    """재생성 오류 시나리오는 preview error 만 남기고 current 산출물을 업로드하지 않는다."""
+    context = context_factory()
 
     await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
 
     assert _events(context.main_client, "slide_regenerated") == []
     error_events = _events(context.main_client, "slide_preview_error")
     assert len(error_events) == 1
-    assert error_events[0]["slide_order"] == 3
-    assert error_events[0]["message"] == "qa failed"
-    assert error_events[0]["retryable"] is True
+    assert error_events[0]["slide_order"] == expected_slide_order
+    assert error_events[0]["retryable"] is expected_retryable
+    assert expected_message in error_events[0]["message"]
+    assert bool(context.storage.downloaded_pptx) is expected_downloaded
+    assert bool(context.renderer.calls) is expected_rendered
     assert context.storage.uploaded_pptx == []
     assert context.storage.uploaded_pdf == []
     assert context.storage.uploaded_previews == []
-
-
-@pytest.mark.asyncio
-async def test_regenerate_invalid_slide_order_sends_error_without_processing() -> None:
-    """잘못된 slide_order 컨텍스트는 0번 슬라이드 처리로 진행하지 않고 중단한다."""
-    main_client = FakeMainClient()
-    main_client.slide_context["slide_order"] = "3"
-    context = PipelineContext(main_client=main_client)
-
-    await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
-
-    assert _events(context.main_client, "slide_regenerated") == []
-    error_events = _events(context.main_client, "slide_preview_error")
-    assert len(error_events) == 1
-    assert error_events[0]["slide_order"] == 0
-    assert error_events[0]["retryable"] is False
-    assert "slide_order" in error_events[0]["message"]
-    assert context.storage.downloaded_pptx == []
-    assert context.renderer.calls == []
-    assert context.storage.uploaded_pptx == []
-    assert context.storage.uploaded_pdf == []
-
-
-@pytest.mark.asyncio
-async def test_regenerate_download_error_is_retryable_preview_error() -> None:
-    """GCS 다운로드 같은 IO 실패는 메인에서 재시도할 수 있게 retryable 로 표시한다."""
-    context = PipelineContext()
-    context.storage.download_error = OSError("gcs unavailable")
-
-    await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
-
-    error_events = _events(context.main_client, "slide_preview_error")
-    assert len(error_events) == 1
-    assert error_events[0]["slide_order"] == 3
-    assert error_events[0]["retryable"] is True
-    assert "gcs unavailable" in error_events[0]["message"]
-    assert context.storage.uploaded_pptx == []
-    assert context.storage.uploaded_pdf == []
 
 
 class PipelineContext:
