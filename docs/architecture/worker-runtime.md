@@ -45,6 +45,13 @@ soffice 실행 + LLM I/O + 디스크 작업이 핵심 워크로드다.
 - 메인 백엔드의 큐 백로그 메트릭 기반 알람 (Cloud Tasks `oldest_age` > 5분 → 경고)
 - 최대 워커 인스턴스 수는 LLM API rate limit 고려해서 설정 (예: max 20)
 
+**운영 관측성:**
+- 워커는 `/metrics` 에 Prometheus text exposition 형식으로 soffice duration/RSS,
+  timeout/OOM/other 실패, tmp 디스크 사용량, 폰트 fallback, lifetime 처리 수를 노출한다.
+- `worker_jobs_processed_total` 은 `/health.lifetime_processed` 와 같은 카운터를 읽고,
+  `worker_ready_for_recycle` 은 `/health.ready_for_recycle` 과 같은 기준으로 0/1 gauge 를 노출한다.
+- 알람 기준과 PromQL 예시는 `worker-spec.md` §8.3.7 에 둔다.
+
 > **코드 실행 모델 / 강격리 샌드박스(Daytona 등)는 본 MVP 범위 밖이다 — §17 참조.**
 > 현재 설계는 LLM 이 데이터(`fills`)를 내고 결정적 코드가 적용하는 방식이라 임의 코드 실행이
 > 없으므로, Cloud Run 의 프로세스 격리 + 컨테이너 하드닝으로 충분하다. 원조 Anthropic PPTX

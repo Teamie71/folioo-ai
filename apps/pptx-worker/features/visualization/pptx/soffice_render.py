@@ -7,12 +7,20 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Protocol
+
+from pptx_worker.metrics import (
+    FailureReason,
+    WorkerMetricsRegistry,
+    get_worker_metrics,
+    safe_directory_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +125,11 @@ class PptxRenderer:
         self,
         options: RenderOptions | None = None,
         counter: ConversionCounter | None = None,
+        metrics: WorkerMetricsRegistry | None = None,
     ) -> None:
         self._options = options or RenderOptions()
         self._counter = counter or InMemoryConversionCounter()
+        self._metrics = metrics or get_worker_metrics()
         self._validate_options(self._options)
 
     @property
@@ -148,55 +158,73 @@ class PptxRenderer:
             ValueError: 입력 경로, 옵션, 페이지 번호가 유효하지 않은 경우.
             PptxRenderError: 외부 변환 명령이 실패한 경우.
         """
+        started_at = time.perf_counter()
+        soffice_rss_bytes: int | None = None
         source_path = self._validate_pptx_path(Path(pptx_path))
         final_output_dir = Path(output_dir)
         self._validate_page(page)
         final_output_dir.mkdir(parents=True, exist_ok=True)
 
-        workdir_obj = tempfile.TemporaryDirectory(
-            prefix="folioo_render_",
-            dir=str(self._options.tmp_root),
-        )
-        with workdir_obj as raw_workdir:
-            workdir = Path(raw_workdir)
-            input_pptx = workdir / "input.pptx"
-            pdf_dir = workdir / "pdf"
-            image_dir = workdir / "jpg"
-            pdf_dir.mkdir()
-            image_dir.mkdir()
-            shutil.copy2(source_path, input_pptx)
+        try:
+            workdir_obj = tempfile.TemporaryDirectory(
+                prefix="folioo_render_",
+                dir=str(self._options.tmp_root),
+            )
+            with workdir_obj as raw_workdir:
+                workdir = Path(raw_workdir)
+                input_pptx = workdir / "input.pptx"
+                pdf_dir = workdir / "pdf"
+                image_dir = workdir / "jpg"
+                pdf_dir.mkdir()
+                image_dir.mkdir()
+                shutil.copy2(source_path, input_pptx)
 
-            temp_pdf, attempts = self._convert_pptx_to_pdf(input_pptx, pdf_dir, workdir)
-            temp_images = self._render_pdf_to_jpg(temp_pdf, image_dir, page)
+                temp_pdf, attempts, soffice_rss_bytes = self._convert_pptx_to_pdf(
+                    input_pptx, pdf_dir, workdir
+                )
+                temp_images = self._render_pdf_to_jpg(temp_pdf, image_dir, page)
 
-            final_pdf = final_output_dir / f"{source_path.stem}{_PDF_SUFFIX}"
-            self._clean_owned_outputs(final_output_dir, final_pdf)
-            shutil.copy2(temp_pdf, final_pdf)
-            slides = self._copy_images(temp_images, final_output_dir)
+                final_pdf = final_output_dir / f"{source_path.stem}{_PDF_SUFFIX}"
+                self._clean_owned_outputs(final_output_dir, final_pdf)
+                shutil.copy2(temp_pdf, final_pdf)
+                slides = self._copy_images(temp_images, final_output_dir)
 
-        conversion_count = self._counter.increment()
-        return RenderResult(
-            pdf_path=final_pdf,
-            slides=tuple(slides),
-            soffice_attempts=attempts,
-            conversion_count=conversion_count,
-        )
+            duration_seconds = time.perf_counter() - started_at
+            conversion_count = self._counter.increment()
+            self._metrics.observe_soffice_conversion_success(
+                duration_seconds=duration_seconds,
+                rss_bytes=soffice_rss_bytes,
+            )
+            return RenderResult(
+                pdf_path=final_pdf,
+                slides=tuple(slides),
+                soffice_attempts=attempts,
+                conversion_count=conversion_count,
+            )
+        except Exception as exc:
+            if isinstance(exc, PptxRenderError):
+                self._metrics.record_soffice_conversion_failure(_classify_render_failure(exc))
+            raise
+        finally:
+            self._metrics.set_tmp_disk_bytes_used(safe_directory_size(self._options.tmp_root))
 
     def _convert_pptx_to_pdf(
         self,
         input_pptx: Path,
         pdf_dir: Path,
         workdir: Path,
-    ) -> tuple[Path, int]:
+    ) -> tuple[Path, int, int | None]:
         attempts = 0
         last_error: PptxRenderError | None = None
+        rss_bytes: int | None = None
         for attempt in range(1, 3):
             attempts = attempt
             profile_dir = workdir / f"soffice-profile-{uuid.uuid4().hex}"
             profile_dir.mkdir()
             command = self._soffice_command(input_pptx, pdf_dir, profile_dir)
             try:
-                self._run_command(command, "soffice")
+                run_result = self._run_command(command, "soffice")
+                rss_bytes = _max_optional_int(rss_bytes, run_result.rss_bytes)
             except _CommandTimeoutError as exc:
                 last_error = PptxRenderError(
                     f"soffice 변환이 {self._options.timeout_seconds:g}초를 초과했습니다."
@@ -213,7 +241,7 @@ class PptxRenderer:
             pdf_path = pdf_dir / f"{input_pptx.stem}{_PDF_SUFFIX}"
             if not pdf_path.is_file():
                 raise PptxRenderError(f"soffice PDF 산출물을 찾을 수 없습니다: {pdf_path}")
-            return pdf_path, attempts
+            return pdf_path, attempts, rss_bytes
 
         if last_error is not None:
             raise last_error
@@ -264,7 +292,7 @@ class PptxRenderer:
             str(input_pptx),
         ]
 
-    def _run_command(self, command: Sequence[str], command_name: str) -> None:
+    def _run_command(self, command: Sequence[str], command_name: str) -> "_CommandRunResult":
         process = subprocess.Popen(
             list(command),
             stdout=subprocess.PIPE,
@@ -284,11 +312,26 @@ class PptxRenderer:
                 stderr=stderr,
             ) from exc
 
+        rss_bytes = _max_child_rss_bytes()
+        if command_name == "soffice":
+            fallback_count = count_font_fallback_warnings(stdout, stderr)
+            self._metrics.record_font_fallback_warnings(fallback_count)
+
         if process.returncode != 0:
-            raise PptxRenderError(
-                f"{command_name} 명령이 실패했습니다. "
-                f"(exit={process.returncode}, stderr={stderr.strip()!r})"
+            raise _CommandFailedError(
+                command_name=command_name,
+                command=command,
+                returncode=process.returncode,
+                stdout=stdout,
+                stderr=stderr,
+                rss_bytes=rss_bytes,
             )
+        return _CommandRunResult(
+            stdout=stdout,
+            stderr=stderr,
+            returncode=process.returncode,
+            rss_bytes=rss_bytes,
+        )
 
     def _clean_owned_outputs(self, output_dir: Path, pdf_path: Path) -> None:
         """이번 렌더러가 소유하는 이전 PDF/JPG 산출물을 제거한다."""
@@ -378,3 +421,99 @@ class _CommandTimeoutError(PptxRenderError):
 
     def __str__(self) -> str:
         return f"{self.command_name} 명령이 타임아웃되었습니다."
+
+
+@dataclass(frozen=True)
+class _CommandRunResult:
+    """외부 명령 실행 결과."""
+
+    stdout: str | None
+    stderr: str | None
+    returncode: int
+    rss_bytes: int | None
+
+
+@dataclass(frozen=True)
+class _CommandFailedError(PptxRenderError):
+    """외부 명령 non-zero 종료."""
+
+    command_name: str
+    command: Sequence[str]
+    returncode: int
+    stdout: str | None
+    stderr: str | None
+    rss_bytes: int | None
+
+    @property
+    def is_oom(self) -> bool:
+        """OOM kill 로 추정되는 종료인지 반환한다."""
+        stderr = (self.stderr or "").lower()
+        stdout = (self.stdout or "").lower()
+        logs = f"{stdout}\n{stderr}"
+        return (
+            self.returncode in {-signal.SIGKILL, 128 + signal.SIGKILL}
+            or "out of memory" in logs
+            or "oom" in logs
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{self.command_name} 명령이 실패했습니다. "
+            f"(exit={self.returncode}, stderr={(self.stderr or '').strip()!r})"
+        )
+
+
+def _classify_render_failure(exc: BaseException) -> FailureReason:
+    """렌더링 예외 체인을 timeout/oom/other 로 분류한다."""
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, _CommandTimeoutError):
+            return "timeout"
+        if isinstance(current, _CommandFailedError) and current.is_oom:
+            return "oom"
+        current = current.__cause__
+    return "other"
+
+
+def count_font_fallback_warnings(*logs: str | None) -> int:
+    """LibreOffice 로그에서 폰트 fallback/substitution 경고 수를 계산한다."""
+    patterns = (
+        re.compile(r"\bfont\b.*\bfallback\b", re.IGNORECASE),
+        re.compile(r"\bfallback\b.*\bfont\b", re.IGNORECASE),
+        re.compile(r"\bfont\b.*\bsubstitut", re.IGNORECASE),
+        re.compile(r"\bsubstitut.*\bfont\b", re.IGNORECASE),
+        re.compile(r"\bmissing\b.*\bfont\b", re.IGNORECASE),
+        re.compile(r"\bfont\b.*\bnot found\b", re.IGNORECASE),
+    )
+    count = 0
+    for log in logs:
+        if not log:
+            continue
+        for line in log.splitlines():
+            if any(pattern.search(line) for pattern in patterns):
+                count += 1
+    return count
+
+
+def _max_optional_int(current: int | None, value: int | None) -> int | None:
+    if value is None:
+        return current
+    if current is None:
+        return value
+    return max(current, value)
+
+
+def _max_child_rss_bytes() -> int | None:
+    """종료된 child process 의 ru_maxrss 를 bytes 로 반환한다."""
+    try:
+        import resource
+    except ImportError:
+        return None
+
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    max_rss = int(usage.ru_maxrss)
+    if max_rss < 0:
+        return None
+    if os.uname().sysname == "Darwin":
+        return max_rss
+    return max_rss * 1024

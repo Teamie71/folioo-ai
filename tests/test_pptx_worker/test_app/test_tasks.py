@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pptx_worker.api import tasks as tasks_api
 from pptx_worker.main import create_app
+from pptx_worker.metrics import WorkerMetricsRegistry, set_worker_metrics
 from pptx_worker.runtime import WorkerRuntime, set_worker_runtime
 
 from features.visualization.service import (
@@ -92,6 +93,7 @@ def worker_client(monkeypatch):
         recycle_after=2,
         shutdown_callback=lambda: shutdown_calls.append("shutdown"),
     )
+    set_worker_metrics(WorkerMetricsRegistry())
     service = FakeVisualizationTaskService(runtime)
 
     tasks_api.set_main_client_factory(lambda callback_base_url: main_client)
@@ -102,6 +104,7 @@ def worker_client(monkeypatch):
         yield client, main_client, service, runtime, shutdown_calls
 
     tasks_api.reset_main_client_factory()
+    set_worker_metrics(None)
     set_worker_runtime(None)
 
 
@@ -309,6 +312,24 @@ def test_health_reports_runtime_counters_and_recycle_readiness(worker_client):
     assert after_second.json()["lifetime_processed"] == 2
     assert after_second.json()["ready_for_recycle"] is True
     assert shutdown_calls == ["shutdown"]
+
+
+def test_metrics_exposes_runtime_counter_and_recycle_signal(worker_client):
+    """메트릭의 처리 카운터와 재활용 신호는 /health 와 같은 런타임 소스를 쓴다."""
+    client, _, service, _, _ = worker_client
+    service.generate_conversion_count = 2
+
+    response = client.post("/tasks/visualizations/generate", json=generate_payload(jobId="job-1"))
+    health = client.get("/health").json()
+    metrics = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert health["lifetime_processed"] == 2
+    assert health["ready_for_recycle"] is True
+    assert metrics.status_code == 200
+    assert "worker_jobs_processed_total 2" in metrics.text
+    assert "worker_ready_for_recycle 1" in metrics.text
+    assert 'soffice_conversion_failures_total{reason="timeout"} 0' in metrics.text
 
 
 @pytest.mark.asyncio

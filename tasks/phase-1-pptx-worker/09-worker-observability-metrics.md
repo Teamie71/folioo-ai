@@ -6,7 +6,8 @@ spec: "specs/phase-1/09-worker-observability-metrics.md"
 depends_on: ["1.01", "1.04", "1.05"]
 blocks: []
 estimate: "S"
-status: "todo"
+status: "done"
+completed_at: "2026-05-28"
 owner: ""
 sprint: ""
 ---
@@ -23,21 +24,21 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] 메트릭 노출 방식 결정(Prometheus exporter 등) + 모니터링 백엔드 연동 지점 확인
+- [x] 메트릭 노출 방식 결정(Prometheus exporter 등) + 모니터링 백엔드 연동 지점 확인
 
 ## 구현 체크리스트
 
-- [ ] `soffice_rss_bytes`, `soffice_conversion_duration_seconds{quantile}`(P50/P95/P99)
-- [ ] `soffice_conversion_failures_total{reason=timeout|oom|기타}`, `worker_oom_kill_total`
-- [ ] `worker_jobs_processed_total`(1.01 lifetime 카운터와 동일 소스), `tmp_disk_bytes_used`, `font_fallback_warnings_total`
-- [ ] 알람 기준: P95 duration>30s 5분 지속→경고, oom_kill 증가→즉시, font_fallback 증가→폰트 누락 알림
-- [ ] emit 지점: soffice 래퍼(04)·오케스트레이션(05)·`/health`(01) 계측 훅
+- [x] `soffice_rss_bytes`, `soffice_conversion_duration_seconds{quantile}`(P50/P95/P99)
+- [x] `soffice_conversion_failures_total{reason=timeout|oom|other}`, `worker_oom_kill_total`
+- [x] `worker_jobs_processed_total`(1.01 lifetime 카운터와 동일 소스), `tmp_disk_bytes_used`, `font_fallback_warnings_total`
+- [x] 알람 기준: P95 duration>30s 5분 지속→경고, oom_kill 증가→즉시, font_fallback 증가→폰트 누락 알림
+- [x] emit 지점: soffice 래퍼(04)·오케스트레이션(05)·`/health`(01) 계측 훅
 
 ## Definition of Done
 
-- [ ] 정상 변환 시 duration 분위수·RSS 갱신, 타임아웃/OOM 실패가 reason 별 카운트 검증
-- [ ] `worker_jobs_processed_total` 이 1.01 lifetime 카운터와 일치, N회 도달 시 ready_for_recycle 연동 검증
-- [ ] 폰트 누락 변환 시 `font_fallback_warnings_total` 증가, P95>30s 경고 임계 충족 검증
+- [x] 정상 변환 시 duration 분위수·RSS 갱신, 타임아웃/OOM 실패가 reason 별 카운트 검증
+- [x] `worker_jobs_processed_total` 이 1.01 lifetime 카운터와 일치, N회 도달 시 ready_for_recycle 연동 검증
+- [x] 폰트 누락 변환 시 `font_fallback_warnings_total` 증가, P95>30s 경고 임계 충족 검증
 
 ## 리스크 / 메모
 

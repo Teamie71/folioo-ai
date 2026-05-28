@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from google.cloud import storage
+from pptx_worker.metrics import get_worker_metrics, safe_directory_size
 
 logger = logging.getLogger(__name__)
 
@@ -266,4 +267,5 @@ def job_workdir(job_id: str) -> Generator[Path, None, None]:
         yield workdir
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+        get_worker_metrics().set_tmp_disk_bytes_used(safe_directory_size(Path("/tmp")))
         logger.debug("cleaned up workdir %s", workdir)
