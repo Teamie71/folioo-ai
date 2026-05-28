@@ -314,9 +314,18 @@ async def test_process_message_accepts_file_only_request(monkeypatch):
 async def test_process_message_returns_none_when_all_complete(monkeypatch):
     """모든 단계 완료 상태면 ai_response를 None으로 반환한다."""
     dummy_graph = DummyGraph()
-    dummy_graph.state_snapshot = DummyStateSnapshot(values={"session_id": "session_1"})
+    previous_messages = [AIMessage(content="직전 질문")]
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "messages": previous_messages,
+            "all_stages_complete": False,
+            "is_extended_mode": False,
+            "extension_count": 0,
+        }
+    )
     dummy_graph.invoke_result = {
-        "messages": [HumanMessage(content="사용자 최종 답변")],
+        "messages": [*previous_messages, HumanMessage(content="사용자 최종 답변")],
         "current_stage": 4,
         "stage_progress": {"fixed_q_used": 3},
         "overall_completion_percentage": 100.0,
@@ -336,6 +345,128 @@ async def test_process_message_returns_none_when_all_complete(monkeypatch):
     invocation = dummy_graph.invocations[0]
     assert invocation["state"]["current_turn_files"] == []
     assert invocation["state"]["file_contexts"] == []
+
+
+@pytest.mark.asyncio
+async def test_process_message_returns_immediate_extension_question_after_stage_four_completion(
+    monkeypatch,
+):
+    """정규 마지막 답변 처리 결과로 생성된 첫 연장 질문을 반환한다."""
+    dummy_graph = DummyGraph()
+    previous_messages = [
+        AIMessage(content="정규 마지막 질문"),
+    ]
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "messages": previous_messages,
+            "all_stages_complete": False,
+            "is_extended_mode": False,
+            "extension_count": 0,
+        }
+    )
+    dummy_graph.invoke_result = {
+        "messages": [
+            *previous_messages,
+            HumanMessage(content="정규 마지막 답변입니다."),
+            AIMessage(content="연장 첫 질문"),
+        ],
+        "current_stage": 4,
+        "stage_progress": {"fixed_q_used": 3},
+        "overall_completion_percentage": 100.0,
+        "all_stages_complete": False,
+        "is_extended_mode": True,
+        "extension_count": 1,
+        "extension_turns_used": 1,
+        "extension_turns_max": 18,
+    }
+    service = _build_service(monkeypatch, dummy_graph)
+
+    result = await service.process_message(
+        session_id="session_1",
+        message="정규 마지막 답변입니다.",
+    )
+
+    assert result["ai_response"] == "연장 첫 질문"
+    assert result["all_complete"] is False
+    assert result["is_extended_mode"] is True
+    assert result["extension_turns_used"] == 1
+    assert result["extension_turns_max"] == 18
+
+    invocation = dummy_graph.invocations[0]
+    assert "is_extended_mode" not in invocation["state"]
+    assert invocation["state"]["messages"] == [HumanMessage(content="정규 마지막 답변입니다.")]
+
+
+@pytest.mark.asyncio
+async def test_process_message_auto_starts_extension_for_completed_legacy_session(monkeypatch):
+    """이미 완료 상태로 저장된 기존 세션도 후속 채팅으로 연장 모드에 진입한다."""
+    dummy_graph = DummyGraph()
+    previous_messages = [
+        AIMessage(content="정규 마지막 질문"),
+        HumanMessage(content="정규 마지막 답변"),
+    ]
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "messages": previous_messages,
+            "all_stages_complete": True,
+            "is_extended_mode": False,
+            "extension_count": 0,
+        }
+    )
+    dummy_graph.invoke_result = {
+        "messages": [
+            *previous_messages,
+            HumanMessage(content="추가로 정리하고 싶은 내용입니다."),
+            AIMessage(content="연장 질문"),
+        ],
+        "current_stage": 4,
+        "stage_progress": {"fixed_q_used": 3},
+        "overall_completion_percentage": 100.0,
+        "all_stages_complete": False,
+        "is_extended_mode": True,
+        "extension_count": 1,
+        "extension_turns_used": 1,
+        "extension_turns_max": 18,
+    }
+    monkeypatch.setattr(
+        interview_service,
+        "get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
+            },
+        )(),
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    result = await service.process_message(
+        session_id="session_1",
+        message="추가로 정리하고 싶은 내용입니다.",
+    )
+
+    assert result["ai_response"] == "연장 질문"
+    assert result["all_complete"] is False
+    assert result["is_extended_mode"] is True
+    assert result["extension_turns_used"] == 1
+    assert result["extension_turns_max"] == 18
+
+    invocation = dummy_graph.invocations[0]
+    assert invocation["state"]["is_extended_mode"] is True
+    assert invocation["state"]["all_stages_complete"] is False
+    assert invocation["state"]["extension_count"] == 1
+    assert invocation["state"]["extension_turns_used"] == 0
+    assert invocation["state"]["extension_turns_max"] == 18
+    assert invocation["state"]["additional_question_target_statuses"] == {}
+    assert invocation["state"]["additional_question_pre_evaluated"] is False
+    assert invocation["state"]["current_additional_question_target_id"] is None
+    assert invocation["state"]["messages"] == [
+        HumanMessage(content="추가로 정리하고 싶은 내용입니다.")
+    ]
 
 
 @pytest.mark.asyncio
@@ -369,15 +500,17 @@ async def test_process_message_resets_current_turn_files_when_no_files(monkeypat
 async def test_extend_session_success(monkeypatch):
     """완료된 세션은 연장 모드로 전환되고 첫 연장 질문을 반환한다."""
     dummy_graph = DummyGraph()
+    previous_messages = [AIMessage(content="정규 마지막 질문")]
     dummy_graph.state_snapshot = DummyStateSnapshot(
         values={
             "session_id": "session_1",
+            "messages": previous_messages,
             "all_stages_complete": True,
             "extension_count": 0,
         }
     )
     dummy_graph.invoke_result = {
-        "messages": [AIMessage(content="연장 첫 질문")],
+        "messages": [*previous_messages, AIMessage(content="연장 첫 질문")],
         "extension_count": 1,
         "extension_turns_max": 18,
     }
@@ -413,6 +546,42 @@ async def test_extend_session_success(monkeypatch):
     assert invocation["state"]["current_turn_files"] == []
     assert invocation["state"]["file_contexts"] == []
     assert invocation["state"]["mentioned_insight"] is None
+
+
+@pytest.mark.asyncio
+async def test_extend_session_raises_when_no_new_ai_response(monkeypatch):
+    """연장 실행 결과에 새 AI 메시지가 없으면 과거 질문을 재사용하지 않고 실패한다."""
+    dummy_graph = DummyGraph()
+    previous_messages = [AIMessage(content="정규 마지막 질문")]
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "messages": previous_messages,
+            "all_stages_complete": True,
+            "extension_count": 0,
+        }
+    )
+    dummy_graph.invoke_result = {
+        "messages": previous_messages,
+        "extension_count": 1,
+        "extension_turns_max": 18,
+    }
+    monkeypatch.setattr(
+        interview_service,
+        "get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
+            },
+        )(),
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(ValueError, match="연장 질문을 생성하지 못했습니다"):
+        await service.extend_session("session_1")
 
 
 @pytest.mark.asyncio

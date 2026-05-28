@@ -25,9 +25,17 @@ class _DummyLLM:
 
 
 class _DummyGlobalConfig:
-    def __init__(self, *, enable_dynamic_followup: bool = True):
+    def __init__(
+        self,
+        *,
+        enable_dynamic_followup: bool = True,
+        max_extensions: int = 1,
+        extension_turns_per_session: int = 18,
+    ):
         self.enable_dynamic_followup = enable_dynamic_followup
         self.context_window_size = 5
+        self.max_extensions = max_extensions
+        self.extension_turns_per_session = extension_turns_per_session
 
 
 def _mock_analyst_llm(response: AnalystResponse):
@@ -211,8 +219,8 @@ def test_run_keeps_stage_when_fixed_questions_remain_even_if_required_fields_com
     assert result["stage_progress"]["is_complete"] is False
 
 
-def test_run_marks_all_complete_at_stage_4(monkeypatch):
-    """4단계 완료 시 all_stages_complete와 overall_completion_percentage를 설정한다."""
+def test_run_starts_extended_mode_at_stage_4_completion(monkeypatch):
+    """4단계 완료 시 같은 요청에서 연장 모드 첫 질문 생성으로 라우팅한다."""
     response = AnalystResponse(
         fields=[
             AnalystFieldResult(
@@ -229,6 +237,11 @@ def test_run_marks_all_complete_at_stage_4(monkeypatch):
         analyst,
         "_calculate_overall_completion_percentage",
         lambda experience_name, collected_data: (88.5, None),
+    )
+    monkeypatch.setattr(
+        analyst,
+        "get_global_config",
+        lambda: _DummyGlobalConfig(max_extensions=1, extension_turns_per_session=18),
     )
 
     state = get_initial_interview_state(
@@ -248,10 +261,54 @@ def test_run_marks_all_complete_at_stage_4(monkeypatch):
 
     assert result["current_stage"] == 4
     assert result["stage_progress"]["is_complete"] is True
+    assert result["all_stages_complete"] is False
+    assert result["is_extended_mode"] is True
+    assert result["extension_count"] == 1
+    assert result["extension_turns_used"] == 0
+    assert result["extension_turns_max"] == 18
+    assert result["additional_question_target_statuses"] == {}
+    assert result["additional_question_pre_evaluated"] is False
+    assert result["current_additional_question_target_id"] is None
+    assert result["overall_completion_percentage"] == 88.5
+    assert result["next_node"] == "question_generator"
+    assert result["collected_data"]["stage_4"]["final_deliverable"]["value"] == "서비스 런칭 완료"
+
+
+def test_run_marks_all_complete_at_stage_4_when_extension_limit_reached(monkeypatch):
+    """연장 가능 횟수가 없으면 4단계 완료 시 기존처럼 종료한다."""
+    response = AnalystResponse(fields=[])
+    monkeypatch.setattr(
+        analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
+    )
+    monkeypatch.setattr(
+        analyst,
+        "_calculate_overall_completion_percentage",
+        lambda experience_name, collected_data: (88.5, None),
+    )
+    monkeypatch.setattr(
+        analyst,
+        "get_global_config",
+        lambda: _DummyGlobalConfig(max_extensions=1, extension_turns_per_session=18),
+    )
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["current_stage"] = 4
+    state["extension_count"] = 1
+    stage_4_config = load_stage_config(4)
+    state["stage_progress"]["fixed_q_total"] = len(stage_4_config.fixed_questions)
+    state["stage_progress"]["fixed_q_used"] = state["stage_progress"]["fixed_q_total"]
+
+    result = analyst.run(state)
+
+    assert result["stage_progress"]["is_complete"] is True
     assert result["all_stages_complete"] is True
+    assert result["is_extended_mode"] is False
     assert result["overall_completion_percentage"] == 88.5
     assert result["next_node"] == "end"
-    assert result["collected_data"]["stage_4"]["final_deliverable"]["value"] == "서비스 런칭 완료"
 
 
 def test_run_extended_mode_routes_to_question_generator(monkeypatch):
