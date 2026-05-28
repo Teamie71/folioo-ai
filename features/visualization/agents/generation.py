@@ -28,10 +28,12 @@ _FILL_SYSTEM_PROMPT = """PPTX 슬라이드 Slot 을 채우는 편집 데이터 �
 스키마: {"fills": {"shape_id": {"action": "text"|"remove"|"chart", "text": string, "font_size_override": number|null, "is_title": boolean|null, "data": object|null}}}
 지침:
 - 임의 코드나 XML 을 만들지 말고 fills 데이터만 산출하세요.
-- 제공된 shape_id 만 key 로 사용하세요.
+- provided slots 중 editable=true 이고 required=true 인 shape_id 만 필수로 채우세요.
+- required=false, editable=false, kind=decorative/background/layout slot 은 필수 채움 대상이 아닙니다.
+- 제공된 shape_id 만 key 로 사용하고, 각 slot 의 allowed_actions 범위 안에서만 action 을 선택하세요.
+- chart slot 은 action=chart 와 data.categories, data.series[].values 를 함께 제공하세요.
 - 텍스트가 길면 먼저 폰트를 줄이되 원본의 60% 미만이나 10pt 미만으로 내리지 마세요.
-- 텍스트 요약이 필요하면 고유명사, 수치, 기술 스택을 보존하세요.
-- 제공된 모든 shape_id 에 대해 text/remove/chart 중 하나를 반환하세요.
+- 텍스트 요약이 필요하면 고유명사, 수치, 기술 스택, 성과 지표를 보존하세요.
 """
 
 _REGENERATE_SYSTEM_PROMPT = """PPTX 단일 슬라이드 수정 요청을 fill 변경 지시로 해석하는 편집자입니다.
@@ -40,13 +42,15 @@ _REGENERATE_SYSTEM_PROMPT = """PPTX 단일 슬라이드 수정 요청을 fill �
 지침:
 - 사용자가 지정한 도형만 fills 에 포함하세요. 지정되지 않은 도형은 절대 포함하지 마세요.
 - 제공된 shape_id 만 key 로 사용하세요.
+- 현재 구현은 텍스트 도형의 text/font_size_override/is_title 변경만 지원합니다.
 - 폰트 크기는 10pt 이상 48pt 이하로만 조정하세요.
 - 사용자가 텍스트/문구/표현 변경을 명시한 경우만 text 를 변경하세요.
 - 스타일 요청만 있으면 text 는 null 로 두고 font_size_override 같은 스타일 필드만 반환하세요.
-- 슬라이드 추가/삭제, 도형 이동, 슬라이드 밖 배치, 임의 shape 생성은 허용되지 않습니다.
+- 색상, 도형 크기, 위치, 레이아웃, 차트 데이터, 슬라이드 추가/삭제, 도형 이동,
+  슬라이드 밖 배치, 임의 shape 생성은 허용되지 않습니다.
 """
 
-_TEXT_CHANGE_HINTS = (
+_TEXT_FIELD_HINTS = (
     "텍스트",
     "문구",
     "표현",
@@ -54,21 +58,39 @@ _TEXT_CHANGE_HINTS = (
     "오타",
     "카피",
     "워딩",
+    "text",
+    "copy",
+    "wording",
+    "typo",
+)
+_TEXT_TRANSFORM_HINTS = (
     "바꿔",
     "바꾸",
-    "변경",
-    "수정",
     "고쳐",
     "임팩트",
     "짧게",
     "요약",
-    "text",
-    "copy",
-    "wording",
     "rename",
     "rephrase",
     "rewrite",
-    "typo",
+)
+_UNSUPPORTED_REGENERATE_PATTERNS = (
+    ("색상/채우기 변경", re.compile(r"색|색상|컬러|채우기|배경색|테두리|선색|color", re.I)),
+    ("위치/배치 변경", re.compile(r"위치|이동|옮겨|배치|정렬|밖으로|position|move|align", re.I)),
+    ("레이아웃 변경", re.compile(r"레이아웃|템플릿|layout|template", re.I)),
+    (
+        "도형 크기 변경",
+        re.compile(r"(도형|박스|상자|shape|box).{0,8}(크기|확대|축소|size|resize)", re.I),
+    ),
+    ("차트 데이터 변경", re.compile(r"차트|그래프|chart|graph", re.I)),
+    (
+        "슬라이드/도형 생성",
+        re.compile(r"슬라이드\s*(추가|삭제)|도형\s*(추가|삭제)|shape\s*(add|delete)", re.I),
+    ),
+)
+_METRIC_SLIDE_PATTERN = re.compile(
+    r"chart|graph|metric|metrics|kpi|차트|그래프|지표|성과\s*지표|수치|통계|전환율|증감|비율",
+    re.I,
 )
 
 
@@ -276,6 +298,7 @@ class LLMSlideChangeGenerator:
         """사용자 요청과 현재 slot/fill 을 기반으로 수정 대상만 산출한다."""
         if not user_request.strip():
             raise ValueError("재생성 요청이 비어 있습니다.")
+        _reject_unsupported_regenerate_request(user_request)
         if not slots:
             return {}
 
@@ -371,6 +394,14 @@ def prefilter_source_slides(
 def _build_plan_prompt(*, portfolio_text: str, source_slides: Sequence[SourceSlide]) -> str:
     payload = {
         "portfolio_text": portfolio_text,
+        "selection_signals": {
+            "has_numeric_data": _has_numeric_signal(portfolio_text),
+            "has_visual_asset": _has_visual_signal(portfolio_text),
+        },
+        "selection_guidance": (
+            "has_numeric_data=true 이면 chart 또는 metric-oriented Source Slide 를 "
+            "후보로 고려하고, 선택 시 reason 에 수치/성과 지표 근거를 남기세요."
+        ),
         "source_slides": [
             {
                 "id": slide.source_slide_id,
@@ -462,18 +493,34 @@ def _parse_fills_payload(
         shape_key = str(shape_id)
         if shape_key not in slots_by_id:
             raise ValueError(f"제공되지 않은 shape_id 입니다: {shape_key}")
+        slot = slots_by_id[shape_key]
+        if not _slot_is_editable(slot):
+            raise ValueError(f"비편집 slot 은 fills 대상이 아닙니다: {shape_key}")
+
         fill = raw_fill.model_dump(exclude_none=True)
         action = raw_fill.action
+        allowed_actions = _allowed_actions_for_slot(slot)
+        if action not in allowed_actions:
+            allowed_text = ", ".join(sorted(allowed_actions))
+            raise ValueError(
+                f"slot {shape_key} 은 action={action!r} 을 지원하지 않습니다. 허용: {allowed_text}"
+            )
         if action == "text":
             fill["text"] = str(raw_fill.text or "")
+        elif action == "chart":
+            _validate_chart_fill_data(fill, shape_key)
         if fill.get("font_size_override") is not None:
             fill["font_size_override"] = _guard_font_size(
                 fill["font_size_override"],
-                slots_by_id[shape_key].get("font_size_pt"),
+                slot.get("font_size_pt"),
             )
         normalized[shape_key] = fill
 
-    missing_shape_ids = sorted(set(slots_by_id) - set(normalized))
+    missing_shape_ids = sorted(
+        shape_id
+        for shape_id, slot in slots_by_id.items()
+        if _slot_requires_fill(slot) and shape_id not in normalized
+    )
     if missing_shape_ids:
         raise ValueError(f"fills 에 누락된 shape_id 가 있습니다: {', '.join(missing_shape_ids)}")
 
@@ -501,7 +548,7 @@ def _parse_regenerate_changes_payload(
             raise ValueError(f"fill 은 객체여야 합니다: {shape_key}")
 
         slot = slots_by_id[shape_key]
-        if slot.get("kind") not in {None, "text"}:
+        if not _slot_is_editable(slot) or "text" not in _allowed_actions_for_slot(slot):
             raise ValueError(f"재생성 변경은 텍스트 도형만 지원합니다: {shape_key}")
 
         action = str(raw_fill.get("action") or "text")
@@ -549,7 +596,21 @@ def _guard_regenerate_font_size(value: Any) -> float:
 
 def _text_change_requested(user_request: str) -> bool:
     lowered = user_request.casefold()
-    return any(hint in lowered for hint in _TEXT_CHANGE_HINTS)
+    if any(hint in lowered for hint in _TEXT_FIELD_HINTS):
+        return True
+    if any(hint in lowered for hint in _TEXT_TRANSFORM_HINTS):
+        return True
+    return bool(re.search(r"[\"'“”‘’][^\"'“”‘’]+[\"'“”‘’]\s*(로|으로)", user_request))
+
+
+def _reject_unsupported_regenerate_request(user_request: str) -> None:
+    for label, pattern in _UNSUPPORTED_REGENERATE_PATTERNS:
+        if pattern.search(user_request):
+            raise ValueError(
+                "지원하지 않는 수정 범위입니다: "
+                f"{label}. 현재 Phase 2 는 지정한 텍스트 도형의 문구, 폰트 크기, "
+                "제목 강조만 지원합니다."
+            )
 
 
 def _keep_source_slide(
@@ -560,11 +621,65 @@ def _keep_source_slide(
 ) -> bool:
     if slide.category in {"cover", "closing"}:
         return True
-    if slide.category == "chart" and not has_numeric_data:
+    if _is_metric_or_chart_slide(slide) and not has_numeric_data:
         return False
     if slide.category == "visual" and not has_visual_asset:
         return False
     return True
+
+
+def _slot_is_editable(slot: Mapping[str, Any]) -> bool:
+    if slot.get("editable") is False:
+        return False
+    kind = str(slot.get("kind") or "").casefold()
+    return kind not in {"decorative", "background", "layout", "non_editable"}
+
+
+def _slot_requires_fill(slot: Mapping[str, Any]) -> bool:
+    return _slot_is_editable(slot) and slot.get("required") is not False
+
+
+def _allowed_actions_for_slot(slot: Mapping[str, Any]) -> set[str]:
+    raw_actions = slot.get("allowed_actions")
+    if isinstance(raw_actions, Sequence) and not isinstance(raw_actions, str):
+        actions = {str(action) for action in raw_actions}
+        if actions:
+            return actions
+
+    kind = str(slot.get("kind") or "text").casefold()
+    if kind == "chart":
+        return {"chart"}
+    return {"text", "remove"}
+
+
+def _validate_chart_fill_data(fill: Mapping[str, Any], shape_id: str) -> None:
+    data = fill.get("data")
+    if not isinstance(data, Mapping):
+        raise ValueError(f"chart fill 에는 data 객체가 필요합니다: {shape_id}")
+
+    categories = data.get("categories")
+    if not isinstance(categories, list) or not categories:
+        raise ValueError(f"chart fill 에는 data.categories 배열이 필요합니다: {shape_id}")
+
+    series_list = data.get("series")
+    if not isinstance(series_list, list) or not series_list:
+        raise ValueError(f"chart fill 에는 data.series 배열이 필요합니다: {shape_id}")
+
+    for index, series in enumerate(series_list):
+        if not isinstance(series, Mapping):
+            raise ValueError(f"chart data.series[{index}] 는 객체여야 합니다: {shape_id}")
+        values = series.get("values")
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"chart data.series[{index}].values 배열이 필요합니다: {shape_id}")
+        if len(values) != len(categories):
+            raise ValueError(
+                f"chart categories 와 series[{index}].values 길이가 일치해야 합니다: {shape_id}"
+            )
+
+
+def _is_metric_or_chart_slide(slide: SourceSlide) -> bool:
+    text = f"{slide.category} {slide.description} {slide.best_for}"
+    return bool(_METRIC_SLIDE_PATTERN.search(text))
 
 
 def _has_numeric_signal(text: str) -> bool:

@@ -1,5 +1,6 @@
 """시각화 생성 LLM 어댑터 테스트."""
 
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -66,6 +67,11 @@ def test_slide_plan_generator_validates_required_rules() -> None:
     assert plan.selected_slides[0].source_slide_id == "cover_A"
     assert plan.selected_slides[-1].category == "closing"
     assert plan.selected_slides[-1].slide_filename == "slide7.xml"
+    assert plan.to_blob()["selected_slides"][4]["reason"] == "chart_A 선택"
+
+    prompt_payload = json.loads(llm.messages[0][1].content)
+    assert prompt_payload["selection_signals"]["has_numeric_data"] is True
+    assert any(slide["id"] == "chart_A" for slide in prompt_payload["source_slides"])
 
 
 def test_slide_plan_generator_rejects_consecutive_categories() -> None:
@@ -218,6 +224,107 @@ def test_content_fill_generator_rejects_missing_slot_fill() -> None:
         )
 
 
+def test_content_fill_generator_does_not_require_optional_decorative_slot() -> None:
+    """optional/decorative slot 은 누락되어도 fill 생성 실패로 보지 않는다."""
+    llm = FakeLLM([{"fills": {"2": {"action": "text", "text": "핵심 요약"}}}])
+    generator = LLMContentFillGenerator(llm=llm)
+
+    fills = generator.create_fills(
+        content_brief="요약",
+        slots=[
+            {
+                "shape_id": "2",
+                "font_size_pt": 20,
+                "kind": "text",
+                "editable": True,
+                "required": True,
+                "allowed_actions": ["text", "remove"],
+            },
+            {
+                "shape_id": "9",
+                "kind": "decorative",
+                "editable": False,
+                "required": False,
+                "allowed_actions": [],
+            },
+        ],
+    )
+
+    assert fills == {"2": {"action": "text", "text": "핵심 요약"}}
+    system_prompt = llm.messages[0][0].content
+    prompt_payload = json.loads(llm.messages[0][1].content.rsplit("\n", maxsplit=1)[1])
+    assert "required=false" in system_prompt
+    assert "성과 지표" in system_prompt
+    assert prompt_payload["slots"][1]["editable"] is False
+
+
+def test_content_fill_generator_rejects_fill_for_non_editable_slot() -> None:
+    """LLM 이 비편집 slot 을 채우려 하면 적용 전에 거부한다."""
+    llm = FakeLLM(
+        [
+            {
+                "fills": {
+                    "2": {"action": "text", "text": "핵심 요약"},
+                    "9": {"action": "text", "text": "장식 오염"},
+                }
+            }
+        ]
+    )
+    generator = LLMContentFillGenerator(llm=llm)
+
+    with pytest.raises(ValueError, match="비편집"):
+        generator.create_fills(
+            content_brief="요약",
+            slots=[
+                {"shape_id": "2", "font_size_pt": 20, "kind": "text"},
+                {"shape_id": "9", "kind": "decorative", "editable": False, "required": False},
+            ],
+        )
+
+
+def test_content_fill_generator_requires_chart_data_for_chart_slot() -> None:
+    """chart slot 은 chart action 과 data 구조가 함께 있어야 한다."""
+    llm = FakeLLM([{"fills": {"8": {"action": "chart"}}}])
+    generator = LLMContentFillGenerator(llm=llm)
+
+    with pytest.raises(ValueError, match="data 객체"):
+        generator.create_fills(
+            content_brief="성과 지표 차트",
+            slots=[
+                {
+                    "shape_id": "8",
+                    "kind": "chart",
+                    "required": True,
+                    "allowed_actions": ["chart"],
+                }
+            ],
+        )
+
+
+def test_content_fill_generator_accepts_valid_chart_fill() -> None:
+    """chart fill 은 categories 와 series values 길이를 검증한 뒤 보존한다."""
+    chart_data = {
+        "categories": ["전", "후"],
+        "series": [{"name": "전환율", "values": [12, 42]}],
+    }
+    llm = FakeLLM([{"fills": {"8": {"action": "chart", "data": chart_data}}}])
+    generator = LLMContentFillGenerator(llm=llm)
+
+    fills = generator.create_fills(
+        content_brief="성과 지표 차트",
+        slots=[
+            {
+                "shape_id": "8",
+                "kind": "chart",
+                "required": True,
+                "allowed_actions": ["chart"],
+            }
+        ],
+    )
+
+    assert fills == {"8": {"action": "chart", "data": chart_data}}
+
+
 def test_content_fill_generator_rejects_invalid_action_with_pydantic_schema() -> None:
     """Fill action 은 Pydantic schema 단계에서 허용값으로 제한된다."""
     llm = FakeLLM([{"fills": {"2": {"action": "script", "text": "오류"}}}])
@@ -256,6 +363,33 @@ def test_slide_change_generator_preserves_text_for_style_only_request() -> None:
     assert changes == {"2": {"action": "text", "text": "현재 제목", "font_size_override": 48.0}}
 
 
+def test_slide_change_generator_does_not_treat_size_change_as_text_change() -> None:
+    """크기 변경 같은 스타일 요청은 '변경' 표현이 있어도 기존 텍스트를 보존한다."""
+    llm = FakeLLM(
+        [
+            {
+                "fills": {
+                    "2": {
+                        "action": "text",
+                        "text": "임의로 바뀐 제목",
+                        "font_size_override": 24,
+                    }
+                }
+            }
+        ]
+    )
+    generator = LLMSlideChangeGenerator(llm=llm)
+
+    changes = generator.create_changes(
+        user_request="제목 크기를 24pt로 변경해줘",
+        slots=[{"shape_id": "2", "current_text": "기존 제목", "font_size_pt": 20, "kind": "text"}],
+        current_fills={"2": {"action": "text", "text": "현재 제목"}},
+    )
+
+    assert changes["2"]["text"] == "현재 제목"
+    assert changes["2"]["font_size_override"] == 24.0
+
+
 def test_slide_change_generator_allows_explicit_text_request() -> None:
     """표현 변경 요청처럼 명시적인 텍스트 수정은 요청 도형에 한해 허용한다."""
     llm = FakeLLM(
@@ -281,6 +415,34 @@ def test_slide_change_generator_allows_explicit_text_request() -> None:
 
     assert changes["2"]["text"] == "핵심 성과 요약"
     assert changes["2"]["font_size_override"] == 18.0
+
+
+def test_slide_change_generator_rejects_unsupported_color_request_before_llm() -> None:
+    """현재 구현 범위 밖인 색상 변경 요청은 LLM 호출 전에 명시적으로 거부한다."""
+    llm = FakeLLM([])
+    generator = LLMSlideChangeGenerator(llm=llm)
+
+    with pytest.raises(ValueError, match="지원하지 않는 수정 범위"):
+        generator.create_changes(
+            user_request="제목 색을 빨간색으로 바꿔줘",
+            slots=[{"shape_id": "2", "current_text": "기존 제목", "kind": "text"}],
+            current_fills={"2": {"action": "text", "text": "기존 제목"}},
+        )
+
+    assert llm.messages == []
+
+
+def test_slide_change_generator_rejects_chart_shape_changes() -> None:
+    """Phase 2 일반 재생성은 chart slot 변경을 지원하지 않는다."""
+    llm = FakeLLM([{"fills": {"8": {"action": "chart", "data": {"series": []}}}}])
+    generator = LLMSlideChangeGenerator(llm=llm)
+
+    with pytest.raises(ValueError, match="텍스트 도형만"):
+        generator.create_changes(
+            user_request="이 영역 수치를 업데이트해줘",
+            slots=[{"shape_id": "8", "kind": "chart", "current_text": "기존 차트"}],
+            current_fills={"8": {"action": "chart", "data": {"series": []}}},
+        )
 
 
 def test_rule_prefilter_excludes_chart_and_visual_without_signals() -> None:
@@ -317,6 +479,23 @@ def test_rule_prefilter_keeps_chart_and_visual_with_signals() -> None:
     assert "visual" in {slide.category for slide in filtered}
 
 
+def test_rule_prefilter_uses_description_and_best_for_metric_signals() -> None:
+    """category 뿐 아니라 description/best_for 의 metric 신호도 필터링 기준으로 사용한다."""
+    slides = parse_template_metadata(_template_meta(include_visual=True, include_metric=True))
+
+    without_numbers = prefilter_source_slides(
+        portfolio_text="사용자 리서치와 문제 정의를 중심으로 진행했습니다.",
+        source_slides=slides,
+    )
+    with_numbers = prefilter_source_slides(
+        portfolio_text="전환율 42% 개선과 KPI 추적 결과를 정리했습니다.",
+        source_slides=slides,
+    )
+
+    assert "metric_A" not in {slide.source_slide_id for slide in without_numbers}
+    assert {"chart_A", "metric_A"} <= {slide.source_slide_id for slide in with_numbers}
+
+
 def test_slide_plan_output_error_message_lists_supported_keys() -> None:
     """slide_plan/selected_slides 둘 다 없을 때 허용 입력을 안내한다."""
     with pytest.raises(ValueError, match="selected_slides"):
@@ -344,6 +523,7 @@ def _template_meta(
     *,
     include_overview_b: bool = False,
     include_visual: bool = False,
+    include_metric: bool = False,
 ) -> dict[str, object]:
     slides = [
         _meta_slide(0, "cover_A", "cover"),
@@ -367,6 +547,19 @@ def _template_meta(
         slides.insert(2 + offset, _meta_slide(len(slides), "toc_A", "toc"))
         slides.insert(3 + offset, _meta_slide(len(slides), "problem_A", "problem"))
         slides.insert(-1, _meta_slide(len(slides), "visual_A", "visual"))
+        for index, slide in enumerate(slides):
+            slide["slide_index"] = index
+    if include_metric:
+        slides.insert(
+            -1,
+            {
+                "slide_index": len(slides),
+                "id": "metric_A",
+                "category": "text",
+                "description": "KPI metric dashboard 설명",
+                "best_for": "전환율, 매출, 성과 지표 비교에 적합",
+            },
+        )
         for index, slide in enumerate(slides):
             slide["slide_index"] = index
     return {

@@ -229,12 +229,15 @@ class FakeToolchain:
 class FakeEditor:
     """SlideEditor 대역."""
 
-    def __init__(self) -> None:
+    def __init__(self, slots: list[dict[str, Any]] | None = None) -> None:
+        self.slots = slots or [
+            {"shape_id": "2", "font_size_pt": 20, "kind": "text"},
+        ]
         self.applied: list[tuple[str, dict[str, dict[str, Any]]]] = []
         self.cleared: list[str] = []
 
     def extract_slots(self, slide_xml_path: str) -> list[dict[str, Any]]:
-        return [{"shape_id": "2", "font_size_pt": 20, "kind": "text", "path": slide_xml_path}]
+        return [dict(slot, path=slide_xml_path) for slot in self.slots]
 
     def apply_fills(self, slide_xml_path: str, fills: dict[str, dict[str, Any]]) -> None:
         self.applied.append((slide_xml_path, fills))
@@ -414,6 +417,10 @@ async def test_generate_pipeline_success_sends_callbacks_and_uploads_outputs() -
 
     assert context.main_client.closed is True
     assert context.main_client.slide_plan_requests[0]["idempotency_key"] == "job-1:job:slide_plan"
+    assert (
+        context.main_client.slide_plan_requests[0]["slide_plan"]["selected_slides"][0]["reason"]
+        == "테스트"
+    )
     content_events = _events(context.main_client, "slide_content_ready")
     assert len(content_events) == 7
     assert content_events[0]["idempotency_key"] == "job-1:slide:slide-1:slide_content_ready"
@@ -564,6 +571,37 @@ async def test_regenerate_user_request_changes_only_requested_shape() -> None:
 
 
 @pytest.mark.asyncio
+async def test_regenerate_preserves_unrequested_text_and_chart_fills() -> None:
+    """제목만 키우는 요청은 본문과 차트 current_fills 를 그대로 유지한다."""
+    main_client = FakeMainClient()
+    main_client.slide_context["current_fills"]["8"] = {
+        "action": "chart",
+        "data": {
+            "categories": ["전", "후"],
+            "series": [{"name": "전환율", "values": [12, 42]}],
+        },
+    }
+    editor = FakeEditor(
+        slots=[
+            {"shape_id": "2", "font_size_pt": 20, "kind": "text", "current_text": "기존 제목"},
+            {"shape_id": "3", "font_size_pt": 14, "kind": "text", "current_text": "본문 유지"},
+            {"shape_id": "8", "kind": "chart", "current_text": "전환율 차트"},
+        ]
+    )
+    context = PipelineContext(main_client=main_client, editor=editor)
+
+    await context.service.regenerate(_regenerate_task(user_request="제목만 키워줘"))
+
+    _, applied_fills = context.editor.applied[0]
+    assert set(applied_fills) == {"2"}
+
+    event = _events(context.main_client, "slide_regenerated")[0]
+    assert event["current_fills"]["2"]["font_size_override"] == 28
+    assert event["current_fills"]["3"]["text"] == "본문 유지"
+    assert event["current_fills"]["8"]["data"]["series"][0]["values"] == [12, 42]
+
+
+@pytest.mark.asyncio
 async def test_retry_regenerate_uses_content_brief_without_user_request() -> None:
     """retry 는 userRequest 없이 저장된 content_brief 로 Step 3 fill 생성을 재사용한다."""
     context = PipelineContext()
@@ -694,12 +732,13 @@ class PipelineContext:
         filler: FakeFillGenerator | None = None,
         change_generator: FakeChangeGenerator | None = None,
         qa_step: FakeQAStep | None = None,
+        editor: FakeEditor | None = None,
         max_content_concurrency: int = 4,
     ) -> None:
         self.main_client = main_client or FakeMainClient()
         self.storage = FakeStorage()
         self.toolchain = FakeToolchain()
-        self.editor = FakeEditor()
+        self.editor = editor or FakeEditor()
         self.renderer = FakeRenderer()
         self.filler = filler or FakeFillGenerator()
         self.change_generator = change_generator or FakeChangeGenerator()
