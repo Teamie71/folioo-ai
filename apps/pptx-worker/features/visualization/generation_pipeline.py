@@ -15,10 +15,13 @@ from common.clients.base_client import MainServerError
 from features.visualization.agents import (
     ContentFillGenerator,
     LLMContentFillGenerator,
+    LLMSlideChangeGenerator,
     LLMSlidePlanGenerator,
     PlannedSlide,
+    SlideChangeGenerator,
     SlidePlanGenerator,
 )
+from features.visualization.fills import merge_current_fills
 from features.visualization.main_client import VisualizationMainClient
 from features.visualization.pptx import (
     PptxRenderer,
@@ -78,6 +81,10 @@ class MainClient(Protocol):
 
     async def get_job_context(self, job_id: str) -> dict[str, Any]:
         """Job 컨텍스트를 조회한다."""
+        ...
+
+    async def get_slide_context(self, job_id: str, slide_id: str) -> dict[str, Any]:
+        """슬라이드 컨텍스트를 조회한다."""
         ...
 
     async def submit_slide_plan(
@@ -144,12 +151,20 @@ class StorageClient(Protocol):
         """템플릿 meta.json 을 다운로드한다."""
         ...
 
+    def download_pptx(self, job_id: str, dest: Path) -> None:
+        """current.pptx 를 다운로드한다."""
+        ...
+
     def upload_pptx(self, job_id: str, src: Path) -> str:
         """current.pptx 를 업로드하고 GCS key 를 반환한다."""
         ...
 
     def upload_pdf(self, job_id: str, src: Path) -> str:
         """current.pdf 를 업로드하고 GCS key 를 반환한다."""
+        ...
+
+    def upload_preview(self, job_id: str, slide_order: int, src: Path) -> str:
+        """슬라이드 프리뷰를 업로드하고 GCS key 를 반환한다."""
         ...
 
 
@@ -253,6 +268,7 @@ class VisualizationTaskService:
         renderer_factory: RendererFactory | None = None,
         slide_plan_generator: SlidePlanGenerator | None = None,
         content_fill_generator: ContentFillGenerator | None = None,
+        slide_change_generator: SlideChangeGenerator | None = None,
         qa_step_factory: QAStepFactory | None = None,
         clock: Callable[[], datetime] | None = None,
         max_content_concurrency: int = 4,
@@ -268,6 +284,7 @@ class VisualizationTaskService:
         self._renderer_factory = renderer_factory or PptxRenderer
         self._slide_plan_generator = slide_plan_generator or LLMSlidePlanGenerator()
         self._content_fill_generator = content_fill_generator or LLMContentFillGenerator()
+        self._slide_change_generator = slide_change_generator or LLMSlideChangeGenerator()
         self._qa_step_factory = qa_step_factory or _default_qa_step_factory
         self._clock = clock or (lambda: datetime.now(UTC))
         self._max_content_concurrency = max_content_concurrency
@@ -284,17 +301,169 @@ class VisualizationTaskService:
             await _close_client(main_client)
 
     async def regenerate(self, task: RegenerateVisualizationTask) -> None:
-        """단일 슬라이드 재생성 파이프라인으로 위임한다."""
-        logger.warning(
-            "RegenerateVisualizationTask regenerate unsupported: job_id=%s slide_id=%s is_retry=%s",
-            task.job_id,
-            task.slide_id,
-            task.is_retry,
+        """Phase 2 단일 슬라이드 재생성/재시도 파이프라인을 실행한다."""
+        main_client = self._main_client_factory(task.callback_base_url)
+        try:
+            try:
+                await self._regenerate_with_client(task, main_client)
+            except MainServerError as exc:
+                raise RetryableError(f"메인 백엔드 콜백/조회에 실패했습니다: {exc}") from exc
+        finally:
+            await _close_client(main_client)
+
+    async def _regenerate_with_client(
+        self,
+        task: RegenerateVisualizationTask,
+        main_client: MainClient,
+    ) -> None:
+        slide_context = await main_client.get_slide_context(task.job_id, task.slide_id)
+        registered_slide = RegisteredSlide(
+            slide_id=task.slide_id,
+            slide_order=0,
+            source_slide_id="",
+            slide_filename="",
         )
-        raise FatalError(
-            "PPTX 슬라이드 재생성 파이프라인이 아직 연결되지 않았습니다.",
-            error_code="VISUALIZATION_REGENERATE_UNSUPPORTED",
-        )
+        try:
+            registered_slide = _registered_slide_from_context(task.slide_id, slide_context)
+            current_fills = _current_fills_from_context(slide_context)
+            job_context = await main_client.get_job_context(task.job_id)
+            content_brief = _content_brief_for_slide(
+                job_context,
+                registered_slide,
+                required=task.is_retry,
+            )
+
+            with job_workdir(task.job_id) as workdir:
+                storage = self._storage_factory()
+                toolchain = self._toolchain_factory()
+                editor = self._editor_factory()
+                renderer = self._renderer_factory()
+
+                current_pptx = workdir / "current.pptx"
+                unpacked_dir = workdir / "unpacked"
+                updated_pptx = workdir / "updated.pptx"
+                fixed_pptx = workdir / "updated-fixed.pptx"
+                initial_render_dir = workdir / "rendered-initial"
+                qa_render_dir = workdir / "rendered-qa"
+                final_render_dir = workdir / "rendered-final"
+
+                storage.download_pptx(task.job_id, current_pptx)
+                toolchain.unpack(current_pptx, unpacked_dir)
+
+                slide_xml_path = _slide_xml_path(unpacked_dir, registered_slide.slide_filename)
+                slots = await asyncio.to_thread(editor.extract_slots, str(slide_xml_path))
+                if task.is_retry:
+                    updated_fills = await self._create_fills_with_timeout_retry(
+                        content_brief=content_brief,
+                        slots=slots,
+                    )
+                    await asyncio.to_thread(editor.apply_fills, str(slide_xml_path), updated_fills)
+                else:
+                    if task.user_request is None:
+                        raise ValueError("일반 재생성에는 user_request 가 필요합니다.")
+                    changes = await self._create_slide_changes_with_timeout_retry(
+                        user_request=task.user_request,
+                        slots=slots,
+                        current_fills=current_fills,
+                    )
+                    if not changes:
+                        raise ValueError("재생성 변경 지시가 비어 있습니다.")
+                    await asyncio.to_thread(editor.apply_fills, str(slide_xml_path), changes)
+                    updated_fills = merge_current_fills(current_fills, changes)
+
+                self._pack_and_validate(
+                    toolchain=toolchain,
+                    unpacked_dir=unpacked_dir,
+                    output_pptx=updated_pptx,
+                    template_pptx=current_pptx,
+                )
+                render_result = renderer.render(
+                    updated_pptx,
+                    initial_render_dir,
+                    page=registered_slide.slide_order,
+                )
+                rendered_by_page = {slide.page: slide.image_path for slide in render_result.slides}
+                image_path = rendered_by_page.get(registered_slide.slide_order)
+                if image_path is None:
+                    raise PptxRenderError(
+                        f"렌더 결과에 slide_order={registered_slide.slide_order} 이미지가 없습니다."
+                    )
+
+                qa_step = self._qa_step_factory(
+                    storage,
+                    main_client,
+                    editor,
+                    toolchain,
+                    renderer,
+                )
+                qa_result = await qa_step.process(
+                    job_id=task.job_id,
+                    slides=[
+                        SlidePreview(
+                            slide_id=registered_slide.slide_id,
+                            slide_order=registered_slide.slide_order,
+                            slide_filename=registered_slide.slide_filename,
+                            image_path=image_path,
+                            content_brief=content_brief,
+                            current_fills=updated_fills,
+                        )
+                    ],
+                    unpacked_dir=unpacked_dir,
+                    working_pptx_path=updated_pptx,
+                    fixed_pptx_path=fixed_pptx,
+                    render_output_dir=qa_render_dir,
+                    ready_event=None,
+                )
+                ready_outcome = _single_ready_outcome(qa_result.outcomes)
+                if ready_outcome is None:
+                    return
+
+                final_pptx = (
+                    fixed_pptx if qa_result.pack_count and fixed_pptx.is_file() else updated_pptx
+                )
+                final_fills = dict(getattr(ready_outcome, "current_fills", None) or updated_fills)
+                final_pdf = render_result.pdf_path
+                if final_pptx != updated_pptx:
+                    final_pdf = renderer.render(
+                        final_pptx,
+                        final_render_dir,
+                        page=registered_slide.slide_order,
+                    ).pdf_path
+
+                storage.upload_pptx(task.job_id, final_pptx)
+                storage.upload_pdf(task.job_id, final_pdf)
+
+                await main_client.send_slide_event(
+                    task.job_id,
+                    registered_slide.slide_id,
+                    event="slide_regenerated",
+                    slide_order=registered_slide.slide_order,
+                    idempotency_key=_slide_event_key(
+                        task.job_id,
+                        registered_slide.slide_id,
+                        "slide_regenerated",
+                    ),
+                    occurred_at=self._now_iso(),
+                    schema_version=task.schema_version,
+                    current_fills=final_fills,
+                    gcs_preview_key=ready_outcome.gcs_preview_key,
+                )
+        except MainServerError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "regenerate pipeline failed: job_id=%s slide_id=%s is_retry=%s",
+                task.job_id,
+                task.slide_id,
+                task.is_retry,
+            )
+            await self._send_regenerate_preview_error(
+                task=task,
+                main_client=main_client,
+                registered_slide=registered_slide,
+                message=str(exc) or "슬라이드 재생성에 실패했습니다.",
+                retryable=_is_regenerate_retryable_error(exc),
+            )
 
     async def _generate_with_client(
         self,
@@ -651,6 +820,27 @@ class VisualizationTaskService:
                 raise
         raise RuntimeError("슬라이드 콘텐츠 생성 재시도에 실패했습니다.")
 
+    async def _create_slide_changes_with_timeout_retry(
+        self,
+        *,
+        user_request: str,
+        slots: Sequence[Mapping[str, Any]],
+        current_fills: Mapping[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        for attempt in range(1, 3):
+            try:
+                return await asyncio.to_thread(
+                    self._slide_change_generator.create_changes,
+                    user_request=user_request,
+                    slots=slots,
+                    current_fills=current_fills,
+                )
+            except Exception as exc:
+                if attempt == 1 and _is_timeout_error(exc):
+                    continue
+                raise
+        raise RuntimeError("슬라이드 재생성 변경 지시 생성 재시도에 실패했습니다.")
+
     def _pack_and_validate(
         self,
         *,
@@ -723,6 +913,31 @@ class VisualizationTaskService:
         await main_client.send_job_event(
             task.job_id,
             **kwargs,
+        )
+
+    async def _send_regenerate_preview_error(
+        self,
+        *,
+        task: RegenerateVisualizationTask,
+        main_client: MainClient,
+        registered_slide: RegisteredSlide,
+        message: str,
+        retryable: bool,
+    ) -> None:
+        await main_client.send_slide_event(
+            task.job_id,
+            registered_slide.slide_id,
+            event="slide_preview_error",
+            slide_order=registered_slide.slide_order,
+            idempotency_key=_slide_event_key(
+                task.job_id,
+                registered_slide.slide_id,
+                "slide_preview_error",
+            ),
+            occurred_at=self._now_iso(),
+            schema_version=task.schema_version,
+            message=message,
+            retryable=retryable,
         )
 
     def _now_iso(self) -> str:
@@ -829,6 +1044,97 @@ def _registered_slides_by_order(
     return registered
 
 
+def _registered_slide_from_context(
+    fallback_slide_id: str,
+    slide_context: Mapping[str, Any],
+) -> RegisteredSlide:
+    slide_id = slide_context.get("id")
+    if not isinstance(slide_id, str) or not slide_id.strip():
+        slide_id = fallback_slide_id
+
+    slide_order = slide_context.get("slide_order")
+    if not isinstance(slide_order, int) or isinstance(slide_order, bool) or slide_order < 1:
+        logger.error(
+            "invalid regenerate slide_context.slide_order: slide_context=%s",
+            dict(slide_context),
+        )
+        raise ValueError("slide_context.slide_order 는 1 이상의 정수여야 합니다.")
+
+    source_slide_id = slide_context.get("source_slide_id")
+    if not isinstance(source_slide_id, str):
+        source_slide_id = ""
+
+    slide_filename = slide_context.get("slide_filename")
+    if not isinstance(slide_filename, str) or not slide_filename.strip():
+        logger.error(
+            "invalid regenerate slide_context.slide_filename: slide_context=%s",
+            dict(slide_context),
+        )
+        raise ValueError("slide_context.slide_filename 이 비어 있습니다.")
+
+    return RegisteredSlide(
+        slide_id=slide_id,
+        slide_order=slide_order,
+        source_slide_id=source_slide_id,
+        slide_filename=slide_filename,
+    )
+
+
+def _current_fills_from_context(slide_context: Mapping[str, Any]) -> dict[str, Any]:
+    current_fills = slide_context.get("current_fills")
+    if not isinstance(current_fills, Mapping):
+        return {}
+    normalized: dict[str, Any] = {}
+    for shape_id, fill in current_fills.items():
+        normalized[str(shape_id)] = dict(fill) if isinstance(fill, Mapping) else fill
+    return normalized
+
+
+def _content_brief_for_slide(
+    job_context: Mapping[str, Any],
+    slide: RegisteredSlide,
+    *,
+    required: bool,
+) -> str:
+    slide_plan = job_context.get("slide_plan")
+    selected_slides = slide_plan.get("selected_slides") if isinstance(slide_plan, Mapping) else None
+    if not isinstance(selected_slides, Sequence) or isinstance(selected_slides, (str, bytes)):
+        if required:
+            raise ValueError("retry 재생성에 사용할 slide_plan.selected_slides 가 없습니다.")
+        return ""
+
+    for raw_item in selected_slides:
+        if not isinstance(raw_item, Mapping):
+            continue
+        if _is_matching_planned_slide(raw_item, slide):
+            content_brief = raw_item.get("content_brief")
+            if isinstance(content_brief, str) and content_brief.strip():
+                return content_brief
+            if required:
+                raise ValueError("retry 재생성에 사용할 content_brief 가 비어 있습니다.")
+            return ""
+
+    if required:
+        raise ValueError(f"slide_plan 에 slide_order={slide.slide_order} 항목이 없습니다.")
+    return ""
+
+
+def _is_matching_planned_slide(item: Mapping[str, Any], slide: RegisteredSlide) -> bool:
+    order = item.get("order", item.get("slide_order"))
+    if isinstance(order, int) and order == slide.slide_order:
+        return True
+    if slide.source_slide_id and item.get("source_slide_id") == slide.source_slide_id:
+        return True
+    return bool(slide.slide_filename and item.get("slide_filename") == slide.slide_filename)
+
+
+def _single_ready_outcome(outcomes: Sequence[Any]) -> Any | None:
+    for outcome in outcomes:
+        if getattr(outcome, "status", None) == "ready":
+            return outcome
+    return None
+
+
 def _slide_xml_path(unpacked_dir: Path, slide_filename: str) -> Path:
     path = unpacked_dir / "ppt" / "slides" / slide_filename
     if not path.is_file():
@@ -864,6 +1170,14 @@ def _is_timeout_error(exc: Exception) -> bool:
         return True
     name = exc.__class__.__name__.lower()
     return "timeout" in name or "timedout" in name
+
+
+def _is_regenerate_retryable_error(exc: Exception) -> bool:
+    if _is_timeout_error(exc):
+        return True
+    if isinstance(exc, FileNotFoundError):
+        return False
+    return isinstance(exc, (OSError, PptxRenderError))
 
 
 def _slide_event_key(job_id: str, slide_id: str, event: str) -> str:

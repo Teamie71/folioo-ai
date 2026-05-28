@@ -6,6 +6,7 @@ import pytest
 
 from features.visualization.agents import (
     LLMContentFillGenerator,
+    LLMSlideChangeGenerator,
     LLMSlidePlanGenerator,
     parse_template_metadata,
     prefilter_source_slides,
@@ -227,6 +228,59 @@ def test_content_fill_generator_rejects_invalid_action_with_pydantic_schema() ->
             content_brief="요약",
             slots=[{"shape_id": "2", "font_size_pt": 20, "kind": "text"}],
         )
+
+
+def test_slide_change_generator_preserves_text_for_style_only_request() -> None:
+    """스타일 요청에서는 LLM 이 text 를 줘도 기존 텍스트를 보존하고 폰트 범위를 clamp 한다."""
+    llm = FakeLLM(
+        [
+            {
+                "fills": {
+                    "2": {
+                        "action": "text",
+                        "text": "임의로 바뀐 제목",
+                        "font_size_override": 72,
+                    }
+                }
+            }
+        ]
+    )
+    generator = LLMSlideChangeGenerator(llm=llm)
+
+    changes = generator.create_changes(
+        user_request="제목 크기 키워줘",
+        slots=[{"shape_id": "2", "current_text": "기존 제목", "font_size_pt": 20, "kind": "text"}],
+        current_fills={"2": {"action": "text", "text": "현재 제목"}},
+    )
+
+    assert changes == {"2": {"action": "text", "text": "현재 제목", "font_size_override": 48.0}}
+
+
+def test_slide_change_generator_allows_explicit_text_request() -> None:
+    """표현 변경 요청처럼 명시적인 텍스트 수정은 요청 도형에 한해 허용한다."""
+    llm = FakeLLM(
+        [
+            {
+                "fills": {
+                    "2": {
+                        "action": "text",
+                        "text": "핵심 성과 요약",
+                        "font_size_override": 18,
+                    }
+                }
+            }
+        ]
+    )
+    generator = LLMSlideChangeGenerator(llm=llm)
+
+    changes = generator.create_changes(
+        user_request="제목 표현을 더 간결하게 바꿔줘",
+        slots=[{"shape_id": "2", "current_text": "기존 제목", "font_size_pt": 20, "kind": "text"}],
+        current_fills={"2": {"action": "text", "text": "기존 제목"}},
+    )
+
+    assert changes["2"]["text"] == "핵심 성과 요약"
+    assert changes["2"]["font_size_override"] == 18.0
 
 
 def test_rule_prefilter_excludes_chart_and_visual_without_signals() -> None:

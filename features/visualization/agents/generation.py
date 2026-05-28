@@ -34,6 +34,43 @@ _FILL_SYSTEM_PROMPT = """PPTX 슬라이드 Slot 을 채우는 편집 데이터 �
 - 제공된 모든 shape_id 에 대해 text/remove/chart 중 하나를 반환하세요.
 """
 
+_REGENERATE_SYSTEM_PROMPT = """PPTX 단일 슬라이드 수정 요청을 fill 변경 지시로 해석하는 편집자입니다.
+응답은 반드시 JSON 객체 하나로만 작성하세요.
+스키마: {"fills": {"shape_id": {"action": "text", "text": string|null, "font_size_override": number|null, "is_title": boolean|null}}}
+지침:
+- 사용자가 지정한 도형만 fills 에 포함하세요. 지정되지 않은 도형은 절대 포함하지 마세요.
+- 제공된 shape_id 만 key 로 사용하세요.
+- 폰트 크기는 10pt 이상 48pt 이하로만 조정하세요.
+- 사용자가 텍스트/문구/표현 변경을 명시한 경우만 text 를 변경하세요.
+- 스타일 요청만 있으면 text 는 null 로 두고 font_size_override 같은 스타일 필드만 반환하세요.
+- 슬라이드 추가/삭제, 도형 이동, 슬라이드 밖 배치, 임의 shape 생성은 허용되지 않습니다.
+"""
+
+_TEXT_CHANGE_HINTS = (
+    "텍스트",
+    "문구",
+    "표현",
+    "문장",
+    "오타",
+    "카피",
+    "워딩",
+    "바꿔",
+    "바꾸",
+    "변경",
+    "수정",
+    "고쳐",
+    "임팩트",
+    "짧게",
+    "요약",
+    "text",
+    "copy",
+    "wording",
+    "rename",
+    "rephrase",
+    "rewrite",
+    "typo",
+)
+
 
 class GenerationLLM(Protocol):
     """LangChain compatible LLM interface."""
@@ -66,6 +103,20 @@ class ContentFillGenerator(Protocol):
         slots: Sequence[Mapping[str, Any]],
     ) -> dict[str, dict[str, Any]]:
         """SlideEditor.apply_fills 입력 형식의 fill 맵을 반환한다."""
+        ...
+
+
+class SlideChangeGenerator(Protocol):
+    """사용자 재생성 요청을 부분 fill 변경 지시로 변환한다."""
+
+    def create_changes(
+        self,
+        *,
+        user_request: str,
+        slots: Sequence[Mapping[str, Any]],
+        current_fills: Mapping[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        """수정 대상 shape_id 만 포함한 fill 맵을 반환한다."""
         ...
 
 
@@ -207,6 +258,56 @@ class LLMContentFillGenerator:
         response_text = _normalize_response_text(getattr(response, "content", response))
         payload = _loads_json_object(response_text)
         return _parse_fills_payload(payload, slots)
+
+
+class LLMSlideChangeGenerator:
+    """Phase 2 일반 재생성: 사용자 요청을 안전한 부분 fill 변경으로 변환."""
+
+    def __init__(self, llm: GenerationLLM | None = None) -> None:
+        self._llm = llm
+
+    def create_changes(
+        self,
+        *,
+        user_request: str,
+        slots: Sequence[Mapping[str, Any]],
+        current_fills: Mapping[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        """사용자 요청과 현재 slot/fill 을 기반으로 수정 대상만 산출한다."""
+        if not user_request.strip():
+            raise ValueError("재생성 요청이 비어 있습니다.")
+        if not slots:
+            return {}
+
+        llm = self._llm or get_llm_uncached(temperature=0.1, timeout=120)
+        prompt_payload = json.dumps(
+            {
+                "user_request": user_request,
+                "slots": list(slots),
+                "current_fills": current_fills,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+        messages = [
+            SystemMessage(content=_REGENERATE_SYSTEM_PROMPT),
+            HumanMessage(
+                content=(
+                    "현재 슬라이드 Slot, 적용 중인 current_fills, 사용자 요청을 보고 "
+                    "수정 대상 shape_id 만 fills 로 반환하세요.\n"
+                    f"{prompt_payload}"
+                )
+            ),
+        ]
+        response = llm.invoke(messages)
+        response_text = _normalize_response_text(getattr(response, "content", response))
+        payload = _loads_json_object(response_text)
+        return _parse_regenerate_changes_payload(
+            payload,
+            slots=slots,
+            current_fills=current_fills,
+            allow_text_change=_text_change_requested(user_request),
+        )
 
 
 def parse_template_metadata(metadata: Mapping[str, Any]) -> tuple[SourceSlide, ...]:
@@ -377,6 +478,78 @@ def _parse_fills_payload(
         raise ValueError(f"fills 에 누락된 shape_id 가 있습니다: {', '.join(missing_shape_ids)}")
 
     return normalized
+
+
+def _parse_regenerate_changes_payload(
+    payload: Mapping[str, Any],
+    *,
+    slots: Sequence[Mapping[str, Any]],
+    current_fills: Mapping[str, Any],
+    allow_text_change: bool,
+) -> dict[str, dict[str, Any]]:
+    fills = payload.get("fills")
+    if not isinstance(fills, Mapping):
+        raise ValueError("재생성 변경 지시에는 fills 객체가 필요합니다.")
+
+    slots_by_id = {str(slot.get("shape_id")): slot for slot in slots if slot.get("shape_id")}
+    normalized: dict[str, dict[str, Any]] = {}
+    for shape_id, raw_fill in fills.items():
+        shape_key = str(shape_id)
+        if shape_key not in slots_by_id:
+            raise ValueError(f"제공되지 않은 shape_id 입니다: {shape_key}")
+        if not isinstance(raw_fill, Mapping):
+            raise ValueError(f"fill 은 객체여야 합니다: {shape_key}")
+
+        slot = slots_by_id[shape_key]
+        if slot.get("kind") not in {None, "text"}:
+            raise ValueError(f"재생성 변경은 텍스트 도형만 지원합니다: {shape_key}")
+
+        action = str(raw_fill.get("action") or "text")
+        if action != "text":
+            raise ValueError(f"재생성 변경은 text action 만 허용합니다: {shape_key}")
+
+        fill: dict[str, Any] = {"action": "text"}
+        requested_text = raw_fill.get("text")
+        if allow_text_change and requested_text is not None:
+            fill["text"] = str(requested_text)
+        else:
+            fill["text"] = _existing_text_for_shape(shape_key, slot, current_fills)
+
+        if raw_fill.get("font_size_override") is not None:
+            fill["font_size_override"] = _guard_regenerate_font_size(
+                raw_fill.get("font_size_override")
+            )
+        if raw_fill.get("is_title") is not None:
+            fill["is_title"] = bool(raw_fill.get("is_title"))
+        normalized[shape_key] = fill
+
+    return normalized
+
+
+def _existing_text_for_shape(
+    shape_id: str,
+    slot: Mapping[str, Any],
+    current_fills: Mapping[str, Any],
+) -> str:
+    current_fill = current_fills.get(shape_id)
+    if isinstance(current_fill, Mapping) and current_fill.get("text") is not None:
+        return str(current_fill.get("text"))
+    if slot.get("current_text") is not None:
+        return str(slot.get("current_text"))
+    return ""
+
+
+def _guard_regenerate_font_size(value: Any) -> float:
+    try:
+        size = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"font_size_override 는 숫자여야 합니다: {value!r}") from exc
+    return min(max(size, 10.0), 48.0)
+
+
+def _text_change_requested(user_request: str) -> bool:
+    lowered = user_request.casefold()
+    return any(hint in lowered for hint in _TEXT_CHANGE_HINTS)
 
 
 def _keep_source_slide(
