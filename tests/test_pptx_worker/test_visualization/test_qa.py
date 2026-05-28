@@ -182,16 +182,23 @@ class FakeRenderer:
 
     def __init__(self, pages: list[int]) -> None:
         self.pages = pages
-        self.calls: list[tuple[Path, Path]] = []
+        self.calls: list[tuple[Path, Path, int | None]] = []
 
-    def render(self, pptx_path: Path, output_dir: Path) -> FakeRenderResult:
-        self.calls.append((pptx_path, output_dir))
+    def render(
+        self,
+        pptx_path: Path,
+        output_dir: Path,
+        *,
+        page: int | None = None,
+    ) -> FakeRenderResult:
+        self.calls.append((pptx_path, output_dir, page))
         output_dir.mkdir(parents=True, exist_ok=True)
         rendered = []
-        for page in self.pages:
-            image_path = output_dir / f"slide-{page:02d}.jpg"
-            _write_jpeg(image_path, width=960 + page, height=540 + page)
-            rendered.append(FakeRenderedSlide(page=page, image_path=image_path))
+        pages = [page] if page is not None else self.pages
+        for rendered_page in pages:
+            image_path = output_dir / f"slide-{rendered_page:02d}.jpg"
+            _write_jpeg(image_path, width=960 + rendered_page, height=540 + rendered_page)
+            rendered.append(FakeRenderedSlide(page=rendered_page, image_path=image_path))
         return FakeRenderResult(slides=tuple(rendered))
 
 
@@ -349,6 +356,7 @@ async def test_issue_slides_are_fixed_as_batch_and_only_affected_slides_rechecke
     assert result.render_count == 1
     assert len(context.toolchain.pack_calls) == 1
     assert len(renderer.calls) == 1
+    assert renderer.calls[0][2] is None
     assert [event["slide_order"] for event in context.main_client.events] == [2, 1, 3]
     assert all(event["event"] == "slide_preview_ready" for event in context.main_client.events)
     assert [outcome.status for outcome in result.outcomes] == ["ready", "ready", "ready"]
@@ -383,6 +391,7 @@ async def test_failed_after_max_attempts_sends_retryable_preview_error(tmp_path:
     assert [call[0] for call in context.fixer.calls] == [1, 1]
     assert len(context.toolchain.pack_calls) == 2
     assert len(renderer.calls) == 2
+    assert [call[2] for call in renderer.calls] == [1, 1]
     assert len(context.main_client.events) == 1
     event = context.main_client.events[0]
     assert event["event"] == "slide_preview_error"
@@ -391,6 +400,30 @@ async def test_failed_after_max_attempts_sends_retryable_preview_error(tmp_path:
     assert result.outcomes[0].status == "error"
     assert result.outcomes[0].qa_attempts == 3
     assert result.fix_attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_ready_event_can_be_suppressed_after_preview_upload(tmp_path: Path) -> None:
+    """재생성 경로는 QA preview 업로드 후 성공 콜백을 서비스 계층에서 따로 보낼 수 있다."""
+    context = _make_step_context(tmp_path, slide_orders=[1])
+    qa = FakeQA({1: [_passed()]})
+    step = context.make_step(qa=qa, renderer=FakeRenderer(pages=[1]))
+
+    result = await step.process(
+        job_id="job-1",
+        slides=context.slides,
+        unpacked_dir=context.unpacked_dir,
+        working_pptx_path=context.working_pptx,
+        fixed_pptx_path=context.fixed_pptx,
+        render_output_dir=context.render_dir,
+        ready_event=None,
+    )
+
+    assert context.storage.uploads[0][:2] == ("job-1", 1)
+    assert context.main_client.events == []
+    assert result.outcomes[0].status == "ready"
+    assert result.outcomes[0].gcs_preview_key == "jobs/job-1/previews/slide-01.jpg"
+    assert result.outcomes[0].current_fills["2"]["text"] == "Folioo KPI 10%"
 
 
 @pytest.mark.asyncio

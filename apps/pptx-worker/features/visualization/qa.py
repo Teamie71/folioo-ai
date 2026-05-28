@@ -9,7 +9,7 @@ import logging
 import mimetypes
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -136,6 +136,7 @@ class SlidePreviewOutcome:
     status: OutcomeStatus
     qa_attempts: int
     gcs_preview_key: str | None = None
+    current_fills: Mapping[str, Any] = field(default_factory=dict)
     issues: tuple[VisualQAIssue, ...] = ()
 
 
@@ -286,6 +287,7 @@ class VisualQAFixVerifyStep:
         working_pptx_path: str | Path,
         fixed_pptx_path: str | Path,
         render_output_dir: str | Path,
+        ready_event: str | None = "slide_preview_ready",
     ) -> VisualQAPipelineResult:
         """렌더된 슬라이드들을 QA 처리하고 슬라이드별 ready/error 콜백을 보낸다."""
         if not slides:
@@ -310,6 +312,7 @@ class VisualQAFixVerifyStep:
             candidate_orders=tuple(pending),
             outcomes=outcomes,
             checked_orders=checked_orders,
+            ready_event=ready_event,
         )
 
         fix_attempts = 0
@@ -332,7 +335,8 @@ class VisualQAFixVerifyStep:
                 self._toolchain.pack(unpacked_root, fixed_pptx, original_pptx=working_pptx)
                 pack_count += 1
 
-                render_result = self._renderer.render(fixed_pptx, render_dir)
+                render_page = fixed_orders[0] if len(fixed_orders) == 1 else None
+                render_result = self._renderer.render(fixed_pptx, render_dir, page=render_page)
                 render_count += 1
                 rendered_by_page = {
                     rendered.page: rendered.image_path for rendered in render_result.slides
@@ -350,6 +354,7 @@ class VisualQAFixVerifyStep:
                     candidate_orders=fixed_orders,
                     outcomes=outcomes,
                     checked_orders=checked_orders,
+                    ready_event=ready_event,
                 )
 
             failed_orders = [*unfixed_orders, *recheck_failed_orders]
@@ -393,6 +398,7 @@ class VisualQAFixVerifyStep:
         candidate_orders: tuple[int, ...],
         outcomes: dict[int, SlidePreviewOutcome],
         checked_orders: list[int],
+        ready_event: str | None,
     ) -> list[int]:
         failed_orders: list[int] = []
         for slide_order in candidate_orders:
@@ -408,13 +414,18 @@ class VisualQAFixVerifyStep:
             pending_slide.last_result = qa_result
             checked_orders.append(slide_order)
             if qa_result.passed:
-                gcs_key = await self._upload_and_send_ready(job_id, pending_slide)
+                gcs_key = await self._upload_and_send_ready(
+                    job_id,
+                    pending_slide,
+                    ready_event=ready_event,
+                )
                 outcomes[slide_order] = SlidePreviewOutcome(
                     slide_id=pending_slide.slide.slide_id,
                     slide_order=slide_order,
                     status="ready",
                     qa_attempts=pending_slide.qa_attempts,
                     gcs_preview_key=gcs_key,
+                    current_fills=pending_slide.slide.current_fills,
                 )
                 continue
             failed_orders.append(slide_order)
@@ -446,6 +457,13 @@ class VisualQAFixVerifyStep:
                 if not fills:
                     raise ValueError("자동 수정 fill 이 비어 있습니다.")
                 await asyncio.to_thread(self._editor.apply_fills, str(slide_xml_path), fills)
+                pending_slide.slide = replace(
+                    pending_slide.slide,
+                    current_fills=_merge_current_fills(
+                        pending_slide.slide.current_fills,
+                        fills,
+                    ),
+                )
             except Exception as exc:
                 logger.warning(
                     "visual QA fix failed: slide_order=%s attempt=%s error=%s",
@@ -467,18 +485,28 @@ class VisualQAFixVerifyStep:
             fixed_orders.append(slide_order)
         return tuple(fixed_orders)
 
-    async def _upload_and_send_ready(self, job_id: str, pending_slide: _PendingSlide) -> str:
+    async def _upload_and_send_ready(
+        self,
+        job_id: str,
+        pending_slide: _PendingSlide,
+        *,
+        ready_event: str | None,
+    ) -> str:
         slide = pending_slide.slide
         metadata = preview_metadata(pending_slide.image_path)
         gcs_key = self._storage.upload_preview(job_id, slide.slide_order, pending_slide.image_path)
+        if ready_event is None:
+            return gcs_key
+
         await self._main_client.send_slide_event(
             job_id,
             slide.slide_id,
-            event="slide_preview_ready",
+            event=ready_event,
             slide_order=slide.slide_order,
-            idempotency_key=_idempotency_key(job_id, slide, "slide_preview_ready"),
+            idempotency_key=_idempotency_key(job_id, slide, ready_event),
             occurred_at=self._now_iso(),
             gcs_preview_key=gcs_key,
+            current_fills=dict(slide.current_fills),
             preview_width=metadata.width,
             preview_height=metadata.height,
             preview_byte_size=metadata.byte_size,
@@ -582,6 +610,23 @@ def _summarize_fills(fills: Mapping[str, Any]) -> str:
     if len(summary) <= _MAX_TEXT_SUMMARY_CHARS:
         return summary
     return f"{summary[:_MAX_TEXT_SUMMARY_CHARS].rstrip()}\n...(요약 길이 제한)"
+
+
+def _merge_current_fills(
+    current_fills: Mapping[str, Any],
+    changes: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for shape_id, fill in current_fills.items():
+        merged[str(shape_id)] = dict(fill) if isinstance(fill, Mapping) else fill
+
+    for shape_id, fill in changes.items():
+        shape_key = str(shape_id)
+        if fill.get("action") == "remove":
+            merged.pop(shape_key, None)
+            continue
+        merged[shape_key] = dict(fill)
+    return merged
 
 
 def _image_data_url(image_path: Path) -> str:

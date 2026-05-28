@@ -13,7 +13,6 @@ import pytest
 from common.clients.base_client import MainServerError
 from features.visualization.agents import PlannedSlide, SlidePlan
 from features.visualization.service import (
-    FatalError,
     GenerateVisualizationTask,
     RegenerateVisualizationTask,
     RetryableError,
@@ -53,6 +52,8 @@ class FakeQAOutcome:
     slide_id: str
     slide_order: int
     status: str
+    gcs_preview_key: str | None = None
+    current_fills: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,32 @@ class FakeMainClient:
     ) -> None:
         self.return_slide_rows = return_slide_rows
         self.fail_slide_events = fail_slide_events or set()
-        self.job_context = {"status": "pending", "portfolio_text": "Folioo KPI 42% 개선"}
+        self.job_context = {
+            "status": "pending",
+            "portfolio_text": "Folioo KPI 42% 개선",
+            "slide_plan": {
+                "selected_slides": [
+                    {
+                        "order": index,
+                        "source_slide_id": f"source_{index}",
+                        "slide_filename": f"slide{index}.xml",
+                        "content_brief": f"brief-{index}",
+                    }
+                    for index in range(1, 8)
+                ]
+            },
+        }
+        self.slide_context = {
+            "id": "slide-3",
+            "status": "regenerating",
+            "slide_order": 3,
+            "source_slide_id": "source_3",
+            "slide_filename": "slide3.xml",
+            "current_fills": {
+                "2": {"action": "text", "text": "기존 제목", "font_size_override": 18},
+                "3": {"action": "text", "text": "본문 유지", "font_size_override": 14},
+            },
+        }
         self.slide_plan_requests: list[dict[str, Any]] = []
         self.slide_events: list[dict[str, Any]] = []
         self.job_events: list[dict[str, Any]] = []
@@ -83,6 +109,11 @@ class FakeMainClient:
     async def get_job_context(self, job_id: str) -> dict[str, Any]:
         assert job_id == "job-1"
         return dict(self.job_context)
+
+    async def get_slide_context(self, job_id: str, slide_id: str) -> dict[str, Any]:
+        assert job_id == "job-1"
+        assert slide_id == "slide-3"
+        return dict(self.slide_context)
 
     async def submit_slide_plan(self, job_id: str, **kwargs: Any) -> list[dict[str, Any]]:
         self.slide_plan_requests.append({"job_id": job_id, **kwargs})
@@ -114,8 +145,10 @@ class FakeStorage:
     """GCS 클라이언트 대역."""
 
     def __init__(self) -> None:
+        self.downloaded_pptx: list[tuple[str, Path]] = []
         self.uploaded_pptx: list[tuple[str, Path]] = []
         self.uploaded_pdf: list[tuple[str, Path]] = []
+        self.uploaded_previews: list[tuple[str, int, Path]] = []
 
     def download_template(self, template_id: str, dest: Path) -> None:
         assert template_id == "blue"
@@ -127,6 +160,11 @@ class FakeStorage:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(json.dumps({"slides": []}), encoding="utf-8")
 
+    def download_pptx(self, job_id: str, dest: Path) -> None:
+        self.downloaded_pptx.append((job_id, dest))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"current")
+
     def upload_pptx(self, job_id: str, src: Path) -> str:
         self.uploaded_pptx.append((job_id, src))
         return f"jobs/{job_id}/current.pptx"
@@ -134,6 +172,10 @@ class FakeStorage:
     def upload_pdf(self, job_id: str, src: Path) -> str:
         self.uploaded_pdf.append((job_id, src))
         return f"jobs/{job_id}/current.pdf"
+
+    def upload_preview(self, job_id: str, slide_order: int, src: Path) -> str:
+        self.uploaded_previews.append((job_id, slide_order, src))
+        return f"jobs/{job_id}/previews/slide-{slide_order:02d}.jpg"
 
 
 class FakeToolchain:
@@ -246,22 +288,50 @@ class FakeFillGenerator:
         }
 
 
+class FakeChangeGenerator:
+    """사용자 재생성 요청을 고정 부분 fill 로 변환한다."""
+
+    def __init__(self, response: dict[str, dict[str, Any]] | None = None) -> None:
+        self.response = (
+            {"2": {"action": "text", "text": "기존 제목", "font_size_override": 28}}
+            if response is None
+            else response
+        )
+        self.calls: list[dict[str, Any]] = []
+
+    def create_changes(
+        self,
+        *,
+        user_request: str,
+        slots: list[dict[str, Any]],
+        current_fills: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        self.calls.append(
+            {
+                "user_request": user_request,
+                "slots": slots,
+                "current_fills": current_fills,
+            }
+        )
+        return self.response
+
+
 class FakeRenderer:
     """PPTX 렌더러 대역."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[Path, Path]] = []
+        self.calls: list[tuple[Path, Path, int | None]] = []
 
     def render(
         self, pptx_path: Path, output_dir: Path, *, page: int | None = None
     ) -> FakeRenderResult:
-        del page
-        self.calls.append((pptx_path, output_dir))
+        self.calls.append((pptx_path, output_dir, page))
         output_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = output_dir / f"{pptx_path.stem}.pdf"
         pdf_path.write_bytes(b"pdf")
         slides = []
-        for index in range(1, 8):
+        pages = [page] if page is not None else list(range(1, 8))
+        for index in pages:
             image_path = output_dir / f"slide-{index:02d}.jpg"
             image_path.write_bytes(b"jpg")
             slides.append(FakeRenderedSlide(page=index, image_path=image_path))
@@ -271,27 +341,42 @@ class FakeRenderer:
 class FakeQAStep:
     """시각 QA 단계 대역."""
 
-    def __init__(self, main_client: FakeMainClient, statuses: dict[int, str] | None = None) -> None:
+    def __init__(
+        self,
+        main_client: FakeMainClient,
+        storage: FakeStorage | None = None,
+        statuses: dict[int, str] | None = None,
+    ) -> None:
         self.main_client = main_client
+        self.storage = storage
         self.statuses = statuses or {}
         self.received_orders: list[int] = []
 
     async def process(self, *, job_id: str, slides: list[Any], **kwargs: Any) -> FakeQAResult:
-        del kwargs
+        ready_event = kwargs.get("ready_event", "slide_preview_ready")
         outcomes = []
         for slide in slides:
             self.received_orders.append(slide.slide_order)
             status = self.statuses.get(slide.slide_order, "ready")
             if status == "ready":
-                await self.main_client.send_slide_event(
-                    job_id,
-                    slide.slide_id,
-                    event="slide_preview_ready",
-                    slide_order=slide.slide_order,
-                    idempotency_key=f"{job_id}:slide:{slide.slide_id}:slide_preview_ready",
-                    occurred_at="2026-05-27T00:00:00Z",
-                    gcs_preview_key=f"jobs/{job_id}/previews/slide-{slide.slide_order:02d}.jpg",
-                )
+                if self.storage is not None:
+                    gcs_preview_key = self.storage.upload_preview(
+                        job_id,
+                        slide.slide_order,
+                        slide.image_path,
+                    )
+                else:
+                    gcs_preview_key = f"jobs/{job_id}/previews/slide-{slide.slide_order:02d}.jpg"
+                if ready_event is not None:
+                    await self.main_client.send_slide_event(
+                        job_id,
+                        slide.slide_id,
+                        event=ready_event,
+                        slide_order=slide.slide_order,
+                        idempotency_key=f"{job_id}:slide:{slide.slide_id}:{ready_event}",
+                        occurred_at="2026-05-27T00:00:00Z",
+                        gcs_preview_key=gcs_preview_key,
+                    )
             else:
                 await self.main_client.send_slide_event(
                     job_id,
@@ -303,7 +388,16 @@ class FakeQAStep:
                     message="qa failed",
                     retryable=True,
                 )
-            outcomes.append(FakeQAOutcome(slide.slide_id, slide.slide_order, status))
+                gcs_preview_key = None
+            outcomes.append(
+                FakeQAOutcome(
+                    slide.slide_id,
+                    slide.slide_order,
+                    status,
+                    gcs_preview_key=gcs_preview_key,
+                    current_fills=dict(getattr(slide, "current_fills", {}) or {}),
+                )
+            )
         return FakeQAResult(outcomes=tuple(outcomes))
 
 
@@ -436,25 +530,71 @@ async def test_slide_content_ready_callback_failure_does_not_blank_generated_sli
 
 
 @pytest.mark.asyncio
-async def test_regenerate_unsupported_is_fatal_not_retryable() -> None:
-    """미구현 regenerate 는 무한 재시도 없이 fatal 로 ACK 대상이 된다."""
-    service = VisualizationTaskService()
+async def test_regenerate_user_request_changes_only_requested_shape() -> None:
+    """일반 재생성은 지정 도형만 변경하고 미지정 current_fills 는 보존한다."""
+    context = PipelineContext()
 
-    with pytest.raises(FatalError) as exc_info:
-        await service.regenerate(
-            RegenerateVisualizationTask(
-                message_type="viz.regenerate",
-                job_id="job-1",
-                slide_id="slide-1",
-                user_request=None,
-                is_retry=False,
-                idempotency_key="task-key",
-                callback_base_url="http://main.local",
-                schema_version=1,
-            )
-        )
+    await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
 
-    assert exc_info.value.error_code == "VISUALIZATION_REGENERATE_UNSUPPORTED"
+    assert context.main_client.closed is True
+    assert context.storage.downloaded_pptx[0][0] == "job-1"
+    assert len(context.editor.applied) == 1
+    applied_path, applied_fills = context.editor.applied[0]
+    assert applied_path.endswith("slide3.xml")
+    assert set(applied_fills) == {"2"}
+    assert context.change_generator.calls[0]["user_request"] == "제목 크기 키워줘"
+    assert context.filler.calls == []
+    assert context.renderer.calls[0][2] == 3
+
+    regenerated_events = _events(context.main_client, "slide_regenerated")
+    assert len(regenerated_events) == 1
+    event = regenerated_events[0]
+    assert event["slide_order"] == 3
+    assert event["gcs_preview_key"] == "jobs/job-1/previews/slide-03.jpg"
+    assert event["current_fills"]["2"]["font_size_override"] == 28
+    assert event["current_fills"]["3"]["text"] == "본문 유지"
+    assert _events(context.main_client, "slide_preview_ready") == []
+    assert context.storage.uploaded_pptx
+    assert context.storage.uploaded_pdf
+    assert context.storage.uploaded_previews[0][:2] == ("job-1", 3)
+
+
+@pytest.mark.asyncio
+async def test_retry_regenerate_uses_content_brief_without_user_request() -> None:
+    """retry 는 userRequest 없이 저장된 content_brief 로 Step 3 fill 생성을 재사용한다."""
+    context = PipelineContext()
+
+    await context.service.regenerate(_regenerate_task(is_retry=True, user_request=None))
+
+    assert context.change_generator.calls == []
+    assert context.filler.calls == [3]
+    assert len(context.editor.applied) == 1
+    _, applied_fills = context.editor.applied[0]
+    assert applied_fills == {
+        "2": {"action": "text", "text": "슬라이드 3", "font_size_override": 18}
+    }
+    regenerated_events = _events(context.main_client, "slide_regenerated")
+    assert regenerated_events[0]["current_fills"] == applied_fills
+    assert regenerated_events[0]["gcs_preview_key"] == "jobs/job-1/previews/slide-03.jpg"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_failure_sends_preview_error_without_output_upload() -> None:
+    """재생성 실패 시 워커는 preview error 만 보내고 current 산출물 업로드를 하지 않는다."""
+    change_generator = FakeChangeGenerator(response={})
+    context = PipelineContext(change_generator=change_generator)
+
+    await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
+
+    assert _events(context.main_client, "slide_regenerated") == []
+    error_events = _events(context.main_client, "slide_preview_error")
+    assert len(error_events) == 1
+    assert error_events[0]["slide_order"] == 3
+    assert error_events[0]["retryable"] is False
+    assert "변경 지시" in error_events[0]["message"]
+    assert context.storage.uploaded_pptx == []
+    assert context.storage.uploaded_pdf == []
+    assert context.storage.uploaded_previews == []
 
 
 class PipelineContext:
@@ -465,6 +605,7 @@ class PipelineContext:
         *,
         main_client: FakeMainClient | None = None,
         filler: FakeFillGenerator | None = None,
+        change_generator: FakeChangeGenerator | None = None,
         qa_step: FakeQAStep | None = None,
         max_content_concurrency: int = 4,
     ) -> None:
@@ -474,9 +615,11 @@ class PipelineContext:
         self.editor = FakeEditor()
         self.renderer = FakeRenderer()
         self.filler = filler or FakeFillGenerator()
-        self.qa_step = qa_step or FakeQAStep(self.main_client)
+        self.change_generator = change_generator or FakeChangeGenerator()
+        self.qa_step = qa_step or FakeQAStep(self.main_client, self.storage)
         if qa_step is not None:
             qa_step.main_client = self.main_client
+            qa_step.storage = self.storage
         self.service = VisualizationTaskService(
             main_client_factory=lambda _: self.main_client,
             storage_factory=lambda: self.storage,
@@ -485,6 +628,7 @@ class PipelineContext:
             renderer_factory=lambda: self.renderer,
             slide_plan_generator=FakePlanGenerator(),
             content_fill_generator=self.filler,
+            slide_change_generator=self.change_generator,
             qa_step_factory=lambda storage, main, editor, toolchain, renderer: self.qa_step,
             clock=lambda: datetime(2026, 5, 27, tzinfo=UTC),
             max_content_concurrency=max_content_concurrency,
@@ -498,6 +642,23 @@ def _task() -> GenerateVisualizationTask:
         portfolio_id="portfolio-1",
         user_id="user-1",
         template_id="blue",
+        idempotency_key="task-key",
+        callback_base_url="http://main.local",
+        schema_version=1,
+    )
+
+
+def _regenerate_task(
+    *,
+    user_request: str | None = "제목 크기 키워줘",
+    is_retry: bool = False,
+) -> RegenerateVisualizationTask:
+    return RegenerateVisualizationTask(
+        message_type="viz.regenerate",
+        job_id="job-1",
+        slide_id="slide-3",
+        user_request=user_request,
+        is_retry=is_retry,
         idempotency_key="task-key",
         callback_base_url="http://main.local",
         schema_version=1,
