@@ -4,7 +4,7 @@ phase: 1
 title: "GCS 직접 R/W 클라이언트"
 spec: "specs/phase-1/12-gcs-client.md"
 depends_on: []
-blocks: ["1.05", "1.06"]
+blocks: ["1.05", "1.06", "1.21", "1.25"]
 estimate: "S"
 status: "done"
 completed_at: "2026-05-26"

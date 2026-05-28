@@ -4,7 +4,7 @@ phase: 1
 title: "시각화 워커 서비스 스캐폴드 및 Cloud Tasks Push 핸들러"
 spec: "specs/phase-1/01-worker-service-scaffold.md"
 depends_on: ["1.02"]
-blocks: ["1.09", "1.10"]
+blocks: ["1.09", "1.10", "1.20", "1.22"]
 estimate: "M"
 status: "done"
 completed_at: "2026-05-27"

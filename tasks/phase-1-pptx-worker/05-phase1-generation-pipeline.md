@@ -4,7 +4,7 @@ phase: 1
 title: "Phase 1 초기 생성 파이프라인 오케스트레이션 (Step 1~7)"
 spec: "specs/phase-1/05-phase1-generation-pipeline.md"
 depends_on: ["1.02", "1.03", "1.04", "1.06", "1.11", "1.12"]
-blocks: ["1.07", "1.09"]
+blocks: ["1.07", "1.09", "1.20", "1.22", "1.23", "1.24"]
 estimate: "L"
 status: "done"
 completed_at: "2026-05-28"

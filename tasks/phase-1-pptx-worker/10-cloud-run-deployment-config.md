@@ -4,7 +4,7 @@ phase: 1
 title: "Cloud Run 배포 구성 (시각화 워커)"
 spec: "specs/phase-1/10-cloud-run-deployment-config.md"
 depends_on: ["1.01"]
-blocks: []
+blocks: ["1.20", "1.21"]
 estimate: "S"
 status: "done"
 completed_at: "2026-05-27"

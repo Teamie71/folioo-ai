@@ -4,7 +4,7 @@ phase: 1
 title: "시각 QA + Fix-and-Verify 루프 + 프리뷰 업로드"
 spec: "specs/phase-1/06-visual-qa-fix-verify.md"
 depends_on: ["1.02", "1.03", "1.04", "1.11", "1.12"]
-blocks: ["1.05"]
+blocks: ["1.05", "1.20", "1.23", "1.24"]
 estimate: "M"
 status: "done"
 completed_at: 2026-05-27

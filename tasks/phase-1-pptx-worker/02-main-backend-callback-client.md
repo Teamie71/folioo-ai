@@ -4,7 +4,7 @@ phase: 1
 title: "메인 백엔드 콜백/컨텍스트 클라이언트 (워커 측)"
 spec: "specs/phase-1/02-main-backend-callback-client.md"
 depends_on: []
-blocks: ["1.01", "1.05", "1.06"]
+blocks: ["1.01", "1.05", "1.06", "1.22"]
 estimate: "M"
 status: "done"
 completed_at: "2026-05-25"

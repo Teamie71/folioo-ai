@@ -4,7 +4,7 @@ phase: 1
 title: "Phase 2 재생성/재시도 파이프라인 (단일 슬라이드)"
 spec: "specs/phase-1/07-phase2-regenerate-retry-pipeline.md"
 depends_on: ["1.05"]
-blocks: []
+blocks: ["1.20", "1.22", "1.23", "1.24", "1.25"]
 estimate: "M"
 status: "done"
 completed_at: "2026-05-28"

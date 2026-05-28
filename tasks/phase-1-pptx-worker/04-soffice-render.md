@@ -4,7 +4,7 @@ phase: 1
 title: "soffice 렌더 래퍼 (soffice→PDF→JPG)"
 spec: "specs/phase-1/04-soffice-render.md"
 depends_on: []
-blocks: ["1.05", "1.06", "1.08", "1.09"]
+blocks: ["1.05", "1.06", "1.08", "1.09", "1.21"]
 estimate: "M"
 status: "done"
 completed_at: "2026-05-26"

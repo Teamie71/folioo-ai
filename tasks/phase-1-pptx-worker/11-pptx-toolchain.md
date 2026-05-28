@@ -4,7 +4,7 @@ phase: 1
 title: "PPTX 도구 체인 (unpack/clean/pack/validate + 슬라이드 제거)"
 spec: "specs/phase-1/11-pptx-toolchain.md"
 depends_on: []
-blocks: ["1.05", "1.06"]
+blocks: ["1.05", "1.06", "1.21"]
 estimate: "S"
 status: "done"
 completed_at: "2026-05-25"
