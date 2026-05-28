@@ -281,7 +281,7 @@ class VisualizationTaskService:
         self._storage_factory = storage_factory or GcsClient
         self._toolchain_factory = toolchain_factory or PptxToolchain.from_env
         self._editor_factory = editor_factory or SlideEditor
-        self._renderer_factory = renderer_factory or PptxRenderer
+        self._renderer_factory = renderer_factory or _default_renderer_factory
         self._slide_plan_generator = slide_plan_generator or LLMSlidePlanGenerator()
         self._content_fill_generator = content_fill_generator or LLMContentFillGenerator()
         self._slide_change_generator = slide_change_generator or LLMSlideChangeGenerator()
@@ -992,6 +992,13 @@ def _default_qa_step_factory(
         toolchain=toolchain,  # type: ignore[arg-type]
         renderer=renderer,  # type: ignore[arg-type]
     )
+
+
+def _default_renderer_factory() -> PptxRenderer:
+    """워커 런타임 lifetime 카운터를 공유하는 렌더러를 만든다."""
+    from pptx_worker.runtime import get_worker_runtime
+
+    return PptxRenderer(counter=get_worker_runtime().processed_counter)
 
 
 async def _close_client(client: MainClient) -> None:

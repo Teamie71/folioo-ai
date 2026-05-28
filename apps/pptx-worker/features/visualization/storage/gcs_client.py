@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from google.cloud import storage
+from pptx_worker.metrics import WORKER_TMP_ROOT, get_worker_metrics, safe_directory_size
 
 logger = logging.getLogger(__name__)
 
@@ -261,9 +262,11 @@ def job_workdir(job_id: str) -> Generator[Path, None, None]:
         생성된 작업 디렉터리 경로.
     """
     safe_job_id = _validate_identifier(job_id, "job_id")
-    workdir = Path(tempfile.mkdtemp(prefix=f"job_{safe_job_id}_", dir="/tmp"))
+    WORKER_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    workdir = Path(tempfile.mkdtemp(prefix=f"job_{safe_job_id}_", dir=str(WORKER_TMP_ROOT)))
     try:
         yield workdir
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+        get_worker_metrics().set_tmp_disk_bytes_used(safe_directory_size(WORKER_TMP_ROOT))
         logger.debug("cleaned up workdir %s", workdir)

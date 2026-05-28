@@ -8,6 +8,7 @@ from threading import Lock
 from unittest.mock import patch
 
 import pytest
+from pptx_worker.metrics import WorkerMetricsRegistry
 
 from features.visualization.pptx.soffice_render import (
     InMemoryConversionCounter,
@@ -27,14 +28,14 @@ class FakeProcess:
         factory: "FakePopenFactory",
         *,
         timeout_once: bool = False,
-        should_fail: bool = False,
+        failure_returncode: int | None = None,
     ) -> None:
         self.command = command
         self.factory = factory
         self.timeout_once = timeout_once
-        self.should_fail = should_fail
+        self.failure_returncode = failure_returncode
         self.killed = False
-        self.pid = 1000 + len(factory.processes)
+        self.pid = 10_000_000 + len(factory.processes)
         self.returncode = 0
 
     def communicate(self, timeout: float | None = None) -> tuple[str, str]:
@@ -43,11 +44,12 @@ class FakeProcess:
         if self.killed:
             self.returncode = -9
             return "", "timeout"
-        if self.should_fail:
-            self.returncode = 1
-            return "", f"{self.command[0]} failed"
+        if self.failure_returncode is not None:
+            self.returncode = self.failure_returncode
+            stdout, stderr = self.factory.output_for(self.command[0])
+            return stdout, stderr or f"{self.command[0]} failed"
         self.factory.complete_command(self.command)
-        return "", ""
+        return self.factory.output_for(self.command[0])
 
     def kill(self) -> None:
         self.killed = True
@@ -61,11 +63,13 @@ class FakePopenFactory:
         *,
         full_pages: list[int] | None = None,
         timeout_soffice_attempts: int = 0,
-        failing_commands: set[str] | None = None,
+        failing_commands: set[str] | dict[str, int] | None = None,
+        command_outputs: dict[str, tuple[str, str]] | None = None,
     ) -> None:
         self.full_pages = [1, 2, 3] if full_pages is None else full_pages
         self.timeout_soffice_attempts = timeout_soffice_attempts
-        self.failing_commands = failing_commands or set()
+        self.failing_commands = self._normalize_failing_commands(failing_commands)
+        self.command_outputs = command_outputs or {}
         self.commands: list[list[str]] = []
         self.popen_kwargs: list[dict] = []
         self.processes: list[FakeProcess] = []
@@ -88,7 +92,7 @@ class FakePopenFactory:
                 command,
                 self,
                 timeout_once=timeout_once,
-                should_fail=command[0] in self.failing_commands,
+                failure_returncode=self.failing_commands.get(command[0]),
             )
             self.commands.append(command)
             self.popen_kwargs.append(kwargs)
@@ -102,6 +106,19 @@ class FakePopenFactory:
             self._create_images(command)
         else:
             raise AssertionError(f"알 수 없는 명령입니다: {command}")
+
+    def output_for(self, command_name: str) -> tuple[str, str]:
+        return self.command_outputs.get(command_name, ("", ""))
+
+    @staticmethod
+    def _normalize_failing_commands(
+        failing_commands: set[str] | dict[str, int] | None,
+    ) -> dict[str, int]:
+        if failing_commands is None:
+            return {}
+        if isinstance(failing_commands, dict):
+            return dict(failing_commands)
+        return {command: 1 for command in failing_commands}
 
     @staticmethod
     def _create_pdf(command: list[str]) -> None:
@@ -143,12 +160,15 @@ def tmp_root(tmp_path: Path) -> Path:
 
 
 def _make_renderer(
-    tmp_root: Path, counter: InMemoryConversionCounter | None = None
+    tmp_root: Path,
+    counter: InMemoryConversionCounter | None = None,
+    metrics: WorkerMetricsRegistry | None = None,
 ) -> PptxRenderer:
     """테스트용 렌더러를 만든다."""
     return PptxRenderer(
         options=RenderOptions(timeout_seconds=0.1, tmp_root=tmp_root),
         counter=counter,
+        metrics=metrics or WorkerMetricsRegistry(),
     )
 
 
@@ -186,6 +206,37 @@ def test_full_render_outputs_all_pages_and_omits_page_flags(
     assert "-l" not in pdftoppm_command
     assert result.conversion_count == 1
     assert factory.popen_kwargs[0]["start_new_session"] is True
+    _assert_tmp_root_empty(tmp_root)
+
+
+def test_successful_render_updates_duration_rss_and_tmp_metrics(
+    source_pptx: Path,
+    tmp_root: Path,
+    tmp_path: Path,
+) -> None:
+    """정상 변환은 duration 분위수, RSS, tmp 사용량 gauge 를 갱신한다."""
+    metrics = WorkerMetricsRegistry()
+    factory = FakePopenFactory(full_pages=[1])
+    leftover = tmp_root / "leftover.bin"
+    leftover.write_bytes(b"tmp")
+
+    with (
+        patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory),
+        patch(
+            "features.visualization.pptx.soffice_render.time.perf_counter",
+            side_effect=[10.0, 12.5],
+        ),
+        patch("features.visualization.pptx.soffice_render._max_child_rss_bytes", return_value=512),
+    ):
+        _make_renderer(tmp_root, metrics=metrics).render(source_pptx, tmp_path / "out")
+
+    snapshot = metrics.snapshot()
+    assert snapshot.quantile(0.5) == 2.5
+    assert snapshot.quantile(0.95) == 2.5
+    assert snapshot.quantile(0.99) == 2.5
+    assert snapshot.soffice_rss_bytes == 512
+    assert snapshot.tmp_disk_bytes_used == 3
+    leftover.unlink()
     _assert_tmp_root_empty(tmp_root)
 
 
@@ -293,17 +344,21 @@ def test_soffice_timeout_cleans_workdir_when_retry_fails(
 ) -> None:
     """재시도까지 timeout 이면 예외를 내고 내부 /tmp 작업 디렉터리를 제거한다."""
     counter = InMemoryConversionCounter()
+    metrics = WorkerMetricsRegistry()
     factory = FakePopenFactory(timeout_soffice_attempts=2)
 
     with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
-        with pytest.raises(PptxRenderError, match="초과"):
-            _make_renderer(tmp_root, counter).render(source_pptx, tmp_path / "out")
+        with pytest.raises(PptxRenderError, match="초과") as exc_info:
+            _make_renderer(tmp_root, counter, metrics).render(source_pptx, tmp_path / "out")
 
     soffice_processes = [
         process for process in factory.processes if process.command[0] == "soffice"
     ]
     assert [process.killed for process in soffice_processes] == [True, True]
+    assert exc_info.value.__cause__ is not None
+    assert exc_info.value.__cause__.args
     assert counter.value == 0
+    assert metrics.snapshot().soffice_conversion_failures_total["timeout"] == 1
     _assert_tmp_root_empty(tmp_root)
 
 
@@ -316,13 +371,59 @@ def test_non_zero_exit_raises_render_error(
 ) -> None:
     """외부 명령이 non-zero exit 이면 렌더 실패로 처리한다."""
     counter = InMemoryConversionCounter()
+    metrics = WorkerMetricsRegistry()
     factory = FakePopenFactory(failing_commands={command_name})
 
     with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
-        with pytest.raises(PptxRenderError, match=f"{command_name} 명령이 실패"):
-            _make_renderer(tmp_root, counter).render(source_pptx, tmp_path / "out")
+        with pytest.raises(PptxRenderError, match=f"{command_name} 명령이 실패") as exc_info:
+            _make_renderer(tmp_root, counter, metrics).render(source_pptx, tmp_path / "out")
 
     assert counter.value == 0
+    assert exc_info.value.args
+    assert metrics.snapshot().soffice_conversion_failures_total["other"] == 1
+    _assert_tmp_root_empty(tmp_root)
+
+
+def test_soffice_sigkill_failure_is_counted_as_oom(
+    source_pptx: Path,
+    tmp_root: Path,
+    tmp_path: Path,
+) -> None:
+    """timeout 없이 SIGKILL 된 soffice 실패는 OOM reason 으로 분류한다."""
+    metrics = WorkerMetricsRegistry()
+    factory = FakePopenFactory(failing_commands={"soffice": -signal.SIGKILL})
+
+    with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
+        with pytest.raises(PptxRenderError, match="soffice 명령이 실패"):
+            _make_renderer(tmp_root, metrics=metrics).render(source_pptx, tmp_path / "out")
+
+    snapshot = metrics.snapshot()
+    assert snapshot.soffice_conversion_failures_total["oom"] == 1
+    assert snapshot.worker_oom_kill_total == 1
+    _assert_tmp_root_empty(tmp_root)
+
+
+def test_font_fallback_warning_in_soffice_logs_increments_counter(
+    source_pptx: Path,
+    tmp_root: Path,
+    tmp_path: Path,
+) -> None:
+    """soffice 로그의 font fallback 경고는 별도 카운터로 집계한다."""
+    metrics = WorkerMetricsRegistry()
+    factory = FakePopenFactory(
+        full_pages=[1],
+        command_outputs={
+            "soffice": (
+                "",
+                "warn: font fallback requested for MissingDisplay\ninfo: font substitution applied",
+            )
+        },
+    )
+
+    with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
+        _make_renderer(tmp_root, metrics=metrics).render(source_pptx, tmp_path / "out")
+
+    assert metrics.snapshot().font_fallback_warnings_total == 2
     _assert_tmp_root_empty(tmp_root)
 
 

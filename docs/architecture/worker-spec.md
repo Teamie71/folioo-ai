@@ -184,10 +184,33 @@ RUN pip3 install defusedxml lxml pillow google-cloud-storage google-cloud-tasks 
 | `tmp_disk_bytes_used` | 임시 파일 누수 감지 |
 | `font_fallback_warnings_total` | 폰트 누락 감지 (새 템플릿 추가 시) |
 
+워커는 `GET /metrics` 에 Prometheus text exposition 형식으로 위 지표를 노출한다.
+서비스 전체가 Cloud Run require-auth 대상이므로, 외부 스크레이퍼는 워커 호출 권한이 있는
+서비스 계정으로 OIDC 토큰을 붙여 호출한다. `soffice_conversion_failures_total{reason}` 의
+라벨 값은 `timeout`, `oom`, `other` 로 고정한다(`other` 는 기타 실패).
+이 failure counter 는 기존 spec 메트릭명을 유지하되, 실제 집계 범위는 soffice 래퍼의 렌더
+수명주기이므로 `pdftoppm` 실패도 `other` 로 포함될 수 있다.
+`worker_jobs_processed_total` 은 `/health.lifetime_processed` 와 같은 런타임 카운터를 읽고,
+`worker_ready_for_recycle` 은 `/health.ready_for_recycle` 과 같은 기준으로 0/1 gauge 를 노출한다.
+
 **알람 기준 예시:**
-- `P95 conversion_duration > 30s` 5분 지속 → 경고
-- `worker_oom_kill_total` 증가 → 즉시 알람 (메모리 한도 부족)
-- `font_fallback_warnings_total` 증가 → 폰트 누락 (디자이너 알림)
+- 렌더링 지연: `max_over_time(soffice_conversion_duration_seconds{quantile="0.95"}[5m]) > 30`
+  → 5분 지속 시 경고. 워커 용량 부족, 템플릿 고밀도화, LibreOffice 회귀를 확인한다.
+- OOM: `increase(worker_oom_kill_total[1m]) > 0` 또는
+  `increase(soffice_conversion_failures_total{reason="oom"}[1m]) > 0`
+  → 즉시 알람. Cloud Run 메모리 한도와 템플릿 이미지 용량을 확인한다.
+- timeout/기타 실패 증가:
+  `increase(soffice_conversion_failures_total{reason=~"timeout|other"}[5m]) > 0`
+  → 경고. 변환 timeout, 손상된 PPTX, pdftoppm 실패를 확인한다.
+- 폰트 fallback:
+  `increase(font_fallback_warnings_total[5m]) > 0`
+  → 폰트 누락 알림. 템플릿 사용 폰트와 컨테이너 설치 폰트를 대조한다.
+- 임시 디스크:
+  `tmp_disk_bytes_used > 800 * 1024 * 1024`
+  → 경고. `/tmp` cleanup 누수 또는 과도한 렌더 산출물을 확인한다.
+- 재활용 신호:
+  `worker_ready_for_recycle == 1`
+  → 정보성 지표. `worker_jobs_processed_total` 이 재활용 임계값에 도달한 정상 신호다.
 
 #### 8.3.8 MVP 추천 사양 요약
 

@@ -2089,6 +2089,18 @@ GET    {WORKER_URL}/health
          "lifetime_processed": 42,
          "ready_for_recycle": false
        }
+
+GET    {WORKER_URL}/metrics
+       Response: Prometheus text exposition
+       주요 지표:
+         - soffice_conversion_duration_seconds{quantile="0.5|0.95|0.99"}
+         - soffice_conversion_failures_total{reason="timeout|oom|other"}
+         - soffice_rss_bytes
+         - worker_oom_kill_total
+         - worker_jobs_processed_total  # /health.lifetime_processed 와 동일 소스
+         - worker_ready_for_recycle     # /health.ready_for_recycle 과 동일 소스
+         - tmp_disk_bytes_used
+         - font_fallback_warnings_total
 ```
 
 **핸들러 위치 권고 (시각화 워커 코드베이스):**
