@@ -188,6 +188,8 @@ RUN pip3 install defusedxml lxml pillow google-cloud-storage google-cloud-tasks 
 서비스 전체가 Cloud Run require-auth 대상이므로, 외부 스크레이퍼는 워커 호출 권한이 있는
 서비스 계정으로 OIDC 토큰을 붙여 호출한다. `soffice_conversion_failures_total{reason}` 의
 라벨 값은 `timeout`, `oom`, `other` 로 고정한다(`other` 는 기타 실패).
+이 failure counter 는 기존 spec 메트릭명을 유지하되, 실제 집계 범위는 soffice 래퍼의 렌더
+수명주기이므로 `pdftoppm` 실패도 `other` 로 포함될 수 있다.
 `worker_jobs_processed_total` 은 `/health.lifetime_processed` 와 같은 런타임 카운터를 읽고,
 `worker_ready_for_recycle` 은 `/health.ready_for_recycle` 과 같은 기준으로 0/1 gauge 를 노출한다.
 
