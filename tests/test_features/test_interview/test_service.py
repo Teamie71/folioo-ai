@@ -500,15 +500,17 @@ async def test_process_message_resets_current_turn_files_when_no_files(monkeypat
 async def test_extend_session_success(monkeypatch):
     """완료된 세션은 연장 모드로 전환되고 첫 연장 질문을 반환한다."""
     dummy_graph = DummyGraph()
+    previous_messages = [AIMessage(content="정규 마지막 질문")]
     dummy_graph.state_snapshot = DummyStateSnapshot(
         values={
             "session_id": "session_1",
+            "messages": previous_messages,
             "all_stages_complete": True,
             "extension_count": 0,
         }
     )
     dummy_graph.invoke_result = {
-        "messages": [AIMessage(content="연장 첫 질문")],
+        "messages": [*previous_messages, AIMessage(content="연장 첫 질문")],
         "extension_count": 1,
         "extension_turns_max": 18,
     }
@@ -544,6 +546,42 @@ async def test_extend_session_success(monkeypatch):
     assert invocation["state"]["current_turn_files"] == []
     assert invocation["state"]["file_contexts"] == []
     assert invocation["state"]["mentioned_insight"] is None
+
+
+@pytest.mark.asyncio
+async def test_extend_session_raises_when_no_new_ai_response(monkeypatch):
+    """연장 실행 결과에 새 AI 메시지가 없으면 과거 질문을 재사용하지 않고 실패한다."""
+    dummy_graph = DummyGraph()
+    previous_messages = [AIMessage(content="정규 마지막 질문")]
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "messages": previous_messages,
+            "all_stages_complete": True,
+            "extension_count": 0,
+        }
+    )
+    dummy_graph.invoke_result = {
+        "messages": previous_messages,
+        "extension_count": 1,
+        "extension_turns_max": 18,
+    }
+    monkeypatch.setattr(
+        interview_service,
+        "get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
+            },
+        )(),
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(ValueError, match="연장 질문을 생성하지 못했습니다"):
+        await service.extend_session("session_1")
 
 
 @pytest.mark.asyncio

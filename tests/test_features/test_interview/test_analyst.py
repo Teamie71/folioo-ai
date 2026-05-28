@@ -25,9 +25,17 @@ class _DummyLLM:
 
 
 class _DummyGlobalConfig:
-    def __init__(self, *, enable_dynamic_followup: bool = True):
+    def __init__(
+        self,
+        *,
+        enable_dynamic_followup: bool = True,
+        max_extensions: int = 1,
+        extension_turns_per_session: int = 18,
+    ):
         self.enable_dynamic_followup = enable_dynamic_followup
         self.context_window_size = 5
+        self.max_extensions = max_extensions
+        self.extension_turns_per_session = extension_turns_per_session
 
 
 def _mock_analyst_llm(response: AnalystResponse):
@@ -230,6 +238,11 @@ def test_run_starts_extended_mode_at_stage_4_completion(monkeypatch):
         "_calculate_overall_completion_percentage",
         lambda experience_name, collected_data: (88.5, None),
     )
+    monkeypatch.setattr(
+        analyst,
+        "get_global_config",
+        lambda: _DummyGlobalConfig(max_extensions=1, extension_turns_per_session=18),
+    )
 
     state = get_initial_interview_state(
         user_id="test_user",
@@ -271,6 +284,11 @@ def test_run_marks_all_complete_at_stage_4_when_extension_limit_reached(monkeypa
         analyst,
         "_calculate_overall_completion_percentage",
         lambda experience_name, collected_data: (88.5, None),
+    )
+    monkeypatch.setattr(
+        analyst,
+        "get_global_config",
+        lambda: _DummyGlobalConfig(max_extensions=1, extension_turns_per_session=18),
     )
 
     state = get_initial_interview_state(

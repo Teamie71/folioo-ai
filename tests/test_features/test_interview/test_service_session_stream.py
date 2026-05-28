@@ -550,6 +550,72 @@ async def test_extend_session_stream_yields_delta_and_complete(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_extend_session_stream_uses_new_ai_response_when_no_tokens(monkeypatch):
+    """연장 시작 스트림 토큰이 없으면 최종 상태의 새 AI 메시지만 응답으로 사용한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.stream_events = []
+
+    monkeypatch.setattr(
+        "features.interview.service.build_graph", lambda checkpointer=None: dummy_graph
+    )
+    monkeypatch.setattr("features.interview.service.get_checkpointer", lambda: object())
+    monkeypatch.setattr(
+        "features.interview.service.get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
+            },
+        )(),
+    )
+    service = InterviewService()
+
+    previous_messages = [AIMessage(content="정규 마지막 질문")]
+    initial_state = {
+        "session_id": "session-1",
+        "messages": previous_messages,
+        "all_stages_complete": True,
+        "extension_count": 0,
+    }
+    final_state = {
+        "messages": [*previous_messages, AIMessage(content="연장 질문")],
+        "current_stage": 4,
+        "stage_progress": {
+            "fixed_q_used": 3,
+            "fixed_q_total": 3,
+            "generated_q_used": 2,
+            "generated_q_max": 2,
+            "force_all_generated_q": False,
+            "is_complete": True,
+        },
+        "overall_completion_percentage": 100.0,
+        "all_stages_complete": False,
+        "is_extended_mode": True,
+        "extension_turns_used": 1,
+        "extension_turns_max": 18,
+        "extension_count": 1,
+    }
+    states = [initial_state, final_state]
+
+    async def _get_session_state(_session_id: str):
+        if states:
+            return states.pop(0)
+        return final_state
+
+    monkeypatch.setattr(service, "get_session_state", _get_session_state)
+
+    events = [event async for event in service.extend_session_stream(session_id="session-1")]
+
+    complete_event = next(
+        event for event in events if event["event"] == SSEEventType.MESSAGE_COMPLETE
+    )
+    complete_payload = json.loads(complete_event["data"])
+    assert complete_payload["message"]["ai_response"] == "연장 질문"
+
+
+@pytest.mark.anyio
 async def test_process_message_stream_sets_failed_status_on_exception(monkeypatch):
     """스트리밍 예외 발생 시 세션 status를 failed로 기록한다."""
     dummy_graph = DummyGraph()

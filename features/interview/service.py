@@ -386,7 +386,10 @@ class InterviewService:
             config={"configurable": {"thread_id": session_id}},
         )
 
-        ai_response = self._get_latest_ai_response(result.get("messages", []))
+        ai_response = self._get_latest_new_ai_response(
+            current_state.get("messages", []),
+            result.get("messages", []),
+        )
         if ai_response is None:
             raise ValueError("연장 질문을 생성하지 못했습니다.")
 
@@ -492,8 +495,9 @@ class InterviewService:
             if final_state:
                 await self._set_session_status(session_id, "completed")
                 final_state = {**final_state, "status": "completed"}
-                ai_response = accumulated_text or self._get_latest_ai_response(
-                    final_state.get("messages", [])
+                ai_response = accumulated_text or self._get_latest_new_ai_response(
+                    current_state.get("messages", []),
+                    final_state.get("messages", []),
                 )
 
                 yield {

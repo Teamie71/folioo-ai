@@ -238,7 +238,10 @@ def _build_regular_completion_extension_state(
     state: InterviewState,
     extension_turns_max: int,
 ) -> dict:
-    """정규 인터뷰 완료 직후 같은 턴에서 연장 모드로 전환할 state를 구성한다."""
+    """정규 인터뷰 완료 직후 같은 턴에서 연장 모드로 전환할 state를 구성한다.
+
+    같은 그래프 실행에서 첫 연장 질문을 생성하므로 file_contexts와 mentioned_insight는 유지한다.
+    """
     extension_count = int(state.get("extension_count") or 0)
     return {
         "all_stages_complete": False,
