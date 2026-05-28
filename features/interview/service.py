@@ -67,6 +67,15 @@ class InterviewService:
                 return str(content)
         return None
 
+    @classmethod
+    def _get_latest_new_ai_response(
+        cls, previous_messages: list, current_messages: list
+    ) -> str | None:
+        """이번 그래프 실행에서 새로 추가된 AI 응답 텍스트를 반환한다."""
+        if len(current_messages) < len(previous_messages):
+            return cls._get_latest_ai_response(current_messages)
+        return cls._get_latest_ai_response(current_messages[len(previous_messages) :])
+
     @staticmethod
     def _build_extension_meta(state: dict | None) -> dict:
         """응답 페이로드용 연장 메타데이터 구성"""
@@ -81,6 +90,35 @@ class InterviewService:
     def _get_thread_config(session_id: str) -> dict[str, dict[str, str]]:
         """세션별 LangGraph thread config를 반환"""
         return {"configurable": {"thread_id": session_id}}
+
+    @staticmethod
+    def _build_extension_start_state(current_state: dict, extension_turns_max: int) -> dict:
+        """완료 세션을 연장 모드로 전환하기 위한 공통 state update를 구성한다."""
+        extension_count = int(current_state.get("extension_count") or 0)
+        return {
+            "is_extended_mode": True,
+            "all_stages_complete": False,
+            "extension_count": extension_count + 1,
+            "extension_turns_used": 0,
+            "extension_turns_max": extension_turns_max,
+            "additional_question_target_statuses": {},
+            "additional_question_pre_evaluated": False,
+            "current_additional_question_target_id": None,
+            "pending_extended_end_guide": False,
+            "current_turn_files": [],
+            "file_contexts": [],
+            "mentioned_insight": None,
+        }
+
+    @staticmethod
+    def _should_auto_start_extension(current_state: dict, max_extensions: int) -> bool:
+        """완료된 일반 세션의 후속 채팅을 연장 모드 첫 입력으로 처리할지 판단한다."""
+        extension_count = int(current_state.get("extension_count") or 0)
+        return (
+            bool(current_state.get("all_stages_complete"))
+            and not bool(current_state.get("is_extended_mode", False))
+            and extension_count < max_extensions
+        )
 
     async def _set_session_status(
         self,
@@ -335,23 +373,13 @@ class InterviewService:
         if not current_state["all_stages_complete"]:
             raise ValueError("연장은 모든 단계 완료 후에만 시작할 수 있습니다.")
 
-        if current_state["extension_count"] >= global_config.max_extensions:
+        if int(current_state.get("extension_count") or 0) >= global_config.max_extensions:
             raise ValueError("최대 연장 횟수에 도달하여 더 이상 연장할 수 없습니다.")
 
-        input_state = {
-            "is_extended_mode": True,
-            "all_stages_complete": False,
-            "extension_count": current_state["extension_count"] + 1,
-            "extension_turns_used": 0,
-            "extension_turns_max": global_config.extension_turns_per_session,
-            "additional_question_target_statuses": {},
-            "additional_question_pre_evaluated": False,
-            "current_additional_question_target_id": None,
-            "pending_extended_end_guide": False,
-            "current_turn_files": [],
-            "file_contexts": [],
-            "mentioned_insight": None,
-        }
+        input_state = self._build_extension_start_state(
+            current_state,
+            global_config.extension_turns_per_session,
+        )
 
         result = await self._graph.ainvoke(
             input_state,
@@ -407,7 +435,7 @@ class InterviewService:
             }
             return
 
-        if current_state["extension_count"] >= global_config.max_extensions:
+        if int(current_state.get("extension_count") or 0) >= global_config.max_extensions:
             yield {
                 "event": SSEEventType.ERROR,
                 "data": json.dumps(
@@ -423,20 +451,10 @@ class InterviewService:
             }
             return
 
-        input_state = {
-            "is_extended_mode": True,
-            "all_stages_complete": False,
-            "extension_count": current_state["extension_count"] + 1,
-            "extension_turns_used": 0,
-            "extension_turns_max": global_config.extension_turns_per_session,
-            "additional_question_target_statuses": {},
-            "additional_question_pre_evaluated": False,
-            "current_additional_question_target_id": None,
-            "pending_extended_end_guide": False,
-            "current_turn_files": [],
-            "file_contexts": [],
-            "mentioned_insight": None,
-        }
+        input_state = self._build_extension_start_state(
+            current_state,
+            global_config.extension_turns_per_session,
+        )
         config = self._get_thread_config(session_id)
         accumulated_text = ""
 
@@ -597,14 +615,24 @@ class InterviewService:
             raise ValueError(f"세션을 찾을 수 없습니다: {session_id}")
 
         normalized_message = _normalize_user_message(message)
+        global_config = get_global_config()
 
         # 입력 상태 구성
-        input_state: dict = {
+        turn_input_state: dict = {
             "messages": [HumanMessage(content=normalized_message)],
             "current_turn_files": files or [],
             "file_contexts": [],
             "mentioned_insight": mentioned_insight,
         }
+        input_state: dict = turn_input_state
+        if self._should_auto_start_extension(current_state, global_config.max_extensions):
+            input_state = {
+                **self._build_extension_start_state(
+                    current_state,
+                    global_config.extension_turns_per_session,
+                ),
+                **turn_input_state,
+            }
 
         # 그래프 비동기 실행 (Checkpointer가 이전 상태 자동 로드)
         result = await self._graph.ainvoke(
@@ -612,9 +640,10 @@ class InterviewService:
             config=self._get_thread_config(session_id),
         )
 
-        ai_response = None
-        if not result["all_stages_complete"]:
-            ai_response = self._get_latest_ai_response(result.get("messages", []))
+        ai_response = self._get_latest_new_ai_response(
+            current_state.get("messages", []),
+            result.get("messages", []),
+        )
 
         return {
             "ai_response": ai_response,
@@ -725,14 +754,24 @@ class InterviewService:
             return
 
         normalized_message = _normalize_user_message(message)
+        global_config = get_global_config()
 
         # 2. 입력 상태 구성
-        input_state: dict = {
+        turn_input_state: dict = {
             "messages": [HumanMessage(content=normalized_message)],
             "current_turn_files": files or [],
             "file_contexts": [],
             "mentioned_insight": mentioned_insight,
         }
+        input_state: dict = turn_input_state
+        if self._should_auto_start_extension(current_state, global_config.max_extensions):
+            input_state = {
+                **self._build_extension_start_state(
+                    current_state,
+                    global_config.extension_turns_per_session,
+                ),
+                **turn_input_state,
+            }
 
         config = self._get_thread_config(session_id)
         accumulated_text = ""
@@ -795,11 +834,10 @@ class InterviewService:
             if final_state:
                 await self._set_session_status(session_id, "completed")
                 final_state = {**final_state, "status": "completed"}
-                ai_response: str | None = None
-                if not final_state["all_stages_complete"]:
-                    ai_response = accumulated_text or self._get_latest_ai_response(
-                        final_state.get("messages", [])
-                    )
+                ai_response = accumulated_text or self._get_latest_new_ai_response(
+                    current_state.get("messages", []),
+                    final_state.get("messages", []),
+                )
 
                 yield {
                     "event": SSEEventType.MESSAGE_COMPLETE,

@@ -322,9 +322,10 @@ async def test_process_message_stream_accepts_file_only_request(monkeypatch):
 async def test_process_message_stream_returns_none_when_all_complete(monkeypatch):
     """모든 단계 완료 상태면 message_complete의 ai_response는 null이다."""
     dummy_graph = DummyGraph()
+    previous_messages = [AIMessage(content="직전 질문")]
     dummy_graph.state_snapshot = DummyStateSnapshot(
         values={
-            "messages": [HumanMessage(content="사용자 최종 답변")],
+            "messages": [*previous_messages, HumanMessage(content="사용자 최종 답변")],
             "current_stage": 4,
             "stage_progress": {
                 "fixed_q_used": 3,
@@ -336,6 +337,8 @@ async def test_process_message_stream_returns_none_when_all_complete(monkeypatch
             },
             "overall_completion_percentage": 100.0,
             "all_stages_complete": True,
+            "is_extended_mode": False,
+            "extension_count": 1,
         }
     )
     dummy_graph.stream_events = []
@@ -361,6 +364,104 @@ async def test_process_message_stream_returns_none_when_all_complete(monkeypatch
     assert complete_payload["message"]["ai_response"] is None
     assert complete_payload["message"]["status"] == "completed"
     assert complete_payload["message"]["is_extended_mode"] is False
+
+
+@pytest.mark.anyio
+async def test_process_message_stream_auto_starts_extension_after_regular_completion(monkeypatch):
+    """완료 세션의 채팅 스트림은 별도 /extend 없이 연장 모드 상태로 실행된다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.stream_events = [
+        {
+            "event": LangGraphEventType.ON_CHAT_MODEL_STREAM,
+            "metadata": {"langgraph_node": "question_generator"},
+            "data": {"chunk": DummyChunk("연장 질문")},
+        }
+    ]
+
+    monkeypatch.setattr(
+        "features.interview.service.build_graph", lambda checkpointer=None: dummy_graph
+    )
+    monkeypatch.setattr("features.interview.service.get_checkpointer", lambda: object())
+    monkeypatch.setattr(
+        "features.interview.service.get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
+            },
+        )(),
+    )
+    service = InterviewService()
+
+    previous_messages = [
+        AIMessage(content="정규 마지막 질문"),
+        HumanMessage(content="정규 마지막 답변"),
+    ]
+    initial_state = {
+        "session_id": "session-1",
+        "messages": previous_messages,
+        "all_stages_complete": True,
+        "is_extended_mode": False,
+        "extension_count": 0,
+    }
+    final_state = {
+        "messages": [
+            *previous_messages,
+            HumanMessage(content="추가로 정리하고 싶은 내용입니다."),
+            AIMessage(content="연장 질문"),
+        ],
+        "current_stage": 4,
+        "stage_progress": {
+            "fixed_q_used": 3,
+            "fixed_q_total": 3,
+            "generated_q_used": 2,
+            "generated_q_max": 2,
+            "force_all_generated_q": False,
+            "is_complete": True,
+        },
+        "overall_completion_percentage": 100.0,
+        "all_stages_complete": False,
+        "is_extended_mode": True,
+        "extension_count": 1,
+        "extension_turns_used": 1,
+        "extension_turns_max": 18,
+    }
+    states = [initial_state, final_state]
+
+    async def _get_session_state(_session_id: str):
+        if states:
+            return states.pop(0)
+        return final_state
+
+    monkeypatch.setattr(service, "get_session_state", _get_session_state)
+
+    events = [
+        event
+        async for event in service.process_message_stream(
+            session_id="session-1",
+            message="추가로 정리하고 싶은 내용입니다.",
+        )
+    ]
+
+    invocation = dummy_graph.astream_calls[0]["state"]
+    assert invocation["is_extended_mode"] is True
+    assert invocation["all_stages_complete"] is False
+    assert invocation["extension_count"] == 1
+    assert invocation["extension_turns_used"] == 0
+    assert invocation["extension_turns_max"] == 18
+    assert invocation["messages"] == [HumanMessage(content="추가로 정리하고 싶은 내용입니다.")]
+
+    complete_event = next(
+        event for event in events if event["event"] == SSEEventType.MESSAGE_COMPLETE
+    )
+    complete_payload = json.loads(complete_event["data"])
+    assert complete_payload["message"]["ai_response"] == "연장 질문"
+    assert complete_payload["message"]["all_complete"] is False
+    assert complete_payload["message"]["is_extended_mode"] is True
+    assert complete_payload["message"]["extension_turns_used"] == 1
+    assert complete_payload["message"]["extension_turns_max"] == 18
 
 
 @pytest.mark.anyio

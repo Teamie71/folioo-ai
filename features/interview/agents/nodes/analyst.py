@@ -194,6 +194,20 @@ def run(state: InterviewState) -> InterviewState:
                 f"{llm_error} | {completion_llm_error}" if llm_error else completion_llm_error
             )
 
+        if _has_extension_capacity(state, global_config.max_extensions):
+            return {
+                **state,
+                **_build_regular_completion_extension_state(
+                    state,
+                    global_config.extension_turns_per_session,
+                ),
+                "stage_progress": updated_progress,
+                "collected_data": updated_collected_data,
+                "overall_completion_percentage": overall_completion_percentage,
+                "next_node": "question_generator",
+                "llm_error": merged_llm_error,
+            }
+
         return {
             **state,
             "stage_progress": updated_progress,
@@ -211,6 +225,31 @@ def run(state: InterviewState) -> InterviewState:
         "collected_data": updated_collected_data,
         "next_node": "question_generator",
         "llm_error": llm_error,
+    }
+
+
+def _has_extension_capacity(state: InterviewState, max_extensions: int) -> bool:
+    """추가 대화를 새로 시작할 수 있는지 판단한다."""
+    extension_count = int(state.get("extension_count") or 0)
+    return extension_count < max_extensions
+
+
+def _build_regular_completion_extension_state(
+    state: InterviewState,
+    extension_turns_max: int,
+) -> dict:
+    """정규 인터뷰 완료 직후 같은 턴에서 연장 모드로 전환할 state를 구성한다."""
+    extension_count = int(state.get("extension_count") or 0)
+    return {
+        "all_stages_complete": False,
+        "is_extended_mode": True,
+        "extension_count": extension_count + 1,
+        "extension_turns_used": 0,
+        "extension_turns_max": extension_turns_max,
+        "additional_question_target_statuses": {},
+        "additional_question_pre_evaluated": False,
+        "current_additional_question_target_id": None,
+        "pending_extended_end_guide": False,
     }
 
 
