@@ -6,7 +6,8 @@ spec: "specs/phase-1/07-phase2-regenerate-retry-pipeline.md"
 depends_on: ["1.05"]
 blocks: []
 estimate: "M"
-status: "todo"
+status: "done"
+completed_at: "2026-05-28"
 owner: ""
 sprint: ""
 ---
@@ -21,24 +22,24 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] Phase 2 수정 해석 LLM 프롬프트(§5.3·§5.4.1 가드) 초안
-- [ ] `current.pptx` 가 존재하는 partial_error Job 픽스처
+- [x] Phase 2 수정 해석 LLM 프롬프트(§5.3·§5.4.1 가드) 초안
+- [x] `current.pptx` 가 존재하는 partial_error Job 픽스처
 
 ## 구현 체크리스트
 
-- [ ] 컨텍스트 조회(currentFills·sourceSlideId) → `jobs/{job_id}/current.pptx` GCS 다운로드 → unpack → 대상 슬라이드 XML 만 수정
-- [ ] `isRetry=false`: `userRequest` LLM 해석(폰트 10~48pt, 슬라이드 밖 금지, 미지정 도형 불변, 명시 시에만 텍스트 변경)
-- [ ] `isRetry=true`: `userRequest` 없이 `jobs.slide_plan` content_brief 로 Phase 1 Step 3 로직 재사용
-- [ ] 꼬리 공통: pack(`--original current.pptx`)→해당 페이지만 soffice/pdftoppm→시각 QA(이슈 시 2회)→current.pptx/pdf 덮어쓰기 + 새 프리뷰 PUT → `slide_regenerated`(currentFills·gcsPreviewKey)
-- [ ] 실패 시 `slide_preview_error` 만 발신 (상태 롤백/카운터 보상은 메인 책임 — 워커 미관여)
-- [ ] 워커 가드: slide 상태 `regenerating`(재생성)/`generating`(재시도)일 때만 처리
+- [x] 컨텍스트 조회(currentFills·sourceSlideId) → `jobs/{job_id}/current.pptx` GCS 다운로드 → unpack → 대상 슬라이드 XML 만 수정
+- [x] `isRetry=false`: `userRequest` LLM 해석(폰트 10~48pt, 슬라이드 밖 금지, 미지정 도형 불변, 명시 시에만 텍스트 변경)
+- [x] `isRetry=true`: `userRequest` 없이 `jobs.slide_plan` content_brief 로 Phase 1 Step 3 로직 재사용
+- [x] 꼬리 공통: pack(`--original current.pptx`)→해당 페이지만 soffice/pdftoppm→시각 QA(이슈 시 2회)→current.pptx/pdf 덮어쓰기 + 새 프리뷰 PUT → `slide_regenerated`(currentFills·gcsPreviewKey)
+- [x] 실패 시 `slide_preview_error` 만 발신 (상태 롤백/카운터 보상은 메인 책임 — 워커 미관여)
+- [x] 워커 가드: slide 상태 `regenerating`(재생성)/`generating`(재시도)일 때만 처리
 
 ## Definition of Done
 
-- [ ] `isRetry=false` "제목 크기 키워줘" 시 지정 도형만 변경·미지정 불변 검증
-- [ ] `isRetry=true` 시 userRequest 없이 content_brief 로 재충전 검증
-- [ ] current.pptx/pdf 덮어쓰기 + 해당 페이지 프리뷰만 갱신 + `slide_regenerated` 발신 검증
-- [ ] 상태가 regenerating/generating 아닐 때 push 오면 처리 안 하고 200 skip 검증
+- [x] `isRetry=false` "제목 크기 키워줘" 시 지정 도형만 변경·미지정 불변 검증
+- [x] `isRetry=true` 시 userRequest 없이 content_brief 로 재충전 검증
+- [x] current.pptx/pdf 덮어쓰기 + 해당 페이지 프리뷰만 갱신 + `slide_regenerated` 발신 검증
+- [x] 상태가 regenerating/generating 아닐 때 push 오면 처리 안 하고 200 skip 검증
 
 ## 리스크 / 메모
 
