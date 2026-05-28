@@ -13,6 +13,7 @@ WORKER_PATH = ROOT / "apps" / "pptx-worker"
 
 
 def _worker_pythonpath() -> str:
+    """fresh subprocess 가 worker package를 찾도록 PYTHONPATH를 만든다."""
     paths = [str(ROOT), str(WORKER_PATH)]
     existing = os.environ.get("PYTHONPATH")
     if existing:
@@ -21,16 +22,23 @@ def _worker_pythonpath() -> str:
 
 
 def _run_python(source: str) -> subprocess.CompletedProcess[str]:
+    """격리 Python 프로세스를 실행하고 실패 출력을 pytest 메시지에 포함한다."""
     env = os.environ.copy()
     env["PYTHONPATH"] = _worker_pythonpath()
-    return subprocess.run(
+    result = subprocess.run(
         [sys.executable, "-c", source],
         cwd=ROOT,
         env=env,
-        check=True,
         text=True,
         capture_output=True,
     )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"worker import smoke 실패 (exit={result.returncode}):\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+    return result
 
 
 def test_pptx_worker_package_import_does_not_eager_load_app() -> None:
@@ -61,6 +69,20 @@ import features.visualization.service  # noqa: F401
 
 if "pptx_worker.main" in sys.modules:
     raise RuntimeError("features.visualization.service imported pptx_worker.main")
+"""
+
+    _run_python(textwrap.dedent(source))
+
+
+def test_visualization_qa_import_does_not_eager_load_worker_app() -> None:
+    """qa 단독 import 가 pptx_worker.main 순환 로딩을 유발하지 않는다."""
+    source = """
+import sys
+
+import features.visualization.qa  # noqa: F401
+
+if "pptx_worker.main" in sys.modules:
+    raise RuntimeError("features.visualization.qa imported pptx_worker.main")
 """
 
     _run_python(textwrap.dedent(source))

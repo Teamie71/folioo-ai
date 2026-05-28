@@ -208,3 +208,18 @@ def test_deployment_readme_documents_required_auth_checks(expected: str) -> None
     readme = README.read_text()
 
     assert expected in readme
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [
+        "이미지 build smoke는 `ANTHROPIC_PPTX_SKILL_DIR` 미설정 시 빠르게 실패하는 경로만",
+        "Secret/volume/env로 runtime에 주입",
+        "`PptxToolchain.ensure_available()`까지",
+    ],
+)
+def test_deployment_readme_documents_runtime_skill_smoke_scope(expected: str) -> None:
+    """PPTX skill directory smoke 범위가 build/runtime 경계를 설명한다."""
+    readme = README.read_text()
+
+    assert expected in readme

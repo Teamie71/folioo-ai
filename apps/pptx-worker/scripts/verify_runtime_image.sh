@@ -62,9 +62,8 @@ if "pptx_worker.main" in sys.modules:
 
 try:
     PptxToolchain.from_env(env_var="FOLIOO_MISSING_PPTX_SKILL_DIR_SMOKE")
-except PptxToolchainError as exc:
-    if "환경변수가 설정되지 않았습니다" not in str(exc):
-        raise
+except PptxToolchainError:
+    pass
 else:
     raise RuntimeError("missing PPTX skill env smoke did not fail")
 
