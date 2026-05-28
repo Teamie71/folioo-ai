@@ -21,6 +21,7 @@ from features.visualization.agents import (
     SlideChangeGenerator,
     SlidePlanGenerator,
 )
+from features.visualization.fills import merge_current_fills
 from features.visualization.main_client import VisualizationMainClient
 from features.visualization.pptx import (
     PptxRenderer,
@@ -316,9 +317,15 @@ class VisualizationTaskService:
         main_client: MainClient,
     ) -> None:
         slide_context = await main_client.get_slide_context(task.job_id, task.slide_id)
-        registered_slide = _registered_slide_from_context(task.slide_id, slide_context)
-        current_fills = _current_fills_from_context(slide_context)
+        registered_slide = RegisteredSlide(
+            slide_id=task.slide_id,
+            slide_order=0,
+            source_slide_id="",
+            slide_filename="",
+        )
         try:
+            registered_slide = _registered_slide_from_context(task.slide_id, slide_context)
+            current_fills = _current_fills_from_context(slide_context)
             job_context = await main_client.get_job_context(task.job_id)
             content_brief = _content_brief_for_slide(
                 job_context,
@@ -362,7 +369,7 @@ class VisualizationTaskService:
                     if not changes:
                         raise ValueError("재생성 변경 지시가 비어 있습니다.")
                     await asyncio.to_thread(editor.apply_fills, str(slide_xml_path), changes)
-                    updated_fills = _merge_current_fills(current_fills, changes)
+                    updated_fills = merge_current_fills(current_fills, changes)
 
                 self._pack_and_validate(
                     toolchain=toolchain,
@@ -455,7 +462,7 @@ class VisualizationTaskService:
                 main_client=main_client,
                 registered_slide=registered_slide,
                 message=str(exc) or "슬라이드 재생성에 실패했습니다.",
-                retryable=False,
+                retryable=_is_regenerate_retryable_error(exc),
             )
 
     async def _generate_with_client(
@@ -1046,16 +1053,24 @@ def _registered_slide_from_context(
         slide_id = fallback_slide_id
 
     slide_order = slide_context.get("slide_order")
-    if not isinstance(slide_order, int):
-        slide_order = 0
+    if not isinstance(slide_order, int) or isinstance(slide_order, bool) or slide_order < 1:
+        logger.error(
+            "invalid regenerate slide_context.slide_order: slide_context=%s",
+            dict(slide_context),
+        )
+        raise ValueError("slide_context.slide_order 는 1 이상의 정수여야 합니다.")
 
     source_slide_id = slide_context.get("source_slide_id")
     if not isinstance(source_slide_id, str):
         source_slide_id = ""
 
     slide_filename = slide_context.get("slide_filename")
-    if not isinstance(slide_filename, str):
-        slide_filename = ""
+    if not isinstance(slide_filename, str) or not slide_filename.strip():
+        logger.error(
+            "invalid regenerate slide_context.slide_filename: slide_context=%s",
+            dict(slide_context),
+        )
+        raise ValueError("slide_context.slide_filename 이 비어 있습니다.")
 
     return RegisteredSlide(
         slide_id=slide_id,
@@ -1113,23 +1128,6 @@ def _is_matching_planned_slide(item: Mapping[str, Any], slide: RegisteredSlide) 
     return bool(slide.slide_filename and item.get("slide_filename") == slide.slide_filename)
 
 
-def _merge_current_fills(
-    current_fills: Mapping[str, Any],
-    changes: Mapping[str, Mapping[str, Any]],
-) -> dict[str, Any]:
-    merged: dict[str, Any] = {}
-    for shape_id, fill in current_fills.items():
-        merged[str(shape_id)] = dict(fill) if isinstance(fill, Mapping) else fill
-
-    for shape_id, fill in changes.items():
-        shape_key = str(shape_id)
-        if fill.get("action") == "remove":
-            merged.pop(shape_key, None)
-            continue
-        merged[shape_key] = dict(fill)
-    return merged
-
-
 def _single_ready_outcome(outcomes: Sequence[Any]) -> Any | None:
     for outcome in outcomes:
         if getattr(outcome, "status", None) == "ready":
@@ -1172,6 +1170,14 @@ def _is_timeout_error(exc: Exception) -> bool:
         return True
     name = exc.__class__.__name__.lower()
     return "timeout" in name or "timedout" in name
+
+
+def _is_regenerate_retryable_error(exc: Exception) -> bool:
+    if _is_timeout_error(exc):
+        return True
+    if isinstance(exc, FileNotFoundError):
+        return False
+    return isinstance(exc, (OSError, PptxRenderError))
 
 
 def _slide_event_key(job_id: str, slide_id: str, event: str) -> str:

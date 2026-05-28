@@ -17,6 +17,7 @@ from typing import Any, Literal, Protocol
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from common.llm.client import get_file_processor_llm
+from features.visualization.fills import merge_current_fills
 from features.visualization.main_client import VisualizationMainClient
 from features.visualization.pptx import PptxRenderer, PptxToolchain, SlideEditor
 from features.visualization.storage.gcs_client import GcsClient
@@ -459,7 +460,7 @@ class VisualQAFixVerifyStep:
                 await asyncio.to_thread(self._editor.apply_fills, str(slide_xml_path), fills)
                 pending_slide.slide = replace(
                     pending_slide.slide,
-                    current_fills=_merge_current_fills(
+                    current_fills=merge_current_fills(
                         pending_slide.slide.current_fills,
                         fills,
                     ),
@@ -610,23 +611,6 @@ def _summarize_fills(fills: Mapping[str, Any]) -> str:
     if len(summary) <= _MAX_TEXT_SUMMARY_CHARS:
         return summary
     return f"{summary[:_MAX_TEXT_SUMMARY_CHARS].rstrip()}\n...(요약 길이 제한)"
-
-
-def _merge_current_fills(
-    current_fills: Mapping[str, Any],
-    changes: Mapping[str, Mapping[str, Any]],
-) -> dict[str, Any]:
-    merged: dict[str, Any] = {}
-    for shape_id, fill in current_fills.items():
-        merged[str(shape_id)] = dict(fill) if isinstance(fill, Mapping) else fill
-
-    for shape_id, fill in changes.items():
-        shape_key = str(shape_id)
-        if fill.get("action") == "remove":
-            merged.pop(shape_key, None)
-            continue
-        merged[shape_key] = dict(fill)
-    return merged
 
 
 def _image_data_url(image_path: Path) -> str:
