@@ -254,6 +254,20 @@ class FakeRenderer:
         return FakeRenderResult(slides=tuple(rendered))
 
 
+class FailingRenderer(FakeRenderer):
+    """렌더 단계 실패 대역."""
+
+    def render(
+        self,
+        pptx_path: Path,
+        output_dir: Path,
+        *,
+        page: int | None = None,
+    ) -> FakeRenderResult:
+        self.calls.append((pptx_path, output_dir, page))
+        raise RuntimeError("render failed")
+
+
 def test_visual_qa_classifies_passed_and_issue_slides(tmp_path: Path) -> None:
     """LLM JSON 응답을 통과/이슈 결과로 파싱한다."""
     image_path = tmp_path / "slide-01.jpg"
@@ -295,6 +309,38 @@ def test_visual_qa_parses_first_json_object_from_wrapped_response(tmp_path: Path
 
     assert result.passed is True
     assert result.issues == ()
+
+
+def test_visual_qa_factory_creates_llm_per_check(tmp_path: Path) -> None:
+    """기본 병렬 QA 경로에서 호출별 LLM 분리가 가능하도록 factory 를 사용한다."""
+    image_path = tmp_path / "slide-01.jpg"
+    _write_jpeg(image_path, width=800, height=450)
+    llms = [
+        FakeLLM(['{"passed": true, "issues": []}']),
+        FakeLLM(['{"passed": true, "issues": []}']),
+    ]
+    created: list[FakeLLM] = []
+
+    def llm_factory() -> FakeLLM:
+        llm = llms.pop(0)
+        created.append(llm)
+        return llm
+
+    qa = VisualQA(llm_factory=llm_factory)
+
+    qa.check_slide(image_path, {"brief": "표지"})
+    qa.check_slide(image_path, {"brief": "본문"})
+
+    assert len(created) == 2
+    assert created[0] is not created[1]
+    assert len(created[0].messages) == 1
+    assert len(created[1].messages) == 1
+
+
+def test_visual_qa_rejects_llm_and_factory_together() -> None:
+    """LLM 공유 객체와 factory 를 동시에 주입하는 잘못된 설정을 막는다."""
+    with pytest.raises(ValueError, match="동시에 설정"):
+        VisualQA(llm=FakeLLM([]), llm_factory=lambda: FakeLLM([]))
 
 
 def test_llm_visual_fixer_preserves_guardrails_in_prompt(tmp_path: Path) -> None:
@@ -532,7 +578,7 @@ async def test_fix_validation_failure_blocks_preview_ready_and_reports_slide_err
     context.toolchain.repair_results = [FakeValidation(success=False, stderr="repair failed")]
     qa = FakeQA({1: [_failed("overflow")]})
     renderer = FakeRenderer(pages=[1])
-    step = context.make_step(qa=qa, renderer=renderer, max_fix_attempts=1)
+    step = context.make_step(qa=qa, renderer=renderer)
 
     result = await step.process(
         job_id="job-1",
@@ -543,6 +589,7 @@ async def test_fix_validation_failure_blocks_preview_ready_and_reports_slide_err
         render_output_dir=context.render_dir,
     )
 
+    assert [call[0] for call in context.fixer.calls] == [1]
     assert len(context.toolchain.pack_calls) == 1
     assert len(context.toolchain.validate_calls) == 1
     assert len(context.toolchain.repair_calls) == 1
@@ -557,6 +604,36 @@ async def test_fix_validation_failure_blocks_preview_ready_and_reports_slide_err
     assert event["retryable"] is True
     assert "pptx_validation_failed" in event["message"]
     assert "repair failed" in event["message"]
+
+
+@pytest.mark.asyncio
+async def test_fix_render_failure_is_not_retried_as_fix_input(tmp_path: Path) -> None:
+    """자동 수정 후 렌더 실패는 즉시 slide error 로 확정하고 fix 루프에 재진입하지 않는다."""
+    context = _make_step_context(tmp_path, slide_orders=[1])
+    qa = FakeQA({1: [_failed("overflow")]})
+    renderer = FailingRenderer(pages=[1])
+    step = context.make_step(qa=qa, renderer=renderer)
+
+    result = await step.process(
+        job_id="job-1",
+        slides=context.slides,
+        unpacked_dir=context.unpacked_dir,
+        working_pptx_path=context.working_pptx,
+        fixed_pptx_path=context.fixed_pptx,
+        render_output_dir=context.render_dir,
+    )
+
+    assert [call[0] for call in context.fixer.calls] == [1]
+    assert len(context.toolchain.pack_calls) == 1
+    assert len(context.toolchain.validate_calls) == 1
+    assert len(renderer.calls) == 1
+    assert context.storage.uploads == []
+    assert result.pack_count == 1
+    assert result.render_count == 0
+    assert result.outcomes[0].status == "error"
+    event = context.main_client.events[0]
+    assert event["event"] == "slide_preview_error"
+    assert "pptx_render_failed" in event["message"]
 
 
 @pytest.mark.asyncio

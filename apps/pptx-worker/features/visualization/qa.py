@@ -8,7 +8,7 @@ import json
 import logging
 import mimetypes
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,7 +16,7 @@ from typing import Any, Literal, Protocol
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from common.llm.client import get_file_processor_llm
+from common.llm.client import get_file_processor_llm, get_file_processor_llm_uncached
 from features.visualization.fills import merge_current_fills
 from features.visualization.main_client import VisualizationMainClient
 from features.visualization.pptx import (
@@ -187,8 +187,16 @@ class _SlideCheckResult:
 class VisualQA:
     """렌더된 슬라이드 이미지를 비전 LLM으로 검사한다."""
 
-    def __init__(self, llm: VisionLLM | None = None) -> None:
+    def __init__(
+        self,
+        llm: VisionLLM | None = None,
+        *,
+        llm_factory: Callable[[], VisionLLM] | None = None,
+    ) -> None:
+        if llm is not None and llm_factory is not None:
+            raise ValueError("llm과 llm_factory는 동시에 설정할 수 없습니다.")
         self._llm = llm
+        self._llm_factory = llm_factory
 
     def check_slide(
         self,
@@ -200,7 +208,7 @@ class VisualQA:
         if not image_path.is_file():
             raise FileNotFoundError(f"슬라이드 프리뷰 이미지를 찾을 수 없습니다: {image_path}")
 
-        llm = self._llm or get_file_processor_llm()
+        llm = self._get_llm()
         messages = [
             SystemMessage(content=_QA_SYSTEM_PROMPT),
             HumanMessage(
@@ -219,6 +227,13 @@ class VisualQA:
         response = llm.invoke(messages)
         response_text = _normalize_response_text(getattr(response, "content", response))
         return _parse_qa_response(response_text)
+
+    def _get_llm(self) -> VisionLLM:
+        if self._llm is not None:
+            return self._llm
+        if self._llm_factory is not None:
+            return self._llm_factory()
+        return get_file_processor_llm_uncached()
 
 
 class LLMVisualFixer:
@@ -364,14 +379,16 @@ class VisualQAFixVerifyStep:
                         fix_attempts,
                         exc,
                     )
-                    self._mark_orders_failed(
-                        pending,
-                        fixed_orders,
+                    await self._finalize_slide_errors(
+                        job_id=job_id,
+                        pending=pending,
+                        outcomes=outcomes,
+                        slide_orders=fixed_orders,
                         code="pptx_validation_failed",
                         message=f"자동 수정 산출물 검증에 실패했습니다: {exc}",
                         retryable=True,
                     )
-                    failed_orders = [*unfixed_orders, *fixed_orders]
+                    failed_orders = unfixed_orders
                     continue
 
                 pack_count += 1
@@ -386,14 +403,16 @@ class VisualQAFixVerifyStep:
                         fix_attempts,
                         exc,
                     )
-                    self._mark_orders_failed(
-                        pending,
-                        fixed_orders,
+                    await self._finalize_slide_errors(
+                        job_id=job_id,
+                        pending=pending,
+                        outcomes=outcomes,
+                        slide_orders=fixed_orders,
                         code="pptx_render_failed",
                         message=f"자동 수정 산출물 렌더링에 실패했습니다: {exc}",
                         retryable=True,
                     )
-                    failed_orders = [*unfixed_orders, *fixed_orders]
+                    failed_orders = unfixed_orders
                     continue
 
                 rendered_by_page = {
@@ -410,9 +429,11 @@ class VisualQAFixVerifyStep:
                     rendered_orders.append(slide_order)
 
                 if missing_orders:
-                    self._mark_orders_failed(
-                        pending,
-                        tuple(missing_orders),
+                    await self._finalize_slide_errors(
+                        job_id=job_id,
+                        pending=pending,
+                        outcomes=outcomes,
+                        slide_orders=tuple(missing_orders),
                         code="pptx_render_missing_slide",
                         message="재렌더 결과에 슬라이드 이미지가 없습니다.",
                         retryable=True,
@@ -429,7 +450,6 @@ class VisualQAFixVerifyStep:
                     )
                 else:
                     recheck_failed_orders = []
-                recheck_failed_orders = [*missing_orders, *recheck_failed_orders]
 
             failed_orders = [*unfixed_orders, *recheck_failed_orders]
 
@@ -456,7 +476,7 @@ class VisualQAFixVerifyStep:
 
         result = VisualQAPipelineResult(
             outcomes=tuple(outcomes[key] for key in sorted(outcomes)),
-            qa_checked_slide_orders=tuple(checked_orders),
+            qa_checked_slide_orders=tuple(sorted(checked_orders)),
             fix_attempts=fix_attempts,
             pack_count=pack_count,
             render_count=render_count,
@@ -692,18 +712,28 @@ class VisualQAFixVerifyStep:
 
         candidate_pptx.replace(fixed_pptx)
 
-    def _mark_orders_failed(
+    async def _finalize_slide_errors(
         self,
-        pending: dict[int, _PendingSlide],
-        slide_orders: tuple[int, ...],
         *,
+        job_id: str,
+        pending: dict[int, _PendingSlide],
+        outcomes: dict[int, SlidePreviewOutcome],
+        slide_orders: tuple[int, ...],
         code: str,
         message: str,
         retryable: bool,
     ) -> None:
         issue = VisualQAIssue(code=code, message=message, retryable=retryable)
         for slide_order in slide_orders:
-            pending[slide_order].last_result = VisualQAResult(passed=False, issues=(issue,))
+            pending_slide = pending[slide_order]
+            pending_slide.last_result = VisualQAResult(passed=False, issues=(issue,))
+            await self._send_preview_error(
+                job_id,
+                pending_slide.slide,
+                message=_format_issue_message((issue,)),
+                retryable=retryable,
+            )
+            outcomes[slide_order] = self._error_outcome(pending_slide, (issue,))
 
     def _error_outcome(
         self,

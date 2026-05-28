@@ -316,3 +316,26 @@ def test_get_file_processor_llm_uses_dedicated_configuration(monkeypatch):
     assert captured["disable_streaming"] is True
     assert captured["max_retries"] == 0
     llm_client.get_file_processor_llm.cache_clear()
+
+
+def test_get_file_processor_llm_uncached_returns_new_instances(monkeypatch):
+    """캐시 없는 FileProcessor LLM helper는 호출마다 새 클라이언트를 만든다."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://example.test")
+    monkeypatch.setenv("FILE_PROCESSOR_MODEL_NAME", "google/gemini-test")
+
+    captured: list[dict[str, object]] = []
+
+    class _FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+
+    monkeypatch.setattr(llm_client, "ChatOpenAI", _FakeChatOpenAI)
+
+    first = llm_client.get_file_processor_llm_uncached()
+    second = llm_client.get_file_processor_llm_uncached()
+
+    assert isinstance(first, _FakeChatOpenAI)
+    assert isinstance(second, _FakeChatOpenAI)
+    assert first is not second
+    assert [item["model"] for item in captured] == ["google/gemini-test", "google/gemini-test"]

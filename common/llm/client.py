@@ -83,12 +83,23 @@ def get_file_processor_llm(
 ) -> ChatOpenAI:
     """FileProcessor 노드 전용 Vision LLM 클라이언트 반환"""
 
-    file_processor_model = model or os.getenv(
-        "FILE_PROCESSOR_MODEL_NAME", "google/gemini-3.1-pro-preview"
+    return _build_llm(
+        model=_file_processor_model(model),
+        temperature=temperature,
+        timeout=120,
+        disable_streaming=True,
+        max_retries=0,
     )
 
+
+def get_file_processor_llm_uncached(
+    model: str | None = None,
+    temperature: float = 0.0,
+) -> ChatOpenAI:
+    """FileProcessor 노드 전용 Vision LLM 클라이언트를 캐시 없이 반환"""
+
     return _build_llm(
-        model=file_processor_model,
+        model=_file_processor_model(model),
         temperature=temperature,
         timeout=120,
         disable_streaming=True,
@@ -104,3 +115,7 @@ def get_llm_uncached(
     """캐싱 없이 새 LLM 인스턴스 반환 (테스트/특수 케이스용)"""
 
     return _build_llm(model=model, temperature=temperature, timeout=timeout)
+
+
+def _file_processor_model(model: str | None) -> str:
+    return model or os.getenv("FILE_PROCESSOR_MODEL_NAME", "google/gemini-3.1-pro-preview")
