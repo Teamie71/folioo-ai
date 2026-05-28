@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import math
 import os
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 from typing import Literal
 
 FailureReason = Literal["timeout", "oom", "other"]
 
+DEFAULT_DURATION_SAMPLE_LIMIT = 512
 FAILURE_REASONS: tuple[FailureReason, ...] = ("timeout", "oom", "other")
 PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+WORKER_TMP_ROOT = Path(os.getenv("TMPDIR", "/tmp")).resolve()
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,10 +41,12 @@ class MetricsSnapshot:
 class WorkerMetricsRegistry:
     """단일 워커 프로세스에서 쓰는 thread-safe 메트릭 저장소."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_duration_samples: int = DEFAULT_DURATION_SAMPLE_LIMIT) -> None:
+        if max_duration_samples <= 0:
+            raise ValueError("max_duration_samples는 1 이상이어야 합니다.")
         self._lock = RLock()
         self._soffice_rss_bytes = 0
-        self._soffice_conversion_durations: list[float] = []
+        self._soffice_conversion_durations: deque[float] = deque(maxlen=max_duration_samples)
         self._soffice_conversion_failures = dict.fromkeys(FAILURE_REASONS, 0)
         self._worker_oom_kill_total = 0
         self._tmp_disk_bytes_used = 0
@@ -109,7 +114,7 @@ class WorkerMetricsRegistry:
         """Prometheus text exposition 포맷으로 메트릭을 렌더링한다."""
         snapshot = self.snapshot()
         lines = [
-            "# HELP soffice_rss_bytes Last observed LibreOffice child peak RSS in bytes.",
+            "# HELP soffice_rss_bytes Last observed LibreOffice process peak RSS in bytes.",
             "# TYPE soffice_rss_bytes gauge",
             f"soffice_rss_bytes {snapshot.soffice_rss_bytes}",
             "# HELP soffice_conversion_duration_seconds LibreOffice conversion duration summary.",
@@ -126,7 +131,7 @@ class WorkerMetricsRegistry:
                 f"soffice_conversion_duration_seconds_sum {duration_sum:.6g}",
                 "soffice_conversion_duration_seconds_count "
                 f"{len(snapshot.soffice_conversion_duration_seconds)}",
-                "# HELP soffice_conversion_failures_total LibreOffice conversion failures by reason.",
+                "# HELP soffice_conversion_failures_total PPTX render conversion failures by reason.",
                 "# TYPE soffice_conversion_failures_total counter",
             ]
         )
@@ -194,6 +199,7 @@ def safe_directory_size(path: Path) -> int:
 
 
 _metrics: WorkerMetricsRegistry | None = None
+_metrics_lock = Lock()
 
 
 def get_worker_metrics() -> WorkerMetricsRegistry:
@@ -201,7 +207,9 @@ def get_worker_metrics() -> WorkerMetricsRegistry:
     global _metrics
 
     if _metrics is None:
-        _metrics = WorkerMetricsRegistry()
+        with _metrics_lock:
+            if _metrics is None:
+                _metrics = WorkerMetricsRegistry()
     return _metrics
 
 
@@ -209,12 +217,15 @@ def set_worker_metrics(metrics: WorkerMetricsRegistry | None) -> None:
     """테스트용 워커 메트릭 저장소 교체."""
     global _metrics
 
-    _metrics = metrics
+    with _metrics_lock:
+        _metrics = metrics
 
 
 __all__ = [
     "FAILURE_REASONS",
+    "DEFAULT_DURATION_SAMPLE_LIMIT",
     "PROMETHEUS_CONTENT_TYPE",
+    "WORKER_TMP_ROOT",
     "FailureReason",
     "MetricsSnapshot",
     "WorkerMetricsRegistry",

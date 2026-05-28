@@ -35,7 +35,7 @@ class FakeProcess:
         self.timeout_once = timeout_once
         self.failure_returncode = failure_returncode
         self.killed = False
-        self.pid = 1000 + len(factory.processes)
+        self.pid = 10_000_000 + len(factory.processes)
         self.returncode = 0
 
     def communicate(self, timeout: float | None = None) -> tuple[str, str]:
@@ -348,13 +348,15 @@ def test_soffice_timeout_cleans_workdir_when_retry_fails(
     factory = FakePopenFactory(timeout_soffice_attempts=2)
 
     with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
-        with pytest.raises(PptxRenderError, match="초과"):
+        with pytest.raises(PptxRenderError, match="초과") as exc_info:
             _make_renderer(tmp_root, counter, metrics).render(source_pptx, tmp_path / "out")
 
     soffice_processes = [
         process for process in factory.processes if process.command[0] == "soffice"
     ]
     assert [process.killed for process in soffice_processes] == [True, True]
+    assert exc_info.value.__cause__ is not None
+    assert exc_info.value.__cause__.args
     assert counter.value == 0
     assert metrics.snapshot().soffice_conversion_failures_total["timeout"] == 1
     _assert_tmp_root_empty(tmp_root)
@@ -373,10 +375,11 @@ def test_non_zero_exit_raises_render_error(
     factory = FakePopenFactory(failing_commands={command_name})
 
     with patch("features.visualization.pptx.soffice_render.subprocess.Popen", factory):
-        with pytest.raises(PptxRenderError, match=f"{command_name} 명령이 실패"):
+        with pytest.raises(PptxRenderError, match=f"{command_name} 명령이 실패") as exc_info:
             _make_renderer(tmp_root, counter, metrics).render(source_pptx, tmp_path / "out")
 
     assert counter.value == 0
+    assert exc_info.value.args
     assert metrics.snapshot().soffice_conversion_failures_total["other"] == 1
     _assert_tmp_root_empty(tmp_root)
 
