@@ -332,10 +332,21 @@ async def handle_generate_task(
     """초기 PPTX 생성 Cloud Tasks push 요청을 처리한다."""
     runtime = _get_runtime()
     service = _get_task_service()
+    execution_key, target_key = _generate_in_flight_keys(payload)
     client = _main_client_factory(payload.callback_base_url)
 
     async with runtime.track_active():
         try:
+            if await runtime.in_flight_tasks.is_in_flight(
+                execution_key=execution_key,
+                target_key=target_key,
+            ):
+                return _in_flight_skip_response(
+                    payload=payload,
+                    target_key=target_key,
+                    background_tasks=background_tasks,
+                )
+
             try:
                 job_context = await client.get_job_context(payload.job_id)
             except MainServerError as exc:
@@ -360,7 +371,6 @@ async def handle_generate_task(
                     background_tasks=background_tasks,
                 )
 
-            execution_key, target_key = _generate_in_flight_keys(payload)
             claim = await runtime.in_flight_tasks.try_acquire(
                 execution_key=execution_key,
                 target_key=target_key,
@@ -430,10 +440,21 @@ async def handle_regenerate_task(
     """단일 슬라이드 재생성 Cloud Tasks push 요청을 처리한다."""
     runtime = _get_runtime()
     service = _get_task_service()
+    execution_key, target_key = _regenerate_in_flight_keys(payload)
     client = _main_client_factory(payload.callback_base_url)
 
     async with runtime.track_active():
         try:
+            if await runtime.in_flight_tasks.is_in_flight(
+                execution_key=execution_key,
+                target_key=target_key,
+            ):
+                return _in_flight_skip_response(
+                    payload=payload,
+                    target_key=target_key,
+                    background_tasks=background_tasks,
+                )
+
             try:
                 slide_context = await client.get_slide_context(payload.job_id, payload.slide_id)
             except MainServerError as exc:
@@ -459,7 +480,6 @@ async def handle_regenerate_task(
                     background_tasks=background_tasks,
                 )
 
-            execution_key, target_key = _regenerate_in_flight_keys(payload)
             claim = await runtime.in_flight_tasks.try_acquire(
                 execution_key=execution_key,
                 target_key=target_key,

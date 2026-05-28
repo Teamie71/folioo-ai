@@ -192,6 +192,11 @@ class InFlightTaskRegistry:
             target_key=target_key,
         )
 
+    async def is_in_flight(self, *, execution_key: str, target_key: str) -> bool:
+        """이미 실행 중인 payload 또는 대상인지 확인한다."""
+        async with self._lock:
+            return execution_key in self._execution_keys or target_key in self._target_keys
+
     async def release(self, *, execution_key: str, target_key: str) -> None:
         """실행 완료 또는 실패 후 in-flight 키를 해제한다."""
         async with self._lock:

@@ -267,7 +267,7 @@ async def test_generate_in_flight_duplicate_push_is_acked_without_reexecution(mo
     assert duplicate.json()["status"] == "skipped"
     assert duplicate.json()["reason"] == "in_flight_duplicate"
     assert len(service.generate_calls) == 1
-    assert main_client.job_context_calls == ["job-1", "job-1"]
+    assert main_client.job_context_calls == ["job-1"]
 
 
 @pytest.mark.asyncio
@@ -306,7 +306,7 @@ async def test_regenerate_in_flight_duplicate_push_is_acked_without_reexecution(
     assert duplicate.json()["reason"] == "in_flight_duplicate"
     assert len(service.regenerate_calls) == 1
     assert service.regenerate_calls[0].user_request == "표를 더 간결하게 바꿔줘"
-    assert main_client.slide_context_calls == [("job-1", "slide-3"), ("job-1", "slide-3")]
+    assert main_client.slide_context_calls == [("job-1", "slide-3")]
 
 
 def test_retryable_error_returns_503_for_cloud_tasks_retry(worker_client):
