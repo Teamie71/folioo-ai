@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tasks/visualizations", tags=["cloud-tasks"])
 
 _GENERATE_PROCESSABLE_JOB_STATUSES = {"pending", "generating"}
+_REGENERATE_PROCESSABLE_SLIDE_STATUSES = {"regenerating", "generating"}
 
 
 class MainClient(Protocol):
@@ -261,6 +262,49 @@ def _slide_order_from_context(slide_context: dict[str, Any]) -> int:
     return 0
 
 
+def _generate_in_flight_keys(payload: GeneratePushPayload) -> tuple[str, str]:
+    """generate payload 실행 키와 job 대상 키를 만든다."""
+    execution_key = (
+        f"{payload.message_type}:job:{payload.job_id}:idempotency:{payload.idempotency_key}"
+    )
+    target_key = f"{payload.message_type}:job:{payload.job_id}"
+    return execution_key, target_key
+
+
+def _regenerate_in_flight_keys(payload: RegeneratePushPayload) -> tuple[str, str]:
+    """regenerate/retry payload 실행 키와 slide 대상 키를 만든다."""
+    execution_key = (
+        f"{payload.message_type}:job:{payload.job_id}:slide:{payload.slide_id}:"
+        f"idempotency:{payload.idempotency_key}"
+    )
+    target_key = f"{payload.message_type}:job:{payload.job_id}:slide:{payload.slide_id}"
+    return execution_key, target_key
+
+
+def _in_flight_skip_response(
+    *,
+    payload: GeneratePushPayload | RegeneratePushPayload,
+    target_key: str,
+    background_tasks: BackgroundTasks,
+) -> JSONResponse:
+    """동일 worker-local 대상이 이미 실행 중이면 Cloud Tasks 에 ACK skip 을 반환한다."""
+    logger.info(
+        "in-flight 중복 작업 skip: message_type=%s job_id=%s target_key=%s idempotency_key=%s",
+        payload.message_type,
+        payload.job_id,
+        target_key,
+        payload.idempotency_key,
+    )
+    body: dict[str, Any] = {
+        "status": "skipped",
+        "reason": "in_flight_duplicate",
+        "jobId": payload.job_id,
+    }
+    if isinstance(payload, RegeneratePushPayload):
+        body["slideId"] = payload.slide_id
+    return _json_response(body, background_tasks=background_tasks)
+
+
 async def _send_regenerate_fatal_callback(
     client: MainClient,
     payload: RegeneratePushPayload,
@@ -316,51 +360,64 @@ async def handle_generate_task(
                     background_tasks=background_tasks,
                 )
 
-            try:
-                await service.generate(payload.to_task())
-            except RetryableError as exc:
-                logger.warning(
-                    "generate 작업 재시도 가능 실패: job_id=%s idempotency_key=%s detail=%s",
-                    payload.job_id,
-                    payload.idempotency_key,
-                    exc,
-                )
-                return _json_response(
-                    {"status": "retryable_failure", "detail": str(exc)},
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    background_tasks=background_tasks,
-                )
-            except FatalError as exc:
-                logger.warning(
-                    "generate 작업 치명 실패: job_id=%s idempotency_key=%s detail=%s",
-                    payload.job_id,
-                    payload.idempotency_key,
-                    exc,
-                )
-                try:
-                    await _send_generate_fatal_callback(client, payload, exc)
-                except Exception as callback_exc:
-                    logger.exception(
-                        "generate 치명 실패 콜백 전송 실패: job_id=%s idempotency_key=%s",
-                        payload.job_id,
-                        payload.idempotency_key,
-                    )
-                    return _json_response(
-                        {"status": "retryable_failure", "detail": str(callback_exc)},
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        background_tasks=background_tasks,
-                    )
-                await _schedule_recycle_if_needed(runtime, background_tasks)
-                return _json_response(
-                    {"status": "fatal_acked", "jobId": payload.job_id},
+            execution_key, target_key = _generate_in_flight_keys(payload)
+            claim = await runtime.in_flight_tasks.try_acquire(
+                execution_key=execution_key,
+                target_key=target_key,
+            )
+            if claim is None:
+                return _in_flight_skip_response(
+                    payload=payload,
+                    target_key=target_key,
                     background_tasks=background_tasks,
                 )
 
-            await _schedule_recycle_if_needed(runtime, background_tasks)
-            return _json_response(
-                {"status": "ok", "jobId": payload.job_id},
-                background_tasks=background_tasks,
-            )
+            async with claim:
+                try:
+                    await service.generate(payload.to_task())
+                except RetryableError as exc:
+                    logger.warning(
+                        "generate 작업 재시도 가능 실패: job_id=%s idempotency_key=%s detail=%s",
+                        payload.job_id,
+                        payload.idempotency_key,
+                        exc,
+                    )
+                    return _json_response(
+                        {"status": "retryable_failure", "detail": str(exc)},
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        background_tasks=background_tasks,
+                    )
+                except FatalError as exc:
+                    logger.warning(
+                        "generate 작업 치명 실패: job_id=%s idempotency_key=%s detail=%s",
+                        payload.job_id,
+                        payload.idempotency_key,
+                        exc,
+                    )
+                    try:
+                        await _send_generate_fatal_callback(client, payload, exc)
+                    except Exception as callback_exc:
+                        logger.exception(
+                            "generate 치명 실패 콜백 전송 실패: job_id=%s idempotency_key=%s",
+                            payload.job_id,
+                            payload.idempotency_key,
+                        )
+                        return _json_response(
+                            {"status": "retryable_failure", "detail": str(callback_exc)},
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            background_tasks=background_tasks,
+                        )
+                    await _schedule_recycle_if_needed(runtime, background_tasks)
+                    return _json_response(
+                        {"status": "fatal_acked", "jobId": payload.job_id},
+                        background_tasks=background_tasks,
+                    )
+
+                await _schedule_recycle_if_needed(runtime, background_tasks)
+                return _json_response(
+                    {"status": "ok", "jobId": payload.job_id},
+                    background_tasks=background_tasks,
+                )
         finally:
             await _close_client(client)
 
@@ -389,7 +446,7 @@ async def handle_regenerate_task(
                 )
 
             slide_status = slide_context.get("status")
-            if slide_status not in ("regenerating", "generating"):
+            if slide_status not in _REGENERATE_PROCESSABLE_SLIDE_STATUSES:
                 logger.info(
                     "regenerate 작업 skip: job_id=%s slide_id=%s status=%s idempotency_key=%s",
                     payload.job_id,
@@ -402,56 +459,74 @@ async def handle_regenerate_task(
                     background_tasks=background_tasks,
                 )
 
-            try:
-                await service.regenerate(payload.to_task())
-            except RetryableError as exc:
-                logger.warning(
-                    "regenerate 작업 재시도 가능 실패: job_id=%s slide_id=%s "
-                    "idempotency_key=%s detail=%s",
-                    payload.job_id,
-                    payload.slide_id,
-                    payload.idempotency_key,
-                    exc,
-                )
-                return _json_response(
-                    {"status": "retryable_failure", "detail": str(exc)},
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    background_tasks=background_tasks,
-                )
-            except FatalError as exc:
-                logger.warning(
-                    "regenerate 작업 치명 실패: job_id=%s slide_id=%s idempotency_key=%s detail=%s",
-                    payload.job_id,
-                    payload.slide_id,
-                    payload.idempotency_key,
-                    exc,
-                )
-                try:
-                    await _send_regenerate_fatal_callback(client, payload, slide_context, exc)
-                except Exception as callback_exc:
-                    logger.exception(
-                        "regenerate 치명 실패 콜백 전송 실패: job_id=%s slide_id=%s "
-                        "idempotency_key=%s",
-                        payload.job_id,
-                        payload.slide_id,
-                        payload.idempotency_key,
-                    )
-                    return _json_response(
-                        {"status": "retryable_failure", "detail": str(callback_exc)},
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        background_tasks=background_tasks,
-                    )
-                await _schedule_recycle_if_needed(runtime, background_tasks)
-                return _json_response(
-                    {"status": "fatal_acked", "jobId": payload.job_id, "slideId": payload.slide_id},
+            execution_key, target_key = _regenerate_in_flight_keys(payload)
+            claim = await runtime.in_flight_tasks.try_acquire(
+                execution_key=execution_key,
+                target_key=target_key,
+            )
+            if claim is None:
+                return _in_flight_skip_response(
+                    payload=payload,
+                    target_key=target_key,
                     background_tasks=background_tasks,
                 )
 
-            await _schedule_recycle_if_needed(runtime, background_tasks)
-            return _json_response(
-                {"status": "ok", "jobId": payload.job_id, "slideId": payload.slide_id},
-                background_tasks=background_tasks,
-            )
+            async with claim:
+                try:
+                    await service.regenerate(payload.to_task())
+                except RetryableError as exc:
+                    logger.warning(
+                        "regenerate 작업 재시도 가능 실패: job_id=%s slide_id=%s "
+                        "idempotency_key=%s detail=%s",
+                        payload.job_id,
+                        payload.slide_id,
+                        payload.idempotency_key,
+                        exc,
+                    )
+                    return _json_response(
+                        {"status": "retryable_failure", "detail": str(exc)},
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        background_tasks=background_tasks,
+                    )
+                except FatalError as exc:
+                    logger.warning(
+                        "regenerate 작업 치명 실패: job_id=%s slide_id=%s "
+                        "idempotency_key=%s detail=%s",
+                        payload.job_id,
+                        payload.slide_id,
+                        payload.idempotency_key,
+                        exc,
+                    )
+                    try:
+                        await _send_regenerate_fatal_callback(client, payload, slide_context, exc)
+                    except Exception as callback_exc:
+                        logger.exception(
+                            "regenerate 치명 실패 콜백 전송 실패: job_id=%s slide_id=%s "
+                            "idempotency_key=%s",
+                            payload.job_id,
+                            payload.slide_id,
+                            payload.idempotency_key,
+                        )
+                        return _json_response(
+                            {"status": "retryable_failure", "detail": str(callback_exc)},
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            background_tasks=background_tasks,
+                        )
+                    await _schedule_recycle_if_needed(runtime, background_tasks)
+                    return _json_response(
+                        {
+                            "status": "fatal_acked",
+                            "jobId": payload.job_id,
+                            "slideId": payload.slide_id,
+                        },
+                        background_tasks=background_tasks,
+                    )
+
+                await _schedule_recycle_if_needed(runtime, background_tasks)
+                return _json_response(
+                    {"status": "ok", "jobId": payload.job_id, "slideId": payload.slide_id},
+                    background_tasks=background_tasks,
+                )
         finally:
             await _close_client(client)
 
