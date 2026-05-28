@@ -19,7 +19,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from common.llm.client import get_file_processor_llm
 from features.visualization.fills import merge_current_fills
 from features.visualization.main_client import VisualizationMainClient
-from features.visualization.pptx import PptxRenderer, PptxToolchain, SlideEditor
+from features.visualization.pptx import (
+    PptxRenderer,
+    PptxToolchain,
+    PptxToolchainError,
+    SlideEditor,
+)
 from features.visualization.storage.gcs_client import GcsClient
 
 logger = logging.getLogger(__name__)
@@ -170,6 +175,15 @@ class _PendingSlide:
     last_result: VisualQAResult | None = None
 
 
+@dataclass(frozen=True)
+class _SlideCheckResult:
+    """비동기 QA 호출 하나의 결과."""
+
+    slide_order: int
+    qa_result: VisualQAResult
+    had_exception: bool = False
+
+
 class VisualQA:
     """렌더된 슬라이드 이미지를 비전 LLM으로 검사한다."""
 
@@ -265,10 +279,13 @@ class VisualQAFixVerifyStep:
         renderer: PptxRenderer,
         fixer: FixInstructionBuilder | None = None,
         max_fix_attempts: int = 2,
+        max_qa_concurrency: int = 4,
         clock: Any | None = None,
     ) -> None:
         if max_fix_attempts < 0:
             raise ValueError("max_fix_attempts는 0 이상이어야 합니다.")
+        if max_qa_concurrency <= 0:
+            raise ValueError("max_qa_concurrency는 1 이상이어야 합니다.")
         self._qa = qa
         self._storage = storage
         self._main_client = main_client
@@ -277,6 +294,7 @@ class VisualQAFixVerifyStep:
         self._renderer = renderer
         self._fixer = fixer or LLMVisualFixer(editor=editor)
         self._max_fix_attempts = max_fix_attempts
+        self._max_qa_concurrency = max_qa_concurrency
         self._clock = clock or (lambda: datetime.now(UTC))
 
     async def process(
@@ -332,31 +350,86 @@ class VisualQAFixVerifyStep:
             recheck_failed_orders: list[int] = []
 
             if fixed_orders:
-                fixed_pptx.parent.mkdir(parents=True, exist_ok=True)
-                self._toolchain.pack(unpacked_root, fixed_pptx, original_pptx=working_pptx)
-                pack_count += 1
+                try:
+                    self._pack_and_validate_fixed_pptx(
+                        unpacked_root=unpacked_root,
+                        fixed_pptx=fixed_pptx,
+                        working_pptx=working_pptx,
+                        attempt=fix_attempts,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "visual QA fixed PPTX validation failed: orders=%s attempt=%s error=%s",
+                        fixed_orders,
+                        fix_attempts,
+                        exc,
+                    )
+                    self._mark_orders_failed(
+                        pending,
+                        fixed_orders,
+                        code="pptx_validation_failed",
+                        message=f"자동 수정 산출물 검증에 실패했습니다: {exc}",
+                        retryable=True,
+                    )
+                    failed_orders = [*unfixed_orders, *fixed_orders]
+                    continue
 
-                render_page = fixed_orders[0] if len(fixed_orders) == 1 else None
-                render_result = self._renderer.render(fixed_pptx, render_dir, page=render_page)
-                render_count += 1
+                pack_count += 1
+                try:
+                    render_page = fixed_orders[0] if len(fixed_orders) == 1 else None
+                    render_result = self._renderer.render(fixed_pptx, render_dir, page=render_page)
+                    render_count += 1
+                except Exception as exc:
+                    logger.warning(
+                        "visual QA fixed PPTX render failed: orders=%s attempt=%s error=%s",
+                        fixed_orders,
+                        fix_attempts,
+                        exc,
+                    )
+                    self._mark_orders_failed(
+                        pending,
+                        fixed_orders,
+                        code="pptx_render_failed",
+                        message=f"자동 수정 산출물 렌더링에 실패했습니다: {exc}",
+                        retryable=True,
+                    )
+                    failed_orders = [*unfixed_orders, *fixed_orders]
+                    continue
+
                 rendered_by_page = {
                     rendered.page: rendered.image_path for rendered in render_result.slides
                 }
+                rendered_orders: list[int] = []
+                missing_orders: list[int] = []
                 for slide_order in fixed_orders:
-                    if slide_order not in rendered_by_page:
-                        raise RuntimeError(
-                            f"재렌더 결과에 slide_order={slide_order} 이미지가 없습니다."
-                        )
-                    pending[slide_order].image_path = rendered_by_page[slide_order]
+                    rendered_image = rendered_by_page.get(slide_order)
+                    if rendered_image is None:
+                        missing_orders.append(slide_order)
+                        continue
+                    pending[slide_order].image_path = rendered_image
+                    rendered_orders.append(slide_order)
 
-                recheck_failed_orders = await self._check_and_publish_passes(
-                    job_id=job_id,
-                    pending=pending,
-                    candidate_orders=fixed_orders,
-                    outcomes=outcomes,
-                    checked_orders=checked_orders,
-                    ready_event=ready_event,
-                )
+                if missing_orders:
+                    self._mark_orders_failed(
+                        pending,
+                        tuple(missing_orders),
+                        code="pptx_render_missing_slide",
+                        message="재렌더 결과에 슬라이드 이미지가 없습니다.",
+                        retryable=True,
+                    )
+
+                if rendered_orders:
+                    recheck_failed_orders = await self._check_and_publish_passes(
+                        job_id=job_id,
+                        pending=pending,
+                        candidate_orders=tuple(rendered_orders),
+                        outcomes=outcomes,
+                        checked_orders=checked_orders,
+                        ready_event=ready_event,
+                    )
+                else:
+                    recheck_failed_orders = []
+                recheck_failed_orders = [*missing_orders, *recheck_failed_orders]
 
             failed_orders = [*unfixed_orders, *recheck_failed_orders]
 
@@ -401,36 +474,138 @@ class VisualQAFixVerifyStep:
         checked_orders: list[int],
         ready_event: str | None,
     ) -> list[int]:
-        failed_orders: list[int] = []
-        for slide_order in candidate_orders:
-            if slide_order in outcomes:
-                continue
-            pending_slide = pending[slide_order]
-            qa_result = await asyncio.to_thread(
-                self._qa.check_slide,
-                pending_slide.image_path,
-                _expected_content(pending_slide.slide),
+        check_orders = tuple(
+            slide_order for slide_order in candidate_orders if slide_order not in outcomes
+        )
+        if not check_orders:
+            return []
+
+        failed_order_set: set[int] = set()
+        semaphore = asyncio.Semaphore(self._max_qa_concurrency)
+        tasks = [
+            asyncio.create_task(
+                self._check_one_slide(
+                    pending_slide=pending[slide_order],
+                    semaphore=semaphore,
+                )
             )
-            pending_slide.qa_attempts += 1
-            pending_slide.last_result = qa_result
-            checked_orders.append(slide_order)
-            if qa_result.passed:
-                gcs_key = await self._upload_and_send_ready(
-                    job_id,
-                    pending_slide,
-                    ready_event=ready_event,
+            for slide_order in check_orders
+        ]
+        try:
+            for future in asyncio.as_completed(tasks):
+                check_result = await future
+                slide_order = check_result.slide_order
+                pending_slide = pending[slide_order]
+                qa_result = check_result.qa_result
+
+                pending_slide.qa_attempts += 1
+                pending_slide.last_result = qa_result
+                checked_orders.append(slide_order)
+
+                if check_result.had_exception:
+                    await self._send_preview_error(
+                        job_id,
+                        pending_slide.slide,
+                        message=_format_issue_message(qa_result.issues),
+                        retryable=_issues_retryable(qa_result.issues),
+                    )
+                    outcomes[slide_order] = self._error_outcome(pending_slide, qa_result.issues)
+                    continue
+
+                if qa_result.passed:
+                    outcomes[slide_order] = await self._publish_ready_or_error(
+                        job_id,
+                        pending_slide,
+                        ready_event=ready_event,
+                    )
+                    continue
+
+                failed_order_set.add(slide_order)
+        except Exception:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        return [slide_order for slide_order in check_orders if slide_order in failed_order_set]
+
+    async def _check_one_slide(
+        self,
+        *,
+        pending_slide: _PendingSlide,
+        semaphore: asyncio.Semaphore,
+    ) -> _SlideCheckResult:
+        slide = pending_slide.slide
+        async with semaphore:
+            try:
+                qa_result = await asyncio.to_thread(
+                    self._qa.check_slide,
+                    pending_slide.image_path,
+                    _expected_content(slide),
                 )
-                outcomes[slide_order] = SlidePreviewOutcome(
-                    slide_id=pending_slide.slide.slide_id,
-                    slide_order=slide_order,
-                    status="ready",
-                    qa_attempts=pending_slide.qa_attempts,
-                    gcs_preview_key=gcs_key,
-                    current_fills=pending_slide.slide.current_fills,
+            except Exception as exc:
+                logger.warning(
+                    "visual QA check failed: slide_order=%s error=%s",
+                    slide.slide_order,
+                    exc,
                 )
-                continue
-            failed_orders.append(slide_order)
-        return failed_orders
+                return _SlideCheckResult(
+                    slide_order=slide.slide_order,
+                    qa_result=VisualQAResult(
+                        passed=False,
+                        issues=(
+                            VisualQAIssue(
+                                code="visual_qa_exception",
+                                message=f"시각 QA 호출에 실패했습니다: {exc}",
+                                retryable=True,
+                            ),
+                        ),
+                    ),
+                    had_exception=True,
+                )
+        return _SlideCheckResult(slide_order=slide.slide_order, qa_result=qa_result)
+
+    async def _publish_ready_or_error(
+        self,
+        job_id: str,
+        pending_slide: _PendingSlide,
+        *,
+        ready_event: str | None,
+    ) -> SlidePreviewOutcome:
+        try:
+            gcs_key = await self._upload_and_send_ready(
+                job_id,
+                pending_slide,
+                ready_event=ready_event,
+            )
+        except Exception as exc:
+            logger.warning(
+                "visual QA preview publish failed: slide_order=%s error=%s",
+                pending_slide.slide.slide_order,
+                exc,
+            )
+            issue = VisualQAIssue(
+                code="preview_publish_failed",
+                message=f"프리뷰 업로드 또는 콜백에 실패했습니다: {exc}",
+                retryable=True,
+            )
+            pending_slide.last_result = VisualQAResult(passed=False, issues=(issue,))
+            await self._send_preview_error(
+                job_id,
+                pending_slide.slide,
+                message=_format_issue_message((issue,)),
+                retryable=issue.retryable,
+            )
+            return self._error_outcome(pending_slide, (issue,))
+
+        return SlidePreviewOutcome(
+            slide_id=pending_slide.slide.slide_id,
+            slide_order=pending_slide.slide.slide_order,
+            status="ready",
+            qa_attempts=pending_slide.qa_attempts,
+            gcs_preview_key=gcs_key,
+            current_fills=pending_slide.slide.current_fills,
+        )
 
     async def _apply_fixes(
         self,
@@ -485,6 +660,63 @@ class VisualQAFixVerifyStep:
                 continue
             fixed_orders.append(slide_order)
         return tuple(fixed_orders)
+
+    def _pack_and_validate_fixed_pptx(
+        self,
+        *,
+        unpacked_root: Path,
+        fixed_pptx: Path,
+        working_pptx: Path,
+        attempt: int,
+    ) -> None:
+        candidate_pptx = _candidate_fixed_pptx_path(fixed_pptx, attempt)
+        candidate_pptx.parent.mkdir(parents=True, exist_ok=True)
+        candidate_pptx.unlink(missing_ok=True)
+
+        self._toolchain.pack(unpacked_root, candidate_pptx, original_pptx=working_pptx)
+        validation = self._toolchain.validate(unpacked_root, original_pptx=working_pptx)
+        if not validation.success:
+            repair_result = self._toolchain.repair(unpacked_root, original_pptx=working_pptx)
+            if not repair_result.success:
+                candidate_pptx.unlink(missing_ok=True)
+                raise PptxToolchainError(
+                    _validation_error_message("PPTX auto-repair 실패", repair_result)
+                )
+            self._toolchain.pack(unpacked_root, candidate_pptx, original_pptx=working_pptx)
+            validation = self._toolchain.validate(unpacked_root, original_pptx=working_pptx)
+            if not validation.success:
+                candidate_pptx.unlink(missing_ok=True)
+                raise PptxToolchainError(
+                    _validation_error_message("PPTX 검증이 repair 이후에도 실패", validation)
+                )
+
+        candidate_pptx.replace(fixed_pptx)
+
+    def _mark_orders_failed(
+        self,
+        pending: dict[int, _PendingSlide],
+        slide_orders: tuple[int, ...],
+        *,
+        code: str,
+        message: str,
+        retryable: bool,
+    ) -> None:
+        issue = VisualQAIssue(code=code, message=message, retryable=retryable)
+        for slide_order in slide_orders:
+            pending[slide_order].last_result = VisualQAResult(passed=False, issues=(issue,))
+
+    def _error_outcome(
+        self,
+        pending_slide: _PendingSlide,
+        issues: tuple[VisualQAIssue, ...],
+    ) -> SlidePreviewOutcome:
+        return SlidePreviewOutcome(
+            slide_id=pending_slide.slide.slide_id,
+            slide_order=pending_slide.slide.slide_order,
+            status="error",
+            qa_attempts=pending_slide.qa_attempts,
+            issues=issues,
+        )
 
     async def _upload_and_send_ready(
         self,
@@ -728,6 +960,16 @@ def _slide_xml_path(unpacked_root: Path, slide_filename: str) -> Path:
     if not path.is_file():
         raise FileNotFoundError(f"슬라이드 XML을 찾을 수 없습니다: {path}")
     return path
+
+
+def _candidate_fixed_pptx_path(fixed_pptx: Path, attempt: int) -> Path:
+    return fixed_pptx.with_name(f"{fixed_pptx.stem}.attempt-{attempt}{fixed_pptx.suffix}")
+
+
+def _validation_error_message(reason: str, validation: object) -> str:
+    stdout = getattr(validation, "stdout", "")
+    stderr = getattr(validation, "stderr", "")
+    return f"{reason}.\nstdout:\n{stdout}\nstderr:\n{stderr}"
 
 
 def _idempotency_key(job_id: str, slide: SlidePreview, event: str) -> str:
