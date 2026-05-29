@@ -8,7 +8,7 @@ import json
 import logging
 import mimetypes
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -193,6 +193,11 @@ class VisualQA:
         *,
         llm_factory: Callable[[], VisionLLM] | None = None,
     ) -> None:
+        """QA 클라이언트를 초기화한다.
+
+        llm_factory 는 병렬 QA worker thread 에서 호출되므로 thread-safe 하거나
+        호출마다 독립적인 LLM 클라이언트를 반환해야 한다.
+        """
         if llm is not None and llm_factory is not None:
             raise ValueError("llm과 llm_factory는 동시에 설정할 수 없습니다.")
         self._llm = llm
@@ -366,7 +371,7 @@ class VisualQAFixVerifyStep:
 
             if fixed_orders:
                 try:
-                    self._pack_and_validate_fixed_pptx(
+                    pack_count += self._pack_and_validate_fixed_pptx(
                         unpacked_root=unpacked_root,
                         fixed_pptx=fixed_pptx,
                         working_pptx=working_pptx,
@@ -391,7 +396,6 @@ class VisualQAFixVerifyStep:
                     failed_orders = unfixed_orders
                     continue
 
-                pack_count += 1
                 try:
                     render_page = fixed_orders[0] if len(fixed_orders) == 1 else None
                     render_result = self._renderer.render(fixed_pptx, render_dir, page=render_page)
@@ -688,11 +692,12 @@ class VisualQAFixVerifyStep:
         fixed_pptx: Path,
         working_pptx: Path,
         attempt: int,
-    ) -> None:
+    ) -> int:
         candidate_pptx = _candidate_fixed_pptx_path(fixed_pptx, attempt)
         candidate_pptx.parent.mkdir(parents=True, exist_ok=True)
         candidate_pptx.unlink(missing_ok=True)
 
+        pack_count = 1
         self._toolchain.pack(unpacked_root, candidate_pptx, original_pptx=working_pptx)
         validation = self._toolchain.validate(unpacked_root, original_pptx=working_pptx)
         if not validation.success:
@@ -702,6 +707,7 @@ class VisualQAFixVerifyStep:
                 raise PptxToolchainError(
                     _validation_error_message("PPTX auto-repair 실패", repair_result)
                 )
+            pack_count += 1
             self._toolchain.pack(unpacked_root, candidate_pptx, original_pptx=working_pptx)
             validation = self._toolchain.validate(unpacked_root, original_pptx=working_pptx)
             if not validation.success:
@@ -711,6 +717,7 @@ class VisualQAFixVerifyStep:
                 )
 
         candidate_pptx.replace(fixed_pptx)
+        return pack_count
 
     async def _finalize_slide_errors(
         self,
@@ -718,7 +725,7 @@ class VisualQAFixVerifyStep:
         job_id: str,
         pending: dict[int, _PendingSlide],
         outcomes: dict[int, SlidePreviewOutcome],
-        slide_orders: tuple[int, ...],
+        slide_orders: Sequence[int],
         code: str,
         message: str,
         retryable: bool,

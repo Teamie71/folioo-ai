@@ -444,7 +444,8 @@ async def test_qa_checks_run_in_parallel_and_fast_pass_is_published_before_slow_
         lambda: any(
             event["event"] == "slide_preview_ready" and event["slide_order"] == 2
             for event in context.main_client.events
-        )
+        ),
+        timeout=1.5,
     )
 
     assert process_task.done() is False
@@ -604,6 +605,37 @@ async def test_fix_validation_failure_blocks_preview_ready_and_reports_slide_err
     assert event["retryable"] is True
     assert "pptx_validation_failed" in event["message"]
     assert "repair failed" in event["message"]
+
+
+@pytest.mark.asyncio
+async def test_fix_validation_repair_success_counts_both_pack_calls(tmp_path: Path) -> None:
+    """repair 성공 후 재pack 된 횟수까지 pack_count 에 반영한다."""
+    context = _make_step_context(tmp_path, slide_orders=[1])
+    context.toolchain.validation_results = [
+        FakeValidation(success=False, stdout="invalid"),
+        FakeValidation(success=True),
+    ]
+    context.toolchain.repair_results = [FakeValidation(success=True)]
+    qa = FakeQA({1: [_failed("overflow"), _passed()]})
+    renderer = FakeRenderer(pages=[1])
+    step = context.make_step(qa=qa, renderer=renderer)
+
+    result = await step.process(
+        job_id="job-1",
+        slides=context.slides,
+        unpacked_dir=context.unpacked_dir,
+        working_pptx_path=context.working_pptx,
+        fixed_pptx_path=context.fixed_pptx,
+        render_output_dir=context.render_dir,
+    )
+
+    assert len(context.toolchain.pack_calls) == 2
+    assert len(context.toolchain.validate_calls) == 2
+    assert len(context.toolchain.repair_calls) == 1
+    assert result.pack_count == 2
+    assert result.render_count == 1
+    assert context.fixed_pptx.exists() is True
+    assert result.outcomes[0].status == "ready"
 
 
 @pytest.mark.asyncio
