@@ -55,12 +55,18 @@ class WorkerRuntime:
         self._active_count = 0
         self._processed_counter = processed_counter or InMemoryConversionCounter()
         self._shutdown_requested = False
+        self._in_flight_tasks = InFlightTaskRegistry()
         self._lock = asyncio.Lock()
 
     @property
     def processed_counter(self) -> ConversionCounter:
         """PPTX 렌더러와 공유할 누적 변환 카운터."""
         return self._processed_counter
+
+    @property
+    def in_flight_tasks(self) -> "InFlightTaskRegistry":
+        """현재 워커 프로세스에서 실행 중인 Cloud Tasks 작업 registry."""
+        return self._in_flight_tasks
 
     @asynccontextmanager
     async def track_active(self):
@@ -113,6 +119,91 @@ class WorkerRuntime:
         return True
 
 
+class InFlightTaskClaim:
+    """worker-local in-flight 작업 claim."""
+
+    def __init__(
+        self,
+        registry: "InFlightTaskRegistry",
+        *,
+        execution_key: str,
+        target_key: str,
+    ) -> None:
+        self._registry = registry
+        self._execution_key = execution_key
+        self._target_key = target_key
+        self._released = False
+
+    @property
+    def execution_key(self) -> str:
+        """Cloud Tasks payload 단위 실행 키."""
+        return self._execution_key
+
+    @property
+    def target_key(self) -> str:
+        """job 또는 slide 단위 대상 키."""
+        return self._target_key
+
+    async def __aenter__(self) -> "InFlightTaskClaim":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: Any,
+    ) -> None:
+        await self.release()
+
+    async def release(self) -> None:
+        """claim 을 해제한다."""
+        if self._released:
+            return
+        await self._registry.release(
+            execution_key=self._execution_key,
+            target_key=self._target_key,
+        )
+        self._released = True
+
+
+class InFlightTaskRegistry:
+    """동일 워커 프로세스 안의 중복 Cloud Tasks 실행을 막는다."""
+
+    def __init__(self) -> None:
+        self._execution_keys: set[str] = set()
+        self._target_keys: set[str] = set()
+        self._lock = asyncio.Lock()
+
+    async def try_acquire(
+        self,
+        *,
+        execution_key: str,
+        target_key: str,
+    ) -> InFlightTaskClaim | None:
+        """이미 실행 중인 payload 또는 대상이면 None, 아니면 claim 을 반환한다."""
+        async with self._lock:
+            if execution_key in self._execution_keys or target_key in self._target_keys:
+                return None
+            self._execution_keys.add(execution_key)
+            self._target_keys.add(target_key)
+        return InFlightTaskClaim(
+            self,
+            execution_key=execution_key,
+            target_key=target_key,
+        )
+
+    async def is_in_flight(self, *, execution_key: str, target_key: str) -> bool:
+        """이미 실행 중인 payload 또는 대상인지 확인한다."""
+        async with self._lock:
+            return execution_key in self._execution_keys or target_key in self._target_keys
+
+    async def release(self, *, execution_key: str, target_key: str) -> None:
+        """실행 완료 또는 실패 후 in-flight 키를 해제한다."""
+        async with self._lock:
+            self._execution_keys.discard(execution_key)
+            self._target_keys.discard(target_key)
+
+
 _runtime: WorkerRuntime | None = None
 
 
@@ -134,6 +225,8 @@ def set_worker_runtime(runtime: WorkerRuntime | None) -> None:
 
 __all__ = [
     "DEFAULT_RECYCLE_AFTER",
+    "InFlightTaskClaim",
+    "InFlightTaskRegistry",
     "WorkerRuntime",
     "get_worker_runtime",
     "set_worker_runtime",

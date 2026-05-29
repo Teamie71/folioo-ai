@@ -29,6 +29,8 @@ class SlideEditor:
     PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
     _TITLE_PLACEHOLDER_TYPES = frozenset({"title", "ctrTitle", "subTitle"})
+    _TEXT_ALLOWED_ACTIONS = ("text", "remove")
+    _CHART_ALLOWED_ACTIONS = ("chart",)
 
     def extract_slots(self, slide_xml_path: str) -> list[dict[str, Any]]:
         """
@@ -40,7 +42,9 @@ class SlideEditor:
         Returns:
             list[dict[str, Any]]: Slot 디스크립터 목록. 각 항목은 `shape_id`,
             `shape_name`, `x_emu`, `y_emu`, `w_emu`, `h_emu`, `current_text`,
-            `is_title_placeholder`, `font_size_pt`, `kind` 를 포함한다.
+            `is_title_placeholder`, `font_size_pt`, `kind`, `editable`, `required`,
+            `allowed_actions` 를 포함한다. 텍스트가 없는 장식 도형은 LLM fill
+            대상에서 제외한다.
         """
         doc = parse(slide_xml_path)
         sp_tree = self._first_descendant(doc, self.PML_NS, "spTree")
@@ -142,16 +146,28 @@ class SlideEditor:
 
         cnv_pr = self._get_cnv_pr(sp_element)
         tx_body = self._first_descendant(sp_element, self.PML_NS, "txBody")
+        is_title_placeholder = self._is_title_placeholder(sp_element)
+        if tx_body is None and not is_title_placeholder:
+            return None
+
+        current_text = self._text_body_content(tx_body) if tx_body is not None else ""
+        if not current_text.strip() and not is_title_placeholder:
+            return None
+
         kind = "image" if self._has_image_fill(sp_element) else "text"
 
         return {
             "shape_id": shape_id,
             "shape_name": cnv_pr.getAttribute("name") if cnv_pr is not None else "",
             **self._coordinates(sp_element),
-            "current_text": self._text_body_content(tx_body) if tx_body is not None else "",
-            "is_title_placeholder": self._is_title_placeholder(sp_element),
+            "current_text": current_text,
+            "is_title_placeholder": is_title_placeholder,
             "font_size_pt": self._first_font_size_pt(tx_body) if tx_body is not None else None,
             "kind": kind,
+            "role": "title" if is_title_placeholder else "body",
+            "editable": True,
+            "required": True,
+            "allowed_actions": list(self._TEXT_ALLOWED_ACTIONS),
         }
 
     def _describe_graphic_frame(
@@ -180,6 +196,10 @@ class SlideEditor:
             "is_title_placeholder": False,
             "font_size_pt": None,
             "kind": "chart",
+            "role": "chart",
+            "editable": True,
+            "required": True,
+            "allowed_actions": list(self._CHART_ALLOWED_ACTIONS),
             "chart_rel_id": self._chart_rel_id(chart),
             "chart_type": chart_summary.get("chart_type"),
             "categories": chart_summary.get("categories", []),

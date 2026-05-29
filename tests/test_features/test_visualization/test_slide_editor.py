@@ -212,8 +212,16 @@ def test_extract_slots_reads_text_and_chart_metadata(tmp_path: Path) -> None:
     assert slots["2"]["is_title_placeholder"] is True
     assert slots["2"]["font_size_pt"] == 40.0
     assert slots["2"]["kind"] == "text"
+    assert slots["2"]["editable"] is True
+    assert slots["2"]["required"] is True
+    assert slots["2"]["allowed_actions"] == ["text", "remove"]
+    assert slots["2"]["role"] == "title"
 
     assert slots["8"]["kind"] == "chart"
+    assert slots["8"]["editable"] is True
+    assert slots["8"]["required"] is True
+    assert slots["8"]["allowed_actions"] == ["chart"]
+    assert slots["8"]["role"] == "chart"
     assert slots["8"]["chart_rel_id"] == "rId7"
     assert slots["8"]["chart_type"] == "bar"
     assert slots["8"]["current_text"] == "기존 차트"
@@ -239,6 +247,48 @@ def test_extract_slots_preserves_soft_line_breaks(tmp_path: Path) -> None:
     slots = {slot["shape_id"]: slot for slot in SlideEditor().extract_slots(str(slide_path))}
 
     assert slots["2"]["current_text"] == "첫 줄\n둘째 줄"
+
+
+def test_extract_slots_excludes_decorative_empty_shapes(tmp_path: Path) -> None:
+    """텍스트가 없는 장식/레이아웃 도형은 LLM fill 대상 slot 으로 노출하지 않는다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    slide_xml = slide_path.read_text(encoding="utf-8").replace(
+        "      <p:graphicFrame>",
+        """      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="4" name="Decorative Circle"/>
+          <p:cNvSpPr/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="100" y="100"/>
+            <a:ext cx="200" cy="200"/>
+          </a:xfrm>
+          <a:solidFill><a:srgbClr val="FFCC00"/></a:solidFill>
+        </p:spPr>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="5" name="Empty Helper Label"/>
+          <p:cNvSpPr/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr/>
+        <p:txBody>
+          <a:bodyPr/>
+          <a:lstStyle/>
+          <a:p><a:r><a:t></a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+      <p:graphicFrame>""",
+    )
+    slide_path.write_text(slide_xml, encoding="utf-8")
+
+    slots = {slot["shape_id"]: slot for slot in SlideEditor().extract_slots(str(slide_path))}
+
+    assert set(slots) == {"2", "3", "8"}
+    assert "Decorative Circle" not in {slot["shape_name"] for slot in slots.values()}
 
 
 def test_extract_slots_rejects_external_chart_relationship(tmp_path: Path) -> None:
