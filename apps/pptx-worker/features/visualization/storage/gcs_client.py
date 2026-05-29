@@ -6,6 +6,7 @@ import shutil
 import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from google.cloud import storage
@@ -95,6 +96,41 @@ def pdf_key(job_id: str) -> str:
     """
     _validate_identifier(job_id, "job_id")
     return f"jobs/{job_id}/current.pdf"
+
+
+def regeneration_attempt_pptx_key(job_id: str, attempt_id: str) -> str:
+    """재생성 attempt PPTX 파일의 staging GCS 키를 반환한다."""
+    _validate_identifier(job_id, "job_id")
+    _validate_identifier(attempt_id, "attempt_id")
+    return f"jobs/{job_id}/attempts/{attempt_id}/current.pptx"
+
+
+def regeneration_attempt_pdf_key(job_id: str, attempt_id: str) -> str:
+    """재생성 attempt PDF 파일의 staging GCS 키를 반환한다."""
+    _validate_identifier(job_id, "job_id")
+    _validate_identifier(attempt_id, "attempt_id")
+    return f"jobs/{job_id}/attempts/{attempt_id}/current.pdf"
+
+
+def regeneration_attempt_preview_key(job_id: str, attempt_id: str, slide_order: int) -> str:
+    """재생성 attempt 프리뷰 이미지의 staging GCS 키를 반환한다."""
+    _validate_identifier(job_id, "job_id")
+    _validate_identifier(attempt_id, "attempt_id")
+    if not 1 <= slide_order <= 99:
+        raise ValueError(f"slide_order는 1~99 범위여야 합니다. (받은 값: {slide_order})")
+    return f"jobs/{job_id}/attempts/{attempt_id}/previews/slide-{slide_order:02d}.jpg"
+
+
+@dataclass(frozen=True, slots=True)
+class RegenerationArtifactKeys:
+    """재생성 attempt 산출물과 canonical 산출물의 GCS key 묶음."""
+
+    attempt_pptx_key: str
+    attempt_pdf_key: str
+    attempt_preview_key: str
+    canonical_pptx_key: str
+    canonical_pdf_key: str
+    canonical_preview_key: str
 
 
 def template_pptx_key(template_id: str) -> str:
@@ -220,9 +256,23 @@ class GcsClient:
         logger.debug("gcs upload %s <- %s", key, src)
         return key
 
+    def upload_regeneration_attempt_pptx(self, job_id: str, attempt_id: str, src: Path) -> str:
+        """재생성 PPTX 산출물을 attempt key 로 업로드한다."""
+        key = regeneration_attempt_pptx_key(job_id, attempt_id)
+        self._bucket.blob(key).upload_from_filename(str(src), content_type=_PPTX_CONTENT_TYPE)
+        logger.debug("gcs upload %s <- %s", key, src)
+        return key
+
     def upload_pdf(self, job_id: str, src: Path) -> str:
         """로컬 PDF 파일을 GCS에 업로드하고 GCS 키를 반환한다."""
         key = pdf_key(job_id)
+        self._bucket.blob(key).upload_from_filename(str(src), content_type="application/pdf")
+        logger.debug("gcs upload %s <- %s", key, src)
+        return key
+
+    def upload_regeneration_attempt_pdf(self, job_id: str, attempt_id: str, src: Path) -> str:
+        """재생성 PDF 산출물을 attempt key 로 업로드한다."""
+        key = regeneration_attempt_pdf_key(job_id, attempt_id)
         self._bucket.blob(key).upload_from_filename(str(src), content_type="application/pdf")
         logger.debug("gcs upload %s <- %s", key, src)
         return key
@@ -238,12 +288,102 @@ class GcsClient:
         logger.debug("gcs upload %s <- %s", key, src)
         return key
 
+    def upload_regeneration_attempt_preview(
+        self,
+        job_id: str,
+        attempt_id: str,
+        slide_order: int,
+        src: Path,
+    ) -> str:
+        """재생성 프리뷰 산출물을 attempt key 로 업로드한다."""
+        key = regeneration_attempt_preview_key(job_id, attempt_id, slide_order)
+        self._bucket.blob(key).upload_from_filename(str(src), content_type="image/jpeg")
+        logger.debug("gcs upload %s <- %s", key, src)
+        return key
+
     def download_preview(self, job_id: str, slide_order: int, dest: Path) -> None:
         """슬라이드 프리뷰 JPG를 GCS에서 로컬 경로로 다운로드한다."""
         key = preview_key(job_id, slide_order)
         dest.parent.mkdir(parents=True, exist_ok=True)
         self._bucket.blob(key).download_to_filename(str(dest))
         logger.debug("gcs download %s -> %s", key, dest)
+
+    def promote_regeneration_attempt(
+        self,
+        job_id: str,
+        attempt_id: str,
+        slide_order: int,
+    ) -> RegenerationArtifactKeys:
+        """재생성 attempt 산출물을 canonical key 로 promote 한다.
+
+        Main Backend callback 이 성공한 뒤에만 호출되어야 한다. Promote 중 일부 copy 가
+        실패하면 사전에 백업한 이전 canonical 객체를 가능한 범위에서 복원한다.
+        """
+        keys = RegenerationArtifactKeys(
+            attempt_pptx_key=regeneration_attempt_pptx_key(job_id, attempt_id),
+            attempt_pdf_key=regeneration_attempt_pdf_key(job_id, attempt_id),
+            attempt_preview_key=regeneration_attempt_preview_key(job_id, attempt_id, slide_order),
+            canonical_pptx_key=pptx_key(job_id),
+            canonical_pdf_key=pdf_key(job_id),
+            canonical_preview_key=preview_key(job_id, slide_order),
+        )
+        backups = [
+            (
+                keys.canonical_pptx_key,
+                _regeneration_rollback_key(job_id, attempt_id, "current.pptx"),
+            ),
+            (
+                keys.canonical_pdf_key,
+                _regeneration_rollback_key(job_id, attempt_id, "current.pdf"),
+            ),
+            (
+                keys.canonical_preview_key,
+                _regeneration_rollback_key(job_id, attempt_id, f"slide-{slide_order:02d}.jpg"),
+            ),
+        ]
+        promotions = [
+            (keys.attempt_pptx_key, keys.canonical_pptx_key),
+            (keys.attempt_pdf_key, keys.canonical_pdf_key),
+            (keys.attempt_preview_key, keys.canonical_preview_key),
+        ]
+
+        backed_up: list[tuple[str, str]] = []
+        try:
+            for source_key, backup_key in backups:
+                self._copy_blob(source_key, backup_key)
+                backed_up.append((source_key, backup_key))
+            for source_key, destination_key in promotions:
+                self._copy_blob(source_key, destination_key)
+        except Exception:
+            logger.exception(
+                "gcs regeneration promote failed; restoring previous canonical artifacts: "
+                "job_id=%s attempt_id=%s slide_order=%s",
+                job_id,
+                attempt_id,
+                slide_order,
+            )
+            for canonical_key, backup_key in reversed(backed_up):
+                try:
+                    self._copy_blob(backup_key, canonical_key)
+                except Exception:
+                    logger.exception(
+                        "gcs regeneration rollback failed: canonical_key=%s backup_key=%s",
+                        canonical_key,
+                        backup_key,
+                    )
+            raise
+        logger.info(
+            "gcs regeneration attempt promoted: job_id=%s attempt_id=%s slide_order=%s",
+            job_id,
+            attempt_id,
+            slide_order,
+        )
+        return keys
+
+    def _copy_blob(self, source_key: str, destination_key: str) -> None:
+        source_blob = self._bucket.blob(source_key)
+        self._bucket.copy_blob(source_blob, self._bucket, destination_key)
+        logger.debug("gcs copy %s -> %s", source_key, destination_key)
 
 
 # ---------------------------------------------------------------------------
@@ -270,3 +410,11 @@ def job_workdir(job_id: str) -> Generator[Path, None, None]:
         shutil.rmtree(workdir, ignore_errors=True)
         get_worker_metrics().set_tmp_disk_bytes_used(safe_directory_size(WORKER_TMP_ROOT))
         logger.debug("cleaned up workdir %s", workdir)
+
+
+def _regeneration_rollback_key(job_id: str, attempt_id: str, filename: str) -> str:
+    _validate_identifier(job_id, "job_id")
+    _validate_identifier(attempt_id, "attempt_id")
+    if "/" in filename or not filename:
+        raise ValueError(f"filename은 단일 파일명이어야 합니다. (받은 값: {filename!r})")
+    return f"jobs/{job_id}/attempts/{attempt_id}/rollback/{filename}"

@@ -327,10 +327,13 @@ class VisualQAFixVerifyStep:
         fixed_pptx_path: str | Path,
         render_output_dir: str | Path,
         ready_event: str | None = "slide_preview_ready",
+        preview_attempt_id: str | None = None,
     ) -> VisualQAPipelineResult:
         """렌더된 슬라이드들을 QA 처리하고 슬라이드별 ready/error 콜백을 보낸다."""
         if not slides:
             raise ValueError("시각 QA 대상 슬라이드가 없습니다.")
+        if preview_attempt_id is not None and ready_event is not None:
+            raise ValueError("preview_attempt_id를 사용할 때 ready_event는 None이어야 합니다.")
 
         unpacked_root = Path(unpacked_dir)
         working_pptx = Path(working_pptx_path)
@@ -352,6 +355,7 @@ class VisualQAFixVerifyStep:
             outcomes=outcomes,
             checked_orders=checked_orders,
             ready_event=ready_event,
+            preview_attempt_id=preview_attempt_id,
         )
 
         fix_attempts = 0
@@ -451,6 +455,7 @@ class VisualQAFixVerifyStep:
                         outcomes=outcomes,
                         checked_orders=checked_orders,
                         ready_event=ready_event,
+                        preview_attempt_id=preview_attempt_id,
                     )
                 else:
                     recheck_failed_orders = []
@@ -497,6 +502,7 @@ class VisualQAFixVerifyStep:
         outcomes: dict[int, SlidePreviewOutcome],
         checked_orders: list[int],
         ready_event: str | None,
+        preview_attempt_id: str | None,
     ) -> list[int]:
         check_orders = tuple(
             slide_order for slide_order in candidate_orders if slide_order not in outcomes
@@ -541,6 +547,7 @@ class VisualQAFixVerifyStep:
                         job_id,
                         pending_slide,
                         ready_event=ready_event,
+                        preview_attempt_id=preview_attempt_id,
                     )
                     continue
 
@@ -595,12 +602,14 @@ class VisualQAFixVerifyStep:
         pending_slide: _PendingSlide,
         *,
         ready_event: str | None,
+        preview_attempt_id: str | None,
     ) -> SlidePreviewOutcome:
         try:
             gcs_key = await self._upload_and_send_ready(
                 job_id,
                 pending_slide,
                 ready_event=ready_event,
+                preview_attempt_id=preview_attempt_id,
             )
         except Exception as exc:
             logger.warning(
@@ -761,10 +770,23 @@ class VisualQAFixVerifyStep:
         pending_slide: _PendingSlide,
         *,
         ready_event: str | None,
+        preview_attempt_id: str | None,
     ) -> str:
         slide = pending_slide.slide
         metadata = preview_metadata(pending_slide.image_path)
-        gcs_key = self._storage.upload_preview(job_id, slide.slide_order, pending_slide.image_path)
+        if preview_attempt_id is None:
+            gcs_key = self._storage.upload_preview(
+                job_id,
+                slide.slide_order,
+                pending_slide.image_path,
+            )
+        else:
+            gcs_key = self._storage.upload_regeneration_attempt_preview(
+                job_id,
+                preview_attempt_id,
+                slide.slide_order,
+                pending_slide.image_path,
+            )
         if ready_event is None:
             return gcs_key
 

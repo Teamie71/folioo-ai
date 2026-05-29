@@ -147,10 +147,15 @@ class FakeStorage:
 
     def __init__(self) -> None:
         self.download_error: Exception | None = None
+        self.attempt_pptx_error: Exception | None = None
         self.downloaded_pptx: list[tuple[str, Path]] = []
         self.uploaded_pptx: list[tuple[str, Path]] = []
         self.uploaded_pdf: list[tuple[str, Path]] = []
         self.uploaded_previews: list[tuple[str, int, Path]] = []
+        self.uploaded_attempt_pptx: list[tuple[str, str, Path]] = []
+        self.uploaded_attempt_pdf: list[tuple[str, str, Path]] = []
+        self.uploaded_attempt_previews: list[tuple[str, str, int, Path]] = []
+        self.promoted_attempts: list[tuple[str, str, int]] = []
 
     def download_template(self, template_id: str, dest: Path) -> None:
         assert template_id == "blue"
@@ -173,13 +178,41 @@ class FakeStorage:
         self.uploaded_pptx.append((job_id, src))
         return f"jobs/{job_id}/current.pptx"
 
+    def upload_regeneration_attempt_pptx(
+        self,
+        job_id: str,
+        attempt_id: str,
+        src: Path,
+    ) -> str:
+        if self.attempt_pptx_error is not None:
+            raise self.attempt_pptx_error
+        self.uploaded_attempt_pptx.append((job_id, attempt_id, src))
+        return f"jobs/{job_id}/attempts/{attempt_id}/current.pptx"
+
     def upload_pdf(self, job_id: str, src: Path) -> str:
         self.uploaded_pdf.append((job_id, src))
         return f"jobs/{job_id}/current.pdf"
 
+    def upload_regeneration_attempt_pdf(self, job_id: str, attempt_id: str, src: Path) -> str:
+        self.uploaded_attempt_pdf.append((job_id, attempt_id, src))
+        return f"jobs/{job_id}/attempts/{attempt_id}/current.pdf"
+
     def upload_preview(self, job_id: str, slide_order: int, src: Path) -> str:
         self.uploaded_previews.append((job_id, slide_order, src))
         return f"jobs/{job_id}/previews/slide-{slide_order:02d}.jpg"
+
+    def upload_regeneration_attempt_preview(
+        self,
+        job_id: str,
+        attempt_id: str,
+        slide_order: int,
+        src: Path,
+    ) -> str:
+        self.uploaded_attempt_previews.append((job_id, attempt_id, slide_order, src))
+        return f"jobs/{job_id}/attempts/{attempt_id}/previews/slide-{slide_order:02d}.jpg"
+
+    def promote_regeneration_attempt(self, job_id: str, attempt_id: str, slide_order: int) -> None:
+        self.promoted_attempts.append((job_id, attempt_id, slide_order))
 
 
 class FakeToolchain:
@@ -361,17 +394,26 @@ class FakeQAStep:
 
     async def process(self, *, job_id: str, slides: list[Any], **kwargs: Any) -> FakeQAResult:
         ready_event = kwargs.get("ready_event", "slide_preview_ready")
+        preview_attempt_id = kwargs.get("preview_attempt_id")
         outcomes = []
         for slide in slides:
             self.received_orders.append(slide.slide_order)
             status = self.statuses.get(slide.slide_order, "ready")
             if status == "ready":
                 if self.storage is not None:
-                    gcs_preview_key = self.storage.upload_preview(
-                        job_id,
-                        slide.slide_order,
-                        slide.image_path,
-                    )
+                    if preview_attempt_id is None:
+                        gcs_preview_key = self.storage.upload_preview(
+                            job_id,
+                            slide.slide_order,
+                            slide.image_path,
+                        )
+                    else:
+                        gcs_preview_key = self.storage.upload_regeneration_attempt_preview(
+                            job_id,
+                            preview_attempt_id,
+                            slide.slide_order,
+                            slide.image_path,
+                        )
                 else:
                     gcs_preview_key = f"jobs/{job_id}/previews/slide-{slide.slide_order:02d}.jpg"
                 if ready_event is not None:
@@ -561,13 +603,20 @@ async def test_regenerate_user_request_changes_only_requested_shape() -> None:
     assert len(regenerated_events) == 1
     event = regenerated_events[0]
     assert event["slide_order"] == 3
+    assert event["idempotency_key"] == "job-1:slide:slide-3:slide_regenerated:task-key"
     assert event["gcs_preview_key"] == "jobs/job-1/previews/slide-03.jpg"
     assert event["current_fills"]["2"]["font_size_override"] == 28
     assert event["current_fills"]["3"]["text"] == "본문 유지"
     assert _events(context.main_client, "slide_preview_ready") == []
-    assert context.storage.uploaded_pptx
-    assert context.storage.uploaded_pdf
-    assert context.storage.uploaded_previews[0][:2] == ("job-1", 3)
+    assert context.storage.uploaded_pptx == []
+    assert context.storage.uploaded_pdf == []
+    assert context.storage.uploaded_previews == []
+    assert context.storage.uploaded_attempt_pptx[0][:2] == ("job-1", "task-key")
+    assert context.storage.uploaded_attempt_pdf[0][:2] == ("job-1", "task-key")
+    assert any(
+        item[:3] == ("job-1", "task-key", 3) for item in context.storage.uploaded_attempt_previews
+    )
+    assert context.storage.promoted_attempts == [("job-1", "task-key", 3)]
 
 
 @pytest.mark.asyncio
@@ -618,6 +667,8 @@ async def test_retry_regenerate_uses_content_brief_without_user_request() -> Non
     regenerated_events = _events(context.main_client, "slide_regenerated")
     assert regenerated_events[0]["current_fills"] == applied_fills
     assert regenerated_events[0]["gcs_preview_key"] == "jobs/job-1/previews/slide-03.jpg"
+    assert context.storage.uploaded_attempt_pptx[0][:2] == ("job-1", "task-key")
+    assert context.storage.promoted_attempts == [("job-1", "task-key", 3)]
 
 
 @pytest.mark.asyncio
@@ -637,6 +688,10 @@ async def test_regenerate_failure_sends_preview_error_without_output_upload() ->
     assert context.storage.uploaded_pptx == []
     assert context.storage.uploaded_pdf == []
     assert context.storage.uploaded_previews == []
+    assert context.storage.uploaded_attempt_pptx == []
+    assert context.storage.uploaded_attempt_pdf == []
+    assert context.storage.uploaded_attempt_previews == []
+    assert context.storage.promoted_attempts == []
 
 
 def _regenerate_qa_failure_context() -> PipelineContext:
@@ -720,6 +775,75 @@ async def test_regenerate_error_scenarios_send_preview_error_without_current_upl
     assert context.storage.uploaded_pptx == []
     assert context.storage.uploaded_pdf == []
     assert context.storage.uploaded_previews == []
+    assert context.storage.uploaded_attempt_pptx == []
+    assert context.storage.uploaded_attempt_pdf == []
+    assert context.storage.promoted_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_regenerate_callback_failure_keeps_canonical_outputs_unchanged() -> None:
+    """성공 후보 업로드 후 callback 이 실패하면 canonical promote 를 실행하지 않는다."""
+    context = PipelineContext(main_client=FakeMainClient(fail_slide_events={"slide_regenerated"}))
+
+    with pytest.raises(RetryableError):
+        await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
+
+    assert any(
+        item[:3] == ("job-1", "task-key", 3) for item in context.storage.uploaded_attempt_previews
+    )
+    assert context.storage.uploaded_attempt_pptx[0][:2] == ("job-1", "task-key")
+    assert context.storage.uploaded_attempt_pdf[0][:2] == ("job-1", "task-key")
+    assert context.storage.uploaded_pptx == []
+    assert context.storage.uploaded_pdf == []
+    assert context.storage.uploaded_previews == []
+    assert context.storage.promoted_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_regenerate_attempt_upload_failure_does_not_expose_attempt_key() -> None:
+    """attempt 업로드 실패는 preview error 로 수렴하고 attempt key 를 callback 하지 않는다."""
+    context = PipelineContext()
+    context.storage.attempt_pptx_error = OSError("attempt upload failed")
+
+    await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
+
+    assert _events(context.main_client, "slide_regenerated") == []
+    error_events = _events(context.main_client, "slide_preview_error")
+    assert len(error_events) == 1
+    assert "attempt upload failed" in error_events[0]["message"]
+    assert "gcs_preview_key" not in error_events[0]
+    assert any(
+        item[:3] == ("job-1", "task-key", 3) for item in context.storage.uploaded_attempt_previews
+    )
+    assert context.storage.uploaded_attempt_pptx == []
+    assert context.storage.uploaded_pptx == []
+    assert context.storage.uploaded_pdf == []
+    assert context.storage.uploaded_previews == []
+    assert context.storage.promoted_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_regenerate_push_reuses_same_attempt_key() -> None:
+    """같은 idempotency key 재시도는 같은 attempt key 로 업로드/promote 되어 충돌 범위가 고정된다."""
+    context = PipelineContext()
+
+    await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
+    await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
+
+    assert [item[1] for item in context.storage.uploaded_attempt_pptx] == [
+        "task-key",
+        "task-key",
+    ]
+    assert [
+        event["idempotency_key"] for event in _events(context.main_client, "slide_regenerated")
+    ] == [
+        "job-1:slide:slide-3:slide_regenerated:task-key",
+        "job-1:slide:slide-3:slide_regenerated:task-key",
+    ]
+    assert context.storage.promoted_attempts == [
+        ("job-1", "task-key", 3),
+        ("job-1", "task-key", 3),
+    ]
 
 
 class PipelineContext:
