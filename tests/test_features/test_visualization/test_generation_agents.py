@@ -390,6 +390,32 @@ def test_slide_change_generator_does_not_treat_size_change_as_text_change() -> N
     assert changes["2"]["font_size_override"] == 24.0
 
 
+@pytest.mark.parametrize("user_request", ["제목을 수정해줘", "내용 변경해줘"])
+def test_slide_change_generator_allows_generic_text_change_request(user_request: str) -> None:
+    """수정/변경 요청은 스타일 맥락이 없으면 텍스트 변경으로 처리한다."""
+    llm = FakeLLM(
+        [
+            {
+                "fills": {
+                    "2": {
+                        "action": "text",
+                        "text": "핵심 성과 요약",
+                    }
+                }
+            }
+        ]
+    )
+    generator = LLMSlideChangeGenerator(llm=llm)
+
+    changes = generator.create_changes(
+        user_request=user_request,
+        slots=[{"shape_id": "2", "current_text": "기존 제목", "font_size_pt": 20, "kind": "text"}],
+        current_fills={"2": {"action": "text", "text": "기존 제목"}},
+    )
+
+    assert changes["2"]["text"] == "핵심 성과 요약"
+
+
 def test_slide_change_generator_allows_explicit_text_request() -> None:
     """표현 변경 요청처럼 명시적인 텍스트 수정은 요청 도형에 한해 허용한다."""
     llm = FakeLLM(
@@ -415,6 +441,75 @@ def test_slide_change_generator_allows_explicit_text_request() -> None:
 
     assert changes["2"]["text"] == "핵심 성과 요약"
     assert changes["2"]["font_size_override"] == 18.0
+
+
+def test_slide_change_generator_allows_chart_adjacent_text_style_request() -> None:
+    """차트 주변 텍스트 스타일 요청은 chart 데이터 변경으로 오인해 사전 거부하지 않는다."""
+    llm = FakeLLM(
+        [
+            {
+                "fills": {
+                    "2": {
+                        "action": "text",
+                        "text": "임의로 바뀐 차트 제목",
+                        "font_size_override": 28,
+                    }
+                }
+            }
+        ]
+    )
+    generator = LLMSlideChangeGenerator(llm=llm)
+
+    changes = generator.create_changes(
+        user_request="차트 제목 크기 키워줘",
+        slots=[
+            {"shape_id": "2", "current_text": "기존 차트 제목", "font_size_pt": 20, "kind": "text"}
+        ],
+        current_fills={"2": {"action": "text", "text": "현재 차트 제목"}},
+    )
+
+    assert changes["2"]["text"] == "현재 차트 제목"
+    assert changes["2"]["font_size_override"] == 28.0
+
+
+def test_slide_change_generator_allows_graph_caption_text_request() -> None:
+    """그래프 설명 문구 요청은 인접 텍스트 slot 변경으로 허용한다."""
+    llm = FakeLLM(
+        [
+            {
+                "fills": {
+                    "2": {
+                        "action": "text",
+                        "text": "전환율 개선 설명",
+                    }
+                }
+            }
+        ]
+    )
+    generator = LLMSlideChangeGenerator(llm=llm)
+
+    changes = generator.create_changes(
+        user_request="그래프 설명 문구를 바꿔줘",
+        slots=[{"shape_id": "2", "current_text": "기존 설명", "font_size_pt": 14, "kind": "text"}],
+        current_fills={"2": {"action": "text", "text": "기존 설명"}},
+    )
+
+    assert changes["2"]["text"] == "전환율 개선 설명"
+
+
+def test_slide_change_generator_rejects_chart_data_request_before_llm() -> None:
+    """차트 데이터 변경 요청은 현재 Phase 2 지원 범위 밖이므로 LLM 호출 전에 거부한다."""
+    llm = FakeLLM([])
+    generator = LLMSlideChangeGenerator(llm=llm)
+
+    with pytest.raises(ValueError, match="차트 데이터 변경"):
+        generator.create_changes(
+            user_request="차트 수치를 변경해줘",
+            slots=[{"shape_id": "2", "current_text": "기존 차트 제목", "kind": "text"}],
+            current_fills={"2": {"action": "text", "text": "기존 차트 제목"}},
+        )
+
+    assert llm.messages == []
 
 
 def test_slide_change_generator_rejects_unsupported_color_request_before_llm() -> None:

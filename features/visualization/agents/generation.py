@@ -74,6 +74,21 @@ _TEXT_TRANSFORM_HINTS = (
     "rephrase",
     "rewrite",
 )
+_GENERIC_TEXT_CHANGE_HINTS = (
+    "수정",
+    "변경",
+    "업데이트",
+    "update",
+)
+_STYLE_ONLY_TEXT_CHANGE_PATTERN = re.compile(
+    r"크기|폰트|font|pt|사이즈|size|키워\s*(줘|주세요)|키우|크게|작게|줄여|줄이|확대|축소|굵게|볼드|bold",
+    re.I,
+)
+_CHART_DATA_CHANGE_PATTERN = re.compile(
+    r"(차트|그래프|chart|graph).{0,16}(데이터|수치|값|series|categories|values|data)"
+    r"|(데이터|수치|값|series|categories|values|data).{0,16}(차트|그래프|chart|graph)",
+    re.I,
+)
 _UNSUPPORTED_REGENERATE_PATTERNS = (
     ("색상/채우기 변경", re.compile(r"색|색상|컬러|채우기|배경색|테두리|선색|color", re.I)),
     ("위치/배치 변경", re.compile(r"위치|이동|옮겨|배치|정렬|밖으로|position|move|align", re.I)),
@@ -82,7 +97,7 @@ _UNSUPPORTED_REGENERATE_PATTERNS = (
         "도형 크기 변경",
         re.compile(r"(도형|박스|상자|shape|box).{0,8}(크기|확대|축소|size|resize)", re.I),
     ),
-    ("차트 데이터 변경", re.compile(r"차트|그래프|chart|graph", re.I)),
+    ("차트 데이터 변경", _CHART_DATA_CHANGE_PATTERN),
     (
         "슬라이드/도형 생성",
         re.compile(r"슬라이드\s*(추가|삭제)|도형\s*(추가|삭제)|shape\s*(add|delete)", re.I),
@@ -596,9 +611,13 @@ def _guard_regenerate_font_size(value: Any) -> float:
 
 def _text_change_requested(user_request: str) -> bool:
     lowered = user_request.casefold()
+    if _STYLE_ONLY_TEXT_CHANGE_PATTERN.search(user_request):
+        return False
     if any(hint in lowered for hint in _TEXT_FIELD_HINTS):
         return True
     if any(hint in lowered for hint in _TEXT_TRANSFORM_HINTS):
+        return True
+    if any(hint in lowered for hint in _GENERIC_TEXT_CHANGE_HINTS):
         return True
     return bool(re.search(r"[\"'“”‘’][^\"'“”‘’]+[\"'“”‘’]\s*(로|으로)", user_request))
 
