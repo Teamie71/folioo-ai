@@ -67,9 +67,11 @@ sprint: ""
 | Main callback 4xx/5xx/timeout | Cloud Tasks retry, promote 미실행 | 이전 completed 유지 |
 | promote 성공 | attempt 산출물을 canonical 로 copy | 최신 결과 |
 | promote 중 copy 실패 | 가능한 범위에서 backup canonical 로 rollback 후 Cloud Tasks retry | rollback 성공 시 이전 completed 유지 |
+| rollback 실패 | Worker 로그를 남기고 재시도 실패로 전파한다. 부분 canonical 혼합 가능성이 있으므로 운영 알림/수동 복구 정책은 1.26 handoff 범위다. | 운영 복구 전까지 불일치 가능 |
 | 중복 retry | 같은 idempotency key 기반 attempt id 재사용 | 같은 canonical 대상에 멱등 promote |
 
 ## 리스크 / 메모
 
 - Main Backend의 DB 트랜잭션, CAS, signed URL 발급 구현은 별도 저장소 책임이다.
 - 필요한 callback/promote 계약 변경은 1.26 handoff에 반영한다.
+- attempt/rollback prefix 는 재시도와 장애 분석을 위해 즉시 삭제하지 않는다. GCS lifecycle rule 또는 주기적 GC 보존 기간은 1.26 handoff에서 운영 정책으로 확정한다.

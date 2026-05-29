@@ -596,6 +596,7 @@ async def test_regenerate_user_request_changes_only_requested_shape() -> None:
     assert len(regenerated_events) == 1
     event = regenerated_events[0]
     assert event["slide_order"] == 3
+    assert event["idempotency_key"] == "job-1:slide:slide-3:slide_regenerated:task-key"
     assert event["gcs_preview_key"] == "jobs/job-1/previews/slide-03.jpg"
     assert event["current_fills"]["2"]["font_size_override"] == 28
     assert event["current_fills"]["3"]["text"] == "본문 유지"
@@ -605,7 +606,9 @@ async def test_regenerate_user_request_changes_only_requested_shape() -> None:
     assert context.storage.uploaded_previews == []
     assert context.storage.uploaded_attempt_pptx[0][:2] == ("job-1", "task-key")
     assert context.storage.uploaded_attempt_pdf[0][:2] == ("job-1", "task-key")
-    assert context.storage.uploaded_attempt_previews[0][:3] == ("job-1", "task-key", 3)
+    assert any(
+        item[:3] == ("job-1", "task-key", 3) for item in context.storage.uploaded_attempt_previews
+    )
     assert context.storage.promoted_attempts == [("job-1", "task-key", 3)]
 
 
@@ -747,7 +750,9 @@ async def test_regenerate_callback_failure_keeps_canonical_outputs_unchanged() -
     with pytest.raises(RetryableError):
         await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
 
-    assert context.storage.uploaded_attempt_previews[0][:3] == ("job-1", "task-key", 3)
+    assert any(
+        item[:3] == ("job-1", "task-key", 3) for item in context.storage.uploaded_attempt_previews
+    )
     assert context.storage.uploaded_attempt_pptx[0][:2] == ("job-1", "task-key")
     assert context.storage.uploaded_attempt_pdf[0][:2] == ("job-1", "task-key")
     assert context.storage.uploaded_pptx == []
@@ -788,6 +793,12 @@ async def test_duplicate_regenerate_push_reuses_same_attempt_key() -> None:
     assert [item[1] for item in context.storage.uploaded_attempt_pptx] == [
         "task-key",
         "task-key",
+    ]
+    assert [
+        event["idempotency_key"] for event in _events(context.main_client, "slide_regenerated")
+    ] == [
+        "job-1:slide:slide-3:slide_regenerated:task-key",
+        "job-1:slide:slide-3:slide_regenerated:task-key",
     ]
     assert context.storage.promoted_attempts == [
         ("job-1", "task-key", 3),

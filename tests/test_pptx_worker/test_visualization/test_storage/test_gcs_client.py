@@ -118,6 +118,19 @@ def mock_gcs(tmp_path):
         yield client, mock_bucket, mock_blob, tmp_path
 
 
+def _use_distinct_blob_mocks(mock_bucket):
+    """bucket.blob(key) 호출마다 key 별 Blob mock 을 반환한다."""
+    blobs: dict[str, MagicMock] = {}
+
+    def _blob(name: str) -> MagicMock:
+        if name not in blobs:
+            blobs[name] = MagicMock(name=f"blob:{name}")
+        return blobs[name]
+
+    mock_bucket.blob.side_effect = _blob
+    return blobs
+
+
 class TestDownloadTemplate:
     def test_calls_correct_key(self, mock_gcs):
         client, mock_bucket, mock_blob, tmp_path = mock_gcs
@@ -281,6 +294,7 @@ class TestDownloadPreview:
 class TestPromoteRegenerationAttempt:
     def test_copies_attempt_artifacts_to_canonical_after_backup(self, mock_gcs):
         client, mock_bucket, _, _ = mock_gcs
+        blobs = _use_distinct_blob_mocks(mock_bucket)
 
         keys = client.promote_regeneration_attempt("job-42", "attempt-1", 3)
 
@@ -289,27 +303,40 @@ class TestPromoteRegenerationAttempt:
         assert keys.canonical_preview_key == "jobs/job-42/previews/slide-03.jpg"
         assert mock_bucket.copy_blob.call_args_list == [
             call(
-                mock_bucket.blob.return_value,
+                blobs["jobs/job-42/current.pptx"],
                 mock_bucket,
                 "jobs/job-42/attempts/attempt-1/rollback/current.pptx",
             ),
             call(
-                mock_bucket.blob.return_value,
+                blobs["jobs/job-42/current.pdf"],
                 mock_bucket,
                 "jobs/job-42/attempts/attempt-1/rollback/current.pdf",
             ),
             call(
-                mock_bucket.blob.return_value,
+                blobs["jobs/job-42/previews/slide-03.jpg"],
                 mock_bucket,
                 "jobs/job-42/attempts/attempt-1/rollback/slide-03.jpg",
             ),
-            call(mock_bucket.blob.return_value, mock_bucket, "jobs/job-42/current.pptx"),
-            call(mock_bucket.blob.return_value, mock_bucket, "jobs/job-42/current.pdf"),
-            call(mock_bucket.blob.return_value, mock_bucket, "jobs/job-42/previews/slide-03.jpg"),
+            call(
+                blobs["jobs/job-42/attempts/attempt-1/current.pptx"],
+                mock_bucket,
+                "jobs/job-42/current.pptx",
+            ),
+            call(
+                blobs["jobs/job-42/attempts/attempt-1/current.pdf"],
+                mock_bucket,
+                "jobs/job-42/current.pdf",
+            ),
+            call(
+                blobs["jobs/job-42/attempts/attempt-1/previews/slide-03.jpg"],
+                mock_bucket,
+                "jobs/job-42/previews/slide-03.jpg",
+            ),
         ]
 
     def test_restore_backups_when_promote_copy_fails(self, mock_gcs):
         client, mock_bucket, _, _ = mock_gcs
+        blobs = _use_distinct_blob_mocks(mock_bucket)
         mock_bucket.copy_blob.side_effect = [
             None,
             None,
@@ -324,11 +351,22 @@ class TestPromoteRegenerationAttempt:
         with pytest.raises(RuntimeError, match="copy failed"):
             client.promote_regeneration_attempt("job-42", "attempt-1", 3)
 
-        destinations = [item.args[2] for item in mock_bucket.copy_blob.call_args_list]
-        assert destinations[-3:] == [
-            "jobs/job-42/previews/slide-03.jpg",
-            "jobs/job-42/current.pdf",
-            "jobs/job-42/current.pptx",
+        assert mock_bucket.copy_blob.call_args_list[-3:] == [
+            call(
+                blobs["jobs/job-42/attempts/attempt-1/rollback/slide-03.jpg"],
+                mock_bucket,
+                "jobs/job-42/previews/slide-03.jpg",
+            ),
+            call(
+                blobs["jobs/job-42/attempts/attempt-1/rollback/current.pdf"],
+                mock_bucket,
+                "jobs/job-42/current.pdf",
+            ),
+            call(
+                blobs["jobs/job-42/attempts/attempt-1/rollback/current.pptx"],
+                mock_bucket,
+                "jobs/job-42/current.pptx",
+            ),
         ]
 
 

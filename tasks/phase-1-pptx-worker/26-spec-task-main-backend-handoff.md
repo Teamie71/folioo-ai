@@ -72,3 +72,6 @@ sprint: ""
 - 이 task는 문서 정합성과 handoff가 범위다. 문서가 가리키는 코드 수정은 1.20~1.25에서 처리한다.
 - Main Backend 저장소가 별도로 있다면, 이 task 결과를 그쪽 이슈 생성의 원본으로 사용할 수 있게 작성한다.
 - 1.25 handoff에는 재생성 산출물 계약을 명시한다: Worker는 attempt key 업로드 후 `slide_regenerated` 2xx를 Main commit 성공으로 간주하고 canonical promote를 수행한다. Main은 실패한 attempt key를 signed URL 대상으로 노출하지 않고, `slide_regenerated` idempotency 처리와 promote 실패 재시도 중 사용자 노출 정책을 정리해야 한다.
+- Main Backend는 `slide_regenerated` callback 직후 canonical signed URL 발급 시점이 GCS promote 완료보다 앞설 수 있음을 전제로, promote 완료 확인 전에는 이전 preview 유지 또는 pending 상태 노출 정책을 정해야 한다.
+- Worker promote rollback 도 일부 GCS copy 실패 시 완전 원자성을 보장할 수 없으므로, Main/운영 handoff에는 부분 canonical 혼합 감지, 알림, 수동 복구 절차, job 단위 잠금/generation precondition 적용 가능성을 포함한다.
+- `jobs/{job_id}/attempts/{attempt_id}/...` 및 `rollback/` 객체는 즉시 삭제하지 않는다. 배포/운영 handoff에서 bucket lifecycle rule 또는 주기적 GC로 보존 기간을 정한다.

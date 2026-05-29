@@ -484,6 +484,7 @@ class VisualizationTaskService:
                         task.job_id,
                         registered_slide.slide_id,
                         "slide_regenerated",
+                        attempt_id,
                     ),
                     occurred_at=self._now_iso(),
                     schema_version=task.schema_version,
@@ -1262,8 +1263,11 @@ def _is_regenerate_retryable_error(exc: Exception) -> bool:
     return isinstance(exc, (OSError, PptxRenderError))
 
 
-def _slide_event_key(job_id: str, slide_id: str, event: str) -> str:
-    return f"{job_id}:slide:{slide_id}:{event}"
+def _slide_event_key(job_id: str, slide_id: str, event: str, *parts: str) -> str:
+    key = f"{job_id}:slide:{slide_id}:{event}"
+    if parts:
+        return f"{key}:{':'.join(parts)}"
+    return key
 
 
 def _job_event_key(job_id: str, event: str, stage: str | None = None) -> str:

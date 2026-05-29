@@ -294,6 +294,8 @@ class VisualQAFixVerifyStep:
         """렌더된 슬라이드들을 QA 처리하고 슬라이드별 ready/error 콜백을 보낸다."""
         if not slides:
             raise ValueError("시각 QA 대상 슬라이드가 없습니다.")
+        if preview_attempt_id is not None and ready_event is not None:
+            raise ValueError("preview_attempt_id를 사용할 때 ready_event는 None이어야 합니다.")
 
         unpacked_root = Path(unpacked_dir)
         working_pptx = Path(working_pptx_path)

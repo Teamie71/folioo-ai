@@ -466,6 +466,29 @@ async def test_preview_attempt_id_uploads_regenerate_preview_to_attempt_key(
 
 
 @pytest.mark.asyncio
+async def test_preview_attempt_id_rejects_ready_event(tmp_path: Path) -> None:
+    """attempt preview key 가 ready callback payload 로 노출되는 조합을 차단한다."""
+    context = _make_step_context(tmp_path, slide_orders=[1])
+    qa = FakeQA({1: [_passed()]})
+    step = context.make_step(qa=qa, renderer=FakeRenderer(pages=[1]))
+
+    with pytest.raises(ValueError, match="ready_event"):
+        await step.process(
+            job_id="job-1",
+            slides=context.slides,
+            unpacked_dir=context.unpacked_dir,
+            working_pptx_path=context.working_pptx,
+            fixed_pptx_path=context.fixed_pptx,
+            render_output_dir=context.render_dir,
+            preview_attempt_id="attempt-1",
+        )
+
+    assert context.storage.uploads == []
+    assert context.storage.attempt_uploads == []
+    assert context.main_client.events == []
+
+
+@pytest.mark.asyncio
 async def test_failed_after_max_attempts_preserves_non_retryable_issue(
     tmp_path: Path,
 ) -> None:
