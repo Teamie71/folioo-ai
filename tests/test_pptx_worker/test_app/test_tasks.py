@@ -1,7 +1,9 @@
 """PPTX 워커 Cloud Tasks push 핸들러 테스트."""
 
+import asyncio
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pptx_worker.api import tasks as tasks_api
@@ -68,9 +70,17 @@ class FakeVisualizationTaskService(VisualizationTaskService):
         self.regenerate_error: Exception | None = None
         self.generate_conversion_count = 0
         self.regenerate_conversion_count = 0
+        self.generate_started: asyncio.Event | None = None
+        self.release_generate: asyncio.Event | None = None
+        self.regenerate_started: asyncio.Event | None = None
+        self.release_regenerate: asyncio.Event | None = None
 
     async def generate(self, task: GenerateVisualizationTask) -> None:
         self.generate_calls.append(task)
+        if self.generate_started is not None:
+            self.generate_started.set()
+        if self.release_generate is not None:
+            await self.release_generate.wait()
         if self.generate_error is not None:
             raise self.generate_error
         for _ in range(self.generate_conversion_count):
@@ -78,15 +88,18 @@ class FakeVisualizationTaskService(VisualizationTaskService):
 
     async def regenerate(self, task: RegenerateVisualizationTask) -> None:
         self.regenerate_calls.append(task)
+        if self.regenerate_started is not None:
+            self.regenerate_started.set()
+        if self.release_regenerate is not None:
+            await self.release_regenerate.wait()
         if self.regenerate_error is not None:
             raise self.regenerate_error
         for _ in range(self.regenerate_conversion_count):
             await self.runtime.mark_processed()
 
 
-@pytest.fixture()
-def worker_client(monkeypatch):
-    """테스트용 워커 앱과 fake 의존성을 구성한다."""
+def configure_worker_dependencies(monkeypatch):
+    """테스트용 워커 fake 의존성을 구성한다."""
     main_client = FakeMainClient()
     shutdown_calls: list[str] = []
     runtime = WorkerRuntime(
@@ -100,12 +113,25 @@ def worker_client(monkeypatch):
     monkeypatch.setattr(tasks_api, "_get_task_service", lambda: service)
     set_worker_runtime(runtime)
 
-    with TestClient(create_app()) as client:
-        yield client, main_client, service, runtime, shutdown_calls
+    return main_client, service, runtime, shutdown_calls
 
+
+def reset_worker_dependencies() -> None:
+    """테스트용 워커 fake 의존성을 정리한다."""
     tasks_api.reset_main_client_factory()
     set_worker_metrics(None)
     set_worker_runtime(None)
+
+
+@pytest.fixture()
+def worker_client(monkeypatch):
+    """테스트용 워커 앱과 fake 의존성을 구성한다."""
+    main_client, service, runtime, shutdown_calls = configure_worker_dependencies(monkeypatch)
+
+    with TestClient(create_app()) as client:
+        yield client, main_client, service, runtime, shutdown_calls
+
+    reset_worker_dependencies()
 
 
 def generate_payload(**overrides: Any) -> dict[str, Any]:
@@ -209,6 +235,80 @@ def test_terminal_regenerate_push_is_acked_without_reexecution(worker_client):
     assert client.get("/health").json()["lifetime_processed"] == 0
 
 
+@pytest.mark.asyncio
+async def test_generate_in_flight_duplicate_push_is_acked_without_reexecution(monkeypatch):
+    main_client, service, _, _ = configure_worker_dependencies(monkeypatch)
+    service.generate_started = asyncio.Event()
+    service.release_generate = asyncio.Event()
+    app = create_app()
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            first = asyncio.create_task(
+                client.post("/tasks/visualizations/generate", json=generate_payload())
+            )
+            await asyncio.wait_for(service.generate_started.wait(), timeout=1)
+
+            duplicate = await client.post(
+                "/tasks/visualizations/generate",
+                json=generate_payload(),
+            )
+            service.release_generate.set()
+            first_response = await asyncio.wait_for(first, timeout=1)
+    finally:
+        reset_worker_dependencies()
+
+    assert first_response.status_code == 200
+    assert first_response.json()["status"] == "ok"
+    assert duplicate.status_code == 200
+    assert duplicate.json()["status"] == "skipped"
+    assert duplicate.json()["reason"] == "in_flight_duplicate"
+    assert len(service.generate_calls) == 1
+    assert main_client.job_context_calls == ["job-1"]
+
+
+@pytest.mark.asyncio
+async def test_regenerate_in_flight_duplicate_push_is_acked_without_reexecution(monkeypatch):
+    main_client, service, _, _ = configure_worker_dependencies(monkeypatch)
+    service.regenerate_started = asyncio.Event()
+    service.release_regenerate = asyncio.Event()
+    app = create_app()
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            first = asyncio.create_task(
+                client.post("/tasks/visualizations/regenerate", json=regenerate_payload())
+            )
+            await asyncio.wait_for(service.regenerate_started.wait(), timeout=1)
+
+            duplicate = await client.post(
+                "/tasks/visualizations/regenerate",
+                json=regenerate_payload(
+                    userRequest="같은 슬라이드를 다시 만들어줘",
+                    idempotencyKey="idem-regenerate-repeat",
+                ),
+            )
+            service.release_regenerate.set()
+            first_response = await asyncio.wait_for(first, timeout=1)
+    finally:
+        reset_worker_dependencies()
+
+    assert first_response.status_code == 200
+    assert first_response.json()["status"] == "ok"
+    assert duplicate.status_code == 200
+    assert duplicate.json()["status"] == "skipped"
+    assert duplicate.json()["reason"] == "in_flight_duplicate"
+    assert len(service.regenerate_calls) == 1
+    assert service.regenerate_calls[0].user_request == "표를 더 간결하게 바꿔줘"
+    assert main_client.slide_context_calls == [("job-1", "slide-3")]
+
+
 def test_retryable_error_returns_503_for_cloud_tasks_retry(worker_client):
     client, _, service, _, _ = worker_client
     service.generate_error = RetryableError("LLM 일시 실패")
@@ -218,6 +318,13 @@ def test_retryable_error_returns_503_for_cloud_tasks_retry(worker_client):
     assert response.status_code == 503
     assert response.json()["status"] == "retryable_failure"
     assert client.get("/health").json()["lifetime_processed"] == 0
+
+    service.generate_error = None
+    retry_response = client.post("/tasks/visualizations/generate", json=generate_payload())
+
+    assert retry_response.status_code == 200
+    assert retry_response.json()["status"] == "ok"
+    assert len(service.generate_calls) == 2
 
 
 def test_fatal_generate_error_sends_job_callback_then_acks(worker_client):

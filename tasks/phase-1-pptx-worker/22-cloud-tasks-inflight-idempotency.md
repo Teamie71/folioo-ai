@@ -6,7 +6,8 @@ spec: "specs/phase-1/01-worker-service-scaffold.md"
 depends_on: ["1.01", "1.02", "1.05", "1.07"]
 blocks: ["1.26"]
 estimate: "M"
-status: "todo"
+status: "done"
+completed_at: "2026-05-28"
 owner: ""
 sprint: ""
 ---
@@ -25,34 +26,36 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] GitHub Issue #237 본문과 Cloud Tasks at-least-once delivery 전제 확인
-- [ ] 현재 terminal skip과 processable status 조건을 테스트로 재현
-- [ ] Main Backend CAS가 담당해야 할 범위와 worker-local guard로 가능한 범위 구분
+- [x] GitHub Issue #237 본문과 Cloud Tasks at-least-once delivery 전제 확인
+- [x] 현재 terminal skip과 processable status 조건을 테스트로 재현
+- [x] Main Backend CAS가 담당해야 할 범위와 worker-local guard로 가능한 범위 구분
 
 ## 구현 체크리스트
 
-- [ ] generate push 처리 전 Main Backend 상태 조회 조건 확인
-- [ ] regenerate/retry push 처리 전 slide/job 상태 조회 조건 확인
-- [ ] terminal 상태 skip과 processable 상태 진입 조건을 테스트로 고정
-- [ ] `idempotencyKey`가 callback event key와 worker execution key에서 어떻게 쓰이는지 분리 확인
-- [ ] 같은 payload 동시 도착 시 worker-local guard, Main internal API claim/check, 기존 상태 조회 API 확장 중 구현 방안 결정
-- [ ] Cloud Run `concurrency=1`만으로 보장되지 않는 중복 재전송 케이스 문서화
-- [ ] skip/retry/fatal 응답 코드가 Cloud Tasks 재시도 모델과 맞는지 확인
-- [ ] 동일 job generate push가 이미 처리 중일 때 중복 파이프라인 실행 방지
-- [ ] 동일 slide regenerate push가 이미 처리 중일 때 중복 파이프라인 실행 방지
-- [ ] 처리 대상이 아닌 상태는 200 ACK skip 유지
-- [ ] retryable/fatal 실패가 기존 callback 계약을 깨지 않도록 유지
+- [x] generate push 처리 전 Main Backend 상태 조회 조건 확인
+- [x] regenerate/retry push 처리 전 slide/job 상태 조회 조건 확인
+- [x] terminal 상태 skip과 processable 상태 진입 조건을 테스트로 고정
+- [x] `idempotencyKey`가 callback event key와 worker execution key에서 어떻게 쓰이는지 분리 확인
+- [x] 같은 payload 동시 도착 시 worker-local guard, Main internal API claim/check, 기존 상태 조회 API 확장 중 구현 방안 결정
+- [x] Cloud Run `concurrency=1`만으로 보장되지 않는 중복 재전송 케이스 문서화
+- [x] skip/retry/fatal 응답 코드가 Cloud Tasks 재시도 모델과 맞는지 확인
+- [x] 동일 job generate push가 이미 처리 중일 때 중복 파이프라인 실행 방지
+- [x] 동일 slide regenerate push가 이미 처리 중일 때 중복 파이프라인 실행 방지
+- [x] 처리 대상이 아닌 상태는 200 ACK skip 유지
+- [x] retryable/fatal 실패가 기존 callback 계약을 깨지 않도록 유지
 
 ## Definition of Done
 
-- [ ] generate terminal 재전송이 재실행 없이 200 ACK 되는 테스트 통과
-- [ ] generate in-flight 중복 push가 실제 파이프라인을 중복 실행하지 않는 테스트 통과
-- [ ] regenerate terminal/비대상 상태 push가 200 skip 되는 테스트 통과
-- [ ] regenerate in-flight 중복 push가 단일 실행으로 수렴하는 테스트 통과
-- [ ] retryable/fatal/skip 응답 분류가 Cloud Tasks 재시도 정책과 문서상 일치
-- [ ] `uv run ruff check .` 및 관련 worker 테스트 통과
+- [x] generate terminal 재전송이 재실행 없이 200 ACK 되는 테스트 통과
+- [x] generate in-flight 중복 push가 실제 파이프라인을 중복 실행하지 않는 테스트 통과
+- [x] regenerate terminal/비대상 상태 push가 200 skip 되는 테스트 통과
+- [x] regenerate in-flight 중복 push가 단일 실행으로 수렴하는 테스트 통과
+- [x] retryable/fatal/skip 응답 분류가 Cloud Tasks 재시도 정책과 문서상 일치
+- [x] `uv run ruff check .` 및 관련 worker 테스트 통과
 
 ## 리스크 / 메모
 
 - Worker는 Postgres에 직접 접근하지 않는다.
 - Main Backend의 DB CAS, quota 차감, stuck recovery 구현이 필요하면 1.26 handoff에 명확히 남긴다.
+- 이번 구현은 worker-local in-flight registry로 같은 워커 프로세스 안의 동일 payload 및 동일 job/slide 대상 중복 실행을 200 ACK skip 처리한다.
+- Cloud Run `concurrency=1`은 인스턴스당 1요청만 제한하므로, 서로 다른 인스턴스로 분산된 중복 push의 원자적 차단은 Main Backend CAS/claim 계약(1.26 handoff) 범위로 남긴다.
