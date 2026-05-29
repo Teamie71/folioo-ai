@@ -80,10 +80,21 @@ class FakeStorage:
 
     def __init__(self) -> None:
         self.uploads: list[tuple[str, int, Path]] = []
+        self.attempt_uploads: list[tuple[str, str, int, Path]] = []
 
     def upload_preview(self, job_id: str, slide_order: int, src: Path) -> str:
         self.uploads.append((job_id, slide_order, src))
         return preview_key(job_id, slide_order)
+
+    def upload_regeneration_attempt_preview(
+        self,
+        job_id: str,
+        attempt_id: str,
+        slide_order: int,
+        src: Path,
+    ) -> str:
+        self.attempt_uploads.append((job_id, attempt_id, slide_order, src))
+        return f"jobs/{job_id}/attempts/{attempt_id}/previews/slide-{slide_order:02d}.jpg"
 
 
 class FakeMainClient:
@@ -424,6 +435,34 @@ async def test_ready_event_can_be_suppressed_after_preview_upload(tmp_path: Path
     assert result.outcomes[0].status == "ready"
     assert result.outcomes[0].gcs_preview_key == "jobs/job-1/previews/slide-01.jpg"
     assert result.outcomes[0].current_fills["2"]["text"] == "Folioo KPI 10%"
+
+
+@pytest.mark.asyncio
+async def test_preview_attempt_id_uploads_regenerate_preview_to_attempt_key(
+    tmp_path: Path,
+) -> None:
+    """재생성 QA 경로는 canonical preview 대신 attempt preview key 로 업로드할 수 있다."""
+    context = _make_step_context(tmp_path, slide_orders=[1])
+    qa = FakeQA({1: [_passed()]})
+    step = context.make_step(qa=qa, renderer=FakeRenderer(pages=[1]))
+
+    result = await step.process(
+        job_id="job-1",
+        slides=context.slides,
+        unpacked_dir=context.unpacked_dir,
+        working_pptx_path=context.working_pptx,
+        fixed_pptx_path=context.fixed_pptx,
+        render_output_dir=context.render_dir,
+        ready_event=None,
+        preview_attempt_id="attempt-1",
+    )
+
+    assert context.storage.uploads == []
+    assert context.storage.attempt_uploads[0][:3] == ("job-1", "attempt-1", 1)
+    assert (
+        result.outcomes[0].gcs_preview_key == "jobs/job-1/attempts/attempt-1/previews/slide-01.jpg"
+    )
+    assert context.main_client.events == []
 
 
 @pytest.mark.asyncio

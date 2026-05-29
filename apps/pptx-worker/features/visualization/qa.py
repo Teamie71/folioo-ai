@@ -289,6 +289,7 @@ class VisualQAFixVerifyStep:
         fixed_pptx_path: str | Path,
         render_output_dir: str | Path,
         ready_event: str | None = "slide_preview_ready",
+        preview_attempt_id: str | None = None,
     ) -> VisualQAPipelineResult:
         """렌더된 슬라이드들을 QA 처리하고 슬라이드별 ready/error 콜백을 보낸다."""
         if not slides:
@@ -314,6 +315,7 @@ class VisualQAFixVerifyStep:
             outcomes=outcomes,
             checked_orders=checked_orders,
             ready_event=ready_event,
+            preview_attempt_id=preview_attempt_id,
         )
 
         fix_attempts = 0
@@ -356,6 +358,7 @@ class VisualQAFixVerifyStep:
                     outcomes=outcomes,
                     checked_orders=checked_orders,
                     ready_event=ready_event,
+                    preview_attempt_id=preview_attempt_id,
                 )
 
             failed_orders = [*unfixed_orders, *recheck_failed_orders]
@@ -400,6 +403,7 @@ class VisualQAFixVerifyStep:
         outcomes: dict[int, SlidePreviewOutcome],
         checked_orders: list[int],
         ready_event: str | None,
+        preview_attempt_id: str | None,
     ) -> list[int]:
         failed_orders: list[int] = []
         for slide_order in candidate_orders:
@@ -419,6 +423,7 @@ class VisualQAFixVerifyStep:
                     job_id,
                     pending_slide,
                     ready_event=ready_event,
+                    preview_attempt_id=preview_attempt_id,
                 )
                 outcomes[slide_order] = SlidePreviewOutcome(
                     slide_id=pending_slide.slide.slide_id,
@@ -492,10 +497,23 @@ class VisualQAFixVerifyStep:
         pending_slide: _PendingSlide,
         *,
         ready_event: str | None,
+        preview_attempt_id: str | None,
     ) -> str:
         slide = pending_slide.slide
         metadata = preview_metadata(pending_slide.image_path)
-        gcs_key = self._storage.upload_preview(job_id, slide.slide_order, pending_slide.image_path)
+        if preview_attempt_id is None:
+            gcs_key = self._storage.upload_preview(
+                job_id,
+                slide.slide_order,
+                pending_slide.image_path,
+            )
+        else:
+            gcs_key = self._storage.upload_regeneration_attempt_preview(
+                job_id,
+                preview_attempt_id,
+                slide.slide_order,
+                pending_slide.image_path,
+            )
         if ready_event is None:
             return gcs_key
 

@@ -1,6 +1,6 @@
 """GCS 클라이언트 단위 테스트"""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -11,6 +11,9 @@ from features.visualization.storage.gcs_client import (
     pdf_key,
     pptx_key,
     preview_key,
+    regeneration_attempt_pdf_key,
+    regeneration_attempt_pptx_key,
+    regeneration_attempt_preview_key,
     template_meta_key,
     template_pptx_key,
     template_thumbnail_key,
@@ -45,6 +48,20 @@ class TestCanonicalKeys:
     def test_pdf_key(self):
         assert pdf_key("job-abc") == "jobs/job-abc/current.pdf"
 
+    def test_regeneration_attempt_keys(self):
+        assert (
+            regeneration_attempt_pptx_key("job-abc", "attempt-1")
+            == "jobs/job-abc/attempts/attempt-1/current.pptx"
+        )
+        assert (
+            regeneration_attempt_pdf_key("job-abc", "attempt-1")
+            == "jobs/job-abc/attempts/attempt-1/current.pdf"
+        )
+        assert (
+            regeneration_attempt_preview_key("job-abc", "attempt-1", 3)
+            == "jobs/job-abc/attempts/attempt-1/previews/slide-03.jpg"
+        )
+
     def test_template_pptx_key(self):
         assert template_pptx_key("blue") == "templates/blue/template.pptx"
 
@@ -68,6 +85,10 @@ class TestValidateIdentifier:
     def test_key_helpers_reject_slash_in_job_id(self):
         with pytest.raises(ValueError):
             pptx_key("job/42")
+
+    def test_attempt_key_helpers_reject_slash_in_attempt_id(self):
+        with pytest.raises(ValueError):
+            regeneration_attempt_pptx_key("job-42", "attempt/1")
 
     @pytest.mark.parametrize(
         "helper",
@@ -165,6 +186,22 @@ class TestUploadPptx:
         )
 
 
+class TestUploadRegenerationAttemptPptx:
+    def test_returns_attempt_key(self, mock_gcs, tmp_path):
+        client, mock_bucket, mock_blob, _ = mock_gcs
+        src = tmp_path / "output.pptx"
+        src.touch()
+
+        key = client.upload_regeneration_attempt_pptx("job-42", "attempt-1", src)
+
+        assert key == "jobs/job-42/attempts/attempt-1/current.pptx"
+        mock_bucket.blob.assert_called_once_with("jobs/job-42/attempts/attempt-1/current.pptx")
+        mock_blob.upload_from_filename.assert_called_once_with(
+            str(src),
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+
+
 class TestUploadPdf:
     def test_returns_canonical_key(self, mock_gcs, tmp_path):
         client, mock_bucket, mock_blob, _ = mock_gcs
@@ -175,6 +212,21 @@ class TestUploadPdf:
 
         assert key == "jobs/job-42/current.pdf"
         mock_bucket.blob.assert_called_once_with("jobs/job-42/current.pdf")
+        mock_blob.upload_from_filename.assert_called_once_with(
+            str(src), content_type="application/pdf"
+        )
+
+
+class TestUploadRegenerationAttemptPdf:
+    def test_returns_attempt_key(self, mock_gcs, tmp_path):
+        client, mock_bucket, mock_blob, _ = mock_gcs
+        src = tmp_path / "output.pdf"
+        src.touch()
+
+        key = client.upload_regeneration_attempt_pdf("job-42", "attempt-1", src)
+
+        assert key == "jobs/job-42/attempts/attempt-1/current.pdf"
+        mock_bucket.blob.assert_called_once_with("jobs/job-42/attempts/attempt-1/current.pdf")
         mock_blob.upload_from_filename.assert_called_once_with(
             str(src), content_type="application/pdf"
         )
@@ -200,6 +252,21 @@ class TestUploadPreview:
         mock_blob.upload_from_filename.assert_called_once_with(str(src), content_type="image/jpeg")
 
 
+class TestUploadRegenerationAttemptPreview:
+    def test_returns_attempt_key(self, mock_gcs, tmp_path):
+        client, mock_bucket, mock_blob, _ = mock_gcs
+        src = tmp_path / "slide.jpg"
+        src.touch()
+
+        key = client.upload_regeneration_attempt_preview("job-42", "attempt-1", 3, src)
+
+        assert key == "jobs/job-42/attempts/attempt-1/previews/slide-03.jpg"
+        mock_bucket.blob.assert_called_once_with(
+            "jobs/job-42/attempts/attempt-1/previews/slide-03.jpg"
+        )
+        mock_blob.upload_from_filename.assert_called_once_with(str(src), content_type="image/jpeg")
+
+
 class TestDownloadPreview:
     def test_calls_correct_key(self, mock_gcs, tmp_path):
         client, mock_bucket, mock_blob, _ = mock_gcs
@@ -209,6 +276,60 @@ class TestDownloadPreview:
 
         mock_bucket.blob.assert_called_once_with("jobs/job-42/previews/slide-01.jpg")
         mock_blob.download_to_filename.assert_called_once_with(str(dest))
+
+
+class TestPromoteRegenerationAttempt:
+    def test_copies_attempt_artifacts_to_canonical_after_backup(self, mock_gcs):
+        client, mock_bucket, _, _ = mock_gcs
+
+        keys = client.promote_regeneration_attempt("job-42", "attempt-1", 3)
+
+        assert keys.canonical_pptx_key == "jobs/job-42/current.pptx"
+        assert keys.canonical_pdf_key == "jobs/job-42/current.pdf"
+        assert keys.canonical_preview_key == "jobs/job-42/previews/slide-03.jpg"
+        assert mock_bucket.copy_blob.call_args_list == [
+            call(
+                mock_bucket.blob.return_value,
+                mock_bucket,
+                "jobs/job-42/attempts/attempt-1/rollback/current.pptx",
+            ),
+            call(
+                mock_bucket.blob.return_value,
+                mock_bucket,
+                "jobs/job-42/attempts/attempt-1/rollback/current.pdf",
+            ),
+            call(
+                mock_bucket.blob.return_value,
+                mock_bucket,
+                "jobs/job-42/attempts/attempt-1/rollback/slide-03.jpg",
+            ),
+            call(mock_bucket.blob.return_value, mock_bucket, "jobs/job-42/current.pptx"),
+            call(mock_bucket.blob.return_value, mock_bucket, "jobs/job-42/current.pdf"),
+            call(mock_bucket.blob.return_value, mock_bucket, "jobs/job-42/previews/slide-03.jpg"),
+        ]
+
+    def test_restore_backups_when_promote_copy_fails(self, mock_gcs):
+        client, mock_bucket, _, _ = mock_gcs
+        mock_bucket.copy_blob.side_effect = [
+            None,
+            None,
+            None,
+            None,
+            RuntimeError("copy failed"),
+            None,
+            None,
+            None,
+        ]
+
+        with pytest.raises(RuntimeError, match="copy failed"):
+            client.promote_regeneration_attempt("job-42", "attempt-1", 3)
+
+        destinations = [item.args[2] for item in mock_bucket.copy_blob.call_args_list]
+        assert destinations[-3:] == [
+            "jobs/job-42/previews/slide-03.jpg",
+            "jobs/job-42/current.pdf",
+            "jobs/job-42/current.pptx",
+        ]
 
 
 # ---------------------------------------------------------------------------

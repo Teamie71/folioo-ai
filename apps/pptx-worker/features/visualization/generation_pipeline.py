@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -31,7 +33,7 @@ from features.visualization.pptx import (
     SlideEditor,
 )
 from features.visualization.qa import SlidePreview, VisualQA, VisualQAFixVerifyStep
-from features.visualization.storage.gcs_client import GcsClient, job_workdir
+from features.visualization.storage.gcs_client import GcsClient, job_workdir, preview_key
 
 logger = logging.getLogger(__name__)
 
@@ -159,12 +161,49 @@ class StorageClient(Protocol):
         """current.pptx 를 업로드하고 GCS key 를 반환한다."""
         ...
 
+    def upload_regeneration_attempt_pptx(
+        self,
+        job_id: str,
+        attempt_id: str,
+        src: Path,
+    ) -> str:
+        """재생성 PPTX 를 attempt key 로 업로드하고 GCS key 를 반환한다."""
+        ...
+
     def upload_pdf(self, job_id: str, src: Path) -> str:
         """current.pdf 를 업로드하고 GCS key 를 반환한다."""
         ...
 
+    def upload_regeneration_attempt_pdf(
+        self,
+        job_id: str,
+        attempt_id: str,
+        src: Path,
+    ) -> str:
+        """재생성 PDF 를 attempt key 로 업로드하고 GCS key 를 반환한다."""
+        ...
+
     def upload_preview(self, job_id: str, slide_order: int, src: Path) -> str:
         """슬라이드 프리뷰를 업로드하고 GCS key 를 반환한다."""
+        ...
+
+    def upload_regeneration_attempt_preview(
+        self,
+        job_id: str,
+        attempt_id: str,
+        slide_order: int,
+        src: Path,
+    ) -> str:
+        """재생성 프리뷰를 attempt key 로 업로드하고 GCS key 를 반환한다."""
+        ...
+
+    def promote_regeneration_attempt(
+        self,
+        job_id: str,
+        attempt_id: str,
+        slide_order: int,
+    ) -> Any:
+        """재생성 attempt 산출물을 canonical key 로 promote 한다."""
         ...
 
 
@@ -317,6 +356,7 @@ class VisualizationTaskService:
         main_client: MainClient,
     ) -> None:
         slide_context = await main_client.get_slide_context(task.job_id, task.slide_id)
+        attempt_id = _regeneration_attempt_id(task.idempotency_key)
         registered_slide = RegisteredSlide(
             slide_id=task.slide_id,
             slide_order=0,
@@ -413,6 +453,7 @@ class VisualizationTaskService:
                     fixed_pptx_path=fixed_pptx,
                     render_output_dir=qa_render_dir,
                     ready_event=None,
+                    preview_attempt_id=attempt_id,
                 )
                 ready_outcome = _single_ready_outcome(qa_result.outcomes)
                 if ready_outcome is None:
@@ -430,8 +471,9 @@ class VisualizationTaskService:
                         page=registered_slide.slide_order,
                     ).pdf_path
 
-                storage.upload_pptx(task.job_id, final_pptx)
-                storage.upload_pdf(task.job_id, final_pdf)
+                storage.upload_regeneration_attempt_pptx(task.job_id, attempt_id, final_pptx)
+                storage.upload_regeneration_attempt_pdf(task.job_id, attempt_id, final_pdf)
+                canonical_preview_key = preview_key(task.job_id, registered_slide.slide_order)
 
                 await main_client.send_slide_event(
                     task.job_id,
@@ -446,8 +488,24 @@ class VisualizationTaskService:
                     occurred_at=self._now_iso(),
                     schema_version=task.schema_version,
                     current_fills=final_fills,
-                    gcs_preview_key=ready_outcome.gcs_preview_key,
+                    gcs_preview_key=canonical_preview_key,
                 )
+                try:
+                    storage.promote_regeneration_attempt(
+                        task.job_id,
+                        attempt_id,
+                        registered_slide.slide_order,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "regenerate artifact promote failed: job_id=%s slide_id=%s attempt_id=%s",
+                        task.job_id,
+                        task.slide_id,
+                        attempt_id,
+                    )
+                    raise RetryableError(f"재생성 산출물 promote에 실패했습니다: {exc}") from exc
+        except RetryableError:
+            raise
         except MainServerError:
             raise
         except Exception as exc:
@@ -1140,6 +1198,23 @@ def _single_ready_outcome(outcomes: Sequence[Any]) -> Any | None:
         if getattr(outcome, "status", None) == "ready":
             return outcome
     return None
+
+
+_SAFE_ATTEMPT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+_UNSAFE_ATTEMPT_ID_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _regeneration_attempt_id(idempotency_key: str) -> str:
+    """Cloud Tasks idempotency key 를 GCS-safe attempt id 로 변환한다."""
+    stripped = idempotency_key.strip()
+    if _SAFE_ATTEMPT_ID_PATTERN.fullmatch(stripped):
+        return stripped
+
+    digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:12]
+    slug = _UNSAFE_ATTEMPT_ID_CHARS.sub("-", stripped).strip("-_")[:40]
+    if not slug:
+        slug = "attempt"
+    return f"{slug}-{digest}"
 
 
 def _slide_xml_path(unpacked_dir: Path, slide_filename: str) -> Path:
