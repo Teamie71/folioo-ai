@@ -112,7 +112,7 @@ class InterviewService:
 
     @staticmethod
     def _is_regular_interview_complete_state(current_state: dict) -> bool:
-        """4단계 정규 인터뷰가 완료된 상태인지 판단한다."""
+        """4단계 정규 인터뷰가 완료된 상태인지 보수적으로 판단한다."""
         if not bool(current_state.get("all_stages_complete")):
             return False
 
@@ -125,7 +125,7 @@ class InterviewService:
 
         stage_progress = current_state.get("stage_progress")
         if not isinstance(stage_progress, dict):
-            return True
+            return False
 
         if "is_complete" in stage_progress:
             return bool(stage_progress["is_complete"])
@@ -133,7 +133,7 @@ class InterviewService:
         fixed_q_used = stage_progress.get("fixed_q_used")
         fixed_q_total = stage_progress.get("fixed_q_total")
         if fixed_q_used is None or fixed_q_total is None:
-            return True
+            return False
 
         try:
             return int(fixed_q_used) >= int(fixed_q_total)

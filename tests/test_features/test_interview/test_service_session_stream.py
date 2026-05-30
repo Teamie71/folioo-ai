@@ -478,7 +478,7 @@ async def test_process_message_stream_auto_starts_extension_after_regular_comple
 
 
 @pytest.mark.anyio
-async def test_process_message_stream_does_not_auto_start_extension_before_stage_four(monkeypatch):
+async def test_process_message_stream_no_auto_extension_before_stage_4(monkeypatch):
     """완료 플래그가 잘못 켜져도 4단계 완료 전이면 채팅 스트림을 자동 연장하지 않는다."""
     dummy_graph = DummyGraph()
     dummy_graph.stream_events = [

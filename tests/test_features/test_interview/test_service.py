@@ -83,6 +83,96 @@ def _completed_stage_4_progress() -> dict:
     }
 
 
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ({}, False),
+        ({"all_stages_complete": True}, False),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 3,
+                "stage_progress": _completed_stage_4_progress(),
+            },
+            False,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": _completed_stage_4_progress(),
+            },
+            True,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": "4",
+                "stage_progress": {"is_complete": True},
+            },
+            True,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": {
+                    "fixed_q_used": 3,
+                    "fixed_q_total": 3,
+                    "is_complete": False,
+                },
+            },
+            False,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": {"fixed_q_used": 3, "fixed_q_total": 3},
+            },
+            True,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": {"fixed_q_used": 2, "fixed_q_total": 3},
+            },
+            False,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": None,
+            },
+            False,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": {"fixed_q_used": 3},
+            },
+            False,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": {"fixed_q_used": "invalid", "fixed_q_total": 3},
+            },
+            False,
+        ),
+    ],
+)
+def test_is_regular_interview_complete_state(state, expected):
+    """4단계 정규 인터뷰 완료 판정 분기를 고정한다."""
+    assert (
+        interview_service.InterviewService._is_regular_interview_complete_state(state) is expected
+    )
+
+
 @pytest.mark.asyncio
 async def test_create_session_validation_error(monkeypatch):
     """필수 파라미터 누락 시 예외 발생 테스트"""
@@ -701,7 +791,7 @@ async def test_extend_session_raises_when_not_completed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_extend_session_raises_when_completion_flag_is_set_before_stage_four(monkeypatch):
+async def test_extend_session_raises_when_completion_flag_set_before_stage_4(monkeypatch):
     """완료 플래그가 잘못 켜진 3단계 상태는 명시적 연장도 차단한다."""
     dummy_graph = DummyGraph()
     dummy_graph.state_snapshot = DummyStateSnapshot(
