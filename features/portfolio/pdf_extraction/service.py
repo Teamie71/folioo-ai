@@ -87,7 +87,10 @@ class PdfExtractionService:
         try:
             await self._correction_client.complete_pdf_extraction(
                 correction_id,
-                activities=[activity.model_dump() for activity in activities],
+                activities=[
+                    activity.model_dump()
+                    for activity in self._format_activities_for_callback(activities)
+                ],
                 source_type="EXTERNAL",
             )
         except Exception:
@@ -100,6 +103,37 @@ class PdfExtractionService:
         if stripped.startswith("- "):
             return stripped[2:]
         return value
+
+    @classmethod
+    def _format_bullet_line_for_callback(cls, value: str) -> str:
+        """메인 서버 저장 문자열이 포트폴리오 생성 결과처럼 bullet 라인이 되도록 정리한다."""
+        normalized = cls._normalize_structured_text(value).strip()
+        if not normalized:
+            return ""
+        return f"- {normalized}"
+
+    @classmethod
+    def _format_activities_for_callback(cls, activities: list[PdfActivity]) -> list[PdfActivity]:
+        """PDF 추출 완료 callback 전송용으로 텍스트 리스트를 bullet 라인으로 변환한다."""
+        formatted_activities: list[PdfActivity] = []
+        for activity in activities:
+            formatted_activities.append(
+                activity.model_copy(
+                    update={
+                        "detail": [
+                            cls._format_bullet_line_for_callback(item) for item in activity.detail
+                        ],
+                        "responsibility": [
+                            cls._format_bullet_line_for_callback(item)
+                            for item in activity.responsibility
+                        ],
+                        "learning": [
+                            cls._format_bullet_line_for_callback(item) for item in activity.learning
+                        ],
+                    }
+                )
+            )
+        return formatted_activities
 
     @classmethod
     def _validate_result(cls, result: PdfExtractionResult) -> list[PdfActivity]:

@@ -148,8 +148,8 @@ async def test_background_extraction_success_calls_complete_callback(monkeypatch
             [
                 {
                     "activity_name": "프로젝트 A",
-                    "detail": ["상세 설명"],
-                    "responsibility": ["담당 업무"],
+                    "detail": ["- 상세 설명"],
+                    "responsibility": ["- 담당 업무"],
                     "problem_solving": [
                         {
                             "no": 1,
@@ -158,7 +158,7 @@ async def test_background_extraction_success_calls_complete_callback(monkeypatch
                             "reason": "이유",
                         }
                     ],
-                    "learning": ["배운 점"],
+                    "learning": ["- 배운 점"],
                 }
             ],
             "EXTERNAL",
@@ -349,6 +349,35 @@ def test_validate_result_removes_only_leading_dash_bullets_from_structured_field
             reason="선택 이유",
         )
     ]
+
+
+def test_format_activities_for_callback_adds_single_dash_bullet_to_text_lists():
+    """완료 콜백 전송용 텍스트 리스트는 기존 포트폴리오처럼 dash bullet으로 정규화한다."""
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    activity = PdfActivity(
+        activity_name="Project A",
+        detail=["상세", "- 이미 bullet", "  - 공백 bullet"],
+        responsibility=["담당 업무"],
+        problem_solving=[
+            PdfProblemSolvingItem(
+                no=1,
+                situation="문제 상황",
+                strategy="대응 전략",
+                reason="선택 이유",
+            )
+        ],
+        learning=["배운 점"],
+    )
+
+    formatted = service._format_activities_for_callback([activity])
+
+    assert formatted[0].detail == ["- 상세", "- 이미 bullet", "- 공백 bullet"]
+    assert formatted[0].responsibility == ["- 담당 업무"]
+    assert formatted[0].learning == ["- 배운 점"]
+    assert formatted[0].problem_solving == activity.problem_solving
 
 
 def test_validate_file_allows_pdf_extension_for_wrong_mime_type():

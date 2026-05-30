@@ -31,6 +31,25 @@ _FIELD_NAME_TO_SERVER = {
 }
 
 
+def _get_portfolio_text_field(portfolio: dict, *field_names: str) -> object:
+    """여러 서버 필드명 후보 중 비어 있지 않은 첫 값을 반환한다."""
+    fallback: object = ""
+    for field_name in field_names:
+        if field_name not in portfolio:
+            continue
+
+        value = portfolio[field_name]
+        if value is None:
+            continue
+
+        fallback = value
+        if isinstance(value, str) and value.strip() in {"", "0"}:
+            continue
+        return value
+
+    return fallback if fallback is not None else ""
+
+
 def _to_upper_status(status: CorrectionStatus) -> str:
     """CorrectionStatus enum을 메인 서버가 기대하는 UPPER_CASE 문자열로 변환"""
     return status.value.upper()
@@ -222,10 +241,14 @@ class CorrectionService:
 
         portfolio = await self._portfolio_client.get_portfolio(portfolio_id)
         portfolio_output = {
-            "description": portfolio.get("description", ""),
-            "contributions": portfolio.get("responsibilities", ""),
-            "achievements": portfolio.get("problemSolving", ""),
-            "insights": portfolio.get("learnings", ""),
+            "description": _get_portfolio_text_field(portfolio, "description"),
+            "contributions": _get_portfolio_text_field(
+                portfolio, "responsibilities", "contributions", "responsibility"
+            ),
+            "achievements": _get_portfolio_text_field(
+                portfolio, "problemSolving", "problem_solving", "achievements"
+            ),
+            "insights": _get_portfolio_text_field(portfolio, "learnings", "learning", "insights"),
         }
         logger.debug(
             "포트폴리오 첨삭 입력 요약 (correction_id: %s, portfolio_id: %s, description_length: %s, contributions_length: %s, achievements_length: %s, insights_length: %s)",
