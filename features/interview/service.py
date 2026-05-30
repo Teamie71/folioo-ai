@@ -116,6 +116,7 @@ class InterviewService:
         if not bool(current_state.get("all_stages_complete")):
             return False
 
+        # current_stage가 없는 구형/오염 상태는 안전하게 완료로 보지 않는다.
         try:
             current_stage = int(current_state.get("current_stage") or 0)
         except (TypeError, ValueError):
