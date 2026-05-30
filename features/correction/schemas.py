@@ -3,9 +3,61 @@
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 REQUIRED_CORRECTION_FIELDS = ("description", "contributions", "achievements", "insights")
+
+
+def _validate_required_correction_fields(field_names: list[str]) -> None:
+    """필수 첨삭 필드가 정확히 1회씩 포함되는지 검증"""
+    missing_fields = [name for name in REQUIRED_CORRECTION_FIELDS if name not in field_names]
+    duplicated_fields = sorted({name for name in field_names if field_names.count(name) > 1})
+
+    if missing_fields or duplicated_fields:
+        problems: list[str] = []
+        if missing_fields:
+            problems.append(f"누락: {', '.join(missing_fields)}")
+        if duplicated_fields:
+            problems.append(f"중복: {', '.join(duplicated_fields)}")
+        raise ValueError(
+            "fields에는 description, contributions, achievements, insights가 "
+            f"각각 정확히 1회씩 포함되어야 합니다. ({'; '.join(problems)})"
+        )
+
+
+class CorrectionDecisionLine(BaseModel):
+    """LLM이 판단해야 하는 라인별 첨삭 결과"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    line_number: int = Field(..., ge=1, description="라인 번호")
+    type: Literal["reduce", "keep", "emphasize"] = Field(..., description="첨삭 타입")
+    comment: str | None = Field(..., description="첨삭 코멘트 (keep인 경우 null 허용)")
+
+
+class CorrectionDecisionField(BaseModel):
+    """LLM이 판단해야 하는 필드별 첨삭 결과"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field_name: Literal["description", "contributions", "achievements", "insights"] = Field(
+        ..., description="첨삭 대상 필드명"
+    )
+    lines: list[CorrectionDecisionLine] = Field(..., description="라인별 첨삭 목록")
+
+
+class SingleCorrectionDecisionOutput(BaseModel):
+    """단일 포트폴리오용 LLM decision 스키마"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fields: list[CorrectionDecisionField] = Field(..., description="필드별 첨삭 판단 결과")
+
+    @model_validator(mode="after")
+    def validate_required_sections(self) -> "SingleCorrectionDecisionOutput":
+        """필수 섹션 4개가 정확히 1회씩 포함되는지 검증"""
+        _validate_required_correction_fields([field.field_name for field in self.fields])
+        return self
 
 
 class CorrectionLine(BaseModel):
@@ -27,29 +79,14 @@ class CorrectionField(BaseModel):
 
 
 class SingleCorrectionOutput(BaseModel):
-    """단일 포트폴리오용 LLM Structured Output 스키마"""
+    """단일 포트폴리오용 서버 저장 최종 스키마"""
 
     fields: list[CorrectionField] = Field(..., description="필드별 첨삭 결과")
 
     @model_validator(mode="after")
     def validate_required_sections(self) -> "SingleCorrectionOutput":
         """필수 섹션 4개가 정확히 1회씩 포함되는지 검증"""
-        field_names = [field.field_name for field in self.fields]
-
-        missing_fields = [name for name in REQUIRED_CORRECTION_FIELDS if name not in field_names]
-        duplicated_fields = sorted({name for name in field_names if field_names.count(name) > 1})
-
-        if missing_fields or duplicated_fields:
-            problems: list[str] = []
-            if missing_fields:
-                problems.append(f"누락: {', '.join(missing_fields)}")
-            if duplicated_fields:
-                problems.append(f"중복: {', '.join(duplicated_fields)}")
-            raise ValueError(
-                "fields에는 description, contributions, achievements, insights가 "
-                f"각각 정확히 1회씩 포함되어야 합니다. ({'; '.join(problems)})"
-            )
-
+        _validate_required_correction_fields([field.field_name for field in self.fields])
         return self
 
 

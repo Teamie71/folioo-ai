@@ -4,6 +4,7 @@ import pytest
 from langchain_core.prompts import ChatPromptTemplate
 
 from features.correction.prompts import (
+    build_portfolio_correction_line_map,
     correction_generator_prompt,
     format_portfolio_for_correction,
     get_correction_prompt,
@@ -47,8 +48,9 @@ def test_correction_prompt_removes_overall_summary_instruction():
 
     assert len(messages) == 2
     assert "overall_summary" not in messages[0].content
-    assert "SingleCorrectionOutput" in messages[0].content
+    assert "SingleCorrectionDecisionOutput" in messages[0].content
     assert "comment는 null" in messages[0].content
+    assert "original_text 또는 originalText는 절대 출력하지 마세요" in messages[0].content
 
 
 def test_correction_generator_prompt_has_required_input_variables():
@@ -80,6 +82,8 @@ def test_correction_generator_prompt_includes_field_scoped_validation_rules():
     assert "각 field 내부에서 1부터 다시 시작" in messages[0].content
     assert "중복 반환이나 일부 누락은 허용되지 않습니다" in messages[0].content
     assert "각각 정확히 1회씩 포함" in messages[0].content
+    assert "line_number, type, comment 키만 포함" in messages[0].content
+    assert "Markdown 코드블록" in messages[0].content
     assert "이전 시도 피드백\n없음" in messages[0].content
 
 
@@ -152,6 +156,31 @@ def test_format_portfolio_for_correction_numbers_only_bullet_lines():
 
     assert "[배운 점 - insights]" in formatted
     assert "1. **성장한 부분:** 우선순위 조율 역량 강화" in formatted
+
+
+def test_build_portfolio_correction_line_map_matches_formatter_rules():
+    """라인맵은 포맷터와 같은 소구분/불릿/이어지는 줄 병합 규칙을 사용한다."""
+    portfolio = {
+        "description": "- 첫 줄\n이어지는 설명\n일반 헤더\n- 둘째 줄",
+        "contributions": "**[역할]**\n- 기여 첫 줄\n기여 추가 설명",
+        "achievements": "**1) 리소스 부족**\n- 성과 첫 줄",
+        "insights": "- 배운 점",
+    }
+
+    formatted = format_portfolio_for_correction(portfolio)
+    line_map = build_portfolio_correction_line_map(portfolio)
+
+    assert "1. 첫 줄 이어지는 설명 일반 헤더" in formatted
+    assert "2. 둘째 줄" in formatted
+    assert line_map["description"] == {
+        1: "첫 줄 이어지는 설명 일반 헤더",
+        2: "둘째 줄",
+    }
+    assert "**[역할]**" in formatted
+    assert line_map["contributions"] == {1: "기여 첫 줄 기여 추가 설명"}
+    assert "**1) 리소스 부족**" in formatted
+    assert line_map["achievements"] == {1: "성과 첫 줄"}
+    assert line_map["insights"] == {1: "배운 점"}
 
 
 def test_format_portfolio_for_correction_raises_type_error_for_invalid_portfolio():

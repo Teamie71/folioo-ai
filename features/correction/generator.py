@@ -6,9 +6,18 @@ import re
 from common.llm.client import get_llm
 
 from .config import get_correction_llm_config, get_correction_validation_config
-from .prompts.correction_prompt import correction_generator_prompt, format_portfolio_for_correction
+from .prompts.correction_prompt import (
+    build_portfolio_correction_line_map,
+    correction_generator_prompt,
+    format_portfolio_for_correction,
+)
 from .prompts.generator import overall_summary_prompt
-from .schemas import REQUIRED_CORRECTION_FIELDS, PortfolioCorrectionResult, SingleCorrectionOutput
+from .schemas import (
+    REQUIRED_CORRECTION_FIELDS,
+    PortfolioCorrectionResult,
+    SingleCorrectionDecisionOutput,
+    SingleCorrectionOutput,
+)
 
 _generator: "CorrectionGenerator | None" = None
 _ALLOWED_TYPES = {"reduce", "keep", "emphasize"}
@@ -16,8 +25,12 @@ _FIELD_HEADER_PATTERN = re.compile(
     r"^\[[^\]]+ - (?P<field_name>description|contributions|achievements|insights)\]$"
 )
 _NUMBERED_LINE_PATTERN = re.compile(r"^\d+\.\s+")
-_CODE_FENCE_PATTERN = re.compile(
+_FULL_CODE_FENCE_PATTERN = re.compile(
     r"^\s*```(?:[a-zA-Z0-9_-]+)?\s*\n(?P<body>.*?)\n?\s*```\s*$",
+    re.DOTALL,
+)
+_CODE_FENCE_PATTERN = re.compile(
+    r"```(?:[a-zA-Z0-9_-]+)?\s*\n(?P<body>.*?)\n?\s*```",
     re.DOTALL,
 )
 logger = logging.getLogger(__name__)
@@ -68,16 +81,19 @@ class CorrectionGenerator:
             emphasis_points: 강조 포인트 텍스트
 
         Returns:
-            SingleCorrectionOutput: 검증을 통과한 첨삭 결과 또는 재시도 소진 시 마지막 결과
+            SingleCorrectionOutput: 검증을 통과한 최종 첨삭 결과
 
         Raises:
-            CorrectionGenerationError: LLM 호출/파싱이 연속 실패해 결과를 만들지 못한 경우
+            CorrectionGenerationError: LLM 호출/파싱/검증 실패로 결과를 만들지 못한 경우
         """
         validation_feedback = "없음"
-        last_output: SingleCorrectionOutput | None = None
         last_error_message: str | None = None
-        portfolio_data_text = _format_portfolio_data_for_prompt(portfolio_data)
-        field_line_counts = _get_field_line_counts_from_formatted_text(portfolio_data_text)
+        normalized_portfolio = _normalize_portfolio_data(portfolio_data)
+        portfolio_data_text = format_portfolio_for_correction(normalized_portfolio)
+        original_text_map = build_portfolio_correction_line_map(normalized_portfolio)
+        field_line_counts = {
+            field_name: len(line_map) for field_name, line_map in original_text_map.items()
+        }
         total_attempts = self._max_retries + 1
 
         logger.debug(
@@ -106,7 +122,7 @@ class CorrectionGenerator:
                 chain = correction_generator_prompt | self._llm
                 raw_response = chain.invoke(prompt_variables)
                 response_text = _coerce_llm_text_response(raw_response)
-                output: SingleCorrectionOutput = _parse_single_correction_output(response_text)
+                output = _parse_single_correction_decision_output(response_text)
                 logger.info("LLM 첨삭 생성 시도 %s/%s 완료", attempt, total_attempts)
             except Exception as exc:
                 last_error_message = f"LLM 호출/파싱 실패: {exc}"
@@ -119,11 +135,10 @@ class CorrectionGenerator:
                 )
                 continue
 
-            last_output = output
             validation_errors = self._validate(output=output, field_line_counts=field_line_counts)
             if not validation_errors:
                 logger.info("검증 통과 (시도 %s/%s)", attempt, total_attempts)
-                return output
+                return _combine_decision_with_original_text(output, original_text_map)
 
             last_error_message = "; ".join(validation_errors)
             validation_feedback = f"이전 출력 보완 필요: {last_error_message}"
@@ -133,14 +148,6 @@ class CorrectionGenerator:
                 total_attempts,
                 last_error_message,
             )
-
-        if last_output is not None:
-            logger.warning(
-                "재시도 소진 후 마지막 출력 반환 (%s회 시도): %s",
-                total_attempts,
-                last_error_message or "검증 실패",
-            )
-            return last_output
 
         raise CorrectionGenerationError(
             "첨삭 생성에 실패했습니다. "
@@ -179,7 +186,7 @@ class CorrectionGenerator:
 
     def _validate(
         self,
-        output: SingleCorrectionOutput,
+        output: SingleCorrectionDecisionOutput | SingleCorrectionOutput,
         portfolio_data: dict | None = None,
         field_line_counts: dict[str, int] | None = None,
     ) -> list[str]:
@@ -218,6 +225,49 @@ class CorrectionGenerator:
                 )
 
             line_count = field_line_counts.get(field_name, 0)
+            expected_line_numbers = list(range(1, line_count + 1))
+            actual_line_numbers = [line.line_number for line in field.lines]
+            if actual_line_numbers != expected_line_numbers:
+                actual_line_number_set = set(actual_line_numbers)
+                expected_line_number_set = set(expected_line_numbers)
+                missing_line_numbers = [
+                    line_number
+                    for line_number in expected_line_numbers
+                    if line_number not in actual_line_number_set
+                ]
+                duplicated_line_numbers = sorted(
+                    {
+                        line_number
+                        for line_number in actual_line_numbers
+                        if actual_line_numbers.count(line_number) > 1
+                    }
+                )
+                out_of_range_line_numbers = [
+                    line_number
+                    for line_number in actual_line_numbers
+                    if line_number not in expected_line_number_set
+                ]
+
+                line_context = f"expected={expected_line_numbers}, actual={actual_line_numbers}"
+                if missing_line_numbers:
+                    errors.append(
+                        f"{field_name}의 line_number 누락: {missing_line_numbers}. {line_context}"
+                    )
+                if duplicated_line_numbers:
+                    errors.append(
+                        f"{field_name}의 line_number 중복: {duplicated_line_numbers}. {line_context}"
+                    )
+                if out_of_range_line_numbers:
+                    errors.append(
+                        f"{field_name}의 line_number 범위 초과: {out_of_range_line_numbers}. {line_context}"
+                    )
+                if not (
+                    missing_line_numbers or duplicated_line_numbers or out_of_range_line_numbers
+                ):
+                    errors.append(
+                        f"{field_name}의 line_number 순서가 원본과 일치하지 않습니다. {line_context}"
+                    )
+
             for line in field.lines:
                 if line.type not in _ALLOWED_TYPES:
                     errors.append(f"{field_name}의 type 값이 유효하지 않습니다: {line.type}")
@@ -237,11 +287,6 @@ class CorrectionGenerator:
                             f"{field_name}의 {line.line_number}번 라인 comment가 비어 있습니다."
                         )
 
-                if line.line_number < 1 or line.line_number > line_count:
-                    errors.append(
-                        f"{field_name}의 line_number {line.line_number}가 원본 라인 수({line_count})를 벗어났습니다."
-                    )
-
         return errors
 
 
@@ -258,20 +303,24 @@ def _strip_json_code_fence(text: str) -> str:
         str: 펜스가 제거되고 양끝 공백이 정리된 문자열. 펜스가 없으면 원본을 strip한 값.
     """
     stripped = text.strip()
-    match = _CODE_FENCE_PATTERN.match(stripped)
+    match = _FULL_CODE_FENCE_PATTERN.match(stripped)
+    if match is not None:
+        return match.group("body").strip()
+
+    match = _CODE_FENCE_PATTERN.search(stripped)
     if match is not None:
         return match.group("body").strip()
     return stripped
 
 
-def _parse_single_correction_output(text: str) -> SingleCorrectionOutput:
-    """LLM 텍스트 응답을 ``SingleCorrectionOutput``으로 파싱한다.
+def _parse_single_correction_decision_output(text: str) -> SingleCorrectionDecisionOutput:
+    """LLM 텍스트 응답을 ``SingleCorrectionDecisionOutput``으로 파싱한다.
 
     Args:
         text: LLM이 반환한 JSON 문자열 (마크다운 코드펜스 포함 가능)
 
     Returns:
-        SingleCorrectionOutput: 스키마 검증을 통과한 첨삭 결과
+        SingleCorrectionDecisionOutput: 스키마 검증을 통과한 첨삭 판단 결과
 
     Raises:
         ValueError: 응답이 비어 있는 경우
@@ -280,13 +329,48 @@ def _parse_single_correction_output(text: str) -> SingleCorrectionOutput:
     cleaned = _strip_json_code_fence(text)
     if not cleaned:
         raise ValueError("LLM 응답이 비어 있습니다.")
-    return SingleCorrectionOutput.model_validate_json(cleaned)
+    return SingleCorrectionDecisionOutput.model_validate_json(cleaned)
+
+
+def _parse_single_correction_output(text: str) -> SingleCorrectionDecisionOutput:
+    """이전 private helper 이름을 유지하며 decision 스키마로 파싱한다."""
+    return _parse_single_correction_decision_output(text)
+
+
+def _combine_decision_with_original_text(
+    decision_output: SingleCorrectionDecisionOutput,
+    original_text_map: dict[str, dict[int, str]],
+) -> SingleCorrectionOutput:
+    """LLM decision 결과에 코드가 보유한 원문 텍스트를 결합한다."""
+    fields: list[dict] = []
+    for field in decision_output.fields:
+        field_line_map = original_text_map.get(field.field_name, {})
+        lines: list[dict] = []
+        for line in field.lines:
+            try:
+                original_text = field_line_map[line.line_number]
+            except KeyError as exc:
+                raise ValueError(
+                    f"{field.field_name}의 {line.line_number}번 원문을 찾을 수 없습니다."
+                ) from exc
+            lines.append(
+                {
+                    "line_number": line.line_number,
+                    "original_text": original_text,
+                    "type": line.type,
+                    "comment": line.comment,
+                }
+            )
+        fields.append({"field_name": field.field_name, "lines": lines})
+
+    return SingleCorrectionOutput.model_validate({"fields": fields})
 
 
 def _get_field_line_counts(portfolio_data: dict) -> dict[str, int]:
     """필드별 번호 매김 대상 라인 수를 계산"""
-    formatted_text = _format_portfolio_data_for_prompt(portfolio_data)
-    return _get_field_line_counts_from_formatted_text(formatted_text)
+    normalized_portfolio = _normalize_portfolio_data(portfolio_data)
+    line_map = build_portfolio_correction_line_map(normalized_portfolio)
+    return {field_name: len(field_line_map) for field_name, field_line_map in line_map.items()}
 
 
 def _get_field_line_counts_from_formatted_text(formatted_text: str) -> dict[str, int]:
@@ -346,15 +430,15 @@ def _coerce_field_value_to_text(value: object) -> str:
     return str(value)
 
 
-def _format_portfolio_data_for_prompt(portfolio_data: dict) -> str:
+def _normalize_portfolio_data(portfolio_data: dict) -> dict[str, str]:
     """
-    포트폴리오 입력을 첨삭 프롬프트용 텍스트로 변환
+    포트폴리오 입력을 필드별 문자열로 정규화
 
     Args:
         portfolio_data: 필드별 문자열 또는 dict(lines/text/content/value) 형태 데이터
 
     Returns:
-        str: format_portfolio_for_correction() 규칙을 따른 멀티라인 문자열
+        dict[str, str]: 필수 첨삭 필드별 줄바꿈 유지 텍스트
     """
     if not isinstance(portfolio_data, dict):
         raise TypeError("portfolio_data는 dict 타입이어야 합니다.")
@@ -365,7 +449,20 @@ def _format_portfolio_data_for_prompt(portfolio_data: dict) -> str:
             portfolio_data.get(field_name)
         )
 
-    return format_portfolio_for_correction(normalized_portfolio)
+    return normalized_portfolio
+
+
+def _format_portfolio_data_for_prompt(portfolio_data: dict) -> str:
+    """
+    포트폴리오 입력을 첨삭 프롬프트용 텍스트로 변환
+
+    Args:
+        portfolio_data: 필드별 문자열 또는 dict(lines/text/content/value) 형태 데이터
+
+    Returns:
+        str: format_portfolio_for_correction() 규칙을 따른 멀티라인 문자열
+    """
+    return format_portfolio_for_correction(_normalize_portfolio_data(portfolio_data))
 
 
 def _format_portfolio_corrections_for_summary(

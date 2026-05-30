@@ -863,6 +863,7 @@ async def test_run_generation_failure_updates_failed_status():
     await service._run_generation(1)
 
     assert client.updated_statuses[-1] == {"correction_id": 1, "status": "FAILED"}
+    assert client.updated_results == []
 
 
 @pytest.mark.asyncio
