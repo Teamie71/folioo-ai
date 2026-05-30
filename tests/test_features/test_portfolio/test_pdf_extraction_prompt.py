@@ -23,6 +23,9 @@ def test_build_pdf_extraction_messages_includes_filename_and_pdf_data_url():
         "원문 텍스트의 단어, 조사, 문장 구조를 단 한 글자도 바꾸지 않고 그대로 복사"
         in messages[0].content
     )
+    assert "다른 카테고리에 이미 분류한 원문은 `learning`에 중복 배치하지 않습니다." in (
+        messages[0].content
+    )
     assert 'activity_name: "중고 플랫폼 파워 셀러"' in messages[0].content
 
     human_content = messages[1].content

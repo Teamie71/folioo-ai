@@ -80,7 +80,8 @@ def test_correction_generator_prompt_includes_field_scoped_validation_rules():
 
     assert len(messages) == 2
     assert "각 field 내부에서 1부터 다시 시작" in messages[0].content
-    assert "중복 반환이나 일부 누락은 허용되지 않습니다" in messages[0].content
+    assert "번호가 매겨진 줄이 없는 필드도 field 객체는 포함" in messages[0].content
+    assert "번호가 매겨진 줄이 있는 필드에서는 해당 줄을 누락 없이" in messages[0].content
     assert "각각 정확히 1회씩 포함" in messages[0].content
     assert "line_number, type, comment 키만 포함" in messages[0].content
     assert "Markdown 코드블록" in messages[0].content
