@@ -179,6 +179,24 @@ def _decision_json(line_number: int = 1, comment: str | None = "좋습니다.") 
     return _decision_output(line_number=line_number, comment=comment).model_dump_json()
 
 
+def _decision_json_with_empty_insights() -> str:
+    """insights에 첨삭 대상 라인이 없는 decision JSON을 생성한다."""
+    output = _decision_output().model_dump()
+    for field in output["fields"]:
+        if field["field_name"] == "insights":
+            field["lines"] = []
+    return SingleCorrectionDecisionOutput.model_validate(output).model_dump_json()
+
+
+def _output_with_empty_insights() -> SingleCorrectionOutput:
+    """insights에 첨삭 대상 라인이 없는 최종 출력 객체를 생성한다."""
+    output = _output().model_dump()
+    for field in output["fields"]:
+        if field["field_name"] == "insights":
+            field["lines"] = []
+    return SingleCorrectionOutput.model_validate(output)
+
+
 def _portfolio_data_for_output() -> dict:
     """`_output()`의 original_text와 같은 원문을 가진 포트폴리오 입력을 생성한다."""
     return {
@@ -329,6 +347,57 @@ def test_generate_accepts_plain_lines_when_field_has_no_bullets(
 
     assert result == _output()
     assert len(chain.calls) == 1
+
+
+def test_generate_accepts_empty_field_with_empty_lines(monkeypatch: pytest.MonkeyPatch):
+    """원문이 없는 섹션은 빈 lines로 반환하면 첨삭 생성을 통과한다."""
+    from features.correction import generator
+
+    chain = DummyChain([_decision_json_with_empty_insights()])
+    monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
+
+    result = CorrectionGenerator(max_retries=2).generate(
+        company_name="테스트 회사",
+        job_title="백엔드",
+        job_description="채용 공고",
+        company_insight="인사이트",
+        portfolio_data={
+            "description": "- desc",
+            "contributions": "- contri",
+            "achievements": "- ach",
+            "insights": "",
+        },
+        emphasis_points="강조 포인트",
+    )
+
+    assert result == _output_with_empty_insights()
+
+
+def test_generate_raises_when_all_fields_have_no_lines(monkeypatch: pytest.MonkeyPatch):
+    """모든 섹션에 첨삭 대상 라인이 없으면 LLM 호출 전에 실패한다."""
+    from features.correction import generator
+
+    chain = DummyChain([_decision_json_with_empty_insights()])
+    monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
+
+    with pytest.raises(CorrectionGenerationError, match="첨삭 대상 원본 라인이 없습니다"):
+        CorrectionGenerator(max_retries=2).generate(
+            company_name="테스트 회사",
+            job_title="백엔드",
+            job_description="채용 공고",
+            company_insight="인사이트",
+            portfolio_data={
+                "description": "",
+                "contributions": "",
+                "achievements": "",
+                "insights": "",
+            },
+            emphasis_points="강조 포인트",
+        )
+
+    assert chain.calls == []
 
 
 def test_generate_overall_summary(monkeypatch: pytest.MonkeyPatch):

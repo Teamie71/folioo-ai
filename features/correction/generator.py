@@ -219,9 +219,7 @@ class CorrectionGenerator:
                 continue
 
             line_count = field_line_counts.get(field_name, 0)
-            if line_count == 0:
-                errors.append(f"{field_name}의 첨삭 대상 원본 라인이 없습니다.")
-            elif len(field.lines) < self._min_lines_per_field:
+            if line_count > 0 and len(field.lines) < self._min_lines_per_field:
                 errors.append(
                     f"{field_name} 필드는 최소 {self._min_lines_per_field}개 라인이 필요합니다."
                 )
@@ -405,16 +403,11 @@ def _get_field_line_counts(portfolio_data: dict) -> dict[str, int]:
 
 
 def _ensure_portfolio_has_correction_lines(field_line_counts: dict[str, int]) -> None:
-    """LLM 호출 전에 첨삭 대상 라인이 없는 입력을 실패 처리한다."""
-    empty_fields = [
-        field_name
-        for field_name in REQUIRED_CORRECTION_FIELDS
-        if field_line_counts.get(field_name, 0) == 0
-    ]
-    if empty_fields:
-        raise CorrectionGenerationError(
-            f"첨삭 대상 원본 라인이 없는 필드가 있습니다: {', '.join(empty_fields)}"
-        )
+    """LLM 호출 전에 첨삭 대상 라인이 전혀 없는 입력만 실패 처리한다."""
+    if not any(
+        field_line_counts.get(field_name, 0) > 0 for field_name in REQUIRED_CORRECTION_FIELDS
+    ):
+        raise CorrectionGenerationError("첨삭 대상 원본 라인이 없습니다.")
 
 
 def _coerce_field_value_to_text(value: object) -> str:
