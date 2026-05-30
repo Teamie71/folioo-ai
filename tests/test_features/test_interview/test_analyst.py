@@ -185,6 +185,40 @@ def test_run_moves_to_next_stage_when_dynamic_followup_enabled(monkeypatch):
     assert result["next_node"] == "question_generator"
 
 
+def test_run_moves_from_stage_3_to_stage_4_without_extension(monkeypatch):
+    """3단계 완료 시 연장 모드가 아니라 4단계 첫 질문 생성으로 라우팅한다."""
+    response = AnalystResponse(fields=[])
+    monkeypatch.setattr(
+        analyst, "get_analyst_llm", lambda temperature=0.3: _mock_analyst_llm(response)
+    )
+    monkeypatch.setattr(
+        analyst,
+        "get_global_config",
+        lambda: _DummyGlobalConfig(max_extensions=1, extension_turns_per_session=18),
+    )
+
+    state = get_initial_interview_state(
+        user_id="test_user",
+        session_id="test_session",
+        experience_name="테스트 경험",
+    )
+    state["current_stage"] = 3
+    stage_3_config = load_stage_config(3)
+    state["stage_progress"]["fixed_q_total"] = len(stage_3_config.fixed_questions)
+    state["stage_progress"]["fixed_q_used"] = state["stage_progress"]["fixed_q_total"]
+
+    result = analyst.run(state)
+    stage_4_config = load_stage_config(4)
+
+    assert result["current_stage"] == 4
+    assert result["is_extended_mode"] is False
+    assert result["all_stages_complete"] is False
+    assert result["stage_progress"]["fixed_q_used"] == 0
+    assert result["stage_progress"]["fixed_q_total"] == len(stage_4_config.fixed_questions)
+    assert result["stage_progress"]["is_complete"] is False
+    assert result["next_node"] == "question_generator"
+
+
 def test_run_keeps_stage_when_fixed_questions_remain_even_if_required_fields_complete(
     monkeypatch,
 ):
