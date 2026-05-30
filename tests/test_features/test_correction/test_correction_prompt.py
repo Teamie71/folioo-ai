@@ -183,6 +183,69 @@ def test_build_portfolio_correction_line_map_matches_formatter_rules():
     assert line_map["insights"] == {1: "배운 점"}
 
 
+def test_format_portfolio_for_correction_numbers_plain_lines_when_no_bullets():
+    """불릿 없는 외부 포트폴리오 텍스트도 첨삭 대상 번호 라인으로 변환한다."""
+    portfolio = {
+        "description": (
+            '배경: "관광 1번지" 명동의 카페\n'
+            "외국인 관광객 비율이 30% 이상인 카페에서 6개월간 근무했습니다.\n"
+            "Zero Complaint: 주문 실수로 인한 컴플레인 0건"
+        ),
+        "contributions": '외국인 고객에게 "Try this with Oat Milk"라며 옵션을 제안했습니다.',
+        "achievements": (
+            "#1\n"
+            '상황: "Less Sweet", "No Ice" 등 커스텀 주문 오류가 빈번했습니다.\n'
+            "전략: 커스텀 주문 가이드북을 직접 제작했습니다.\n"
+            "이유: 말로 설명하는 데는 한계가 있었습니다."
+        ),
+        "insights": "고객에게 특별한 경험을 제공하는 계기가 되었습니다.",
+    }
+
+    formatted = format_portfolio_for_correction(portfolio)
+    line_map = build_portfolio_correction_line_map(portfolio)
+
+    assert '1. 배경: "관광 1번지" 명동의 카페' in formatted
+    assert "2. 외국인 관광객 비율이 30% 이상인 카페에서 6개월간 근무했습니다." in formatted
+    assert "3. Zero Complaint: 주문 실수로 인한 컴플레인 0건" in formatted
+    assert '1. 외국인 고객에게 "Try this with Oat Milk"라며 옵션을 제안했습니다.' in formatted
+    assert "#1" in formatted
+    assert '1. 상황: "Less Sweet", "No Ice" 등 커스텀 주문 오류가 빈번했습니다.' in formatted
+    assert "2. 전략: 커스텀 주문 가이드북을 직접 제작했습니다." in formatted
+    assert "3. 이유: 말로 설명하는 데는 한계가 있었습니다." in formatted
+    assert "1. 고객에게 특별한 경험을 제공하는 계기가 되었습니다." in formatted
+    assert line_map["description"] == {
+        1: '배경: "관광 1번지" 명동의 카페',
+        2: "외국인 관광객 비율이 30% 이상인 카페에서 6개월간 근무했습니다.",
+        3: "Zero Complaint: 주문 실수로 인한 컴플레인 0건",
+    }
+    assert line_map["achievements"] == {
+        1: '상황: "Less Sweet", "No Ice" 등 커스텀 주문 오류가 빈번했습니다.',
+        2: "전략: 커스텀 주문 가이드북을 직접 제작했습니다.",
+        3: "이유: 말로 설명하는 데는 한계가 있었습니다.",
+    }
+
+
+def test_format_portfolio_for_correction_renumbers_existing_numbered_plain_lines():
+    """이미 번호가 붙은 외부 plain line은 번호 접두사를 제거한 뒤 다시 번호를 매긴다."""
+    portfolio = {
+        "description": "1. 첫 설명\n2. 둘째 설명",
+        "contributions": "1. 첫 담당\n2. 둘째 담당",
+        "achievements": "#1\n1. 상황 설명\n2. 전략 설명",
+        "insights": "1. 배운 점",
+    }
+
+    formatted = format_portfolio_for_correction(portfolio)
+    line_map = build_portfolio_correction_line_map(portfolio)
+
+    assert "1. 첫 설명" in formatted
+    assert "2. 둘째 설명" in formatted
+    assert "1. 1. 첫 설명" not in formatted
+    assert "1. 상황 설명" in formatted
+    assert "1. 1. 상황 설명" not in formatted
+    assert line_map["description"] == {1: "첫 설명", 2: "둘째 설명"}
+    assert line_map["achievements"] == {1: "상황 설명", 2: "전략 설명"}
+
+
 def test_format_portfolio_for_correction_raises_type_error_for_invalid_portfolio():
     """portfolio가 dict 타입이 아닐 때 TypeError를 발생시키는지 테스트"""
     with pytest.raises(TypeError, match="portfolio는 dict 타입이어야 합니다"):

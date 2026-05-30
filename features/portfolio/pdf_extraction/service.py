@@ -87,7 +87,10 @@ class PdfExtractionService:
         try:
             await self._correction_client.complete_pdf_extraction(
                 correction_id,
-                activities=[activity.model_dump() for activity in activities],
+                activities=[
+                    activity.model_dump()
+                    for activity in self._format_activities_for_callback(activities)
+                ],
                 source_type="EXTERNAL",
             )
         except Exception:
@@ -100,6 +103,38 @@ class PdfExtractionService:
         if stripped.startswith("- "):
             return stripped[2:]
         return value
+
+    @classmethod
+    def _format_bullet_line_for_callback(cls, value: str) -> str:
+        """메인 서버 저장 문자열이 포트폴리오 생성 결과처럼 bullet 라인이 되도록 정리한다."""
+        normalized = cls._normalize_structured_text(value).strip()
+        if not normalized:
+            return ""
+        return f"- {normalized}"
+
+    @classmethod
+    def _format_bullet_lines_for_callback(cls, values: list[str]) -> list[str]:
+        """빈 항목을 제외하고 callback 전송용 bullet 라인 목록을 생성한다."""
+        formatted_lines = [cls._format_bullet_line_for_callback(value) for value in values]
+        return [line for line in formatted_lines if line]
+
+    @classmethod
+    def _format_activities_for_callback(cls, activities: list[PdfActivity]) -> list[PdfActivity]:
+        """PDF 추출 완료 callback 전송용으로 텍스트 리스트를 bullet 라인으로 변환한다."""
+        formatted_activities: list[PdfActivity] = []
+        for activity in activities:
+            formatted_activities.append(
+                activity.model_copy(
+                    update={
+                        "detail": cls._format_bullet_lines_for_callback(activity.detail),
+                        "responsibility": cls._format_bullet_lines_for_callback(
+                            activity.responsibility
+                        ),
+                        "learning": cls._format_bullet_lines_for_callback(activity.learning),
+                    }
+                )
+            )
+        return formatted_activities
 
     @classmethod
     def _validate_result(cls, result: PdfExtractionResult) -> list[PdfActivity]:

@@ -303,32 +303,32 @@ def test_generate_raises_error_when_llm_fails_without_output(monkeypatch: pytest
         )
 
 
-def test_generate_fails_fast_when_portfolio_has_no_numbered_line(
+def test_generate_accepts_plain_lines_when_field_has_no_bullets(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """첨삭 대상 번호 라인이 없는 필드는 LLM 호출 전 실패 처리한다."""
+    """불릿 없는 필드도 plain line fallback으로 첨삭 대상 라인을 만든다."""
     from features.correction import generator
 
     chain = DummyChain([_decision_json(line_number=1)])
     monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
     monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
 
-    with pytest.raises(CorrectionGenerationError, match="description"):
-        CorrectionGenerator(max_retries=2).generate(
-            company_name="테스트 회사",
-            job_title="백엔드",
-            job_description="채용 공고",
-            company_insight="인사이트",
-            portfolio_data={
-                "description": "불릿 없는 설명",
-                "contributions": "- contri",
-                "achievements": "- ach",
-                "insights": "- ins",
-            },
-            emphasis_points="강조 포인트",
-        )
+    result = CorrectionGenerator(max_retries=2).generate(
+        company_name="테스트 회사",
+        job_title="백엔드",
+        job_description="채용 공고",
+        company_insight="인사이트",
+        portfolio_data={
+            "description": "desc",
+            "contributions": "- contri",
+            "achievements": "- ach",
+            "insights": "- ins",
+        },
+        emphasis_points="강조 포인트",
+    )
 
-    assert chain.calls == []
+    assert result == _output()
+    assert len(chain.calls) == 1
 
 
 def test_generate_overall_summary(monkeypatch: pytest.MonkeyPatch):

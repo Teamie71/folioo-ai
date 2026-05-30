@@ -804,6 +804,79 @@ async def test_run_generation_success_calls_generator_and_saves_result():
 
 
 @pytest.mark.asyncio
+async def test_run_generation_supports_external_snake_case_portfolio_fields():
+    """외부 PDF 포트폴리오의 snake_case 필드명도 첨삭 입력으로 사용한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(
+        status="GENERATING",
+        company_insight="인사이트",
+        highlight_point="강조",
+        portfolio_ids=[77],
+    )
+    generator = DummyGenerator()
+    portfolio_client = DummyPortfolioClient(
+        portfolios={
+            77: {
+                "id": 77,
+                "description": "상세",
+                "responsibility": "담당 업무",
+                "problem_solving": "문제 해결",
+                "learning": "배운 점",
+            }
+        }
+    )
+    service = CorrectionService(client, portfolio_client, generator, DummyRagPipeline())
+
+    await service._run_generation(1)
+
+    assert generator.calls[0]["portfolio_output"] == {
+        "description": "상세",
+        "contributions": "담당 업무",
+        "achievements": "문제 해결",
+        "insights": "배운 점",
+    }
+    assert client.updated_results
+
+
+@pytest.mark.asyncio
+async def test_run_generation_skips_empty_placeholders_and_stringifies_fields():
+    """빈 값과 '0' placeholder는 건너뛰고 선택한 필드는 문자열로 정규화한다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(
+        status="GENERATING",
+        company_insight="인사이트",
+        highlight_point="강조",
+        portfolio_ids=[77],
+    )
+    generator = DummyGenerator()
+    portfolio_client = DummyPortfolioClient(
+        portfolios={
+            77: {
+                "id": 77,
+                "description": 123,
+                "responsibilities": "0",
+                "responsibility": " 담당 업무 ",
+                "problemSolving": "",
+                "problem_solving": "문제 해결",
+                "learnings": None,
+                "learning": "배운 점",
+            }
+        }
+    )
+    service = CorrectionService(client, portfolio_client, generator, DummyRagPipeline())
+
+    await service._run_generation(1)
+
+    assert generator.calls[0]["portfolio_output"] == {
+        "description": "123",
+        "contributions": "담당 업무",
+        "achievements": "문제 해결",
+        "insights": "배운 점",
+    }
+    assert client.updated_results
+
+
+@pytest.mark.asyncio
 async def test_run_generation_does_not_block_event_loop():
     """_run_generation의 LLM 호출은 이벤트 루프를 블로킹하지 않는다."""
 

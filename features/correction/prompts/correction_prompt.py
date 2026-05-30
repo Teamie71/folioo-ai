@@ -13,7 +13,10 @@ _FIELD_TITLE_BY_NAME = {
 }
 
 _BULLET_PATTERN = re.compile(r"^\s*[-*]\s+(?P<content>.+)$")
-_SUBHEADER_PATTERN = re.compile(r"^\s*(?:\*\*)?(?:\[[^\]]+\]|\d+\)\s*\S.+)(?:\*\*)?\s*$")
+_NUMBERED_LINE_PATTERN = re.compile(r"^\s*\d+\.\s+(?P<content>.+)$")
+_SUBHEADER_PATTERN = re.compile(
+    r"^\s*(?:\*\*)?(?:\[[^\]]+\]|\d+\)\s*\S.+|#\s*\d+(?:\s+\S.*)?)(?:\*\*)?\s*$"
+)
 _EMPTY_TEXT_VALUES = {"", "0"}
 
 CORRECTION_SYSTEM_PROMPT = """
@@ -133,6 +136,7 @@ def _format_field_for_correction(field_lines: list[str]) -> tuple[list[str], dic
     line_number = 0
     latest_numbered_line_index: int | None = None
     latest_line_number: int | None = None
+    has_bullet_line = any(_BULLET_PATTERN.match(line) is not None for line in field_lines)
 
     for line in field_lines:
         if _is_subheader_line(line):
@@ -147,6 +151,20 @@ def _format_field_for_correction(field_lines: list[str]) -> tuple[list[str], dic
             bullet_content = bullet_match.group("content").strip()
             output_lines.append(f"{line_number}. {bullet_content}")
             original_text_by_line_number[line_number] = bullet_content
+            latest_numbered_line_index = len(output_lines) - 1
+            latest_line_number = line_number
+            continue
+
+        if not has_bullet_line:
+            line_number += 1
+            numbered_line_match = _NUMBERED_LINE_PATTERN.match(line)
+            original_text = (
+                numbered_line_match.group("content").strip()
+                if numbered_line_match is not None
+                else line
+            )
+            output_lines.append(f"{line_number}. {original_text}")
+            original_text_by_line_number[line_number] = original_text
             latest_numbered_line_index = len(output_lines) - 1
             latest_line_number = line_number
             continue
