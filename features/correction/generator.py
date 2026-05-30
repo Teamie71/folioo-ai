@@ -3,6 +3,8 @@
 import logging
 import re
 
+from pydantic import ValidationError
+
 from common.llm.client import get_llm
 
 from .config import get_correction_llm_config, get_correction_validation_config
@@ -21,10 +23,6 @@ from .schemas import (
 
 _generator: "CorrectionGenerator | None" = None
 _ALLOWED_TYPES = {"reduce", "keep", "emphasize"}
-_FIELD_HEADER_PATTERN = re.compile(
-    r"^\[[^\]]+ - (?P<field_name>description|contributions|achievements|insights)\]$"
-)
-_NUMBERED_LINE_PATTERN = re.compile(r"^\d+\.\s+")
 _FULL_CODE_FENCE_PATTERN = re.compile(
     r"^\s*```(?:[a-zA-Z0-9_-]+)?\s*\n(?P<body>.*?)\n?\s*```\s*$",
     re.DOTALL,
@@ -94,6 +92,7 @@ class CorrectionGenerator:
         field_line_counts = {
             field_name: len(line_map) for field_name, line_map in original_text_map.items()
         }
+        _ensure_portfolio_has_correction_lines(field_line_counts)
         total_attempts = self._max_retries + 1
 
         logger.debug(
@@ -219,12 +218,14 @@ class CorrectionGenerator:
             if field is None:
                 continue
 
-            if len(field.lines) < self._min_lines_per_field:
+            line_count = field_line_counts.get(field_name, 0)
+            if line_count == 0:
+                errors.append(f"{field_name}의 첨삭 대상 원본 라인이 없습니다.")
+            elif len(field.lines) < self._min_lines_per_field:
                 errors.append(
                     f"{field_name} 필드는 최소 {self._min_lines_per_field}개 라인이 필요합니다."
                 )
 
-            line_count = field_line_counts.get(field_name, 0)
             expected_line_numbers = list(range(1, line_count + 1))
             actual_line_numbers = [line.line_number for line in field.lines]
             if actual_line_numbers != expected_line_numbers:
@@ -302,15 +303,40 @@ def _strip_json_code_fence(text: str) -> str:
     Returns:
         str: 펜스가 제거되고 양끝 공백이 정리된 문자열. 펜스가 없으면 원본을 strip한 값.
     """
-    stripped = text.strip()
-    match = _FULL_CODE_FENCE_PATTERN.match(stripped)
-    if match is not None:
-        return match.group("body").strip()
+    candidates = _get_json_response_candidates(text)
+    return candidates[0] if candidates else ""
 
-    match = _CODE_FENCE_PATTERN.search(stripped)
-    if match is not None:
-        return match.group("body").strip()
-    return stripped
+
+def _get_json_response_candidates(text: str) -> list[str]:
+    """LLM 응답에서 JSON으로 검증해 볼 후보 문자열을 순서대로 추출한다."""
+    stripped = text.strip()
+    if not stripped:
+        return []
+
+    candidates: list[str] = []
+
+    def append_candidate(candidate: str) -> None:
+        candidate = candidate.strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    full_match = _FULL_CODE_FENCE_PATTERN.match(stripped)
+    if full_match is not None:
+        append_candidate(full_match.group("body"))
+        if not candidates:
+            return []
+
+    fence_bodies = [match.group("body") for match in _CODE_FENCE_PATTERN.finditer(stripped)]
+    for body in reversed(fence_bodies):
+        append_candidate(body)
+
+    first_json_brace = stripped.find("{")
+    last_json_brace = stripped.rfind("}")
+    if 0 <= first_json_brace < last_json_brace:
+        append_candidate(stripped[first_json_brace : last_json_brace + 1])
+
+    append_candidate(stripped)
+    return candidates
 
 
 def _parse_single_correction_decision_output(text: str) -> SingleCorrectionDecisionOutput:
@@ -326,15 +352,20 @@ def _parse_single_correction_decision_output(text: str) -> SingleCorrectionDecis
         ValueError: 응답이 비어 있는 경우
         pydantic.ValidationError: JSON 파싱은 됐지만 스키마 검증에 실패한 경우
     """
-    cleaned = _strip_json_code_fence(text)
-    if not cleaned:
+    candidates = _get_json_response_candidates(text)
+    if not candidates:
         raise ValueError("LLM 응답이 비어 있습니다.")
-    return SingleCorrectionDecisionOutput.model_validate_json(cleaned)
 
+    last_error: ValidationError | None = None
+    for candidate in candidates:
+        try:
+            return SingleCorrectionDecisionOutput.model_validate_json(candidate)
+        except ValidationError as exc:
+            last_error = exc
 
-def _parse_single_correction_output(text: str) -> SingleCorrectionDecisionOutput:
-    """이전 private helper 이름을 유지하며 decision 스키마로 파싱한다."""
-    return _parse_single_correction_decision_output(text)
+    if last_error is not None:
+        raise last_error
+    raise ValueError("LLM 응답에서 검증 가능한 JSON 객체를 찾을 수 없습니다.")
 
 
 def _combine_decision_with_original_text(
@@ -373,28 +404,17 @@ def _get_field_line_counts(portfolio_data: dict) -> dict[str, int]:
     return {field_name: len(field_line_map) for field_name, field_line_map in line_map.items()}
 
 
-def _get_field_line_counts_from_formatted_text(formatted_text: str) -> dict[str, int]:
-    """포맷팅된 텍스트에서 필드별 번호 라인 수를 추출"""
-    line_counts = {field_name: 0 for field_name in REQUIRED_CORRECTION_FIELDS}
-    current_field_name: str | None = None
-
-    for raw_line in formatted_text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        header_match = _FIELD_HEADER_PATTERN.match(line)
-        if header_match is not None:
-            current_field_name = header_match.group("field_name")
-            continue
-
-        if current_field_name is None:
-            continue
-
-        if _NUMBERED_LINE_PATTERN.match(line) is not None:
-            line_counts[current_field_name] += 1
-
-    return line_counts
+def _ensure_portfolio_has_correction_lines(field_line_counts: dict[str, int]) -> None:
+    """LLM 호출 전에 첨삭 대상 라인이 없는 입력을 실패 처리한다."""
+    empty_fields = [
+        field_name
+        for field_name in REQUIRED_CORRECTION_FIELDS
+        if field_line_counts.get(field_name, 0) == 0
+    ]
+    if empty_fields:
+        raise CorrectionGenerationError(
+            f"첨삭 대상 원본 라인이 없는 필드가 있습니다: {', '.join(empty_fields)}"
+        )
 
 
 def _coerce_field_value_to_text(value: object) -> str:
@@ -450,19 +470,6 @@ def _normalize_portfolio_data(portfolio_data: dict) -> dict[str, str]:
         )
 
     return normalized_portfolio
-
-
-def _format_portfolio_data_for_prompt(portfolio_data: dict) -> str:
-    """
-    포트폴리오 입력을 첨삭 프롬프트용 텍스트로 변환
-
-    Args:
-        portfolio_data: 필드별 문자열 또는 dict(lines/text/content/value) 형태 데이터
-
-    Returns:
-        str: format_portfolio_for_correction() 규칙을 따른 멀티라인 문자열
-    """
-    return format_portfolio_for_correction(_normalize_portfolio_data(portfolio_data))
 
 
 def _format_portfolio_corrections_for_summary(

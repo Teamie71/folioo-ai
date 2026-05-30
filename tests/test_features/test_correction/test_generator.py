@@ -11,7 +11,6 @@ from features.correction.generator import (
     _combine_decision_with_original_text,
     _format_portfolio_corrections_for_summary,
     _parse_single_correction_decision_output,
-    _parse_single_correction_output,
     _strip_json_code_fence,
     get_correction_generator,
     reset_correction_generator,
@@ -302,6 +301,34 @@ def test_generate_raises_error_when_llm_fails_without_output(monkeypatch: pytest
             },
             emphasis_points="강조 포인트",
         )
+
+
+def test_generate_fails_fast_when_portfolio_has_no_numbered_line(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """첨삭 대상 번호 라인이 없는 필드는 LLM 호출 전 실패 처리한다."""
+    from features.correction import generator
+
+    chain = DummyChain([_decision_json(line_number=1)])
+    monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
+
+    with pytest.raises(CorrectionGenerationError, match="description"):
+        CorrectionGenerator(max_retries=2).generate(
+            company_name="테스트 회사",
+            job_title="백엔드",
+            job_description="채용 공고",
+            company_insight="인사이트",
+            portfolio_data={
+                "description": "불릿 없는 설명",
+                "contributions": "- contri",
+                "achievements": "- ach",
+                "insights": "- ins",
+            },
+            emphasis_points="강조 포인트",
+        )
+
+    assert chain.calls == []
 
 
 def test_generate_overall_summary(monkeypatch: pytest.MonkeyPatch):
@@ -660,6 +687,30 @@ def test_parse_single_correction_decision_output_accepts_fenced_json():
     assert parsed == _decision_output(line_number=1)
 
 
+def test_parse_single_correction_decision_output_uses_valid_fenced_candidate():
+    """여러 코드펜스 중 decision 스키마로 검증되는 JSON 후보를 선택한다."""
+    invalid_example = '{"fields": [{"field_name": "description", "lines": []}]}'
+    valid_payload = _decision_json(line_number=1)
+
+    parsed = _parse_single_correction_decision_output(
+        "예시는 아래와 같습니다.\n"
+        f"```json\n{invalid_example}\n```\n"
+        "실제 응답입니다.\n"
+        f"```json\n{valid_payload}\n```"
+    )
+
+    assert parsed == _decision_output(line_number=1)
+
+
+def test_parse_single_correction_decision_output_accepts_embedded_json_object():
+    """코드펜스 없이 설명에 섞인 JSON 객체도 검증 가능한 경우 복구한다."""
+    parsed = _parse_single_correction_decision_output(
+        f"응답은 다음과 같습니다.\n{_decision_json(line_number=1)}"
+    )
+
+    assert parsed == _decision_output(line_number=1)
+
+
 def test_parse_single_correction_decision_output_rejects_original_text():
     """LLM decision 스키마는 original_text 출력을 거부한다."""
     payload = _output(line_number=1).model_dump_json()
@@ -683,13 +734,13 @@ def test_combine_decision_with_original_text_uses_line_map():
     assert combined == _output(line_number=1)
 
 
-def test_parse_single_correction_output_raises_on_empty():
+def test_parse_single_correction_decision_output_raises_on_empty():
     """공백/펜스만 들어 있으면 ValueError를 발생시킨다."""
     with pytest.raises(ValueError, match="LLM 응답이 비어 있습니다"):
         _parse_single_correction_decision_output("```json\n\n```")
 
 
-def test_parse_single_correction_output_raises_on_invalid_json():
+def test_parse_single_correction_decision_output_raises_on_invalid_json():
     """깨진 JSON은 ValidationError로 전파된다."""
     with pytest.raises(ValidationError):
-        _parse_single_correction_output("{not valid json")
+        _parse_single_correction_decision_output("{not valid json")
