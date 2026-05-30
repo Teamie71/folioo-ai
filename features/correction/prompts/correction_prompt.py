@@ -13,6 +13,7 @@ _FIELD_TITLE_BY_NAME = {
 }
 
 _BULLET_PATTERN = re.compile(r"^\s*[-*]\s+(?P<content>.+)$")
+_NUMBERED_LINE_PATTERN = re.compile(r"^\s*\d+\.\s+(?P<content>.+)$")
 _SUBHEADER_PATTERN = re.compile(
     r"^\s*(?:\*\*)?(?:\[[^\]]+\]|\d+\)\s*\S.+|#\s*\d+(?:\s+\S.*)?)(?:\*\*)?\s*$"
 )
@@ -156,8 +157,14 @@ def _format_field_for_correction(field_lines: list[str]) -> tuple[list[str], dic
 
         if not has_bullet_line:
             line_number += 1
-            output_lines.append(f"{line_number}. {line}")
-            original_text_by_line_number[line_number] = line
+            numbered_line_match = _NUMBERED_LINE_PATTERN.match(line)
+            original_text = (
+                numbered_line_match.group("content").strip()
+                if numbered_line_match is not None
+                else line
+            )
+            output_lines.append(f"{line_number}. {original_text}")
+            original_text_by_line_number[line_number] = original_text
             latest_numbered_line_index = len(output_lines) - 1
             latest_line_number = line_number
             continue

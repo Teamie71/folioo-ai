@@ -380,6 +380,27 @@ def test_format_activities_for_callback_adds_single_dash_bullet_to_text_lists():
     assert formatted[0].problem_solving == activity.problem_solving
 
 
+def test_format_activities_for_callback_removes_empty_text_items():
+    """완료 콜백 전송용 텍스트 리스트에서 빈 항목은 제거한다."""
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    activity = PdfActivity(
+        activity_name="Project A",
+        detail=["", "   ", "- ", "상세"],
+        responsibility=["  - ", "담당 업무"],
+        problem_solving=[],
+        learning=["", "배운 점"],
+    )
+
+    formatted = service._format_activities_for_callback([activity])
+
+    assert formatted[0].detail == ["- 상세"]
+    assert formatted[0].responsibility == ["- 담당 업무"]
+    assert formatted[0].learning == ["- 배운 점"]
+
+
 def test_validate_file_allows_pdf_extension_for_wrong_mime_type():
     """MIME이 잘못돼도 .pdf 확장자면 fallback 허용한다."""
     service = PdfExtractionService(

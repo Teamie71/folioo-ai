@@ -225,6 +225,27 @@ def test_format_portfolio_for_correction_numbers_plain_lines_when_no_bullets():
     }
 
 
+def test_format_portfolio_for_correction_renumbers_existing_numbered_plain_lines():
+    """이미 번호가 붙은 외부 plain line은 번호 접두사를 제거한 뒤 다시 번호를 매긴다."""
+    portfolio = {
+        "description": "1. 첫 설명\n2. 둘째 설명",
+        "contributions": "1. 첫 담당\n2. 둘째 담당",
+        "achievements": "#1\n1. 상황 설명\n2. 전략 설명",
+        "insights": "1. 배운 점",
+    }
+
+    formatted = format_portfolio_for_correction(portfolio)
+    line_map = build_portfolio_correction_line_map(portfolio)
+
+    assert "1. 첫 설명" in formatted
+    assert "2. 둘째 설명" in formatted
+    assert "1. 1. 첫 설명" not in formatted
+    assert "1. 상황 설명" in formatted
+    assert "1. 1. 상황 설명" not in formatted
+    assert line_map["description"] == {1: "첫 설명", 2: "둘째 설명"}
+    assert line_map["achievements"] == {1: "상황 설명", 2: "전략 설명"}
+
+
 def test_format_portfolio_for_correction_raises_type_error_for_invalid_portfolio():
     """portfolio가 dict 타입이 아닐 때 TypeError를 발생시키는지 테스트"""
     with pytest.raises(TypeError, match="portfolio는 dict 타입이어야 합니다"):

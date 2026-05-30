@@ -31,9 +31,8 @@ _FIELD_NAME_TO_SERVER = {
 }
 
 
-def _get_portfolio_text_field(portfolio: dict, *field_names: str) -> object:
-    """여러 서버 필드명 후보 중 비어 있지 않은 첫 값을 반환한다."""
-    fallback: object = ""
+def _get_portfolio_text_field(portfolio: dict, *field_names: str) -> str:
+    """여러 서버 필드명 후보 중 비어 있지 않은 첫 문자열 값을 반환한다."""
     for field_name in field_names:
         if field_name not in portfolio:
             continue
@@ -42,12 +41,12 @@ def _get_portfolio_text_field(portfolio: dict, *field_names: str) -> object:
         if value is None:
             continue
 
-        fallback = value
-        if isinstance(value, str) and value.strip() in {"", "0"}:
+        normalized = str(value).strip()
+        if normalized in {"", "0"}:
             continue
-        return value
+        return normalized
 
-    return fallback if fallback is not None else ""
+    return ""
 
 
 def _to_upper_status(status: CorrectionStatus) -> str:

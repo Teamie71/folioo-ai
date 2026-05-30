@@ -113,6 +113,12 @@ class PdfExtractionService:
         return f"- {normalized}"
 
     @classmethod
+    def _format_bullet_lines_for_callback(cls, values: list[str]) -> list[str]:
+        """빈 항목을 제외하고 callback 전송용 bullet 라인 목록을 생성한다."""
+        formatted_lines = [cls._format_bullet_line_for_callback(value) for value in values]
+        return [line for line in formatted_lines if line]
+
+    @classmethod
     def _format_activities_for_callback(cls, activities: list[PdfActivity]) -> list[PdfActivity]:
         """PDF 추출 완료 callback 전송용으로 텍스트 리스트를 bullet 라인으로 변환한다."""
         formatted_activities: list[PdfActivity] = []
@@ -120,16 +126,11 @@ class PdfExtractionService:
             formatted_activities.append(
                 activity.model_copy(
                     update={
-                        "detail": [
-                            cls._format_bullet_line_for_callback(item) for item in activity.detail
-                        ],
-                        "responsibility": [
-                            cls._format_bullet_line_for_callback(item)
-                            for item in activity.responsibility
-                        ],
-                        "learning": [
-                            cls._format_bullet_line_for_callback(item) for item in activity.learning
-                        ],
+                        "detail": cls._format_bullet_lines_for_callback(activity.detail),
+                        "responsibility": cls._format_bullet_lines_for_callback(
+                            activity.responsibility
+                        ),
+                        "learning": cls._format_bullet_lines_for_callback(activity.learning),
                     }
                 )
             )
