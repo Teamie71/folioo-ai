@@ -72,6 +72,107 @@ def _build_service(monkeypatch, dummy_graph):
     return interview_service.InterviewService()
 
 
+def _completed_stage_4_progress() -> dict:
+    return {
+        "fixed_q_used": 3,
+        "fixed_q_total": 3,
+        "generated_q_used": 0,
+        "generated_q_max": 0,
+        "force_all_generated_q": False,
+        "is_complete": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ({}, False),
+        ({"all_stages_complete": True}, False),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 3,
+                "stage_progress": _completed_stage_4_progress(),
+            },
+            False,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": _completed_stage_4_progress(),
+            },
+            True,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": "4",
+                "stage_progress": {"is_complete": True},
+            },
+            True,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": {
+                    "fixed_q_used": 3,
+                    "fixed_q_total": 3,
+                    "is_complete": False,
+                },
+            },
+            False,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": {"fixed_q_used": 3, "fixed_q_total": 3},
+            },
+            True,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": {"fixed_q_used": 2, "fixed_q_total": 3},
+            },
+            False,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": None,
+            },
+            False,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": {"fixed_q_used": 3},
+            },
+            False,
+        ),
+        (
+            {
+                "all_stages_complete": True,
+                "current_stage": 4,
+                "stage_progress": {"fixed_q_used": "invalid", "fixed_q_total": 3},
+            },
+            False,
+        ),
+    ],
+)
+def test_is_regular_interview_complete_state(state, expected):
+    """4단계 정규 인터뷰 완료 판정 분기를 고정한다."""
+    assert (
+        interview_service.InterviewService._is_regular_interview_complete_state(state) is expected
+    )
+
+
 @pytest.mark.asyncio
 async def test_create_session_validation_error(monkeypatch):
     """필수 파라미터 누락 시 예외 발생 테스트"""
@@ -413,6 +514,8 @@ async def test_process_message_auto_starts_extension_for_completed_legacy_sessio
             "all_stages_complete": True,
             "is_extended_mode": False,
             "extension_count": 0,
+            "current_stage": 4,
+            "stage_progress": _completed_stage_4_progress(),
         }
     )
     dummy_graph.invoke_result = {
@@ -470,6 +573,76 @@ async def test_process_message_auto_starts_extension_for_completed_legacy_sessio
 
 
 @pytest.mark.asyncio
+async def test_process_message_does_not_auto_start_extension_before_stage_four(monkeypatch):
+    """완료 플래그가 잘못 켜져 있어도 4단계 완료 전이면 자동 연장으로 넘기지 않는다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "messages": [AIMessage(content="3단계 마지막 질문")],
+            "all_stages_complete": True,
+            "is_extended_mode": False,
+            "extension_count": 0,
+            "current_stage": 3,
+            "stage_progress": {
+                "fixed_q_used": 3,
+                "fixed_q_total": 3,
+                "generated_q_used": 0,
+                "generated_q_max": 0,
+                "force_all_generated_q": False,
+                "is_complete": True,
+            },
+        }
+    )
+    dummy_graph.invoke_result = {
+        "messages": [
+            AIMessage(content="3단계 마지막 질문"),
+            HumanMessage(content="3단계 마지막 답변"),
+            AIMessage(content="4단계 첫 질문"),
+        ],
+        "current_stage": 4,
+        "stage_progress": {
+            "fixed_q_used": 1,
+            "fixed_q_total": 3,
+            "generated_q_used": 0,
+            "generated_q_max": 0,
+            "force_all_generated_q": False,
+            "is_complete": False,
+        },
+        "overall_completion_percentage": 0.0,
+        "all_stages_complete": False,
+        "is_extended_mode": False,
+        "extension_turns_used": 0,
+        "extension_turns_max": 18,
+    }
+    monkeypatch.setattr(
+        interview_service,
+        "get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
+            },
+        )(),
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    result = await service.process_message(
+        session_id="session_1",
+        message="3단계 마지막 답변",
+    )
+
+    assert result["current_stage"] == 4
+    assert result["is_extended_mode"] is False
+    assert result["ai_response"] == "4단계 첫 질문"
+    invocation = dummy_graph.invocations[0]
+    assert "is_extended_mode" not in invocation["state"]
+    assert "extension_count" not in invocation["state"]
+
+
+@pytest.mark.asyncio
 async def test_process_message_resets_current_turn_files_when_no_files(monkeypatch):
     """파일이 없는 턴에도 current_turn_files를 빈 리스트로 초기화한다."""
     dummy_graph = DummyGraph()
@@ -506,6 +679,8 @@ async def test_extend_session_success(monkeypatch):
             "session_id": "session_1",
             "messages": previous_messages,
             "all_stages_complete": True,
+            "current_stage": 4,
+            "stage_progress": _completed_stage_4_progress(),
             "extension_count": 0,
         }
     )
@@ -558,6 +733,8 @@ async def test_extend_session_raises_when_no_new_ai_response(monkeypatch):
             "session_id": "session_1",
             "messages": previous_messages,
             "all_stages_complete": True,
+            "current_stage": 4,
+            "stage_progress": _completed_stage_4_progress(),
             "extension_count": 0,
         }
     )
@@ -609,7 +786,45 @@ async def test_extend_session_raises_when_not_completed(monkeypatch):
     )
     service = _build_service(monkeypatch, dummy_graph)
 
-    with pytest.raises(ValueError, match="모든 단계 완료"):
+    with pytest.raises(ValueError, match="4단계 정규 인터뷰 완료"):
+        await service.extend_session("session_1")
+
+
+@pytest.mark.asyncio
+async def test_extend_session_raises_when_completion_flag_set_before_stage_4(monkeypatch):
+    """완료 플래그가 잘못 켜진 3단계 상태는 명시적 연장도 차단한다."""
+    dummy_graph = DummyGraph()
+    dummy_graph.state_snapshot = DummyStateSnapshot(
+        values={
+            "session_id": "session_1",
+            "all_stages_complete": True,
+            "current_stage": 3,
+            "stage_progress": {
+                "fixed_q_used": 3,
+                "fixed_q_total": 3,
+                "generated_q_used": 0,
+                "generated_q_max": 0,
+                "force_all_generated_q": False,
+                "is_complete": True,
+            },
+            "extension_count": 0,
+        }
+    )
+    monkeypatch.setattr(
+        interview_service,
+        "get_global_config",
+        lambda: type(
+            "Config",
+            (),
+            {
+                "max_extensions": 1,
+                "extension_turns_per_session": 18,
+            },
+        )(),
+    )
+    service = _build_service(monkeypatch, dummy_graph)
+
+    with pytest.raises(ValueError, match="4단계 정규 인터뷰 완료"):
         await service.extend_session("session_1")
 
 
@@ -621,6 +836,8 @@ async def test_extend_session_raises_when_max_extensions_reached(monkeypatch):
         values={
             "session_id": "session_1",
             "all_stages_complete": True,
+            "current_stage": 4,
+            "stage_progress": _completed_stage_4_progress(),
             "extension_count": 1,
         }
     )

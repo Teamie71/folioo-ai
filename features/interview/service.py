@@ -111,11 +111,42 @@ class InterviewService:
         }
 
     @staticmethod
+    def _is_regular_interview_complete_state(current_state: dict) -> bool:
+        """4단계 정규 인터뷰가 완료된 상태인지 보수적으로 판단한다."""
+        if not bool(current_state.get("all_stages_complete")):
+            return False
+
+        # current_stage가 없는 구형/오염 상태는 안전하게 완료로 보지 않는다.
+        try:
+            current_stage = int(current_state.get("current_stage") or 0)
+        except (TypeError, ValueError):
+            return False
+        if current_stage != 4:
+            return False
+
+        stage_progress = current_state.get("stage_progress")
+        if not isinstance(stage_progress, dict):
+            return False
+
+        if "is_complete" in stage_progress:
+            return bool(stage_progress["is_complete"])
+
+        fixed_q_used = stage_progress.get("fixed_q_used")
+        fixed_q_total = stage_progress.get("fixed_q_total")
+        if fixed_q_used is None or fixed_q_total is None:
+            return False
+
+        try:
+            return int(fixed_q_used) >= int(fixed_q_total)
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
     def _should_auto_start_extension(current_state: dict, max_extensions: int) -> bool:
         """완료된 일반 세션의 후속 채팅을 연장 모드 첫 입력으로 처리할지 판단한다."""
         extension_count = int(current_state.get("extension_count") or 0)
         return (
-            bool(current_state.get("all_stages_complete"))
+            InterviewService._is_regular_interview_complete_state(current_state)
             and not bool(current_state.get("is_extended_mode", False))
             and extension_count < max_extensions
         )
@@ -370,8 +401,8 @@ class InterviewService:
             raise ValueError(f"세션을 찾을 수 없습니다: {session_id}")
 
         global_config = get_global_config()
-        if not current_state["all_stages_complete"]:
-            raise ValueError("연장은 모든 단계 완료 후에만 시작할 수 있습니다.")
+        if not self._is_regular_interview_complete_state(current_state):
+            raise ValueError("연장은 4단계 정규 인터뷰 완료 후에만 시작할 수 있습니다.")
 
         if int(current_state.get("extension_count") or 0) >= global_config.max_extensions:
             raise ValueError("최대 연장 횟수에 도달하여 더 이상 연장할 수 없습니다.")
@@ -422,7 +453,7 @@ class InterviewService:
             return
 
         global_config = get_global_config()
-        if not current_state["all_stages_complete"]:
+        if not self._is_regular_interview_complete_state(current_state):
             yield {
                 "event": SSEEventType.ERROR,
                 "data": json.dumps(
@@ -430,7 +461,7 @@ class InterviewService:
                         "type": SSEEventType.ERROR,
                         "error": {
                             "code": SSEErrorCode.LLM_ERROR,
-                            "message": "연장은 모든 단계 완료 후에만 시작할 수 있습니다.",
+                            "message": "연장은 4단계 정규 인터뷰 완료 후에만 시작할 수 있습니다.",
                         },
                     },
                     ensure_ascii=False,
