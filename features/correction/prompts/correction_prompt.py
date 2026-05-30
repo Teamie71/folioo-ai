@@ -35,7 +35,7 @@ CORRECTION_SYSTEM_PROMPT = """
 - line_number는 입력에 표시된 숫자를 그대로 사용하세요.
 - line_number는 전체 문서 기준으로 이어서 세지 말고, 각 field 내부에서 1부터 다시 시작하는 번호만 사용하세요.
 - 다른 field의 line_number를 가져오거나 섞지 마세요.
-- original_text는 번호를 제외한 원문을 그대로 넣으세요.
+- original_text 또는 originalText는 절대 출력하지 마세요. 원문 텍스트는 서버 코드가 채웁니다.
 
 # 첨삭 타입 기준
 - reduce: 직무와 무관하거나 장황한 내용, 일반론, 비핵심 보조 업무
@@ -56,13 +56,14 @@ CORRECTION_SYSTEM_PROMPT = """
 - emphasize는 가능하면 comment 끝에 "수정 예시: ..."를 추가하세요.
 
 # 출력 제약
-- 출력은 SingleCorrectionOutput 스키마에 정확히 맞춰야 합니다.
+- 출력은 SingleCorrectionDecisionOutput 스키마에 정확히 맞춰야 합니다.
 - 각 field 객체는 반드시 1개씩만 반환하세요.
 - type은 reduce, keep, emphasize만 사용하세요.
-- 응답은 추가 설명이나 마크다운 코드펜스(```) 없이, 유효한 JSON object 하나만 반환하세요.
-- 모든 line 객체는 line_number, original_text, type, comment 키를 모두 포함해야 하며, keep 타입은 comment를 null로 설정하세요.
+- 응답은 추가 설명 문장, Markdown 코드블록, ```json, ``` 없이 순수 JSON object 하나만 반환하세요.
+- 모든 line 객체는 line_number, type, comment 키만 포함해야 하며, keep 타입은 comment를 null로 설정하세요.
+- 모든 line 객체에는 original_text 또는 originalText 키를 포함하지 마세요.
 - JSON 구조 예시:
-  {{"fields": [{{"field_name": "description", "lines": [{{"line_number": 1, "original_text": "...", "type": "keep", "comment": null}}]}}]}}
+  {{"fields": [{{"field_name": "description", "lines": [{{"line_number": 1, "type": "keep", "comment": null}}]}}]}}
 """.strip()
 
 CORRECTION_GENERATOR_SYSTEM_TEMPLATE = f"""
@@ -125,6 +126,45 @@ def _is_subheader_line(line: str) -> bool:
     return _SUBHEADER_PATTERN.match(line) is not None
 
 
+def _format_field_for_correction(field_lines: list[str]) -> tuple[list[str], dict[int, str]]:
+    """필드 라인을 첨삭 대상 텍스트와 원문 라인맵으로 변환"""
+    output_lines: list[str] = []
+    original_text_by_line_number: dict[int, str] = {}
+    line_number = 0
+    latest_numbered_line_index: int | None = None
+    latest_line_number: int | None = None
+
+    for line in field_lines:
+        if _is_subheader_line(line):
+            output_lines.append(line)
+            latest_numbered_line_index = None
+            latest_line_number = None
+            continue
+
+        bullet_match = _BULLET_PATTERN.match(line)
+        if bullet_match is not None:
+            line_number += 1
+            bullet_content = bullet_match.group("content").strip()
+            output_lines.append(f"{line_number}. {bullet_content}")
+            original_text_by_line_number[line_number] = bullet_content
+            latest_numbered_line_index = len(output_lines) - 1
+            latest_line_number = line_number
+            continue
+
+        if latest_numbered_line_index is None or latest_line_number is None:
+            output_lines.append(line)
+            continue
+
+        output_lines[latest_numbered_line_index] = (
+            f"{output_lines[latest_numbered_line_index]} {line}"
+        )
+        original_text_by_line_number[latest_line_number] = (
+            f"{original_text_by_line_number[latest_line_number]} {line}"
+        )
+
+    return output_lines, original_text_by_line_number
+
+
 def format_portfolio_for_correction(portfolio: dict) -> str:
     """
     첨삭용 포트폴리오 텍스트 포맷팅
@@ -145,34 +185,34 @@ def format_portfolio_for_correction(portfolio: dict) -> str:
         output_lines.append(f"[{title} - {field_name}]")
 
         field_lines = _normalize_lines(portfolio.get(field_name))
-        line_number = 0
-        latest_numbered_line_index: int | None = None
-
-        for line in field_lines:
-            if _is_subheader_line(line):
-                output_lines.append(line)
-                latest_numbered_line_index = None
-                continue
-
-            bullet_match = _BULLET_PATTERN.match(line)
-            if bullet_match is not None:
-                line_number += 1
-                bullet_content = bullet_match.group("content").strip()
-                output_lines.append(f"{line_number}. {bullet_content}")
-                latest_numbered_line_index = len(output_lines) - 1
-                continue
-
-            if latest_numbered_line_index is None:
-                output_lines.append(line)
-                continue
-
-            output_lines[latest_numbered_line_index] = (
-                f"{output_lines[latest_numbered_line_index]} {line}"
-            )
+        field_output_lines, _ = _format_field_for_correction(field_lines)
+        output_lines.extend(field_output_lines)
 
         output_lines.append("")
 
     return "\n".join(output_lines).strip()
+
+
+def build_portfolio_correction_line_map(portfolio: dict) -> dict[str, dict[int, str]]:
+    """
+    첨삭 대상 원문 라인맵 생성
+
+    Args:
+        portfolio: description/contributions/achievements/insights를 포함한 포트폴리오 dict
+
+    Returns:
+        field_name -> line_number -> original_text 매핑
+    """
+    if not isinstance(portfolio, dict):
+        raise TypeError("portfolio는 dict 타입이어야 합니다.")
+
+    line_map: dict[str, dict[int, str]] = {}
+    for field_name in _CORRECTION_FIELD_ORDER:
+        field_lines = _normalize_lines(portfolio.get(field_name))
+        _, original_text_by_line_number = _format_field_for_correction(field_lines)
+        line_map[field_name] = original_text_by_line_number
+
+    return line_map
 
 
 def get_correction_prompt() -> ChatPromptTemplate:
@@ -212,6 +252,7 @@ __all__ = [
     "CORRECTION_GENERATOR_SYSTEM_TEMPLATE",
     "CORRECTION_HUMAN_PROMPT",
     "CORRECTION_SYSTEM_PROMPT",
+    "build_portfolio_correction_line_map",
     "correction_generator_prompt",
     "format_portfolio_for_correction",
     "get_correction_prompt",

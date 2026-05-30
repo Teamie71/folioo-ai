@@ -12,6 +12,7 @@ from features.correction.schemas import (
     CorrectionOutput,
     CorrectionStatus,
     PortfolioCorrectionResult,
+    SingleCorrectionDecisionOutput,
     SingleCorrectionOutput,
 )
 
@@ -63,6 +64,74 @@ def _sample_fields() -> list[dict]:
             ],
         },
     ]
+
+
+def _sample_decision_fields() -> list[dict]:
+    return [
+        {
+            "field_name": "description",
+            "lines": [
+                {
+                    "line_number": 1,
+                    "type": "keep",
+                    "comment": None,
+                }
+            ],
+        },
+        {
+            "field_name": "contributions",
+            "lines": [
+                {
+                    "line_number": 1,
+                    "type": "keep",
+                    "comment": None,
+                }
+            ],
+        },
+        {
+            "field_name": "achievements",
+            "lines": [
+                {
+                    "line_number": 1,
+                    "type": "keep",
+                    "comment": None,
+                }
+            ],
+        },
+        {
+            "field_name": "insights",
+            "lines": [
+                {
+                    "line_number": 1,
+                    "type": "keep",
+                    "comment": None,
+                }
+            ],
+        },
+    ]
+
+
+def test_single_correction_decision_output_schema_excludes_original_text():
+    """LLM decision 스키마는 원문 없이 판단 값만 포함한다."""
+    output = SingleCorrectionDecisionOutput.model_validate({"fields": _sample_decision_fields()})
+
+    assert output.fields[0].field_name == "description"
+    assert not hasattr(output.fields[0].lines[0], "original_text")
+
+
+def test_single_correction_decision_output_rejects_original_text():
+    """LLM decision 스키마는 original_text/originalText 추가 출력을 거부한다."""
+    fields = _sample_decision_fields()
+    fields[0]["lines"][0]["original_text"] = "원문"
+
+    with pytest.raises(ValueError):
+        SingleCorrectionDecisionOutput.model_validate({"fields": fields})
+
+    fields = _sample_decision_fields()
+    fields[0]["lines"][0]["originalText"] = "원문"
+
+    with pytest.raises(ValueError):
+        SingleCorrectionDecisionOutput.model_validate({"fields": fields})
 
 
 def test_single_correction_output_schema():
