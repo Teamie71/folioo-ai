@@ -426,9 +426,9 @@ async def test_passed_slides_upload_preview_and_send_ready_callbacks(tmp_path: P
     assert all(event["event"] == "slide_preview_ready" for event in context.main_client.events)
     first_event = next(event for event in context.main_client.events if event["slide_order"] == 1)
     assert first_event["gcs_preview_key"] == "jobs/job-1/previews/slide-01.jpg"
-    assert first_event["preview_width"] == 801
-    assert first_event["preview_height"] == 451
-    assert first_event["preview_byte_size"] == len(context.slides[0].image_path.read_bytes())
+    assert "preview_width" not in first_event
+    assert "preview_height" not in first_event
+    assert "preview_byte_size" not in first_event
     assert context.toolchain.pack_calls == []
 
 

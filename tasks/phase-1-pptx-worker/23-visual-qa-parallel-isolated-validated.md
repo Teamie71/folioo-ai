@@ -6,7 +6,8 @@ spec: "specs/phase-1/06-visual-qa-fix-verify.md"
 depends_on: ["1.05", "1.06", "1.07"]
 blocks: ["1.25", "1.26"]
 estimate: "L"
-status: "todo"
+status: "done"
+completed_at: "2026-05-31"
 owner: ""
 sprint: ""
 ---
@@ -24,33 +25,40 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] GitHub Issue #238 본문과 현재 QA 순차 실행/예외 전파 경로 확인
-- [ ] LLM vision 호출 rate limit과 Cloud Run 리소스 기준의 동시성 제한 필요 여부 확인
-- [ ] 기존 `slide_preview_ready`, `slide_preview_error`, `all_completed` callback 계약 확인
+- [x] GitHub Issue #238 본문과 현재 QA 순차 실행/예외 전파 경로 확인
+- [x] LLM vision 호출 rate limit과 Cloud Run 리소스 기준의 동시성 제한 필요 여부 확인
+- [x] 기존 `slide_preview_ready`, `slide_preview_error`, `all_completed` callback 계약 확인
 
 ## 구현 체크리스트
 
-- [ ] 현재 `check_slide` 호출과 fix loop 실행 순서 분석
-- [ ] QA 대상 슬라이드를 병렬로 검사하도록 구조 개선
-- [ ] 필요한 경우 LLM rate limit과 Cloud Run 리소스를 고려한 동시성 제한 지점 추가
-- [ ] 빠르게 통과한 슬라이드는 다른 슬라이드 QA 완료를 기다리지 않고 preview 업로드/콜백 가능하게 정리
-- [ ] `check_slide` 예외를 해당 슬라이드의 QA 실패 결과로 변환
-- [ ] preview 업로드 실패를 해당 슬라이드의 `slide_preview_error`로 수렴
-- [ ] QA/fix 중 특정 슬라이드 실패가 전체 Cloud Tasks retry를 유발하지 않도록 정리
-- [ ] 전체 실패와 일부 실패의 job summary/errorCode가 기존 callback 계약과 맞는지 검증
-- [ ] 자동 수정 후 pack 산출물이 구조 검증을 통과하는지 확인하는 경로 추가/보강
-- [ ] 검증 실패 시 성공 preview/upload/callback으로 진행하지 않도록 차단
-- [ ] 영향 받은 슬라이드만 재 QA한다는 정책 유지
-- [ ] 최대 2회 실패 시 retryable 값과 message가 일관되게 전달되는지 확인
+- [x] 현재 `check_slide` 호출과 fix loop 실행 순서 분석
+- [x] QA 대상 슬라이드를 병렬로 검사하도록 구조 개선
+- [x] 필요한 경우 LLM rate limit과 Cloud Run 리소스를 고려한 동시성 제한 지점 추가
+- [x] 빠르게 통과한 슬라이드는 다른 슬라이드 QA 완료를 기다리지 않고 preview 업로드/콜백 가능하게 정리
+- [x] `check_slide` 예외를 해당 슬라이드의 QA 실패 결과로 변환
+- [x] preview 업로드 실패를 해당 슬라이드의 `slide_preview_error`로 수렴
+- [x] QA/fix 중 특정 슬라이드 실패가 전체 Cloud Tasks retry를 유발하지 않도록 정리
+- [x] 전체 실패와 일부 실패의 job summary/errorCode가 기존 callback 계약과 맞는지 검증
+- [x] 자동 수정 후 pack 산출물이 구조 검증을 통과하는지 확인하는 경로 추가/보강
+- [x] 검증 실패 시 성공 preview/upload/callback으로 진행하지 않도록 차단
+- [x] 영향 받은 슬라이드만 재 QA한다는 정책 유지
+- [x] 최대 2회 실패 시 retryable 값과 message가 일관되게 전달되는지 확인
 
 ## Definition of Done
 
-- [ ] QA 병렬 처리 테스트 통과
-- [ ] 슬라이드별 QA 예외 격리 테스트 통과
-- [ ] preview 업로드 실패의 슬라이드별 error 콜백 테스트 통과
-- [ ] fix-and-verify 후 구조 검증 실패 차단 테스트 통과
-- [ ] 전체 성공/일부 실패/전체 실패 summary가 기존 계약과 일치
-- [ ] `uv run ruff check .` 및 관련 worker visualization 테스트 통과
+- [x] QA 병렬 처리 테스트 통과
+- [x] 슬라이드별 QA 예외 격리 테스트 통과
+- [x] preview 업로드 실패의 슬라이드별 error 콜백 테스트 통과
+- [x] fix-and-verify 후 구조 검증 실패 차단 테스트 통과
+- [x] 전체 성공/일부 실패/전체 실패 summary가 기존 계약과 일치
+- [x] `uv run ruff check .` 및 관련 worker visualization 테스트 통과
+
+## 구현 결과
+
+- `VisualQAFixVerifyStep` 는 `max_qa_concurrency` 로 제한된 병렬 QA 를 수행하고 `asyncio.as_completed()` 결과 순서대로 통과 슬라이드 preview 를 공개한다.
+- `check_slide` 예외, preview 업로드 실패, fix 실패, 검증 실패, 렌더 실패는 해당 슬라이드 `slide_preview_error` 로 수렴한다.
+- 자동 수정 후에는 pack/validate/repair/repack/validate 경로를 통과한 산출물만 `fixed_pptx` 로 승격한다.
+- 관련 증거: GitHub PR #243, `tests/test_pptx_worker/test_visualization/test_qa.py`.
 
 ## 리스크 / 메모
 

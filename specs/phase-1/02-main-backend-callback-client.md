@@ -1,7 +1,7 @@
 # 메인 백엔드 콜백/컨텍스트 클라이언트 (워커 측)
 
 ## Purpose
-시각화 워커가 메인 백엔드의 `/api/internal/visualizations/...` 엔드포인트로 진행 이벤트를 콜백하고 작업 컨텍스트(포트폴리오 텍스트·slide_plan·slide 상태)를 조회하는 HTTP 클라이언트를 구축한다.
+시각화 워커가 메인 백엔드의 `/internal/visualizations/...` 엔드포인트로 진행 이벤트를 콜백하고 작업 컨텍스트(포트폴리오 텍스트·slide_plan·slide 상태)를 조회하는 HTTP 클라이언트를 구축한다.
 
 ## Requirements
 - slide-plan 제출, slide 레벨 이벤트(`slide_content_ready`/`slide_preview_ready`/`slide_*_error`/`slide_regenerated`), job 레벨 이벤트(`pipeline_stage_changed`/`all_completed`) 콜백 메서드를 제공한다.

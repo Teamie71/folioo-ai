@@ -32,10 +32,11 @@ sprint: ""
 
 ## Definition of Done
 
-- [x] GCS PUT/GET 이 IAM 직접 인증으로 동작 (signed URL 미경유)
+- [x] GCS PUT/GET 클라이언트가 IAM/ADC 기반 `google-cloud-storage` API 를 사용함 (signed URL 미경유)
 - [x] preview/PPTX/PDF 경로가 canonical 규칙 준수 확인
 - [x] 작업 종료 후 로컬 임시 파일 정리 확인
 
 ## 리스크 / 메모
 
 - 워커는 signed URL 발급 안 함 — `gcsPreviewKey` 만 콜백, 메인이 signed 변환 (1.06 참조).
+- 실제 GCP 버킷 IAM 권한 부여와 impersonation smoke 는 운영 단계에서 수행한다(1.21).

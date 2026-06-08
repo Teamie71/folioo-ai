@@ -10,6 +10,7 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 ENV PORT=8080
 ENV JAVA_TOOL_OPTIONS=-Xmx512m
 ENV PPTX_WORKER_RECYCLE_AFTER=20
+ENV ANTHROPIC_PPTX_SKILL_DIR=/app/apps/pptx-worker/toolchain
 ENV PYTHONPATH=/app:/app/apps/pptx-worker
 ENV PATH=/app/.venv/bin:$PATH
 

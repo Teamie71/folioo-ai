@@ -117,6 +117,14 @@ def mock_gcs(tmp_path):
         client = GcsClient(bucket_name="folioo-visualizations")
         yield client, mock_bucket, mock_blob, tmp_path
 
+def test_gcs_client_uses_gcs_bucket_env_when_bucket_name_is_not_explicit(monkeypatch):
+    """기본 생성자는 Cloud Run GCS_BUCKET env 값을 버킷 이름으로 사용한다."""
+    monkeypatch.setenv("GCS_BUCKET", "folioo-498017-visualizations")
+    with patch("features.visualization.storage.gcs_client.storage.Client") as mock_client_cls:
+        GcsClient()
+
+    mock_client_cls.return_value.bucket.assert_called_once_with("folioo-498017-visualizations")
+
 
 def _use_distinct_blob_mocks(mock_bucket):
     """bucket.blob(key) 호출마다 key 별 Blob mock 을 반환한다."""

@@ -1,6 +1,7 @@
 """GCS 직접 R/W 클라이언트 — IAM 인증, signed URL 미경유"""
 
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -14,7 +15,8 @@ from pptx_worker.metrics import WORKER_TMP_ROOT, get_worker_metrics, safe_direct
 
 logger = logging.getLogger(__name__)
 
-BUCKET_NAME = "folioo-visualizations"
+DEFAULT_BUCKET_NAME = "folioo-visualizations"
+BUCKET_NAME = os.getenv("GCS_BUCKET", DEFAULT_BUCKET_NAME)
 
 _PPTX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
@@ -193,9 +195,10 @@ class GcsClient:
     signed URL 발급은 메인 백엔드 전담이므로 이 클라이언트에는 없다.
     """
 
-    def __init__(self, bucket_name: str = BUCKET_NAME) -> None:
+    def __init__(self, bucket_name: str | None = None) -> None:
         self._storage_client = storage.Client()
-        self._bucket = self._storage_client.bucket(bucket_name)
+        resolved_bucket_name = bucket_name or os.getenv("GCS_BUCKET", DEFAULT_BUCKET_NAME)
+        self._bucket = self._storage_client.bucket(resolved_bucket_name)
 
     # ------------------------------------------------------------------
     # 템플릿 (읽기 전용)
