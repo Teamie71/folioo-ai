@@ -61,8 +61,8 @@ Generate payload:
 {
   "messageType": "viz.generate",
   "jobId": "job-id",
-  "portfolioId": "portfolio-id",
-  "userId": "user-id",
+  "portfolioId": 84,
+  "userId": 69,
   "templateId": "template-id",
   "callbackBaseUrl": "https://main-backend.example",
   "idempotencyKey": "uuid",

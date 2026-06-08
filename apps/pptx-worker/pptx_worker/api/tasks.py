@@ -97,8 +97,8 @@ class GeneratePushPayload(_BasePushPayload):
     """초기 생성 push payload."""
 
     message_type: Literal["viz.generate"] = Field(alias="messageType")
-    portfolio_id: str = Field(alias="portfolioId", min_length=1)
-    user_id: str = Field(alias="userId", min_length=1)
+    portfolio_id: int = Field(alias="portfolioId", ge=1)
+    user_id: int = Field(alias="userId", ge=1)
     template_id: str = Field(alias="templateId", min_length=1)
 
     def to_task(self) -> GenerateVisualizationTask:

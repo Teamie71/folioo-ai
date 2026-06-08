@@ -138,8 +138,8 @@ def generate_payload(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "messageType": "viz.generate",
         "jobId": "job-1",
-        "portfolioId": "portfolio-1",
-        "userId": "user-1",
+        "portfolioId": 84,
+        "userId": 69,
         "templateId": "blue",
         "idempotencyKey": "idem-generate",
         "callbackBaseUrl": "http://main.local",
@@ -176,7 +176,8 @@ def test_generate_push_parses_payload_delegates_and_returns_200(worker_client):
     task = service.generate_calls[0]
     assert task.message_type == "viz.generate"
     assert task.job_id == "job-1"
-    assert task.portfolio_id == "portfolio-1"
+    assert task.portfolio_id == 84
+    assert task.user_id == 69
     assert task.template_id == "blue"
     assert task.callback_base_url == "http://main.local"
     assert main_client.closed is True

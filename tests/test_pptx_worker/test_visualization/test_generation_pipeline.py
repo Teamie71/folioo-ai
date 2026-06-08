@@ -889,8 +889,8 @@ def _task() -> GenerateVisualizationTask:
     return GenerateVisualizationTask(
         message_type="viz.generate",
         job_id="job-1",
-        portfolio_id="portfolio-1",
-        user_id="user-1",
+        portfolio_id=84,
+        user_id=69,
         template_id="blue",
         idempotency_key="task-key",
         callback_base_url="http://main.local",
