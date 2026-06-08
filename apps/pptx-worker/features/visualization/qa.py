@@ -773,7 +773,6 @@ class VisualQAFixVerifyStep:
         preview_attempt_id: str | None,
     ) -> str:
         slide = pending_slide.slide
-        metadata = preview_metadata(pending_slide.image_path)
         if preview_attempt_id is None:
             gcs_key = self._storage.upload_preview(
                 job_id,
@@ -799,9 +798,6 @@ class VisualQAFixVerifyStep:
             occurred_at=self._now_iso(),
             gcs_preview_key=gcs_key,
             current_fills=dict(slide.current_fills),
-            preview_width=metadata.width,
-            preview_height=metadata.height,
-            preview_byte_size=metadata.byte_size,
         )
         return gcs_key
 

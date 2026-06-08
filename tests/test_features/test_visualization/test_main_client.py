@@ -205,7 +205,7 @@ class TestSubmitSlidePlan:
             )
         mock_rwr.assert_called_once_with(
             "POST",
-            "/api/internal/visualizations/job-abc/slide-plan",
+            "/internal/visualizations/job-abc/slide-plan",
             json={
                 "totalSlides": 2,
                 "templateId": "blue",
@@ -320,7 +320,7 @@ class TestSendSlideEvent:
             )
         mock_rwr.assert_called_once_with(
             "POST",
-            "/api/internal/visualizations/job-1/slides/slide-2/events",
+            "/internal/visualizations/job-1/slides/slide-2/events",
             json={
                 "event": "slide_content_ready",
                 "slideOrder": 2,
@@ -332,7 +332,7 @@ class TestSendSlideEvent:
         )
 
     @pytest.mark.asyncio
-    async def test_slide_preview_ready_includes_gcs_key(self):
+    async def test_slide_preview_ready_includes_only_contract_fields(self):
         client = make_client()
         with patch.object(
             client, "_request_with_retry", new_callable=AsyncMock, return_value=None
@@ -345,16 +345,13 @@ class TestSendSlideEvent:
                 idempotency_key="idem-3",
                 occurred_at="2026-05-25T10:01:00Z",
                 gcs_preview_key="jobs/job-1/previews/slide-02.jpg",
-                preview_width=1280,
-                preview_height=720,
-                preview_byte_size=123456,
             )
         body = mock_rwr.call_args.kwargs["json"]
         assert body["event"] == "slide_preview_ready"
         assert body["gcsPreviewKey"] == "jobs/job-1/previews/slide-02.jpg"
-        assert body["width"] == 1280
-        assert body["height"] == 720
-        assert body["byteSize"] == 123456
+        assert "width" not in body
+        assert "height" not in body
+        assert "byteSize" not in body
         assert "currentFills" not in body
 
     @pytest.mark.asyncio
@@ -427,7 +424,7 @@ class TestSendJobEvent:
             )
         mock_rwr.assert_called_once_with(
             "POST",
-            "/api/internal/visualizations/job-1/events",
+            "/internal/visualizations/job-1/events",
             json={
                 "event": "pipeline_stage_changed",
                 "idempotencyKey": "idem-5",
@@ -658,7 +655,7 @@ class TestGetJobContext:
             return_value={"isSuccess": True, "result": {}},
         ) as mock_rwr:
             await client.get_job_context("job-xyz")
-        mock_rwr.assert_called_once_with("GET", "/api/internal/visualizations/job-xyz")
+        mock_rwr.assert_called_once_with("GET", "/internal/visualizations/job-xyz")
 
     @pytest.mark.asyncio
     async def test_non_dict_result_raises(self):
@@ -734,7 +731,7 @@ class TestGetSlideContext:
         ) as mock_rwr:
             await client.get_slide_context("job-xyz", "slide-abc")
         mock_rwr.assert_called_once_with(
-            "GET", "/api/internal/visualizations/job-xyz/slides/slide-abc"
+            "GET", "/internal/visualizations/job-xyz/slides/slide-abc"
         )
 
     @pytest.mark.asyncio
