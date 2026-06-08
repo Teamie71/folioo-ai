@@ -56,8 +56,8 @@ class GenerateVisualizationTask:
 
     message_type: Literal["viz.generate"]
     job_id: str
-    portfolio_id: str
-    user_id: str
+    portfolio_id: int
+    user_id: int
     template_id: str
     idempotency_key: str
     callback_base_url: str
