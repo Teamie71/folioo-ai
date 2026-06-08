@@ -1,48 +1,70 @@
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
-  name: folioo-pptx-worker
-  labels:
-    app.kubernetes.io/name: folioo-pptx-worker
-    app.kubernetes.io/component: pptx-worker
-  annotations:
-    run.googleapis.com/ingress: all
-    run.googleapis.com/invoker-iam-disabled: "false"
+    name: folioo-pptx-worker
+    labels:
+        app: folioo-pptx-worker
+        component: pptx-worker
+    annotations:
+        run.googleapis.com/ingress: all
+        run.googleapis.com/invoker-iam-disabled: "false"
 spec:
-  template:
-    metadata:
-      annotations:
-        autoscaling.knative.dev/minScale: "0"
-        autoscaling.knative.dev/maxScale: "20"
-        run.googleapis.com/execution-environment: gen2
-        run.googleapis.com/cpu-throttling: "false"
-        folioo.ai/memory-budget: "4096Mi"
-        folioo.ai/tmp-required: "1Gi"
-    spec:
-      serviceAccountName: ${WORKER_RUNTIME_SERVICE_ACCOUNT}
-      containerConcurrency: 1
-      timeoutSeconds: 1800
-      containers:
-        - image: ${IMAGE_URI}
-          ports:
-            - name: http1
-              containerPort: 8080
-          env:
-            - name: PORT
-              value: "8080"
-            - name: JAVA_TOOL_OPTIONS
-              value: "-Xmx512m"
-            - name: PPTX_WORKER_RECYCLE_AFTER
-              value: "20"
-          resources:
-            limits:
-              cpu: "2"
-              memory: "5120Mi"
-          volumeMounts:
-            - name: pptx-worker-tmp
-              mountPath: /tmp
-      volumes:
-        - name: pptx-worker-tmp
-          emptyDir:
-            medium: Memory
-            sizeLimit: "1Gi"
+    template:
+        metadata:
+            annotations:
+                autoscaling.knative.dev/minScale: "0"
+                autoscaling.knative.dev/maxScale: "20"
+                run.googleapis.com/execution-environment: gen2
+                run.googleapis.com/cpu-throttling: "false"
+                folioo.ai/memory-budget: "4096Mi"
+                folioo.ai/tmp-required: "1Gi"
+        spec:
+            serviceAccountName: ${WORKER_RUNTIME_SERVICE_ACCOUNT}
+            containerConcurrency: 1
+            timeoutSeconds: 1800
+            containers:
+                - image: ${IMAGE_URI}
+                  ports:
+                      - name: http1
+                        containerPort: 8080
+                  env:
+                      - name: JAVA_TOOL_OPTIONS
+                        value: "-Xmx512m"
+                      - name: PPTX_WORKER_RECYCLE_AFTER
+                        value: "20"
+                      - name: ANTHROPIC_PPTX_SKILL_DIR
+                        value: "/app/apps/pptx-worker/toolchain"
+                      - name: GCS_BUCKET
+                        value: "${GCS_BUCKET}"
+                      - name: MAIN_BACKEND_URL
+                        value: "${MAIN_BACKEND_URL}"
+                      - name: MAIN_BACKEND_TIMEOUT
+                        value: "30"
+                      - name: OPENROUTER_BASE_URL
+                        value: "https://openrouter.ai/api/v1"
+                      - name: LLM_MODEL_NAME
+                        value: "${LLM_MODEL_NAME}"
+                      - name: FILE_PROCESSOR_MODEL_NAME
+                        value: "${FILE_PROCESSOR_MODEL_NAME}"
+                      - name: MAIN_BACKEND_API_KEY
+                        valueFrom:
+                            secretKeyRef:
+                                name: ${MAIN_BACKEND_API_KEY_SECRET}
+                                key: latest
+                      - name: OPENROUTER_API_KEY
+                        valueFrom:
+                            secretKeyRef:
+                                name: ${OPENROUTER_API_KEY_SECRET}
+                                key: latest
+                  resources:
+                      limits:
+                          cpu: "2"
+                          memory: "5120Mi"
+                  volumeMounts:
+                      - name: pptx-worker-tmp
+                        mountPath: /tmp
+            volumes:
+                - name: pptx-worker-tmp
+                  emptyDir:
+                      medium: Memory
+                      sizeLimit: "1Gi"

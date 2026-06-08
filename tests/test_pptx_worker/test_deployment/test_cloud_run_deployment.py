@@ -13,6 +13,7 @@ CLOUDBUILD_YAML = ROOT / "deploy" / "pptx-worker" / "cloudbuild.yaml"
 README = ROOT / "deploy" / "pptx-worker" / "README.md"
 VERIFY_SCRIPT = ROOT / "apps" / "pptx-worker" / "scripts" / "verify_runtime_image.sh"
 PYPROJECT = ROOT / "pyproject.toml"
+TOOLCHAIN_DIR = ROOT / "apps" / "pptx-worker" / "toolchain"
 
 
 def _load_service() -> dict:
@@ -48,16 +49,39 @@ def test_cloud_run_service_caps_java_heap_and_tmp_volume() -> None:
     """JVM 힙 캡과 /tmp 1Gi 메모리 볼륨을 서비스 사양에 고정한다."""
     service = _load_service()
     container = _container(service)
-    env = {item["name"]: item["value"] for item in container["env"]}
+    env = {item["name"]: item.get("value") for item in container["env"]}
     volume_mounts = {item["name"]: item["mountPath"] for item in container["volumeMounts"]}
     volumes = {item["name"]: item for item in service["spec"]["template"]["spec"]["volumes"]}
 
     assert env["JAVA_TOOL_OPTIONS"] == "-Xmx512m"
     assert env["PPTX_WORKER_RECYCLE_AFTER"] == "20"
+    assert env["ANTHROPIC_PPTX_SKILL_DIR"] == "/app/apps/pptx-worker/toolchain"
+    assert "PORT" not in env
     assert volume_mounts["pptx-worker-tmp"] == "/tmp"
     assert volumes["pptx-worker-tmp"]["emptyDir"] == {
         "medium": "Memory",
         "sizeLimit": "1Gi",
+    }
+
+
+def test_cloud_run_service_declares_required_runtime_env_and_secrets() -> None:
+    """워커 런타임 필수 env/Secret Manager 참조가 서비스 사양에 포함된다."""
+    service = _load_service()
+    env = {item["name"]: item for item in _container(service)["env"]}
+
+    assert env["GCS_BUCKET"]["value"] == "${GCS_BUCKET}"
+    assert env["MAIN_BACKEND_URL"]["value"] == "${MAIN_BACKEND_URL}"
+    assert env["MAIN_BACKEND_TIMEOUT"]["value"] == "30"
+    assert env["OPENROUTER_BASE_URL"]["value"] == "https://openrouter.ai/api/v1"
+    assert env["LLM_MODEL_NAME"]["value"] == "${LLM_MODEL_NAME}"
+    assert env["FILE_PROCESSOR_MODEL_NAME"]["value"] == "${FILE_PROCESSOR_MODEL_NAME}"
+    assert env["MAIN_BACKEND_API_KEY"]["valueFrom"]["secretKeyRef"] == {
+        "name": "${MAIN_BACKEND_API_KEY_SECRET}",
+        "key": "latest",
+    }
+    assert env["OPENROUTER_API_KEY"]["valueFrom"]["secretKeyRef"] == {
+        "name": "${OPENROUTER_API_KEY_SECRET}",
+        "key": "latest",
     }
 
 
@@ -79,6 +103,7 @@ def test_cloud_run_service_caps_java_heap_and_tmp_volume() -> None:
         "UV_PYTHON_INSTALL_DIR=/opt/uv-python",
         "PYTHONPATH=/app:/app/apps/pptx-worker",
         "JAVA_TOOL_OPTIONS=-Xmx512m",
+        "ANTHROPIC_PPTX_SKILL_DIR=/app/apps/pptx-worker/toolchain",
         "useradd --create-home --uid 10001 appuser",
         "chown -R appuser:appuser /app /opt/uv-python",
         "USER appuser",
@@ -101,6 +126,20 @@ def test_worker_dockerfile_excludes_unrelated_application_units() -> None:
 
     assert "COPY app/ ./app/" not in dockerfile
     assert "COPY features/ ./features/" not in dockerfile
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "scripts/office/unpack.py",
+        "scripts/office/pack.py",
+        "scripts/office/validate.py",
+        "scripts/clean.py",
+    ],
+)
+def test_worker_image_contains_bundled_pptx_toolchain_scripts(relative_path: str) -> None:
+    """Cloud Run 런타임이 외부 볼륨 없이 PPTX toolchain 을 찾을 수 있다."""
+    assert (TOOLCHAIN_DIR / relative_path).is_file()
 
 
 @pytest.mark.parametrize(
@@ -213,8 +252,8 @@ def test_deployment_readme_documents_required_auth_checks(expected: str) -> None
 @pytest.mark.parametrize(
     "expected",
     [
-        "이미지 build smoke는 `ANTHROPIC_PPTX_SKILL_DIR` 미설정 시 빠르게 실패하는 경로만",
-        "Secret/volume/env로 runtime에 주입",
+        "이미지 build smoke는 번들된 `ANTHROPIC_PPTX_SKILL_DIR`",
+        "`/app/apps/pptx-worker/toolchain`",
         "`PptxToolchain.ensure_available()`까지",
     ],
 )
