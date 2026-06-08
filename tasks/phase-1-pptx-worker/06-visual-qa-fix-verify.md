@@ -32,7 +32,7 @@ sprint: ""
 ## 구현 체크리스트
 
 - [x] `VisualQA.check_slide()` — 오버플로우/잘림·겹침·미교체 안내문구·가독성·균형 검사 → 통과/이슈 목록
-- [x] 통과 슬라이드: canonical key `previews/slide-{slide_order:02d}.jpg` PUT 후 `slide_preview_ready`(gcsPreviewKey·width·height·byteSize) 즉시 발신
+- [x] 통과 슬라이드: canonical key `previews/slide-{slide_order:02d}.jpg` PUT 후 `slide_preview_ready`(gcsPreviewKey) 즉시 발신
 - [x] 이슈 슬라이드: fix-and-verify 큐 → XML 일괄 수정 → pack 1회·PDF 변환 1회(배치) → 영향 슬라이드만 재 QA
 - [x] 최대 2회 실패 시 `slide_preview_error`(message·retryable) 발신
 - [x] 완료 전 최소 1회 시각 QA 강제, 재검증은 영향 슬라이드만

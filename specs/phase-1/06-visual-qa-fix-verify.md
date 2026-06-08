@@ -5,8 +5,10 @@
 
 ## Requirements
 - `VisualQA.check_slide()` 가 프리뷰 이미지를 LLM 비전에 넘겨 오버플로우/잘림·요소 겹침·미교체 안내문구·가독성·레이아웃 균형을 검사하고 통과/이슈 목록을 반환한다.
-- 통과 슬라이드는 GCS `jobs/{job_id}/previews/slide-{slide_order:02d}.jpg` 에 PUT 후 `slide_preview_ready`(gcsPreviewKey·width·height·byteSize) 콜백을 슬라이드별로 즉시 발신한다.
+- QA 대상 슬라이드는 제한된 동시성으로 병렬 검사하고, 한 슬라이드의 QA 예외나 preview 업로드 실패가 전체 Cloud Tasks retry 로 번지지 않도록 슬라이드별 `slide_preview_error` 로 격리한다.
+- 통과 슬라이드는 GCS `jobs/{job_id}/previews/slide-{slide_order:02d}.jpg` 에 PUT 후 `slide_preview_ready`(gcsPreviewKey) 콜백을 슬라이드별로 즉시 발신한다.
 - 이슈 슬라이드는 fix-and-verify 큐에 적재해 LLM 지시대로 XML 일괄 수정→pack 1회·PDF 변환 1회(배치)→영향 슬라이드만 재 QA 한다.
+- 자동 수정 후 산출물은 `pack -> validate -> repair -> repack -> validate` 경로를 통과해야 하며, 검증 실패 산출물은 업로드/ready 콜백으로 진행하지 않는다.
 - 최대 2회 시도에도 실패하면 해당 슬라이드 `slide_preview_error`(message·retryable) 콜백을 보낸다.
 - 렌더→시각 QA 검증을 최소 한 번 거치기 전에는 완료를 선언하지 않고, 재검증은 영향 받은 슬라이드만 검사한다(Anthropic 스킬 원칙).
 
@@ -16,5 +18,7 @@
 ## Verification
 - 오버플로우/미교체 안내문구가 있는 슬라이드 이미지를 QA 가 이슈로 분류하고, 정상 이미지는 통과로 분류하는지 검증한다.
 - 통과 슬라이드가 canonical key 로 GCS 업로드되고 `slide_preview_ready` 콜백이 슬라이드별로 발신되는지 확인한다.
+- 느린 QA/예외 슬라이드가 있어도 빠르게 통과한 슬라이드가 먼저 `slide_preview_ready` 로 공개되고, 예외는 해당 슬라이드 error 로 수렴하는지 확인한다.
+- preview 업로드 실패가 해당 슬라이드 `slide_preview_error` 로 격리되고 다른 통과 슬라이드는 계속 ready 처리되는지 확인한다.
 - 이슈 슬라이드가 1차 수정 후 통과하면 업로드되고, 2회 실패 시 `slide_preview_error`(retryable 포함) 콜백이 발신되는지 검증한다.
-- fix-and-verify 가 영향 슬라이드만 재 QA 하고 pack/PDF 변환을 배치 1회로 묶는지 확인한다.
+- fix-and-verify 가 영향 슬라이드만 재 QA 하고 pack/PDF 변환을 배치 1회로 묶으며, 수정 후 구조 검증 실패가 success 경로를 차단하는지 확인한다.

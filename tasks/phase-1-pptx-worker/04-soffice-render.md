@@ -22,7 +22,7 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] 컨테이너에 libreoffice-impress·poppler-utils·Noto CJK 폰트 설치 (이미지 빌드는 1.10)
+- [x] 컨테이너에 libreoffice-impress·poppler-utils·Noto CJK 폰트 설치 (이미지 빌드는 1.10)
 
 ## 구현 체크리스트
 
