@@ -104,6 +104,15 @@ def read_json_payload(path: Path | str) -> Any:
         raise ValueError(f"JSON 형식이 올바르지 않습니다: {source_path}") from exc
 
 
+def require_template_v2_metadata(metadata: Mapping[str, Any]) -> None:
+    """런타임에서 v2 template meta.json 만 허용한다."""
+    schema_version = metadata.get("schema_version")
+    if schema_version != SCHEMA_VERSION_V2:
+        raise ValueError(
+            f"template meta.json schema_version은 2여야 합니다. 현재 값: {schema_version!r}"
+        )
+
+
 def normalize_json(value: Any) -> Any:
     """JSON 값을 비교 가능한 canonical 구조로 정규화한다."""
     if isinstance(value, Mapping):

@@ -12,6 +12,18 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from common.llm.client import get_llm_uncached
 from features.visualization.agents.schemas import FillPayloadOutput, SlidePlanOutput
+from features.visualization.templates import require_template_v2_metadata
+
+_FALLBACK_RUNTIME_CATEGORIES = (
+    "toc",
+    "overview",
+    "problem",
+    "process",
+    "outcome",
+    "chart",
+    "visual",
+    "text",
+)
 
 _PLAN_SYSTEM_PROMPT = """포트폴리오 PPT 구성을 설계하는 전문가입니다.
 응답은 반드시 JSON 객체 하나로만 작성하세요.
@@ -166,10 +178,13 @@ class SourceSlide:
     category: str
     description: str
     best_for: str
+    slide_filename_override: str = ""
 
     @property
     def slide_filename(self) -> str:
         """PPTX 내부 slide XML 파일명."""
+        if self.slide_filename_override:
+            return self.slide_filename_override
         return f"slide{self.slide_index + 1}.xml"
 
 
@@ -350,9 +365,21 @@ class LLMSlideChangeGenerator:
 
 def parse_template_metadata(metadata: Mapping[str, Any]) -> tuple[SourceSlide, ...]:
     """meta.json 객체에서 SourceSlide 목록을 추출한다."""
+    require_template_v2_metadata(metadata)
+
     raw_slides = metadata.get("slides")
-    if not isinstance(raw_slides, list):
-        raise ValueError("template meta.json 에 slides 배열이 필요합니다.")
+    if isinstance(raw_slides, list):
+        return _parse_source_slides(raw_slides)
+
+    raw_runtime_slides = metadata.get("runtime_slides")
+    if not isinstance(raw_runtime_slides, list):
+        raise ValueError("template meta.json 에 runtime_slides 배열이 필요합니다.")
+
+    return _parse_runtime_source_slides(raw_runtime_slides)
+
+
+def _parse_source_slides(raw_slides: list[Any]) -> tuple[SourceSlide, ...]:
+    """slides 배열에서 SourceSlide 목록을 추출한다."""
 
     slides: list[SourceSlide] = []
     for index, raw_slide in enumerate(raw_slides):
@@ -378,6 +405,76 @@ def parse_template_metadata(metadata: Mapping[str, Any]) -> tuple[SourceSlide, .
         )
 
     return tuple(slides)
+
+
+def _parse_runtime_source_slides(raw_slides: list[Any]) -> tuple[SourceSlide, ...]:
+    """v2 runtime_slides 배열에서 최소 SourceSlide 목록을 추출한다."""
+    slides: list[SourceSlide] = []
+    last_index = len(raw_slides) - 1
+    for index, raw_slide in enumerate(raw_slides):
+        if not isinstance(raw_slide, Mapping):
+            raise ValueError(f"runtime_slides[{index}] 항목은 객체여야 합니다.")
+        try:
+            slide_index = int(raw_slide["slide_index"])
+        except KeyError as exc:
+            raise ValueError(
+                f"runtime_slides[{index}] 필수 필드가 없습니다: {exc.args[0]}"
+            ) from exc
+
+        slide_number = slide_index + 1
+        slide_filename = _runtime_slide_filename(raw_slide, slide_number)
+        category = _metadata_text(raw_slide, "category") or _fallback_runtime_category(
+            index,
+            last_index,
+        )
+        slides.append(
+            SourceSlide(
+                slide_index=slide_index,
+                source_slide_id=(
+                    _metadata_text(raw_slide, "id")
+                    or _metadata_text(raw_slide, "source_slide_id")
+                    or f"slide{slide_number}"
+                ),
+                category=category,
+                description=(
+                    _metadata_text(raw_slide, "description") or f"Runtime slide {slide_number}"
+                ),
+                best_for=_metadata_text(raw_slide, "best_for") or category,
+                slide_filename_override=slide_filename,
+            )
+        )
+    return tuple(slides)
+
+
+def _metadata_text(metadata: Mapping[str, Any], field: str) -> str:
+    value = metadata.get(field)
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _runtime_slide_filename(metadata: Mapping[str, Any], slide_number: int) -> str:
+    slide_filename = _metadata_text(metadata, "slide_filename")
+    if slide_filename:
+        return _basename(slide_filename)
+
+    slide_part = _metadata_text(metadata, "slide_part")
+    if slide_part:
+        return _basename(slide_part)
+
+    return f"slide{slide_number}.xml"
+
+
+def _basename(path: str) -> str:
+    return path.replace("\\", "/").rstrip("/").rsplit("/", maxsplit=1)[-1]
+
+
+def _fallback_runtime_category(index: int, last_index: int) -> str:
+    if index == 0:
+        return "cover"
+    if index == last_index:
+        return "closing"
+    return _FALLBACK_RUNTIME_CATEGORIES[(index - 1) % len(_FALLBACK_RUNTIME_CATEGORIES)]
 
 
 def prefilter_source_slides(

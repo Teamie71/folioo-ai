@@ -34,6 +34,7 @@ from features.visualization.pptx import (
 )
 from features.visualization.qa import SlidePreview, VisualQA, VisualQAFixVerifyStep
 from features.visualization.storage.gcs_client import GcsClient, job_workdir, preview_key
+from features.visualization.templates import require_template_v2_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -550,7 +551,7 @@ class VisualizationTaskService:
                         "템플릿 파일을 가져오지 못했습니다.",
                         error_code="TEMPLATE_FETCH_FAILED",
                     ) from exc
-                template_metadata = _load_json_object(template_meta_path)
+                template_metadata = _load_template_metadata(template_meta_path)
 
                 try:
                     slide_plan = await asyncio.to_thread(
@@ -1084,6 +1085,18 @@ def _load_json_object(path: Path) -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise ValueError(f"JSON 최상위 값은 객체여야 합니다: {path}")
     return loaded
+
+
+def _load_template_metadata(path: Path) -> dict[str, Any]:
+    metadata = _load_json_object(path)
+    try:
+        require_template_v2_metadata(metadata)
+    except ValueError as exc:
+        raise _PipelineFatalError(
+            str(exc),
+            error_code="TEMPLATE_METADATA_SCHEMA_INVALID",
+        ) from exc
+    return metadata
 
 
 def _registered_slides_by_order(

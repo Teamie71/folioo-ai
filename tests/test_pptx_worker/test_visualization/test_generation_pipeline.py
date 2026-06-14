@@ -145,7 +145,12 @@ class FakeMainClient:
 class FakeStorage:
     """GCS 클라이언트 대역."""
 
-    def __init__(self) -> None:
+    def __init__(self, template_metadata: dict[str, Any] | None = None) -> None:
+        self.template_metadata = template_metadata or {
+            "schema_version": 2,
+            "template_id": "blue",
+            "runtime_slides": [],
+        }
         self.download_error: Exception | None = None
         self.attempt_pptx_error: Exception | None = None
         self.downloaded_pptx: list[tuple[str, Path]] = []
@@ -165,7 +170,7 @@ class FakeStorage:
     def download_template_meta(self, template_id: str, dest: Path) -> None:
         assert template_id == "blue"
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(json.dumps({"slides": []}), encoding="utf-8")
+        dest.write_text(json.dumps(self.template_metadata), encoding="utf-8")
 
     def download_pptx(self, job_id: str, dest: Path) -> None:
         if self.download_error is not None:
@@ -477,6 +482,21 @@ async def test_generate_pipeline_success_sends_callbacks_and_uploads_outputs() -
     assert context.storage.uploaded_pdf
     assert len(context.toolchain.pack_calls) == 1
     assert len(context.renderer.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_pipeline_rejects_non_v2_template_meta() -> None:
+    """schema_version 이 v2가 아닌 meta.json은 generation pipeline에서 즉시 실패한다."""
+    context = PipelineContext()
+    context.storage.template_metadata = {"schema_version": 1, "slides": []}
+
+    await context.service.generate(_task())
+
+    assert context.main_client.slide_plan_requests == []
+    assert context.main_client.job_events[-1]["summary"] == {"completed": 0, "failed": 1}
+    assert context.main_client.job_events[-1]["error_code"] == "TEMPLATE_METADATA_SCHEMA_INVALID"
+    assert context.toolchain.unpack_calls == []
+    assert context.storage.uploaded_pptx == []
 
 
 @pytest.mark.asyncio

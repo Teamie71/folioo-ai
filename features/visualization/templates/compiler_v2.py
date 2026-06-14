@@ -46,6 +46,8 @@ def compile_template_v2(
     _validate_template_dir(root)
 
     target_dir = Path(output_dir) if output_dir is not None else root
+    if output_dir is not None:
+        _validate_output_dir(root, target_dir)
     source_extraction = extraction or extract_template_v2_from_pptx(root / TEMPLATE_PPTX_NAME)
     meta_path = target_dir / META_JSON_NAME
     reference_path = target_dir / REFERENCE_JSON_NAME
@@ -96,6 +98,16 @@ def _validate_template_dir(template_dir: Path) -> None:
     template_pptx = template_dir / TEMPLATE_PPTX_NAME
     if not template_pptx.is_file():
         raise ValueError(f"template.pptx 파일을 찾을 수 없습니다: {template_pptx}")
+
+
+def _validate_output_dir(template_dir: Path, output_dir: Path) -> None:
+    resolved_template_dir = template_dir.resolve()
+    resolved_output_dir = output_dir.resolve()
+    if resolved_output_dir == resolved_template_dir or resolved_template_dir in (
+        resolved_output_dir,
+        *resolved_output_dir.parents,
+    ):
+        raise ValueError("--out 출력 디렉터리는 원본 template dir 밖의 별도 디렉터리여야 합니다.")
 
 
 def _check_json_file(path: Path, expected_payload: dict, label: str) -> str | None:
