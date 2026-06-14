@@ -202,11 +202,73 @@ def _shape_geometry(doc: Document, shape_id: str) -> dict[str, int]:
     }
 
 
+def _first_text_run_color(doc: Document, shape_id: str) -> str:
+    shape = _shape_by_id(doc, shape_id)
+    run_props = shape.getElementsByTagNameNS(DRAWINGML_NS, "rPr")[0]
+    color = run_props.getElementsByTagNameNS(DRAWINGML_NS, "srgbClr")[0]
+    return color.getAttribute("val")
+
+
 def _cache_values(cache: Element) -> list[str]:
     values = []
     for point in cache.getElementsByTagNameNS(CHART_NS, "pt"):
         values.append(_node_text(point.getElementsByTagNameNS(CHART_NS, "v")[0]))
     return values
+
+
+def _add_linked_row_fixture(slide_path: Path) -> None:
+    """relayout_row 테스트용 두 번째 chip 과 배경 shape 를 추가한다."""
+    slide_xml = slide_path.read_text(encoding="utf-8").replace(
+        "      <p:graphicFrame>",
+        """      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="4" name="Body Background"/>
+          <p:cNvSpPr/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="900000" y="1580000"/>
+            <a:ext cx="5600000" cy="1410000"/>
+          </a:xfrm>
+          <a:solidFill><a:srgbClr val="EEEEEE"/></a:solidFill>
+        </p:spPr>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="5" name="Second Chip"/>
+          <p:cNvSpPr/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="2300000" y="1600200"/>
+            <a:ext cx="900000" cy="1371600"/>
+          </a:xfrm>
+        </p:spPr>
+        <p:txBody>
+          <a:bodyPr/>
+          <a:lstStyle/>
+          <a:p><a:r><a:rPr sz="1800"/><a:t>두 번째</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="6" name="Second Chip Background"/>
+          <p:cNvSpPr/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="2250000" y="1580000"/>
+            <a:ext cx="1000000" cy="1410000"/>
+          </a:xfrm>
+          <a:solidFill><a:srgbClr val="EEEEEE"/></a:solidFill>
+        </p:spPr>
+      </p:sp>
+      <p:graphicFrame>""",
+    )
+    slide_path.write_text(slide_xml, encoding="utf-8")
 
 
 def test_extract_slots_reads_text_and_chart_metadata(tmp_path: Path) -> None:
@@ -414,6 +476,90 @@ def test_apply_layout_actions_resizes_linked_shape_widths(tmp_path: Path) -> Non
     assert background_geometry["cy"] == 1410000
 
 
+def test_apply_layout_actions_relayouts_row_with_linked_backgrounds(tmp_path: Path) -> None:
+    """relayout_row action 은 row item 과 연결 배경의 x 좌표를 함께 이동한다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    _add_linked_row_fixture(slide_path)
+
+    SlideEditor().apply_layout_actions(
+        str(slide_path),
+        [
+            {
+                "action": "relayout_row",
+                "group_id": "auto_inline_group_1",
+                "min_gap_emu": 200_000,
+                "items": [
+                    {
+                        "shape_id": "3",
+                        "x_emu": 1_100_000,
+                        "w_emu": 1_000_000,
+                        "linked_shape_ids": ["4"],
+                        "linked_x_emu": 1_050_000,
+                        "linked_w_emu": 1_100_000,
+                    },
+                    {
+                        "shape_id": "5",
+                        "x_emu": 2_400_000,
+                        "w_emu": 900_000,
+                        "linked_shape_ids": ["6"],
+                        "linked_x_emu": 2_350_000,
+                        "linked_w_emu": 1_000_000,
+                    },
+                ],
+            }
+        ],
+    )
+
+    doc = parse(str(slide_path))
+
+    assert _shape_geometry(doc, "3")["x"] == 1_100_000
+    assert _shape_geometry(doc, "3")["cx"] == 1_000_000
+    assert _shape_geometry(doc, "4")["x"] == 1_050_000
+    assert _shape_geometry(doc, "4")["cx"] == 1_100_000
+    assert _shape_geometry(doc, "5")["x"] == 2_400_000
+    assert _shape_geometry(doc, "5")["cx"] == 900_000
+    assert _shape_geometry(doc, "6")["x"] == 2_350_000
+    assert _shape_geometry(doc, "6")["cx"] == 1_000_000
+
+
+def test_apply_layout_actions_rejects_visible_relayout_row_min_gap_violation(
+    tmp_path: Path,
+) -> None:
+    """relayout_row action 은 linked background 를 포함한 visible gap 위반을 거부한다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    _add_linked_row_fixture(slide_path)
+
+    with pytest.raises(ValueError, match="min_gap_emu"):
+        SlideEditor().apply_layout_actions(
+            str(slide_path),
+            [
+                {
+                    "action": "relayout_row",
+                    "group_id": "auto_inline_group_1",
+                    "min_gap_emu": 200_000,
+                    "items": [
+                        {
+                            "shape_id": "3",
+                            "x_emu": 1_100_000,
+                            "w_emu": 1_000_000,
+                            "linked_shape_ids": ["4"],
+                            "linked_x_emu": 1_050_000,
+                            "linked_w_emu": 1_100_000,
+                        },
+                        {
+                            "shape_id": "5",
+                            "x_emu": 2_400_000,
+                            "w_emu": 900_000,
+                            "linked_shape_ids": ["6"],
+                            "linked_x_emu": 2_300_000,
+                            "linked_w_emu": 1_000_000,
+                        },
+                    ],
+                }
+            ],
+        )
+
+
 def test_apply_layout_actions_raises_for_missing_shape_id(tmp_path: Path) -> None:
     """존재하지 않는 shape_id 는 잘못된 layout action 으로 거부한다."""
     slide_path, _ = _make_sample_package(tmp_path)
@@ -479,6 +625,71 @@ def test_apply_text_preserves_shape_and_text_style_with_overrides(tmp_path: Path
         assert run_props.getAttribute("b") == "1"
         assert latin.getAttribute("typeface") == "Pretendard"
         assert color.getAttribute("val") == "123456"
+
+
+def test_apply_text_replaces_marker_color_with_output_text_color(tmp_path: Path) -> None:
+    """text fill 은 #FF0000 marker 색상을 output_text_color 로 대체한다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    slide_xml = slide_path.read_text(encoding="utf-8").replace(
+        '<a:srgbClr val="123456"/>',
+        '<a:srgbClr val="FF0000"/>',
+        1,
+    )
+    slide_path.write_text(slide_xml, encoding="utf-8")
+
+    warnings = SlideEditor().apply_fills(
+        str(slide_path),
+        {
+            "2": {
+                "action": "text",
+                "text": "최종 제목",
+                "marker_color": "#FF0000",
+                "output_text_color": "#223344",
+            }
+        },
+    )
+
+    assert warnings == []
+    assert _first_text_run_color(parse(str(slide_path)), "2") == "223344"
+
+
+def test_apply_text_merges_output_text_color_from_slot_metadata(tmp_path: Path) -> None:
+    """v2 slot metadata 의 output_text_color 는 fill payload 보다 낮은 우선순위로 병합된다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    slide_xml = slide_path.read_text(encoding="utf-8").replace(
+        '<a:srgbClr val="123456"/>',
+        '<a:srgbClr val="FF0000"/>',
+        1,
+    )
+    slide_path.write_text(slide_xml, encoding="utf-8")
+
+    warnings = SlideEditor().apply_fills(
+        str(slide_path),
+        {"2": {"action": "text", "text": "최종 제목"}},
+        slot_metadata={"2": {"marker_color": "#FF0000", "output_text_color": "#445566"}},
+    )
+
+    assert warnings == []
+    assert _first_text_run_color(parse(str(slide_path)), "2") == "445566"
+
+
+def test_apply_text_uses_color_fallback_when_output_text_color_missing(tmp_path: Path) -> None:
+    """output_text_color 가 없으면 marker red 를 검정 fallback 으로 대체하고 warning 을 남긴다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    slide_xml = slide_path.read_text(encoding="utf-8").replace(
+        '<a:srgbClr val="123456"/>',
+        '<a:srgbClr val="FF0000"/>',
+        1,
+    )
+    slide_path.write_text(slide_xml, encoding="utf-8")
+
+    warnings = SlideEditor().apply_fills(
+        str(slide_path),
+        {"2": {"action": "text", "text": "최종 제목", "marker_color": "#FF0000"}},
+    )
+
+    assert warnings == ["shape_id 2의 output_text_color가 없어 #000000을 사용합니다."]
+    assert _first_text_run_color(parse(str(slide_path)), "2") == "000000"
 
 
 def test_apply_text_uses_default_run_props_when_run_props_missing(tmp_path: Path) -> None:

@@ -33,6 +33,9 @@ class SlideEditor:
     _TEXT_ALLOWED_ACTIONS = ("text", "remove")
     _CHART_ALLOWED_ACTIONS = ("chart",)
     _GEOMETRY_SHAPE_TAGS = ("sp", "pic", "graphicFrame")
+    _EXACT_MARKER_RGB = "FF0000"
+    _OUTPUT_TEXT_COLOR_FALLBACK_RGB = "000000"
+    _HEX_DIGITS = frozenset("0123456789ABCDEFabcdef")
 
     def extract_slots(self, slide_xml_path: str) -> list[dict[str, Any]]:
         """
@@ -66,7 +69,12 @@ class SlideEditor:
 
         return slots
 
-    def apply_fills(self, slide_xml_path: str, fills: dict[str, dict[str, Any]]) -> None:
+    def apply_fills(
+        self,
+        slide_xml_path: str,
+        fills: dict[str, dict[str, Any]],
+        slot_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> list[str]:
         """
         평평한 shape_id -> fill 맵을 슬라이드 XML 에 적용한다.
 
@@ -74,6 +82,11 @@ class SlideEditor:
             slide_xml_path: 편집 대상 `slideN.xml` 파일 경로
             fills: `shape_id` 를 key 로 하는 Fill 맵. 각 값은 `action`,
                 `text`, `font_size_override`, `is_title`, `data` 를 포함할 수 있다.
+            slot_metadata: `shape_id` 를 key 로 하는 v2 slot metadata. `marker_color`,
+                `output_text_color` 는 fill payload 보다 낮은 우선순위로 병합한다.
+
+        Returns:
+            list[str]: marker color fallback 등 적용 중 발생한 warning 목록
 
         Raises:
             ValueError: 차트 관계, 차트 타입, series 데이터가 유효하지 않은 경우
@@ -81,26 +94,27 @@ class SlideEditor:
         doc = parse(slide_xml_path)
         sp_tree = self._first_descendant(doc, self.PML_NS, "spTree")
         if sp_tree is None:
-            return
+            return []
 
+        warnings: list[str] = []
         for sp_element in list(self._descendants(sp_tree, self.PML_NS, "sp")):
             shape_id = self._get_shape_id(sp_element)
             if shape_id is None or shape_id not in fills:
                 continue
 
-            fill = fills[shape_id]
+            fill = self._merge_slot_style_metadata(shape_id, fills[shape_id], slot_metadata)
             action = fill.get("action", "text")
             if action == "remove":
                 sp_element.parentNode.removeChild(sp_element)
             elif action == "text":
-                self._replace_text(sp_element, fill)
+                warnings.extend(self._replace_text(sp_element, fill))
 
         for graphic_frame in list(self._descendants(sp_tree, self.PML_NS, "graphicFrame")):
             shape_id = self._get_shape_id(graphic_frame)
             if shape_id is None or shape_id not in fills:
                 continue
 
-            fill = fills[shape_id]
+            fill = self._merge_slot_style_metadata(shape_id, fills[shape_id], slot_metadata)
             action = fill.get("action")
             if action == "remove":
                 graphic_frame.parentNode.removeChild(graphic_frame)
@@ -108,6 +122,29 @@ class SlideEditor:
                 self._replace_chart_cache(slide_xml_path, graphic_frame, fill)
 
         self._write_document(Path(slide_xml_path), doc)
+        return warnings
+
+    def _merge_slot_style_metadata(
+        self,
+        shape_id: str,
+        fill: dict[str, Any],
+        slot_metadata: Mapping[str, Mapping[str, Any]] | None,
+    ) -> dict[str, Any]:
+        if slot_metadata is None:
+            return fill
+
+        metadata = slot_metadata.get(shape_id)
+        if not isinstance(metadata, Mapping):
+            return fill
+
+        merged_fill: dict[str, Any] | None = None
+        for field_name in ("marker_color", "output_text_color"):
+            if field_name in fill or not metadata.get(field_name):
+                continue
+            if merged_fill is None:
+                merged_fill = dict(fill)
+            merged_fill[field_name] = metadata[field_name]
+        return merged_fill or fill
 
     def apply_layout_actions(
         self,
@@ -142,6 +179,8 @@ class SlideEditor:
                 self._apply_resize_shape_action(action, shapes_by_id)
             elif action_type == "resize_linked_shape":
                 self._apply_resize_linked_shape_action(action, shapes_by_id)
+            elif action_type == "relayout_row":
+                self._apply_relayout_row_action(action, shapes_by_id)
             else:
                 raise ValueError(f"지원하지 않는 layout action 입니다: {action_type}")
 
@@ -202,6 +241,145 @@ class SlideEditor:
         for linked_shape_id in linked_shape_ids:
             linked_shape = self._required_geometry_shape(linked_shape_id, shapes_by_id)
             self._apply_geometry_updates(linked_shape, linked_updates)
+
+    def _apply_relayout_row_action(
+        self,
+        action: Mapping[str, Any],
+        shapes_by_id: dict[str, Element],
+    ) -> None:
+        """inline label row item 과 연결 배경의 x 좌표를 함께 재배치한다."""
+        min_gap_emu = self._non_negative_geometry_int(action.get("min_gap_emu", 0), "min_gap_emu")
+        row_items = self._relayout_row_items(action)
+        resolved_items = [
+            self._resolve_relayout_row_item(item, index, shapes_by_id)
+            for index, item in enumerate(row_items)
+        ]
+
+        self._validate_relayout_row_gap(resolved_items, min_gap_emu)
+        for item in resolved_items:
+            self._apply_geometry_updates(item["shape"], item["updates"])
+            for linked_item in item["linked_items"]:
+                self._apply_geometry_updates(linked_item["shape"], linked_item["updates"])
+
+    def _relayout_row_items(self, action: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        items = action.get("items")
+        if not isinstance(items, Sequence) or isinstance(items, str | bytes):
+            raise ValueError("relayout_row action 에는 items 목록이 필요합니다.")
+
+        row_items: list[Mapping[str, Any]] = []
+        for item in items:
+            if not isinstance(item, Mapping):
+                raise ValueError("relayout_row item 은 mapping 이어야 합니다.")
+            row_items.append(item)
+
+        if not row_items:
+            raise ValueError("relayout_row action 에는 items 목록이 필요합니다.")
+        return row_items
+
+    def _resolve_relayout_row_item(
+        self,
+        item: Mapping[str, Any],
+        index: int,
+        shapes_by_id: dict[str, Element],
+    ) -> dict[str, Any]:
+        shape = self._required_geometry_shape(item.get("shape_id"), shapes_by_id)
+        x_emu = self._geometry_int(item.get("x_emu"), f"items[{index}].x_emu", positive=False)
+        w_emu = self._relayout_width_emu(shape, item, index)
+        updates: dict[str, int] = {"x_emu": x_emu}
+        if "w_emu" in item:
+            updates["w_emu"] = w_emu
+
+        linked_items = []
+        visible_left = x_emu
+        visible_right = x_emu + w_emu
+        if item.get("linked_shape_ids") is not None or item.get("linked_shape_id") is not None:
+            linked_shape_ids = self._linked_shape_ids(item)
+            current_x = self._required_current_geometry(shape, "x_emu")
+            for linked_shape_id in linked_shape_ids:
+                linked_shape = self._required_geometry_shape(linked_shape_id, shapes_by_id)
+                linked_updates = self._relayout_linked_updates(
+                    item,
+                    index,
+                    x_emu=x_emu,
+                    current_x=current_x,
+                    linked_shape=linked_shape,
+                )
+                linked_items.append({"shape": linked_shape, "updates": linked_updates})
+                linked_x = linked_updates["x_emu"]
+                linked_w = linked_updates.get(
+                    "w_emu",
+                    self._required_current_geometry(linked_shape, "w_emu"),
+                )
+                visible_left = min(visible_left, linked_x)
+                visible_right = max(visible_right, linked_x + linked_w)
+
+        return {
+            "shape": shape,
+            "shape_id": self._get_shape_id(shape) or "",
+            "x_emu": x_emu,
+            "w_emu": w_emu,
+            "visible_left_emu": visible_left,
+            "visible_right_emu": visible_right,
+            "updates": updates,
+            "linked_items": linked_items,
+        }
+
+    def _relayout_width_emu(
+        self,
+        shape: Element,
+        item: Mapping[str, Any],
+        index: int,
+    ) -> int:
+        if "w_emu" in item:
+            return self._geometry_int(item["w_emu"], f"items[{index}].w_emu", positive=True)
+        return self._required_current_geometry(shape, "w_emu")
+
+    def _relayout_linked_updates(
+        self,
+        item: Mapping[str, Any],
+        index: int,
+        *,
+        x_emu: int,
+        current_x: int,
+        linked_shape: Element,
+    ) -> dict[str, int]:
+        updates: dict[str, int] = {}
+        if "linked_x_emu" in item:
+            updates["x_emu"] = self._geometry_int(
+                item["linked_x_emu"],
+                f"items[{index}].linked_x_emu",
+                positive=False,
+            )
+        else:
+            current_linked_x = self._required_current_geometry(linked_shape, "x_emu")
+            updates["x_emu"] = x_emu + (current_linked_x - current_x)
+
+        if "linked_w_emu" in item:
+            updates["w_emu"] = self._geometry_int(
+                item["linked_w_emu"],
+                f"items[{index}].linked_w_emu",
+                positive=True,
+            )
+        return updates
+
+    def _validate_relayout_row_gap(
+        self,
+        resolved_items: Sequence[Mapping[str, Any]],
+        min_gap_emu: int,
+    ) -> None:
+        previous_right: int | None = None
+        previous_shape_id = ""
+        for item in resolved_items:
+            visible_left = int(item["visible_left_emu"])
+            visible_right = int(item["visible_right_emu"])
+            shape_id = str(item["shape_id"])
+            if previous_right is not None and visible_left - previous_right < min_gap_emu:
+                raise ValueError(
+                    "relayout_row item 순서 또는 min_gap_emu 를 만족하지 않습니다: "
+                    f"{previous_shape_id} -> {shape_id}"
+                )
+            previous_right = visible_right
+            previous_shape_id = shape_id
 
     def _geometry_shapes_by_id(self, sp_tree: Element) -> dict[str, Element]:
         """geometry action 대상이 될 수 있는 shape 를 cNvPr/@id 로 색인한다."""
@@ -291,6 +469,12 @@ class SlideEditor:
             raise ValueError(f"{field_name} 값은 0보다 커야 합니다.")
         return parsed_value
 
+    def _non_negative_geometry_int(self, value: Any, field_name: str) -> int:
+        parsed_value = self._geometry_int(value, field_name, positive=False)
+        if parsed_value < 0:
+            raise ValueError(f"{field_name} 값은 0 이상이어야 합니다.")
+        return parsed_value
+
     def _apply_geometry_updates(self, element: Element, updates: Mapping[str, int]) -> None:
         xfrm = self._geometry_xfrm(element)
         if xfrm is None:
@@ -324,6 +508,14 @@ class SlideEditor:
 
         shape_properties = self._first_child(element, self.PML_NS, "spPr")
         return self._first_child(shape_properties, self.DRAWINGML_NS, "xfrm")
+
+    def _required_current_geometry(self, element: Element, field_name: str) -> int:
+        coordinates = self._coordinates(element)
+        value = coordinates.get(field_name)
+        if value is None:
+            shape_id = self._get_shape_id(element) or "(unknown)"
+            raise ValueError(f"shape_id {shape_id} 의 {field_name} 정보를 찾을 수 없습니다.")
+        return value
 
     def _get_shape_id(self, element: Element) -> str | None:
         """cNvPr/@id 값을 추출한다."""
@@ -401,7 +593,7 @@ class SlideEditor:
             "series": chart_summary.get("series", []),
         }
 
-    def _replace_text(self, sp_element: Element, fill: dict[str, Any]) -> None:
+    def _replace_text(self, sp_element: Element, fill: dict[str, Any]) -> list[str]:
         """도형 내부 텍스트를 교체하되 첫 pPr/rPr 서식을 보존한다."""
         doc = sp_element.ownerDocument
         tx_body = self._first_descendant(sp_element, self.PML_NS, "txBody")
@@ -418,6 +610,8 @@ class SlideEditor:
 
         if fill.get("is_title"):
             base_r_pr.setAttribute("b", "1")
+
+        warnings = self._apply_text_output_color(sp_element, base_r_pr, fill)
 
         for paragraph in list(self._children(tx_body, self.DRAWINGML_NS, "p")):
             tx_body.removeChild(paragraph)
@@ -438,6 +632,74 @@ class SlideEditor:
             new_r.appendChild(new_t)
             new_p.appendChild(new_r)
             tx_body.appendChild(new_p)
+
+        return warnings
+
+    def _apply_text_output_color(
+        self,
+        sp_element: Element,
+        run_props: Element,
+        fill: Mapping[str, Any],
+    ) -> list[str]:
+        output_text_color = fill.get("output_text_color")
+        if output_text_color:
+            self._set_run_srgb_color(
+                run_props,
+                self._normalize_rgb_color(output_text_color, "output_text_color"),
+            )
+            return []
+
+        if not self._requires_marker_color_replacement(run_props, fill):
+            return []
+
+        self._set_run_srgb_color(run_props, self._OUTPUT_TEXT_COLOR_FALLBACK_RGB)
+        shape_id = self._get_shape_id(sp_element) or "(unknown)"
+        return [
+            "shape_id "
+            f"{shape_id}의 output_text_color가 없어 "
+            f"#{self._OUTPUT_TEXT_COLOR_FALLBACK_RGB}을 사용합니다."
+        ]
+
+    def _requires_marker_color_replacement(
+        self,
+        run_props: Element,
+        fill: Mapping[str, Any],
+    ) -> bool:
+        marker_color = fill.get("marker_color")
+        if marker_color:
+            return self._normalize_rgb_color(marker_color, "marker_color") == self._EXACT_MARKER_RGB
+
+        return self._run_srgb_color(run_props) == self._EXACT_MARKER_RGB
+
+    def _run_srgb_color(self, run_props: Element) -> str | None:
+        color = self._first_descendant(run_props, self.DRAWINGML_NS, "srgbClr")
+        if color is None:
+            return None
+        value = color.getAttribute("val").strip().upper()
+        return value or None
+
+    def _set_run_srgb_color(self, run_props: Element, rgb_color: str) -> None:
+        doc = run_props.ownerDocument
+        solid_fill = self._first_child(run_props, self.DRAWINGML_NS, "solidFill")
+        if solid_fill is None:
+            solid_fill = doc.createElementNS(self.DRAWINGML_NS, "a:solidFill")
+            run_props.insertBefore(solid_fill, run_props.firstChild)
+
+        for child in list(solid_fill.childNodes):
+            solid_fill.removeChild(child)
+
+        srgb_color = doc.createElementNS(self.DRAWINGML_NS, "a:srgbClr")
+        srgb_color.setAttribute("val", rgb_color)
+        solid_fill.appendChild(srgb_color)
+
+    def _normalize_rgb_color(self, value: Any, field_name: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError(f"{field_name} 값은 #RRGGBB 형식이어야 합니다.")
+
+        color = value.strip().removeprefix("#")
+        if len(color) != 6 or any(char not in self._HEX_DIGITS for char in color):
+            raise ValueError(f"{field_name} 값은 #RRGGBB 형식이어야 합니다.")
+        return color.upper()
 
     def _replace_chart_cache(
         self,

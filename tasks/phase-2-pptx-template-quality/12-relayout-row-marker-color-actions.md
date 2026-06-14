@@ -6,7 +6,8 @@ spec: "specs/phase-2/04-pptx-layout-action-application.md"
 depends_on: ["2.11"]
 blocks: ["2.13", "2.15", "2.16"]
 estimate: "M"
-status: "todo"
+status: "done"
+completed_at: "2026-06-14"
 owner: ""
 sprint: ""
 ---
@@ -22,24 +23,35 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] row item ordering 과 gap 계산을 적용 단계에서 검증할 fixture 준비
-- [ ] text replacement 시 run color 를 `output_text_color` 로 바꾸는 위치 확인
+- [x] row item ordering 과 gap 계산을 적용 단계에서 검증할 fixture 준비
+- [x] text replacement 시 run color 를 `output_text_color` 로 바꾸는 위치 확인
 
 ## 구현 체크리스트
 
-- [ ] `relayout_row` action 으로 group item 과 linked background 의 x 좌표를 함께 이동
-- [ ] group item 순서와 `min_gap_emu` 를 보존하는 검증 추가
-- [ ] text fill 적용 시 `#FF0000` marker color 를 `output_text_color` 로 대체
-- [ ] `output_text_color` 누락 시 안전 fallback 색상 정책 추가
-- [ ] relayout/color replacement 단위 테스트 추가
+- [x] `relayout_row` action 으로 group item 과 linked background 의 x 좌표를 함께 이동
+- [x] group item 순서와 `min_gap_emu` 를 보존하는 검증 추가
+- [x] text fill 적용 시 `#FF0000` marker color 를 `output_text_color` 로 대체
+- [x] `output_text_color` 누락 시 안전 fallback 색상 정책 추가
+- [x] relayout/color replacement 단위 테스트 추가
 
 ## Definition of Done
 
-- [ ] 작업 중 또는 완료 후 새 사용자 확인사항이 생기면 `tasks/phase-2-pptx-template-quality/18-user-signoff-and-operational-readiness.md` 에 추가했다.
-- [ ] `relayout_row` 후 같은 group item 들의 x 좌표가 순서와 gap 을 만족한다
-- [ ] 최종 텍스트에 `#FF0000` marker 색상이 남지 않는다
-- [ ] color fallback 사용 시 warning 또는 fit report 에 남는다
+- [x] 작업 중 또는 완료 후 새 사용자 확인사항이 생기면 `tasks/phase-2-pptx-template-quality/18-user-signoff-and-operational-readiness.md` 에 추가했다.
+- [x] `relayout_row` 후 같은 group item 들의 x 좌표가 순서와 gap 을 만족한다
+- [x] 최종 텍스트에 `#FF0000` marker 색상이 남지 않는다
+- [x] color fallback 사용 시 warning 또는 fit report 에 남는다
 
 ## 리스크 / 메모
 
 - text fill 과 style replacement 순서가 꼬이면 marker red 가 결과물에 남을 수 있다.
+- 새 사용자 확인사항은 없었다.
+- Pipeline 호출부가 `slot_metadata` 를 전달하는 연결은 2.13 범위로 남긴다.
+
+## 검증
+
+- `uv run pytest tests/test_features/test_visualization/test_slide_editor.py -q`
+- `uv run pytest tests/test_features/test_visualization -q`
+- `uv run ruff check .`
+- `uv run ruff format --check .`
+- `git diff --check`
+- `uv run pytest -q`
