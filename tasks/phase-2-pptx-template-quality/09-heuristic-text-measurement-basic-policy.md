@@ -6,7 +6,8 @@ spec: "specs/phase-2/03-pptx-deterministic-text-fit-preflight.md"
 depends_on: ["2.08"]
 blocks: []
 estimate: "M"
-status: "todo"
+status: "done"
+completed_at: "2026-06-14"
 owner: ""
 sprint: ""
 ---
@@ -22,23 +23,23 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] 한글/영문/숫자/공백/기호 폭 heuristic 기준 정리
-- [ ] 현재 텍스트 축소/요약 정책이 구현된 위치 확인
+- [x] 한글/영문/숫자/공백/기호 폭 heuristic 기준 정리
+- [x] 현재 텍스트 축소/요약 정책이 구현된 위치 확인
 
 ## 구현 체크리스트
 
-- [ ] 문자군별 heuristic text width 측정 유틸 구현
-- [ ] 10~15% safety margin, padding, `max_lines`, `nowrap` 검사 추가
-- [ ] `basic_text_area` fit policy 의 요약, `min_font_pt` 제한, 실패 판정 모델 구현
-- [ ] 8pt 이하 shrink 금지 테스트 추가
-- [ ] fit 결과와 실패 사유 structured log 출력 추가
+- [x] 문자군별 heuristic text width 측정 유틸 구현
+- [x] 10~15% safety margin, padding, `max_lines`, `nowrap` 검사 추가
+- [x] `basic_text_area` fit policy 의 요약, `min_font_pt` 제한, 실패 판정 모델 구현
+- [x] 8pt 이하 shrink 금지 테스트 추가
+- [x] fit 결과와 실패 사유 structured log 출력 추가
 
 ## Definition of Done
 
-- [ ] 작업 중 또는 완료 후 새 사용자 확인사항이 생기면 `tasks/phase-2-pptx-template-quality/18-user-signoff-and-operational-readiness.md` 에 추가했다.
-- [ ] 한글/영문/숫자 혼합 텍스트의 예상 폭이 deterministic 하게 계산된다
-- [ ] `basic_text_area` 는 `min_font_pt` 아래로 줄이지 않는다
-- [ ] overflow 가 숨겨지지 않고 요약 또는 실패로 수렴한다
+- [x] 작업 중 또는 완료 후 새 사용자 확인사항이 생기면 `tasks/phase-2-pptx-template-quality/18-user-signoff-and-operational-readiness.md` 에 추가했다.
+- [x] 한글/영문/숫자 혼합 텍스트의 예상 폭이 deterministic 하게 계산된다
+- [x] `basic_text_area` 는 `min_font_pt` 아래로 줄이지 않는다
+- [x] overflow 가 숨겨지지 않고 요약 또는 실패로 수렴한다
 
 ## 리스크 / 메모
 

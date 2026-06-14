@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -19,6 +20,7 @@ from features.visualization.service import (
     RetryableError,
     VisualizationTaskService,
 )
+from features.visualization.text_fit import EMU_PER_PT
 
 
 @dataclass(frozen=True)
@@ -315,13 +317,14 @@ class FakeFillGenerator:
     def __init__(self, responses: dict[int, list[object]] | None = None) -> None:
         self.responses = responses or {}
         self.calls: list[int] = []
+        self.slot_calls: list[tuple[int, list[dict[str, Any]]]] = []
 
     def create_fills(
         self, *, content_brief: str, slots: list[dict[str, Any]]
     ) -> dict[str, dict[str, Any]]:
-        del slots
         slide_order = int(content_brief.rsplit("-", maxsplit=1)[1])
         self.calls.append(slide_order)
+        self.slot_calls.append((slide_order, [dict(slot) for slot in slots]))
         responses = self.responses.get(slide_order)
         if responses:
             result = responses.pop(0)
@@ -520,6 +523,100 @@ async def test_content_timeout_retries_then_blanks_slide_and_continues_partial()
 
 
 @pytest.mark.asyncio
+async def test_text_fit_overflow_logs_structured_result_and_continues_partial(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """basic_text_area overflow 는 structured log 를 남기고 콘텐츠 실패로 수렴한다."""
+    editor = FakeEditor(
+        slots=[
+            {
+                "shape_id": "2",
+                "font_size_pt": 12,
+                "min_font_pt": 10,
+                "kind": "text",
+                "fit_policy": "basic_text_area",
+                "w_emu": int(80 * EMU_PER_PT),
+                "h_emu": int(30 * EMU_PER_PT),
+                "max_lines": 1,
+                "nowrap": True,
+            }
+        ]
+    )
+    filler = FakeFillGenerator(
+        responses={
+            3: [
+                {
+                    "2": {
+                        "action": "text",
+                        "text": "OpenAI API OpenAI API OpenAI API",
+                        "font_size_override": 12,
+                    }
+                }
+            ]
+        }
+    )
+    context = PipelineContext(editor=editor, filler=filler, max_content_concurrency=1)
+
+    with caplog.at_level(logging.INFO, logger="features.visualization.generation_pipeline"):
+        await context.service.generate(_task())
+
+    error_events = _events(context.main_client, "slide_content_error")
+    assert len(error_events) == 1
+    assert error_events[0]["slide_order"] == 3
+    assert "summarize_needed" in error_events[0]["message"]
+    assert len(context.editor.cleared) == 1
+    assert context.main_client.job_events[-1]["summary"] == {"completed": 6, "failed": 1}
+
+    text_fit_logs = [
+        record.pptx_text_fit for record in caplog.records if hasattr(record, "pptx_text_fit")
+    ]
+    overflow_log = next(item for item in text_fit_logs if item["slide_order"] == 3)
+    assert overflow_log["status"] == "summarize_needed"
+    assert overflow_log["reason"] in {"nowrap_width_overflow", "width_overflow"}
+    assert overflow_log["applied_font_pt"] == 10
+    assert overflow_log["final_layout"]["overflow_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_generate_enriches_slots_from_template_metadata_before_preflight() -> None:
+    """초기 생성은 v2 metadata slot 용량 정보를 prompt/preflight 에 전달한다."""
+    editor = FakeEditor(
+        slots=[
+            {
+                "shape_id": "2",
+                "font_size_pt": 12,
+                "kind": "text",
+                "w_emu": int(120 * EMU_PER_PT),
+                "h_emu": int(30 * EMU_PER_PT),
+            }
+        ]
+    )
+    filler = FakeFillGenerator(
+        responses={
+            3: [
+                {
+                    "2": {
+                        "action": "text",
+                        "text": "OpenAI API OpenAI API OpenAI API",
+                        "font_size_override": 12,
+                    }
+                }
+            ]
+        }
+    )
+    context = PipelineContext(editor=editor, filler=filler, max_content_concurrency=1)
+    context.storage.template_metadata = _template_metadata_with_resize_label_slot()
+
+    await context.service.generate(_task())
+
+    assert _events(context.main_client, "slide_content_error") == []
+    assert context.main_client.job_events[-1]["summary"] == {"completed": 7, "failed": 0}
+    slots_by_order = dict(context.filler.slot_calls)
+    assert slots_by_order[3][0]["fit_policy"] == "resize_label"
+    assert slots_by_order[3][0]["layout_type"] == "inline_label_group"
+
+
+@pytest.mark.asyncio
 async def test_all_content_failures_send_error_without_render_or_upload() -> None:
     """모든 슬라이드 콘텐츠 생성 실패는 전체 실패 final callback 으로 마감한다."""
     filler = FakeFillGenerator(
@@ -637,6 +734,47 @@ async def test_regenerate_user_request_changes_only_requested_shape() -> None:
         item[:3] == ("job-1", "task-key", 3) for item in context.storage.uploaded_attempt_previews
     )
     assert context.storage.promoted_attempts == [("job-1", "task-key", 3)]
+
+
+@pytest.mark.asyncio
+async def test_regenerate_enriches_slots_from_downloaded_template_metadata() -> None:
+    """재생성은 template_id 로 v2 metadata 를 내려받아 slot 정책을 복원한다."""
+    main_client = FakeMainClient()
+    main_client.job_context["template_id"] = "blue"
+    editor = FakeEditor(
+        slots=[
+            {
+                "shape_id": "2",
+                "font_size_pt": 12,
+                "kind": "text",
+                "current_text": "기존 제목",
+                "w_emu": int(120 * EMU_PER_PT),
+                "h_emu": int(30 * EMU_PER_PT),
+            }
+        ]
+    )
+    change_generator = FakeChangeGenerator(
+        response={
+            "2": {
+                "action": "text",
+                "text": "OpenAI API OpenAI API OpenAI API",
+                "font_size_override": 12,
+            }
+        }
+    )
+    context = PipelineContext(
+        main_client=main_client,
+        editor=editor,
+        change_generator=change_generator,
+    )
+    context.storage.template_metadata = _template_metadata_with_resize_label_slot()
+
+    await context.service.regenerate(_regenerate_task(user_request="제목을 자세히 써줘"))
+
+    assert _events(context.main_client, "slide_preview_error") == []
+    assert len(_events(context.main_client, "slide_regenerated")) == 1
+    assert context.change_generator.calls[0]["slots"][0]["fit_policy"] == "resize_label"
+    assert context.change_generator.calls[0]["slots"][0]["layout_type"] == "inline_label_group"
 
 
 @pytest.mark.asyncio
@@ -937,3 +1075,25 @@ def _regenerate_task(
 
 def _events(main_client: FakeMainClient, event: str) -> list[dict[str, Any]]:
     return [item for item in main_client.slide_events if item["event"] == event]
+
+
+def _template_metadata_with_resize_label_slot() -> dict[str, Any]:
+    """shape 2를 basic_text_area 가 아닌 inline label slot 으로 선언한 v2 metadata."""
+    return {
+        "schema_version": 2,
+        "template_id": "blue",
+        "runtime_slides": [],
+        "layout_groups": [],
+        "slots": [
+            {
+                "slot_id": "slide3_shape2",
+                "slide_filename": "slide3.xml",
+                "shape_id": "2",
+                "kind": "text",
+                "fit_policy": "resize_label",
+                "layout_type": "inline_label_group",
+                "max_lines": 1,
+                "nowrap": True,
+            }
+        ],
+    }
