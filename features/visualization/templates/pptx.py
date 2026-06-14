@@ -367,7 +367,7 @@ def _marker_slot_from_shape(
         "kind": "text",
         "editable": True,
         "required": True,
-        "allowed_actions": ["text"],
+        "allowed_actions": ["text", "remove"],
     }
     return _MarkerShapeExtraction(
         slots=(slot,),
