@@ -35,6 +35,11 @@ from features.visualization.pptx import (
 from features.visualization.qa import SlidePreview, VisualQA, VisualQAFixVerifyStep
 from features.visualization.storage.gcs_client import GcsClient, job_workdir, preview_key
 from features.visualization.templates import require_template_v2_metadata
+from features.visualization.text_fit import (
+    BasicTextFitResult,
+    TextFitPreflightError,
+    apply_text_fit_preflight,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -379,6 +384,11 @@ class VisualizationTaskService:
                 toolchain = self._toolchain_factory()
                 editor = self._editor_factory()
                 renderer = self._renderer_factory()
+                template_metadata = _load_optional_template_metadata(
+                    job_context=job_context,
+                    storage=storage,
+                    workdir=workdir,
+                )
 
                 current_pptx = workdir / "current.pptx"
                 unpacked_dir = workdir / "unpacked"
@@ -393,10 +403,22 @@ class VisualizationTaskService:
 
                 slide_xml_path = _slide_xml_path(unpacked_dir, registered_slide.slide_filename)
                 slots = await asyncio.to_thread(editor.extract_slots, str(slide_xml_path))
+                slots = _enrich_slots_with_template_metadata(
+                    slots,
+                    template_metadata=template_metadata,
+                    slide_filename=registered_slide.slide_filename,
+                )
                 if task.is_retry:
                     updated_fills = await self._create_fills_with_timeout_retry(
                         content_brief=content_brief,
                         slots=slots,
+                    )
+                    updated_fills = _preflight_text_fills(
+                        job_id=task.job_id,
+                        slide_id=registered_slide.slide_id,
+                        slide_order=registered_slide.slide_order,
+                        slots=slots,
+                        fills=updated_fills,
                     )
                     await asyncio.to_thread(editor.apply_fills, str(slide_xml_path), updated_fills)
                 else:
@@ -409,6 +431,13 @@ class VisualizationTaskService:
                     )
                     if not changes:
                         raise ValueError("재생성 변경 지시가 비어 있습니다.")
+                    changes = _preflight_text_fills(
+                        job_id=task.job_id,
+                        slide_id=registered_slide.slide_id,
+                        slide_order=registered_slide.slide_order,
+                        slots=slots,
+                        fills=changes,
+                    )
                     await asyncio.to_thread(editor.apply_fills, str(slide_xml_path), changes)
                     updated_fills = merge_current_fills(current_fills, changes)
 
@@ -592,6 +621,7 @@ class VisualizationTaskService:
                     unpacked_dir=unpacked_dir,
                     planned_slides=slide_plan.selected_slides,
                     registered_slides=registered_slides,
+                    template_metadata=template_metadata,
                 )
                 ready_content = [
                     outcome for outcome in content_outcomes if outcome.status == "ready"
@@ -755,6 +785,7 @@ class VisualizationTaskService:
         unpacked_dir: Path,
         planned_slides: Sequence[PlannedSlide],
         registered_slides: dict[int, RegisteredSlide],
+        template_metadata: Mapping[str, Any],
     ) -> list[_ContentOutcome]:
         semaphore = asyncio.Semaphore(self._max_content_concurrency)
         tasks = [
@@ -766,6 +797,7 @@ class VisualizationTaskService:
                     unpacked_dir=unpacked_dir,
                     planned_slide=planned_slide,
                     registered_slide=registered_slides[planned_slide.slide_order],
+                    template_metadata=template_metadata,
                     semaphore=semaphore,
                 )
             )
@@ -791,15 +823,28 @@ class VisualizationTaskService:
         unpacked_dir: Path,
         planned_slide: PlannedSlide,
         registered_slide: RegisteredSlide,
+        template_metadata: Mapping[str, Any],
         semaphore: asyncio.Semaphore,
     ) -> _ContentOutcome:
         async with semaphore:
             slide_xml_path = _slide_xml_path(unpacked_dir, planned_slide.slide_filename)
             try:
                 slots = await asyncio.to_thread(editor.extract_slots, str(slide_xml_path))
+                slots = _enrich_slots_with_template_metadata(
+                    slots,
+                    template_metadata=template_metadata,
+                    slide_filename=planned_slide.slide_filename,
+                )
                 fills = await self._create_fills_with_timeout_retry(
                     content_brief=planned_slide.content_brief,
                     slots=slots,
+                )
+                fills = _preflight_text_fills(
+                    job_id=task.job_id,
+                    slide_id=registered_slide.slide_id,
+                    slide_order=registered_slide.slide_order,
+                    slots=slots,
+                    fills=fills,
                 )
                 await asyncio.to_thread(editor.apply_fills, str(slide_xml_path), fills)
             except Exception as exc:
@@ -1037,6 +1082,58 @@ __all__ = [
 ]
 
 
+def _preflight_text_fills(
+    *,
+    job_id: str,
+    slide_id: str,
+    slide_order: int,
+    slots: Sequence[Mapping[str, Any]],
+    fills: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """OOXML 적용 전 `basic_text_area` 텍스트 fit 정책을 실행한다."""
+    try:
+        preflight = apply_text_fit_preflight(slots=slots, fills=fills)
+    except TextFitPreflightError as exc:
+        for result in exc.results:
+            _log_text_fit_result(
+                job_id=job_id,
+                slide_id=slide_id,
+                slide_order=slide_order,
+                result=result,
+            )
+        raise
+
+    for result in preflight.results:
+        _log_text_fit_result(
+            job_id=job_id,
+            slide_id=slide_id,
+            slide_order=slide_order,
+            result=result,
+        )
+    return preflight.fills
+
+
+def _log_text_fit_result(
+    *,
+    job_id: str,
+    slide_id: str,
+    slide_order: int,
+    result: BasicTextFitResult,
+) -> None:
+    """fit 결과와 실패 사유를 structured log 로 남긴다."""
+    logger.info(
+        "pptx text fit preflight result",
+        extra={
+            "pptx_text_fit": {
+                "job_id": job_id,
+                "slide_id": slide_id,
+                "slide_order": slide_order,
+                **result.to_log_dict(),
+            }
+        },
+    )
+
+
 def _default_qa_step_factory(
     storage: StorageClient,
     main_client: MainClient,
@@ -1097,6 +1194,115 @@ def _load_template_metadata(path: Path) -> dict[str, Any]:
             error_code="TEMPLATE_METADATA_SCHEMA_INVALID",
         ) from exc
     return metadata
+
+
+def _load_optional_template_metadata(
+    *,
+    job_context: Mapping[str, Any],
+    storage: StorageClient,
+    workdir: Path,
+) -> dict[str, Any] | None:
+    """재생성 경로에서 가능하면 v2 template metadata 를 확보한다."""
+    embedded_metadata = _template_metadata_from_job_context(job_context)
+    if embedded_metadata is not None:
+        require_template_v2_metadata(embedded_metadata)
+        return embedded_metadata
+
+    template_id = _optional_text(job_context, "template_id")
+    if template_id is None:
+        return None
+
+    template_meta_path = workdir / "meta.json"
+    try:
+        storage.download_template_meta(template_id, template_meta_path)
+        return _load_template_metadata(template_meta_path)
+    except Exception:
+        logger.warning(
+            "template metadata unavailable for regenerate; using raw slots: template_id=%s",
+            template_id,
+            exc_info=True,
+        )
+        return None
+
+
+def _template_metadata_from_job_context(job_context: Mapping[str, Any]) -> dict[str, Any] | None:
+    for key in ("template_metadata", "templateMetadata", "template_meta", "templateMeta"):
+        value = job_context.get(key)
+        if isinstance(value, Mapping):
+            return dict(value)
+    return None
+
+
+def _enrich_slots_with_template_metadata(
+    slots: Sequence[Mapping[str, Any]],
+    *,
+    template_metadata: Mapping[str, Any] | None,
+    slide_filename: str,
+) -> list[dict[str, Any]]:
+    """OOXML slot 에 v2 metadata slot 필드를 overlay 한다."""
+    raw_slots = [dict(slot) for slot in slots]
+    if template_metadata is None:
+        return raw_slots
+
+    template_slots = _template_slots_by_shape_id(
+        template_metadata=template_metadata,
+        slide_filename=slide_filename,
+    )
+    if not template_slots:
+        return raw_slots
+
+    enriched_slots: list[dict[str, Any]] = []
+    for slot in raw_slots:
+        shape_id = str(slot.get("shape_id") or "")
+        template_slot = template_slots.get(shape_id)
+        if template_slot is None:
+            enriched_slots.append(slot)
+            continue
+        merged = dict(template_slot)
+        merged.update(slot)
+        enriched_slots.append(merged)
+    return enriched_slots
+
+
+def _template_slots_by_shape_id(
+    *,
+    template_metadata: Mapping[str, Any],
+    slide_filename: str,
+) -> dict[str, Mapping[str, Any]]:
+    slots = template_metadata.get("slots")
+    if not isinstance(slots, Sequence) or isinstance(slots, str | bytes | bytearray):
+        return {}
+
+    indexed: dict[str, Mapping[str, Any]] = {}
+    for slot in slots:
+        if not isinstance(slot, Mapping):
+            continue
+        if not _metadata_slot_matches_slide(slot, slide_filename):
+            continue
+        shape_id = str(slot.get("shape_id") or "")
+        if not shape_id:
+            continue
+        indexed.setdefault(shape_id, slot)
+    return indexed
+
+
+def _metadata_slot_matches_slide(slot: Mapping[str, Any], slide_filename: str) -> bool:
+    slot_filename = _optional_text(slot, "slide_filename")
+    if slot_filename is not None:
+        return Path(slot_filename).name == slide_filename
+
+    slide_part = _optional_text(slot, "slide_part")
+    if slide_part is not None:
+        return Path(slide_part).name == slide_filename
+
+    return True
+
+
+def _optional_text(data: Mapping[str, Any], key: str) -> str | None:
+    value = data.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _registered_slides_by_order(
