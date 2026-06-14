@@ -62,6 +62,7 @@ def build_template_v2_payloads(
                 source.slots,
                 source.shape_matches,
                 source.shape_inferences,
+                source.layout_groups,
             ),
             "slots",
         ),
@@ -163,14 +164,17 @@ def _enrich_slot_descriptors(
     slots: Sequence[Mapping[str, Any]],
     shape_matches: Sequence[Mapping[str, Any]],
     shape_inferences: Sequence[Mapping[str, Any]],
+    layout_groups: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     matches_by_slot_id = _shape_matches_by_slot_id(shape_matches)
     item_backgrounds_by_slot_id = _item_backgrounds_by_slot_id(shape_inferences)
+    layout_groups_by_slot_id = _layout_groups_by_slot_id(slots, layout_groups)
     return [
         _enrich_slot_descriptor(
             slot,
             matches_by_slot_id.get(str(slot.get("slot_id"))),
             item_backgrounds_by_slot_id.get(str(slot.get("slot_id"))),
+            layout_groups_by_slot_id.get(str(slot.get("slot_id"))),
         )
         for slot in slots
     ]
@@ -212,6 +216,58 @@ def _item_backgrounds_by_slot_id(
     }
 
 
+def _layout_groups_by_slot_id(
+    slots: Sequence[Mapping[str, Any]],
+    layout_groups: Sequence[Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]]:
+    slot_ids_by_shape_id = _slot_ids_by_shape_id(slots)
+    groups_by_slot_id: dict[str, Mapping[str, Any]] = {}
+    for group in layout_groups:
+        if not isinstance(group, Mapping):
+            continue
+        group_id = str(group.get("group_id") or "").strip()
+        if not group_id:
+            continue
+        for slot_id in _layout_group_slot_ids(group, slot_ids_by_shape_id):
+            normalized_slot_id = str(slot_id or "").strip()
+            if not normalized_slot_id or normalized_slot_id in groups_by_slot_id:
+                continue
+            groups_by_slot_id[normalized_slot_id] = group
+    return groups_by_slot_id
+
+
+def _slot_ids_by_shape_id(slots: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    slot_ids_by_shape_id: dict[str, str] = {}
+    for slot in slots:
+        shape_id = str(slot.get("shape_id") or "").strip()
+        slot_id = str(slot.get("slot_id") or "").strip()
+        if shape_id and slot_id and shape_id not in slot_ids_by_shape_id:
+            slot_ids_by_shape_id[shape_id] = slot_id
+    return slot_ids_by_shape_id
+
+
+def _layout_group_slot_ids(
+    group: Mapping[str, Any],
+    slot_ids_by_shape_id: Mapping[str, str],
+) -> tuple[str, ...]:
+    item_slot_ids = _string_sequence(group.get("item_slot_ids"))
+    if item_slot_ids:
+        return item_slot_ids
+
+    item_shape_ids = _string_sequence(group.get("item_shape_ids"))
+    return tuple(
+        slot_ids_by_shape_id[shape_id]
+        for shape_id in item_shape_ids
+        if shape_id in slot_ids_by_shape_id
+    )
+
+
+def _string_sequence(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
+        return ()
+    return tuple(str(item or "").strip() for item in value if str(item or "").strip())
+
+
 def _valid_item_background_inference(inference: Mapping[str, Any]) -> bool:
     if inference.get("resize_linked") is not True:
         return False
@@ -239,6 +295,7 @@ def _enrich_slot_descriptor(
     slot: Mapping[str, Any],
     shape_match: Mapping[str, Any] | None,
     item_background: Mapping[str, Any] | None,
+    layout_group: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     enriched = dict(slot)
     if _is_editable_text_slot(enriched):
@@ -248,10 +305,26 @@ def _enrich_slot_descriptor(
                     enriched[field_name] = shape_match[field_name]
         if item_background is not None:
             enriched["item_background"] = _slot_item_background(item_background)
+        if layout_group is not None:
+            _apply_layout_group_slot_metadata(enriched, layout_group)
         _apply_text_capacity_defaults(enriched)
     elif not _has_allowed_actions(enriched.get("allowed_actions")):
         enriched["allowed_actions"] = _infer_allowed_actions(enriched)
     return enriched
+
+
+def _apply_layout_group_slot_metadata(
+    slot: dict[str, Any],
+    layout_group: Mapping[str, Any],
+) -> None:
+    group_id = str(layout_group.get("group_id") or "").strip()
+    if not group_id:
+        return
+    slot["layout_group_id"] = group_id
+    if layout_group.get("layout_type") == "inline_label_group":
+        slot["fit_policy"] = "resize_label"
+        slot["max_lines"] = 1
+        slot["nowrap"] = True
 
 
 def _slot_item_background(item_background: Mapping[str, Any]) -> dict[str, Any]:

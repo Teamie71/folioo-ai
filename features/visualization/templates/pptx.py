@@ -34,6 +34,15 @@ _CONTAINER_MIN_SLOT_COUNT = 2
 _CONTAINER_MIN_MAX_SLOT_AREA_RATIO = 3.0
 _CONTAINER_MIN_UNION_AREA_RATIO = 1.05
 _CONTAINER_MAX_UNION_AREA_RATIO = 8.0
+_INLINE_LABEL_GROUP_MIN_ITEMS = 3
+_INLINE_LABEL_GROUP_MAX_PLACEHOLDER_CHARS = 28
+_INLINE_LABEL_GROUP_MIN_HEIGHT_SIMILARITY = 0.65
+_INLINE_LABEL_GROUP_MAX_WIDTH_RATIO = 5.0
+_INLINE_LABEL_GROUP_CENTER_Y_TOLERANCE_RATIO = 0.35
+_INLINE_LABEL_GROUP_MAX_GAP_HEIGHT_RATIO = 2.0
+_INLINE_LABEL_GROUP_MAX_GAP_WIDTH_RATIO = 0.75
+_INLINE_LABEL_GROUP_MAX_GAP_VARIANCE_RATIO = 3.0
+_INLINE_LABEL_GROUP_MIN_BACKGROUND_ITEMS = 2
 
 
 @dataclass(frozen=True)
@@ -123,6 +132,7 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
     slide_pairs: list[dict] = []
     shape_matches: list[dict] = []
     shape_inferences: list[dict] = []
+    layout_groups: list[dict] = []
     slots: list[dict] = []
     errors: list[str] = []
     warnings: list[str] = []
@@ -182,6 +192,13 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
             )
             shape_inferences.extend(inferred_shapes)
             warnings.extend(shape_warnings)
+            inferred_groups, group_warnings = _infer_inline_label_groups(
+                marker_result.slots,
+                inferred_shapes,
+                runtime_slide_number=slide_number,
+            )
+            layout_groups.extend(inferred_groups)
+            warnings.extend(group_warnings)
             if not marker_result.slots and not marker_result.has_marker_candidate:
                 errors.append(
                     f"runtime slide {slide_number}에 정확한 #FF0000 editable marker가 없습니다."
@@ -211,7 +228,7 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
     return TemplateV2Extraction(
         runtime_slides=tuple(runtime_slides),
         slots=tuple(slots),
-        layout_groups=(),
+        layout_groups=tuple(layout_groups),
         slide_pairs=tuple(slide_pairs),
         shape_matches=tuple(shape_matches),
         shape_inferences=tuple(shape_inferences),
@@ -777,6 +794,252 @@ def _ambiguous_item_background_inference(
         }
     )
     return inference
+
+
+def _infer_inline_label_groups(
+    slots: tuple[dict, ...],
+    shape_inferences: list[dict],
+    *,
+    runtime_slide_number: int,
+) -> tuple[list[dict], list[str]]:
+    """반복되는 짧은 slot row를 inline label group으로 추론한다."""
+    candidate_slots = tuple(slot for slot in slots if _inline_label_slot_candidate(slot))
+    if len(candidate_slots) < _INLINE_LABEL_GROUP_MIN_ITEMS:
+        return [], []
+
+    item_backgrounds_by_slot_id = _item_background_inferences_by_slot_id(shape_inferences)
+    groups: list[dict] = []
+    warnings: list[str] = []
+    for row in _cluster_inline_label_rows(candidate_slots):
+        group = _inline_label_group_from_row(
+            row,
+            item_backgrounds_by_slot_id,
+            runtime_slide_number=runtime_slide_number,
+            group_index=len(groups) + 1,
+        )
+        if group is None:
+            if len(row) >= _INLINE_LABEL_GROUP_MIN_ITEMS:
+                warnings.append(
+                    "runtime slide "
+                    f"{runtime_slide_number}의 inline_label_group 후보 "
+                    f"({_slot_id_list_text(_sort_slots_by_position(row))})는 "
+                    "정렬, gap, background 신뢰도가 부족해 basic_text_area로 둡니다."
+                )
+            continue
+        groups.append(group)
+    return groups, warnings
+
+
+def _inline_label_slot_candidate(slot: dict) -> bool:
+    if slot.get("editable") is False:
+        return False
+    if str(slot.get("kind") or "text").casefold() != "text":
+        return False
+    if _bbox_tuple(slot) is None:
+        return False
+
+    placeholder_text = str(slot.get("placeholder_text") or "").strip()
+    if not placeholder_text:
+        return False
+    if len(placeholder_text.splitlines()) != 1:
+        return False
+    return len(placeholder_text) <= _INLINE_LABEL_GROUP_MAX_PLACEHOLDER_CHARS
+
+
+def _item_background_inferences_by_slot_id(
+    shape_inferences: list[dict],
+) -> dict[str, dict]:
+    backgrounds_by_slot_id: dict[str, dict] = {}
+    for inference in shape_inferences:
+        if inference.get("inference_type") != "item_background":
+            continue
+        if inference.get("resize_linked") is not True:
+            continue
+        slot_id = str(inference.get("slot_id") or "")
+        if not slot_id:
+            continue
+        backgrounds_by_slot_id[slot_id] = inference
+    return backgrounds_by_slot_id
+
+
+def _cluster_inline_label_rows(slots: tuple[dict, ...]) -> tuple[tuple[dict, ...], ...]:
+    rows: list[list[dict]] = []
+    for slot in sorted(slots, key=_slot_center_y_sort_key):
+        slot_box = _bbox_tuple(slot)
+        if slot_box is None:
+            continue
+
+        matching_row = _matching_inline_label_row(rows, slot)
+        if matching_row is None:
+            rows.append([slot])
+        else:
+            matching_row.append(slot)
+
+    return tuple(
+        _sort_slots_by_position(tuple(row))
+        for row in rows
+        if len(row) >= _INLINE_LABEL_GROUP_MIN_ITEMS
+    )
+
+
+def _slot_center_y_sort_key(slot: dict) -> tuple[float, int, tuple[int, str]]:
+    slot_box = _bbox_tuple(slot)
+    if slot_box is None:
+        return (float("inf"), 10**18, _shape_id_sort_key(str(slot.get("shape_id") or "")))
+    x_emu, y_emu, _w_emu, h_emu = slot_box
+    return (y_emu + (h_emu / 2), x_emu, _shape_id_sort_key(str(slot.get("shape_id") or "")))
+
+
+def _matching_inline_label_row(rows: list[list[dict]], slot: dict) -> list[dict] | None:
+    slot_box = _bbox_tuple(slot)
+    if slot_box is None:
+        return None
+
+    _slot_x, slot_y, _slot_w, slot_h = slot_box
+    slot_center_y = slot_y + (slot_h / 2)
+    for row in rows:
+        row_boxes = tuple(box for row_slot in row if (box := _bbox_tuple(row_slot)) is not None)
+        if not row_boxes:
+            continue
+        row_center_y = sum(y + (height / 2) for _x, y, _width, height in row_boxes) / len(row_boxes)
+        max_height = max(slot_h, *(height for _x, _y, _width, height in row_boxes))
+        tolerance = max_height * _INLINE_LABEL_GROUP_CENTER_Y_TOLERANCE_RATIO
+        if abs(slot_center_y - row_center_y) <= tolerance:
+            return row
+    return None
+
+
+def _inline_label_group_from_row(
+    row: tuple[dict, ...],
+    item_backgrounds_by_slot_id: dict[str, dict],
+    *,
+    runtime_slide_number: int,
+    group_index: int,
+) -> dict | None:
+    if len(row) < _INLINE_LABEL_GROUP_MIN_ITEMS:
+        return None
+    if not _inline_label_row_geometry_is_confident(row):
+        return None
+
+    linked_background_by_item = _linked_background_by_item(row, item_backgrounds_by_slot_id)
+    if not _inline_label_backgrounds_are_confident(len(row), linked_background_by_item):
+        return None
+
+    gaps = _horizontal_gaps(row)
+    slide_index = _runtime_slide_index(row)
+    group_id = f"slide{runtime_slide_number}_inline_label_group{group_index}"
+    return {
+        "group_id": group_id,
+        "slide_index": slide_index,
+        "slide_number": runtime_slide_number,
+        "layout_type": "inline_label_group",
+        "flow": "horizontal",
+        "item_slot_ids": [str(slot.get("slot_id")) for slot in row],
+        "item_shape_ids": [str(slot.get("shape_id")) for slot in row],
+        "gap_emu": _median_int(gaps),
+        "min_gap_emu": min(gaps),
+        "wrap_allowed": False,
+        "linked_background_by_item": linked_background_by_item,
+    }
+
+
+def _inline_label_row_geometry_is_confident(row: tuple[dict, ...]) -> bool:
+    boxes = tuple(box for slot in row if (box := _bbox_tuple(slot)) is not None)
+    if len(boxes) != len(row):
+        return False
+
+    widths = [width for _x, _y, width, _height in boxes]
+    heights = [height for _x, _y, _width, height in boxes]
+    if min(widths, default=0) <= 0 or min(heights, default=0) <= 0:
+        return False
+    if min(heights) / max(heights) < _INLINE_LABEL_GROUP_MIN_HEIGHT_SIMILARITY:
+        return False
+    if max(widths) / min(widths) > _INLINE_LABEL_GROUP_MAX_WIDTH_RATIO:
+        return False
+
+    centers_y = [y + (height / 2) for _x, y, _width, height in boxes]
+    if (
+        max(centers_y) - min(centers_y)
+        > max(heights) * _INLINE_LABEL_GROUP_CENTER_Y_TOLERANCE_RATIO
+    ):
+        return False
+
+    gaps = _horizontal_gaps(row)
+    if len(gaps) != len(row) - 1:
+        return False
+    if min(gaps) < 0:
+        return False
+
+    median_height = _median_int(heights)
+    median_width = _median_int(widths)
+    max_allowed_gap = max(
+        int(median_height * _INLINE_LABEL_GROUP_MAX_GAP_HEIGHT_RATIO),
+        int(median_width * _INLINE_LABEL_GROUP_MAX_GAP_WIDTH_RATIO),
+    )
+    if max(gaps) > max_allowed_gap:
+        return False
+    if min(gaps) > 0 and max(gaps) / min(gaps) > _INLINE_LABEL_GROUP_MAX_GAP_VARIANCE_RATIO:
+        return False
+    if min(gaps) == 0 and max(gaps) > median_height:
+        return False
+    return True
+
+
+def _horizontal_gaps(row: tuple[dict, ...]) -> list[int]:
+    gaps: list[int] = []
+    sorted_row = _sort_slots_by_position(row)
+    for left, right in zip(sorted_row, sorted_row[1:]):
+        left_box = _bbox_tuple(left)
+        right_box = _bbox_tuple(right)
+        if left_box is None or right_box is None:
+            continue
+        left_x, _left_y, left_w, _left_h = left_box
+        right_x, _right_y, _right_w, _right_h = right_box
+        gaps.append(right_x - (left_x + left_w))
+    return gaps
+
+
+def _linked_background_by_item(
+    row: tuple[dict, ...],
+    item_backgrounds_by_slot_id: dict[str, dict],
+) -> dict[str, dict]:
+    linked: dict[str, dict] = {}
+    for slot in row:
+        slot_id = str(slot.get("slot_id") or "")
+        item_shape_id = str(slot.get("shape_id") or "")
+        if not slot_id or not item_shape_id:
+            continue
+        background = item_backgrounds_by_slot_id.get(slot_id)
+        if background is None:
+            continue
+        linked[item_shape_id] = {
+            "slot_id": slot_id,
+            "background_shape_id": background.get("shape_id"),
+            "background_shape_name": background.get("shape_name"),
+            "match_score": background.get("match_score"),
+            "resize_linked": background.get("resize_linked") is True,
+        }
+    return linked
+
+
+def _inline_label_backgrounds_are_confident(
+    item_count: int,
+    linked_background_by_item: dict[str, dict],
+) -> bool:
+    linked_count = len(linked_background_by_item)
+    if linked_count < _INLINE_LABEL_GROUP_MIN_BACKGROUND_ITEMS:
+        return False
+    return linked_count == item_count
+
+
+def _median_int(values: list[int]) -> int:
+    sorted_values = sorted(values)
+    if not sorted_values:
+        return 0
+    middle = len(sorted_values) // 2
+    if len(sorted_values) % 2 == 1:
+        return sorted_values[middle]
+    return round((sorted_values[middle - 1] + sorted_values[middle]) / 2)
 
 
 def _shape_inference_base(

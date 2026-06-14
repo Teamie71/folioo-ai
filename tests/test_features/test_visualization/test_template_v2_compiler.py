@@ -200,6 +200,52 @@ def test_v2_payload_writer_enriches_item_background_and_keeps_container_referenc
     assert payloads.reference["shape_inferences"][1]["allowed_actions"] == []
 
 
+def test_v2_payload_writer_maps_layout_group_by_item_shape_ids() -> None:
+    """layout group이 item_shape_ids만 제공해도 slot에 group metadata를 연결한다."""
+    payloads = build_template_v2_payloads(
+        "ppt-v3",
+        extraction=TemplateV2Extraction(
+            slots=(
+                {
+                    "slot_id": "slide2_shape20",
+                    "shape_id": "20",
+                    "kind": "text",
+                    "editable": True,
+                    "required": True,
+                    "placeholder_text": "Python",
+                },
+                {
+                    "slot_id": "slide2_shape22",
+                    "shape_id": "22",
+                    "kind": "text",
+                    "editable": True,
+                    "required": True,
+                    "placeholder_text": "FastAPI",
+                },
+            ),
+            layout_groups=(
+                {
+                    "group_id": "slide2_inline_label_group1",
+                    "layout_type": "inline_label_group",
+                    "flow": "horizontal",
+                    "item_shape_ids": ["20", "22"],
+                    "gap_emu": 50,
+                    "min_gap_emu": 50,
+                    "wrap_allowed": False,
+                },
+            ),
+        ),
+    )
+
+    assert [slot["layout_group_id"] for slot in payloads.metadata["slots"]] == [
+        "slide2_inline_label_group1",
+        "slide2_inline_label_group1",
+    ]
+    assert {slot["fit_policy"] for slot in payloads.metadata["slots"]} == {"resize_label"}
+    assert all(slot["nowrap"] is True for slot in payloads.metadata["slots"])
+    assert payloads.metadata["layout_groups"][0]["item_shape_ids"] == ["20", "22"]
+
+
 def test_v2_payload_writer_ignores_invalid_or_duplicate_item_backgrounds() -> None:
     """검증되지 않은 item_background는 slot 계약으로 승격하지 않는다."""
     payloads = build_template_v2_payloads(
@@ -734,6 +780,427 @@ def test_compile_template_v2_links_origin_style_chip_item_backgrounds(
         "slide2_shape22",
     }
     assert {inference["shape_id"] for inference in item_inferences} == {"19", "21"}
+
+
+def test_compile_template_v2_groups_origin_style_inline_label_chips(
+    tmp_path: Path,
+) -> None:
+    """첫 runtime slide 하단 chip row를 하나의 inline_label_group으로 묶는다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                "".join(
+                    (
+                        _shape_without_text_xml(
+                            19,
+                            "OpenAI chip background",
+                            x=90,
+                            y=790,
+                            width=320,
+                            height=120,
+                        ),
+                        _shape_xml(
+                            20,
+                            "OpenAI chip",
+                            (_run_xml("OpenAI API", color="FF0000"),),
+                            x=100,
+                            y=800,
+                            width=300,
+                            height=100,
+                        ),
+                        _shape_without_text_xml(
+                            21,
+                            "FastAPI chip background",
+                            x=440,
+                            y=790,
+                            width=290,
+                            height=120,
+                        ),
+                        _shape_xml(
+                            22,
+                            "FastAPI chip",
+                            (_run_xml("FastAPI", color="FF0000"),),
+                            x=450,
+                            y=800,
+                            width=270,
+                            height=100,
+                        ),
+                        _shape_without_text_xml(
+                            23,
+                            "LangGraph chip background",
+                            x=770,
+                            y=790,
+                            width=350,
+                            height=120,
+                        ),
+                        _shape_xml(
+                            24,
+                            "LangGraph chip",
+                            (_run_xml("LangGraph", color="FF0000"),),
+                            x=780,
+                            y=800,
+                            width=330,
+                            height=100,
+                        ),
+                    )
+                ),
+            ),
+            _slide_xml(
+                3,
+                "".join(
+                    (
+                        _shape_xml(
+                            30,
+                            "OpenAI example",
+                            (_run_xml("OpenAI API", color="123456"),),
+                            x=100,
+                            y=800,
+                            width=300,
+                            height=100,
+                        ),
+                        _shape_xml(
+                            31,
+                            "FastAPI example",
+                            (_run_xml("FastAPI", color="123456"),),
+                            x=450,
+                            y=800,
+                            width=270,
+                            height=100,
+                        ),
+                        _shape_xml(
+                            32,
+                            "LangGraph example",
+                            (_run_xml("LangGraph", color="123456"),),
+                            x=780,
+                            y=800,
+                            width=330,
+                            height=100,
+                        ),
+                    )
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    metadata = read_json_payload(result.meta_path)
+    assert len(metadata["layout_groups"]) == 1
+    group = metadata["layout_groups"][0]
+    assert group["group_id"] == "slide2_inline_label_group1"
+    assert group["layout_type"] == "inline_label_group"
+    assert group["flow"] == "horizontal"
+    assert group["item_slot_ids"] == ["slide2_shape20", "slide2_shape22", "slide2_shape24"]
+    assert group["item_shape_ids"] == ["20", "22", "24"]
+    assert group["gap_emu"] == 55
+    assert group["min_gap_emu"] == 50
+    assert group["wrap_allowed"] is False
+
+    slots_by_id = {slot["slot_id"]: slot for slot in metadata["slots"]}
+    for slot_id in group["item_slot_ids"]:
+        slot = slots_by_id[slot_id]
+        assert slot["layout_group_id"] == "slide2_inline_label_group1"
+        assert slot["fit_policy"] == "resize_label"
+        assert slot["max_lines"] == 1
+        assert slot["nowrap"] is True
+        assert "layout_type" not in slot
+
+
+def test_compile_template_v2_records_inline_label_group_linked_backgrounds(
+    tmp_path: Path,
+) -> None:
+    """inline_label_group metadata에 item과 linked background 관계를 함께 기록한다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                "".join(
+                    (
+                        _shape_without_text_xml(
+                            19,
+                            "Python chip background",
+                            x=90,
+                            y=790,
+                            width=260,
+                            height=120,
+                        ),
+                        _shape_xml(
+                            20,
+                            "Python chip",
+                            (_run_xml("Python", color="FF0000"),),
+                            x=100,
+                            y=800,
+                            width=240,
+                            height=100,
+                        ),
+                        _shape_without_text_xml(
+                            21,
+                            "FastAPI chip background",
+                            x=390,
+                            y=790,
+                            width=290,
+                            height=120,
+                        ),
+                        _shape_xml(
+                            22,
+                            "FastAPI chip",
+                            (_run_xml("FastAPI", color="FF0000"),),
+                            x=400,
+                            y=800,
+                            width=270,
+                            height=100,
+                        ),
+                        _shape_without_text_xml(
+                            23,
+                            "Postgres chip background",
+                            x=720,
+                            y=790,
+                            width=330,
+                            height=120,
+                        ),
+                        _shape_xml(
+                            24,
+                            "Postgres chip",
+                            (_run_xml("Postgres", color="FF0000"),),
+                            x=730,
+                            y=800,
+                            width=310,
+                            height=100,
+                        ),
+                    )
+                ),
+            ),
+            _slide_xml(
+                3,
+                "".join(
+                    (
+                        _shape_xml(
+                            30,
+                            "Python example",
+                            (_run_xml("Python", color="123456"),),
+                            x=100,
+                            y=800,
+                            width=240,
+                            height=100,
+                        ),
+                        _shape_xml(
+                            31,
+                            "FastAPI example",
+                            (_run_xml("FastAPI", color="123456"),),
+                            x=400,
+                            y=800,
+                            width=270,
+                            height=100,
+                        ),
+                        _shape_xml(
+                            32,
+                            "Postgres example",
+                            (_run_xml("Postgres", color="123456"),),
+                            x=730,
+                            y=800,
+                            width=310,
+                            height=100,
+                        ),
+                    )
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    metadata = read_json_payload(result.meta_path)
+    group = metadata["layout_groups"][0]
+    assert group["linked_background_by_item"] == {
+        "20": {
+            "slot_id": "slide2_shape20",
+            "background_shape_id": "19",
+            "background_shape_name": "Python chip background",
+            "match_score": group["linked_background_by_item"]["20"]["match_score"],
+            "resize_linked": True,
+        },
+        "22": {
+            "slot_id": "slide2_shape22",
+            "background_shape_id": "21",
+            "background_shape_name": "FastAPI chip background",
+            "match_score": group["linked_background_by_item"]["22"]["match_score"],
+            "resize_linked": True,
+        },
+        "24": {
+            "slot_id": "slide2_shape24",
+            "background_shape_id": "23",
+            "background_shape_name": "Postgres chip background",
+            "match_score": group["linked_background_by_item"]["24"]["match_score"],
+            "resize_linked": True,
+        },
+    }
+
+
+def test_compile_template_v2_requires_all_inline_label_backgrounds(
+    tmp_path: Path,
+) -> None:
+    """일부 item_background가 빠진 chip row는 group으로 승격하지 않는다."""
+    chip_specs = (
+        (19, 20, "Python", 90, 100, 240),
+        (21, 22, "FastAPI", 360, 370, 260),
+        (23, 24, "Postgres", 650, 660, 280),
+        (None, 25, "LangGraph", 960, 970, 300),
+    )
+    runtime_shapes: list[str] = []
+    example_shapes: list[str] = []
+    for index, (background_id, shape_id, text, background_x, text_x, width) in enumerate(
+        chip_specs,
+        start=1,
+    ):
+        if background_id is not None:
+            runtime_shapes.append(
+                _shape_without_text_xml(
+                    background_id,
+                    f"{text} chip background",
+                    x=background_x,
+                    y=790,
+                    width=width + 20,
+                    height=120,
+                )
+            )
+        runtime_shapes.append(
+            _shape_xml(
+                shape_id,
+                f"{text} chip",
+                (_run_xml(text, color="FF0000"),),
+                x=text_x,
+                y=800,
+                width=width,
+                height=100,
+            )
+        )
+        example_shapes.append(
+            _shape_xml(
+                30 + index,
+                f"{text} example",
+                (_run_xml(text, color="123456"),),
+                x=text_x,
+                y=800,
+                width=width,
+                height=100,
+            )
+        )
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(2, "".join(runtime_shapes)),
+            _slide_xml(3, "".join(example_shapes)),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    assert any("background 신뢰도가 부족" in warning for warning in result.warnings)
+    metadata = read_json_payload(result.meta_path)
+    assert metadata["layout_groups"] == []
+    assert all("layout_group_id" not in slot for slot in metadata["slots"])
+
+
+def test_compile_template_v2_keeps_ambiguous_inline_label_candidate_as_basic_text(
+    tmp_path: Path,
+) -> None:
+    """background 신뢰도가 없는 짧은 row는 group으로 강제 분류하지 않는다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                "".join(
+                    (
+                        _shape_xml(
+                            20,
+                            "First short text",
+                            (_run_xml("첫째", color="FF0000"),),
+                            x=100,
+                            y=800,
+                            width=160,
+                            height=80,
+                        ),
+                        _shape_xml(
+                            21,
+                            "Second short text",
+                            (_run_xml("둘째", color="FF0000"),),
+                            x=290,
+                            y=800,
+                            width=160,
+                            height=80,
+                        ),
+                        _shape_xml(
+                            22,
+                            "Third short text",
+                            (_run_xml("셋째", color="FF0000"),),
+                            x=480,
+                            y=800,
+                            width=160,
+                            height=80,
+                        ),
+                    )
+                ),
+            ),
+            _slide_xml(
+                3,
+                "".join(
+                    (
+                        _shape_xml(
+                            30,
+                            "First example",
+                            (_run_xml("첫째 예시", color="123456"),),
+                            x=100,
+                            y=800,
+                            width=160,
+                            height=80,
+                        ),
+                        _shape_xml(
+                            31,
+                            "Second example",
+                            (_run_xml("둘째 예시", color="123456"),),
+                            x=290,
+                            y=800,
+                            width=160,
+                            height=80,
+                        ),
+                        _shape_xml(
+                            32,
+                            "Third example",
+                            (_run_xml("셋째 예시", color="123456"),),
+                            x=480,
+                            y=800,
+                            width=160,
+                            height=80,
+                        ),
+                    )
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    assert any("background 신뢰도가 부족" in warning for warning in result.warnings)
+    metadata = read_json_payload(result.meta_path)
+    assert metadata["layout_groups"] == []
+    assert all("layout_group_id" not in slot for slot in metadata["slots"])
+    assert {slot["fit_policy"] for slot in metadata["slots"]} == {"basic_text_area"}
 
 
 def test_compile_template_v2_records_large_card_as_container_shape(
