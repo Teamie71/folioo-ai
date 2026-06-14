@@ -45,6 +45,7 @@ def test_v2_payload_writer_generates_deterministic_skeleton(tmp_path: Path) -> N
 """
     expected_reference = """{
   "schema_version": 2,
+  "shape_inferences": [],
   "shape_matches": [],
   "slide_pairs": [],
   "template_id": "ppt-v3"
@@ -120,6 +121,156 @@ def test_v2_payload_writer_enriches_slot_capacity_deterministically() -> None:
     assert "role_hint" not in payloads.metadata["slots"][0]
 
 
+def test_v2_payload_writer_enriches_item_background_and_keeps_container_reference_only() -> None:
+    """item_background만 slot에 병합하고 container_shape는 reference 참고 정보로만 둔다."""
+    payloads = build_template_v2_payloads(
+        "ppt-v3",
+        extraction=TemplateV2Extraction(
+            slots=(
+                {
+                    "slot_id": "slide2_shape20",
+                    "shape_id": "20",
+                    "kind": "text",
+                    "editable": True,
+                    "required": True,
+                    "placeholder_text": "OpenAI API",
+                    "marker_color": "#FF0000",
+                },
+                {
+                    "slot_id": "slide2_shape21",
+                    "shape_id": "21",
+                    "kind": "text",
+                    "editable": True,
+                    "required": True,
+                    "placeholder_text": "FastAPI",
+                    "marker_color": "#FF0000",
+                },
+            ),
+            shape_inferences=(
+                {
+                    "inference_type": "item_background",
+                    "slot_id": "slide2_shape20",
+                    "slot_shape_id": "20",
+                    "runtime_slide_index": 1,
+                    "runtime_slide_number": 2,
+                    "shape_id": "19",
+                    "shape_name": "Chip background",
+                    "x_emu": 90,
+                    "y_emu": 190,
+                    "w_emu": 320,
+                    "h_emu": 420,
+                    "match_score": 0.98,
+                    "resize_linked": True,
+                },
+                {
+                    "inference_type": "container_shape",
+                    "runtime_slide_index": 1,
+                    "runtime_slide_number": 2,
+                    "shape_id": "18",
+                    "shape_name": "Card background",
+                    "x_emu": 50,
+                    "y_emu": 80,
+                    "w_emu": 900,
+                    "h_emu": 400,
+                    "contained_slot_ids": ["slide2_shape20", "slide2_shape21"],
+                    "match_score": 1.0,
+                    "resize_linked": False,
+                    "allowed_actions": [],
+                },
+            ),
+        ),
+    )
+
+    first_slot = payloads.metadata["slots"][0]
+    assert first_slot["item_background"] == {
+        "shape_id": "19",
+        "shape_name": "Chip background",
+        "slide_index": 1,
+        "slide_number": 2,
+        "x_emu": 90,
+        "y_emu": 190,
+        "w_emu": 320,
+        "h_emu": 420,
+        "match_score": 0.98,
+        "resize_linked": True,
+    }
+    assert "item_background" not in payloads.metadata["slots"][1]
+    assert payloads.reference["shape_inferences"][1]["inference_type"] == "container_shape"
+    assert payloads.reference["shape_inferences"][1]["resize_linked"] is False
+    assert payloads.reference["shape_inferences"][1]["allowed_actions"] == []
+
+
+def test_v2_payload_writer_ignores_invalid_or_duplicate_item_backgrounds() -> None:
+    """검증되지 않은 item_background는 slot 계약으로 승격하지 않는다."""
+    payloads = build_template_v2_payloads(
+        "ppt-v3",
+        extraction=TemplateV2Extraction(
+            slots=(
+                {
+                    "slot_id": "slide2_shape20",
+                    "shape_id": "20",
+                    "kind": "text",
+                    "editable": True,
+                    "required": True,
+                    "placeholder_text": "OpenAI API",
+                },
+                {
+                    "slot_id": "slide2_shape21",
+                    "shape_id": "21",
+                    "kind": "text",
+                    "editable": True,
+                    "required": True,
+                    "placeholder_text": "FastAPI",
+                },
+            ),
+            shape_inferences=(
+                {
+                    "inference_type": "item_background",
+                    "slot_id": "slide2_shape20",
+                    "runtime_slide_index": 1,
+                    "runtime_slide_number": 2,
+                    "shape_id": "19",
+                    "x_emu": 90,
+                    "y_emu": 190,
+                    "w_emu": 320,
+                    "h_emu": 120,
+                    "match_score": 0.98,
+                    "resize_linked": False,
+                },
+                {
+                    "inference_type": "item_background",
+                    "slot_id": "slide2_shape21",
+                    "runtime_slide_index": 1,
+                    "runtime_slide_number": 2,
+                    "shape_id": "22",
+                    "x_emu": 440,
+                    "y_emu": 190,
+                    "w_emu": 290,
+                    "h_emu": 120,
+                    "match_score": 0.95,
+                    "resize_linked": True,
+                },
+                {
+                    "inference_type": "item_background",
+                    "slot_id": "slide2_shape21",
+                    "runtime_slide_index": 1,
+                    "runtime_slide_number": 2,
+                    "shape_id": "23",
+                    "x_emu": 438,
+                    "y_emu": 188,
+                    "w_emu": 294,
+                    "h_emu": 124,
+                    "match_score": 0.96,
+                    "resize_linked": True,
+                },
+            ),
+        ),
+    )
+
+    assert all("item_background" not in slot for slot in payloads.metadata["slots"])
+    assert len(payloads.reference["shape_inferences"]) == 3
+
+
 def test_v2_payload_writer_preserves_non_text_allowed_action_defaults() -> None:
     """capacity 확장 후에도 chart/remove/decorative action 계약은 유지한다."""
     payloads = build_template_v2_payloads(
@@ -180,6 +331,7 @@ def test_compile_template_v2_writes_meta_and_reference_json(tmp_path: Path) -> N
         "template_id": "ppt-v3",
         "slide_pairs": [],
         "shape_matches": [],
+        "shape_inferences": [],
     }
 
 
@@ -480,6 +632,380 @@ def test_compile_template_v2_preserves_marker_soft_line_breaks(tmp_path: Path) -
     assert metadata["slots"][0]["placeholder_text"] == "첫 줄\n둘째 줄"
 
 
+def test_compile_template_v2_links_origin_style_chip_item_backgrounds(
+    tmp_path: Path,
+) -> None:
+    """origin 스타일 chip row에서 각 text slot을 1:1 item_background와 연결한다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                "".join(
+                    (
+                        _shape_without_text_xml(
+                            19,
+                            "OpenAI chip background",
+                            x=90,
+                            y=190,
+                            width=320,
+                            height=120,
+                        ),
+                        _shape_xml(
+                            20,
+                            "OpenAI chip",
+                            (_run_xml("OpenAI API", color="FF0000"),),
+                            x=100,
+                            y=200,
+                            width=300,
+                            height=100,
+                        ),
+                        _shape_without_text_xml(
+                            21,
+                            "FastAPI chip background",
+                            x=440,
+                            y=190,
+                            width=290,
+                            height=120,
+                        ),
+                        _shape_xml(
+                            22,
+                            "FastAPI chip",
+                            (_run_xml("FastAPI", color="FF0000"),),
+                            x=450,
+                            y=200,
+                            width=270,
+                            height=100,
+                        ),
+                    )
+                ),
+            ),
+            _slide_xml(
+                3,
+                "".join(
+                    (
+                        _shape_xml(
+                            30,
+                            "OpenAI example",
+                            (_run_xml("OpenAI API", color="123456"),),
+                            x=100,
+                            y=200,
+                            width=300,
+                            height=100,
+                        ),
+                        _shape_xml(
+                            31,
+                            "FastAPI example",
+                            (_run_xml("FastAPI", color="123456"),),
+                            x=450,
+                            y=200,
+                            width=270,
+                            height=100,
+                        ),
+                    )
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    metadata = read_json_payload(result.meta_path)
+    backgrounds_by_slot_id = {
+        slot["slot_id"]: slot["item_background"] for slot in metadata["slots"]
+    }
+    assert backgrounds_by_slot_id["slide2_shape20"]["shape_id"] == "19"
+    assert backgrounds_by_slot_id["slide2_shape22"]["shape_id"] == "21"
+    assert all(
+        background["resize_linked"] is True for background in backgrounds_by_slot_id.values()
+    )
+
+    reference = read_json_payload(result.reference_path)
+    item_inferences = [
+        inference
+        for inference in reference["shape_inferences"]
+        if inference["inference_type"] == "item_background"
+    ]
+    assert {inference["slot_id"] for inference in item_inferences} == {
+        "slide2_shape20",
+        "slide2_shape22",
+    }
+    assert {inference["shape_id"] for inference in item_inferences} == {"19", "21"}
+
+
+def test_compile_template_v2_records_large_card_as_container_shape(
+    tmp_path: Path,
+) -> None:
+    """여러 text slot을 담는 큰 배경은 container_shape로만 기록한다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                "".join(
+                    (
+                        _shape_without_text_xml(
+                            19,
+                            "Card background",
+                            x=50,
+                            y=50,
+                            width=500,
+                            height=220,
+                        ),
+                        _shape_xml(
+                            20,
+                            "Card title",
+                            (_run_xml("프로젝트명", color="FF0000"),),
+                            x=100,
+                            y=100,
+                            width=120,
+                            height=40,
+                        ),
+                        _shape_xml(
+                            21,
+                            "Card description",
+                            (_run_xml("프로젝트 설명", color="FF0000"),),
+                            x=100,
+                            y=170,
+                            width=200,
+                            height=40,
+                        ),
+                    )
+                ),
+            ),
+            _slide_xml(
+                3,
+                "".join(
+                    (
+                        _shape_xml(
+                            30,
+                            "Title example",
+                            (_run_xml("folioo", color="123456"),),
+                            x=100,
+                            y=100,
+                            width=120,
+                            height=40,
+                        ),
+                        _shape_xml(
+                            31,
+                            "Description example",
+                            (_run_xml("포트폴리오 생성", color="123456"),),
+                            x=100,
+                            y=170,
+                            width=200,
+                            height=40,
+                        ),
+                    )
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    metadata = read_json_payload(result.meta_path)
+    assert all("item_background" not in slot for slot in metadata["slots"])
+
+    reference = read_json_payload(result.reference_path)
+    assert reference["shape_inferences"] == [
+        {
+            "allowed_actions": [],
+            "contained_slot_ids": ["slide2_shape20", "slide2_shape21"],
+            "h_emu": 220,
+            "inference_type": "container_shape",
+            "match_score": 1.0,
+            "resize_linked": False,
+            "runtime_slide_index": 1,
+            "runtime_slide_number": 2,
+            "shape_id": "19",
+            "shape_name": "Card background",
+            "w_emu": 500,
+            "x_emu": 50,
+            "y_emu": 50,
+        }
+    ]
+
+
+def test_compile_template_v2_ignores_slide_sized_background_as_container_shape(
+    tmp_path: Path,
+) -> None:
+    """슬라이드 전체 배경 수준의 과대 shape는 container_shape로 기록하지 않는다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                "".join(
+                    (
+                        _shape_without_text_xml(
+                            19,
+                            "Slide background",
+                            x=0,
+                            y=0,
+                            width=2000,
+                            height=1000,
+                        ),
+                        _shape_xml(
+                            20,
+                            "Card title",
+                            (_run_xml("프로젝트명", color="FF0000"),),
+                            x=100,
+                            y=100,
+                            width=120,
+                            height=40,
+                        ),
+                        _shape_xml(
+                            21,
+                            "Card description",
+                            (_run_xml("프로젝트 설명", color="FF0000"),),
+                            x=100,
+                            y=170,
+                            width=200,
+                            height=40,
+                        ),
+                    )
+                ),
+            ),
+            _slide_xml(
+                3,
+                "".join(
+                    (
+                        _shape_xml(
+                            30,
+                            "Title example",
+                            (_run_xml("folioo", color="123456"),),
+                            x=100,
+                            y=100,
+                            width=120,
+                            height=40,
+                        ),
+                        _shape_xml(
+                            31,
+                            "Description example",
+                            (_run_xml("포트폴리오 생성", color="123456"),),
+                            x=100,
+                            y=170,
+                            width=200,
+                            height=40,
+                        ),
+                    )
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    reference = read_json_payload(result.reference_path)
+    assert reference["shape_inferences"] == []
+
+
+def test_compile_template_v2_warns_and_skips_ambiguous_item_background(
+    tmp_path: Path,
+) -> None:
+    """한 background가 여러 slot과 겹치면 억지로 item_background를 연결하지 않는다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                "".join(
+                    (
+                        _shape_without_text_xml(
+                            19,
+                            "Ambiguous chip background",
+                            x=0,
+                            y=0,
+                            width=150,
+                            height=100,
+                        ),
+                        _shape_xml(
+                            20,
+                            "First chip",
+                            (_run_xml("첫째", color="FF0000"),),
+                            x=10,
+                            y=0,
+                            width=100,
+                            height=100,
+                        ),
+                        _shape_xml(
+                            21,
+                            "Second chip",
+                            (_run_xml("둘째", color="FF0000"),),
+                            x=80,
+                            y=0,
+                            width=100,
+                            height=100,
+                        ),
+                    )
+                ),
+            ),
+            _slide_xml(
+                3,
+                "".join(
+                    (
+                        _shape_xml(
+                            30,
+                            "First example",
+                            (_run_xml("첫째 예시", color="123456"),),
+                            x=10,
+                            y=0,
+                            width=100,
+                            height=100,
+                        ),
+                        _shape_xml(
+                            31,
+                            "Second example",
+                            (_run_xml("둘째 예시", color="123456"),),
+                            x=80,
+                            y=0,
+                            width=100,
+                            height=100,
+                        ),
+                    )
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    assert any("여러 text slot" in warning for warning in result.warnings)
+    metadata = read_json_payload(result.meta_path)
+    assert all("item_background" not in slot for slot in metadata["slots"])
+
+    reference = read_json_payload(result.reference_path)
+    assert reference["shape_inferences"] == [
+        {
+            "allowed_actions": [],
+            "candidate_slot_ids": ["slide2_shape20", "slide2_shape21"],
+            "h_emu": 100,
+            "inference_type": "ambiguous_item_background",
+            "match_score": reference["shape_inferences"][0]["match_score"],
+            "resize_linked": False,
+            "runtime_slide_index": 1,
+            "runtime_slide_number": 2,
+            "shape_id": "19",
+            "shape_name": "Ambiguous chip background",
+            "w_emu": 150,
+            "x_emu": 0,
+            "y_emu": 0,
+        }
+    ]
+
+
 def test_compile_template_cli_help_returns_zero(capsys: pytest.CaptureFixture[str]) -> None:
     """compile_template.py --help 가 argparse help를 출력하고 0으로 종료한다."""
     with pytest.raises(SystemExit) as exc_info:
@@ -753,6 +1279,29 @@ def _shape_xml(
         "<p:txBody><a:bodyPr/><a:lstStyle/><a:p>"
         f"{''.join(runs_xml)}"
         "</a:p></p:txBody>"
+        "</p:sp>"
+    )
+
+
+def _shape_without_text_xml(
+    shape_id: int,
+    name: str,
+    *,
+    x: int = 0,
+    y: int = 0,
+    width: int = 100,
+    height: int = 100,
+) -> str:
+    return (
+        "<p:sp>"
+        "<p:nvSpPr>"
+        f'<p:cNvPr id="{shape_id}" name="{escape(name)}"/>'
+        "<p:cNvSpPr/><p:nvPr/>"
+        "</p:nvSpPr>"
+        "<p:spPr>"
+        f'<a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{width}" cy="{height}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+        "</p:spPr>"
         "</p:sp>"
     )
 

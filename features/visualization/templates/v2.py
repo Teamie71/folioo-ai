@@ -25,7 +25,7 @@ class TemplateV2Extraction:
     """v2 compiler 추출 결과.
 
     PPTX에서 추출한 runtime slide, editable marker slot, reference skeleton 정보를 담는다.
-    reference shape 매칭과 layout group 추론은 후속 task 가 이 구조를 확장한다.
+    reference shape 매칭과 layout group 추론 결과는 metadata/reference payload 로 분리된다.
     """
 
     runtime_slides: Sequence[Mapping[str, Any]] = ()
@@ -33,6 +33,7 @@ class TemplateV2Extraction:
     layout_groups: Sequence[Mapping[str, Any]] = ()
     slide_pairs: Sequence[Mapping[str, Any]] = ()
     shape_matches: Sequence[Mapping[str, Any]] = ()
+    shape_inferences: Sequence[Mapping[str, Any]] = ()
     errors: Sequence[str] = ()
     warnings: Sequence[str] = ()
 
@@ -57,7 +58,11 @@ def build_template_v2_payloads(
         "template_id": normalized_template_id,
         "runtime_slides": _json_array(source.runtime_slides, "runtime_slides"),
         "slots": _json_array(
-            _enrich_slot_descriptors(source.slots, source.shape_matches),
+            _enrich_slot_descriptors(
+                source.slots,
+                source.shape_matches,
+                source.shape_inferences,
+            ),
             "slots",
         ),
         "layout_groups": _json_array(source.layout_groups, "layout_groups"),
@@ -67,6 +72,7 @@ def build_template_v2_payloads(
         "template_id": normalized_template_id,
         "slide_pairs": _json_array(source.slide_pairs, "slide_pairs"),
         "shape_matches": _json_array(source.shape_matches, "shape_matches"),
+        "shape_inferences": _json_array(source.shape_inferences, "shape_inferences"),
     }
     return TemplateV2Payloads(metadata=metadata, reference=reference)
 
@@ -156,12 +162,15 @@ def _json_array(items: Sequence[Mapping[str, Any]], field_name: str) -> list[Any
 def _enrich_slot_descriptors(
     slots: Sequence[Mapping[str, Any]],
     shape_matches: Sequence[Mapping[str, Any]],
+    shape_inferences: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     matches_by_slot_id = _shape_matches_by_slot_id(shape_matches)
+    item_backgrounds_by_slot_id = _item_backgrounds_by_slot_id(shape_inferences)
     return [
         _enrich_slot_descriptor(
             slot,
             matches_by_slot_id.get(str(slot.get("slot_id"))),
+            item_backgrounds_by_slot_id.get(str(slot.get("slot_id"))),
         )
         for slot in slots
     ]
@@ -181,9 +190,55 @@ def _shape_matches_by_slot_id(
     return matches_by_slot_id
 
 
+def _item_backgrounds_by_slot_id(
+    shape_inferences: Sequence[Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]]:
+    candidates_by_slot_id: dict[str, list[Mapping[str, Any]]] = {}
+    for inference in shape_inferences:
+        if not isinstance(inference, Mapping):
+            continue
+        if inference.get("inference_type") != "item_background":
+            continue
+        if not _valid_item_background_inference(inference):
+            continue
+        slot_id = inference.get("slot_id")
+        if slot_id is None:
+            continue
+        candidates_by_slot_id.setdefault(str(slot_id), []).append(inference)
+    return {
+        slot_id: candidates[0]
+        for slot_id, candidates in candidates_by_slot_id.items()
+        if len(candidates) == 1
+    }
+
+
+def _valid_item_background_inference(inference: Mapping[str, Any]) -> bool:
+    if inference.get("resize_linked") is not True:
+        return False
+    if not str(inference.get("shape_id") or "").strip():
+        return False
+    if not all(_json_number(inference.get(field)) is not None for field in _ITEM_BACKGROUND_FIELDS):
+        return False
+    width = _json_number(inference.get("w_emu"))
+    height = _json_number(inference.get("h_emu"))
+    return width is not None and height is not None and width > 0 and height > 0
+
+
+_ITEM_BACKGROUND_FIELDS = (
+    "runtime_slide_index",
+    "runtime_slide_number",
+    "x_emu",
+    "y_emu",
+    "w_emu",
+    "h_emu",
+    "match_score",
+)
+
+
 def _enrich_slot_descriptor(
     slot: Mapping[str, Any],
     shape_match: Mapping[str, Any] | None,
+    item_background: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     enriched = dict(slot)
     if _is_editable_text_slot(enriched):
@@ -191,10 +246,33 @@ def _enrich_slot_descriptor(
             for field_name in _REFERENCE_SLOT_FIELDS:
                 if field_name in shape_match:
                     enriched[field_name] = shape_match[field_name]
+        if item_background is not None:
+            enriched["item_background"] = _slot_item_background(item_background)
         _apply_text_capacity_defaults(enriched)
     elif not _has_allowed_actions(enriched.get("allowed_actions")):
         enriched["allowed_actions"] = _infer_allowed_actions(enriched)
     return enriched
+
+
+def _slot_item_background(item_background: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "shape_id": item_background.get("shape_id"),
+        "shape_name": item_background.get("shape_name"),
+        "slide_index": item_background.get("runtime_slide_index"),
+        "slide_number": item_background.get("runtime_slide_number"),
+        "x_emu": item_background.get("x_emu"),
+        "y_emu": item_background.get("y_emu"),
+        "w_emu": item_background.get("w_emu"),
+        "h_emu": item_background.get("h_emu"),
+        "match_score": item_background.get("match_score"),
+        "resize_linked": item_background.get("resize_linked") is True,
+    }
+
+
+def _json_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
 
 
 def _apply_text_capacity_defaults(slot: dict[str, Any]) -> None:
