@@ -4,7 +4,7 @@ phase: 1
 title: "템플릿 등록 파이프라인 스크립트 (오프라인 운영자/CI)"
 spec: "specs/phase-1/08-template-registration-pipeline.md"
 depends_on: ["1.04"]
-blocks: []
+blocks: ["2.01"]
 estimate: "M"
 status: "done"
 completed_at: "2026-05-27"

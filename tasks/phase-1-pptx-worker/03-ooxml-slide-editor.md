@@ -4,7 +4,7 @@ phase: 1
 title: "OOXML 슬라이드 편집 엔진 (SlideEditor)"
 spec: "specs/phase-1/03-ooxml-slide-editor.md"
 depends_on: []
-blocks: ["1.05", "1.06", "1.24"]
+blocks: ["1.05", "1.06", "1.24", "2.02", "2.11"]
 estimate: "M"
 status: "done"
 completed_at: "2026-05-26"
