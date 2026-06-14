@@ -46,244 +46,102 @@ OOXML 직접 편집 방식:
 | 공백 보존 | `xml:space="preserve"` |
 | 스마트 따옴표 | XML 엔티티 참조로 처리 |
 | 항목 수 불일치 | 텍스트만 비우지 말고 도형·이미지 등 Slot 전체 제거 |
-| 차트 | `<p:graphicFrame>` 의 차트 파트(`chartN.xml`) 캐시(`numCache`/`strCache`/`ptCount`/`c:f`)만 갱신 — 타입 고정·개수 가변, 임베디드 `.xlsx` 미동기 (§4.4.1, ADR-0003) |
+| 차트 | `<p:graphicFrame>` 의 차트 파트(`chartN.xml`) 캐시(`numCache`/`strCache`/`ptCount`/`c:f`)만 갱신 — 타입 고정·개수 가변, 임베디드 `.xlsx` 미동기 (§4.4.5, ADR-0003) |
 
 ### 4.4 슬라이드 XML 편집 구현
 
 > 식별자는 **`cNvPr/@id`** (PowerPoint 가 자동 부여하는 정수 ID) 를 사용한다.
 > 디자이너가 부여하는 `cNvPr/@name` 에는 의존하지 않는다 — `template-system.md` §3.7 자동 Slot 인식 참조.
-> 슬라이드 편집은 두 단계로 나뉜다:
+> 슬라이드 편집은 세 책임으로 나뉜다:
 >
 > 1. **`extract_slots()`** — 슬라이드 XML 을 스캔해 LLM 에 줄 Slot 디스크립터 생성
-> 2. **`apply_fills()`** — LLM 응답(shape_id → Fill) 을 받아 XML 에 적용
+> 2. **`apply_layout_actions()`** — 워커 내부 geometry action 을 OOXML 에 먼저 적용
+> 3. **`apply_fills()`** — `currentFills` 의 text/remove/chart fill 을 XML 에 적용
 >
-> 텍스트 도형(`<p:sp>`) 외에 **차트(`<p:graphicFrame>`)** 도 두 함수의 스캔 대상이다.
-> 차트 Slot 처리 규칙은 §4.4.1 참조 (ADR-0003).
+> 텍스트 도형(`<p:sp>`), 그림(`<p:pic>`), 차트(`<p:graphicFrame>`)는 모두
+> `cNvPr/@id` 로 식별한다. 차트 Slot 처리 규칙은 §4.4.5 참조 (ADR-0003).
 
-```python
-from defusedxml.minidom import parse
+#### 4.4.1 `layout_actions` 적용
 
+`layout_actions` 는 LLM 이 직접 만들지 않는다. LLM fill 결정 후 deterministic preflight 가
+v2 slot metadata(`layout_groups`, `fit_policy`, `item_background`)를 기준으로 계산하고,
+워커 내부에서 `apply_layout_actions()` 에 전달한다. 이 값은 Main callback payload 나
+DB 의 `currentFills` 에 넣지 않는다.
 
-class SlideEditor:
-    """
-    DrawingML 규칙을 준수하는 슬라이드 편집기.
+| action | 필수/주요 payload | 처리 규칙 |
+|---|---|---|
+| `resize_shape` | `shape_id`, `x_emu`/`y_emu`/`w_emu`/`h_emu` 중 하나 이상 | 대상 shape 의 OOXML `xfrm/off/ext` 값을 직접 변경 |
+| `resize_linked_shape` | `shape_id`, `linked_shape_ids`, text geometry, linked geometry | text shape 과 1:1 `item_background` shape 의 geometry 를 함께 변경 |
+| `relayout_row` | `group_id`, `items[]`, `min_gap_emu` | 같은 row 의 text item 과 linked background x 좌표를 함께 재배치 |
 
-    사전 Slot 명명 불필요 — 도형의 cNvPr/@id 와
-    위치·크기·현재 텍스트·폰트 크기로 LLM 이 동적으로 Slot 역할을 추론한다.
-    """
+적용 순서:
 
-    PML_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
-    DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+1. `layout_actions` 로 geometry 를 먼저 확정한다.
+2. 이후 `apply_fills()` 로 text/remove/chart fill 을 적용한다.
+3. pack/validate/PDF/preview 는 geometry 가 반영된 slide XML 을 기준으로 수행한다.
 
-    # ─────────────────────────────────────────────────────────────
-    # 1) Slot 자동 추출 (LLM 입력용)
-    # ─────────────────────────────────────────────────────────────
-    def extract_slots(self, slide_xml_path: str) -> list[dict]:
-        """
-        슬라이드 XML 에서 텍스트 도형(<p:sp>)과 차트(<p:graphicFrame>)를 스캔하여
-        LLM 에 줄 Slot 디스크립터 목록을 만든다.
+검증 규칙:
 
-        Returns:
-            [
-                {
-                    "shape_id": "3",                # cNvPr/@id (1차 식별자)
-                    "shape_name": "TextBox 2",      # 참고용 (디자이너가 바꿔뒀다면 힌트)
-                    "x_emu": 685800,                # 위치 / 크기 (EMU 단위)
-                    "y_emu": 457200,
-                    "w_emu": 7772400,
-                    "h_emu": 914400,
-                    "current_text": "여기에 프로젝트명",
-                    "is_title_placeholder": True,   # ph type 추론
-                    "font_size_pt": 40.0,           # 가장 첫 <a:rPr sz=...>
-                    "kind": "text" | "image" | "chart"
-                },
-                ...
-            ]
-        """
-        doc = parse(slide_xml_path)
-        sp_tree = doc.getElementsByTagNameNS(self.PML_NS, "spTree")[0]
-        slots: list[dict] = []
+- 알 수 없는 action, 존재하지 않는 `shape_id`, 잘못된 geometry payload 는 `ValueError` 로 실패한다.
+- `w_emu`, `h_emu` 는 양수여야 한다. `x_emu`, `y_emu` 는 OOXML 좌표이므로 음수 가능성을 열어둔다.
+- `relayout_row` 는 text box 뿐 아니라 linked background 를 포함한 visible bounds 기준으로
+  순서와 `min_gap_emu` 를 검증한다.
+- action 실패는 slide-level 오류로 격리하고, 잘못된 geometry 가 success 경로로 올라가지 않게 한다.
 
-        for sp in sp_tree.getElementsByTagNameNS(self.PML_NS, "sp"):
-            slot = self._describe_shape(sp)
-            if slot is not None:
-                slots.append(slot)
+#### 4.4.2 marker color replacement
 
-        for graphic_frame in sp_tree.getElementsByTagNameNS(
-            self.PML_NS, "graphicFrame"
-        ):
-            slot = self._describe_graphic_frame(graphic_frame, slide_xml_path)
-            if slot is not None:
-                slots.append(slot)
+runtime slide 의 `#FF0000` 은 editable marker 이지 최종 출력 색상이 아니다. `apply_fills()` 는
+text fill 을 적용할 때 slot metadata 또는 fill payload 의 `marker_color` 와 `output_text_color` 를
+사용한다.
 
-        return slots
+| 입력 | 처리 |
+|---|---|
+| `output_text_color` 있음 | 기준 run 의 색상을 해당 RGB 로 교체 |
+| `marker_color == "#FF0000"` 이고 `output_text_color` 없음 | fallback `#000000` 적용 후 warning 반환 |
+| 기준 run 이 이미 `#FF0000` 이고 metadata 없음 | marker 잔존 방지를 위해 fallback 적용 |
 
-    # ─────────────────────────────────────────────────────────────
-    # 2) LLM 결과 적용
-    # ─────────────────────────────────────────────────────────────
-    def apply_fills(self, slide_xml_path: str, fills: dict[str, dict]) -> None:
-        """
-        LLM 응답을 슬라이드 XML 에 적용한다.
+`marker_color` 와 `output_text_color` 는 `currentFills` 의 필수 필드가 아니다. 워커는
+`slot_metadata` 를 `shape_id` 로 조회해 fill 보다 낮은 우선순위로 병합한다. 따라서 Main backend 는
+기존 `currentFills` 계약을 변경하지 않아도 된다.
 
-        Args:
-            fills: {
-                "<shape_id>": {
-                    "action": "text" | "remove" | "chart",
-                    "text": "...",                  # action=text 시
-                    "font_size_override": 28,       # 선택 (pt)
-                    "is_title": True                # 선택 (b="1" 처리)
-                },
-                ...
-            }
-        """
-        doc = parse(slide_xml_path)
-        sp_tree = doc.getElementsByTagNameNS(self.PML_NS, "spTree")[0]
+#### 4.4.3 `item_background` / `container_shape` 처리
 
-        for sp in list(sp_tree.getElementsByTagNameNS(self.PML_NS, "sp")):
-            shape_id = self._get_shape_id(sp)
-            if shape_id is None or shape_id not in fills:
-                continue
+`item_background` 과 `container_shape` 는 compiler 가 `reference.json.shape_inferences` 와
+`meta.json.slots[]` / `layout_groups[]` 에 남기는 구조 정보다. 이 정보는 fill payload 가 아니라
+geometry 계산의 입력이다.
 
-            fill = fills[shape_id]
-            action = fill.get("action", "text")
+| 관계 | 의미 | OOXML 적용 규칙 |
+|---|---|---|
+| `item_background` | 하나의 text slot 을 감싸는 작은 1:1 배경 shape | `resize_linked_shape` 의 `linked_shape_ids` 로만 함께 resize |
+| `container_shape` | 여러 text slot 을 담는 큰 카드/섹션 배경 shape | 개별 slot 의 linked resize 대상에서 제외 |
 
-            if action == "remove":
-                sp.parentNode.removeChild(sp)
-            elif action == "text":
-                self._replace_text(sp, fill)
+`item_background.resize_linked` 가 명확한 경우에만 linked resize 를 수행한다. 같은 background 가
+여러 slot 과 겹치거나 큰 카드 배경으로 보이면 `container_shape` 또는 warning/fallback 으로 남기며,
+`resize_linked_shape` 대상에 넣지 않는다.
 
-        for graphic_frame in list(
-            sp_tree.getElementsByTagNameNS(self.PML_NS, "graphicFrame")
-        ):
-            shape_id = self._get_shape_id(graphic_frame)
-            if shape_id is None or shape_id not in fills:
-                continue
+#### 4.4.4 `currentFills` 와 `layout_actions` 책임 경계
 
-            fill = fills[shape_id]
-            if fill.get("action") == "chart":
-                self._replace_chart_cache(slide_xml_path, graphic_frame, fill)
+`currentFills` 는 Main backend 와 callback payload 에 노출되는 기존 상태이다. 값은 평평한
+`shape_id -> fill` 맵이고, `action` 은 `text`, `remove`, `chart` 로 제한한다.
 
-        with open(slide_xml_path, "w", encoding="utf-8") as f:
-            doc.writexml(f, encoding="utf-8")
+`currentFills` 에 넣는 것:
 
-    # ─────────────────────────────────────────────────────────────
-    # 도형 식별
-    # ─────────────────────────────────────────────────────────────
-    def _get_shape_id(self, element) -> str | None:
-        """cNvPr/@id 추출 (네임스페이스 안전)."""
-        nv_props = []
-        for tag_name in ("nvSpPr", "nvGraphicFramePr", "nvPicPr"):
-            nv_props = element.getElementsByTagNameNS(self.PML_NS, tag_name)
-            if nv_props:
-                break
-        if not nv_props:
-            return None
-        cNvPr = nv_props[0].getElementsByTagNameNS(self.PML_NS, "cNvPr")
-        if not cNvPr:
-            cNvPr = nv_props[0].getElementsByTagNameNS(self.DRAWINGML_NS, "cNvPr")
-        if cNvPr:
-            value = cNvPr[0].getAttribute("id")
-            return value or None
-        return None
+- text fill 의 `text`, `font_size_override`, `is_title`
+- remove fill 의 `action: "remove"`
+- chart fill 의 `data`, `chart_type` 같은 차트 교체 입력
 
-    def _describe_shape(self, sp_element) -> dict | None:
-        """Slot 디스크립터 생성 (LLM 입력용)."""
-        # 구현 세부는 생략 — 핵심 아이디어:
-        # 1) cNvPr/@id (필수) / cNvPr/@name (참고)
-        # 2) p:spPr/a:xfrm/a:off, a:ext 로 좌표·크기 (EMU)
-        # 3) p:nvSpPr/p:nvPr/p:ph 의 type 으로 title 여부 추정
-        # 4) p:txBody/a:p/a:r/a:rPr/@sz 로 폰트 크기
-        # 5) p:txBody/a:p/a:r/a:t 텍스트 concat → current_text
-        # 6) 이미지(blipFill) 가 있으면 kind="image"
-        ...
-        return None  # 실제 구현 시 채움
+`currentFills` 에 넣지 않는 것:
 
-    def _describe_graphic_frame(self, graphic_frame, slide_xml_path: str) -> dict | None:
-        """차트 Slot 디스크립터 생성 (상세 규칙은 §4.4.1)."""
-        # 구현 세부는 생략 — 핵심 아이디어:
-        # 1) graphicFrame 의 cNvPr/@id 로 shape_id 추출
-        # 2) graphicFrame 좌표·크기와 chart rel id 추출
-        # 3) slide rels 를 통해 /ppt/charts/chartN.xml 로 이동
-        # 4) chart_type, categories, series 개요를 읽어 kind="chart" 로 반환
-        ...
-        return None  # 실제 구현 시 채움
+- `layout_actions`
+- `x_emu`, `y_emu`, `w_emu`, `h_emu` 같은 geometry 변경 명령
+- `linked_shape_ids`, `item_background`, `container_shape`
+- `layout_groups`, `fit_policy` 같은 compiler/preflight 내부 metadata
 
-    def _replace_chart_cache(self, slide_xml_path: str, graphic_frame, fill) -> None:
-        """차트 캐시 갱신 (상세 규칙은 §4.4.1)."""
-        # chartN.xml 의 strCache/numCache/ptCount/c:f 를 일관되게 갱신한다.
-        # 임베디드 .xlsx 는 MVP 에서 동기화하지 않는다.
-        ...
+geometry 는 최종 PPTX/PDF/preview 에 반영되지만 Main 이 저장하는 fill 계약에는 섞지 않는다.
+재생성 흐름에서 geometry 상태가 필요하면 DB 의 `currentFills` 만 보지 않고 GCS 의 현재 PPTX 를
+기준으로 다시 편집한다.
 
-    def _replace_text(self, sp_element, fill):
-        """
-        텍스트 교체 - 원본 서식 완전 보존
-
-        - 첫 <a:r>의 <a:rPr>을 기준 서식으로 보존
-        - 기존 <a:p> 모두 제거 후 새로 생성
-        - 여러 항목은 개별 <a:p>로 분리
-        - 공백 보존: xml:space="preserve"
-        """
-
-        txBody = sp_element.getElementsByTagNameNS(
-            self.DRAWINGML_NS, "txBody"
-        )[0]
-
-        # 기준 서식 추출
-        base_pPr = self._extract_paragraph_props(txBody)
-        base_rPr = self._extract_run_props(txBody)
-
-        # 폰트 크기 오버라이드
-        if fill.get("font_size_override"):
-            size_val = str(int(fill["font_size_override"] * 100))
-            base_rPr.setAttribute("sz", size_val)
-
-        # 제목이면 굵게
-        if fill.get("is_title"):
-            base_rPr.setAttribute("b", "1")
-
-        # 기존 <a:p> 모두 제거
-        existing_paragraphs = txBody.getElementsByTagNameNS(
-            self.DRAWINGML_NS, "p"
-        )
-        for p in list(existing_paragraphs):
-            txBody.removeChild(p)
-
-        # 새 텍스트를 줄바꿈 기준으로 <a:p> 분리
-        lines = fill["text"].split("\n")
-        doc = sp_element.ownerDocument
-
-        for line in lines:
-            new_p = doc.createElementNS(self.DRAWINGML_NS, "a:p")
-
-            if base_pPr:
-                new_p.appendChild(base_pPr.cloneNode(deep=True))
-
-            new_r = doc.createElementNS(self.DRAWINGML_NS, "a:r")
-            new_r.appendChild(base_rPr.cloneNode(deep=True))
-
-            new_t = doc.createElementNS(self.DRAWINGML_NS, "a:t")
-            if line.startswith(" ") or line.endswith(" ") or "\t" in line:
-                new_t.setAttribute("xml:space", "preserve")
-
-            new_t.appendChild(doc.createTextNode(line))
-            new_r.appendChild(new_t)
-            new_p.appendChild(new_r)
-            txBody.appendChild(new_p)
-
-    def _extract_paragraph_props(self, txBody):
-        pPr_list = txBody.getElementsByTagNameNS(self.DRAWINGML_NS, "pPr")
-        if pPr_list:
-            return pPr_list[0].cloneNode(deep=True)
-        return None
-
-    def _extract_run_props(self, txBody):
-        rPr_list = txBody.getElementsByTagNameNS(self.DRAWINGML_NS, "rPr")
-        if rPr_list:
-            return rPr_list[0].cloneNode(deep=True)
-        return None
-```
-
-### 4.4.1 차트 Slot 처리 (네이티브 캐시 편집 — ADR-0003)
+#### 4.4.5 차트 Slot 처리 (네이티브 캐시 편집 — ADR-0003)
 
 차트는 `<p:sp>` 가 아니라 `<p:graphicFrame>` 이고, 내부는 별도 차트 파트
 (`/ppt/charts/chartN.xml`) → 임베디드 엑셀(`.xlsx`) 로 이어진다. 따라서
