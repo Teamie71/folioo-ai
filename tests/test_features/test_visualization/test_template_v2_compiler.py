@@ -416,6 +416,23 @@ def test_compile_template_cli_out_writes_separate_output_dir(tmp_path: Path) -> 
     assert not (template_dir / "reference.json").exists()
 
 
+def test_compile_template_cli_out_rejects_template_dir_descendant(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--out 은 원본 template dir 내부에 산출물을 쓰지 못한다."""
+    template_dir = _make_template_dir(tmp_path, "ppt-v3")
+    output_dir = template_dir / "compiled"
+
+    assert compile_template_main([str(template_dir), "--out", str(output_dir)]) == 1
+
+    captured = capsys.readouterr()
+    assert "--out 출력 디렉터리" in captured.err
+    assert not output_dir.exists()
+    assert not (template_dir / "meta.json").exists()
+    assert not (template_dir / "reference.json").exists()
+
+
 def test_compile_template_cli_check_uses_normalized_json(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

@@ -28,6 +28,7 @@ from .v2 import (
     json_normalized_equal,
     normalize_json,
     read_json_payload,
+    require_template_v2_metadata,
     write_json_payload,
 )
 from .validation import TemplateValidationResult, validate_template_directory
@@ -60,6 +61,7 @@ __all__ = [
     "load_category_schema",
     "normalize_json",
     "read_json_payload",
+    "require_template_v2_metadata",
     "validate_template_directory",
     "write_json_payload",
 ]

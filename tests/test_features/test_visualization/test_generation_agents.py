@@ -605,6 +605,125 @@ def test_parse_template_metadata_derives_slide_filenames() -> None:
     assert slides[-1].slide_filename == "slide7.xml"
 
 
+@pytest.mark.parametrize("metadata", [{"slides": []}, {"schema_version": 1, "slides": []}])
+def test_parse_template_metadata_rejects_non_v2_schema(metadata: dict[str, object]) -> None:
+    """schema_version 누락 또는 v2가 아닌 meta.json은 런타임에서 즉시 거부한다."""
+    with pytest.raises(ValueError, match="schema_version은 2"):
+        parse_template_metadata(metadata)
+
+
+def test_parse_template_metadata_supports_v2_runtime_slides() -> None:
+    """v2 compiler 산출물의 runtime_slides를 기본 SourceSlide 후보로 변환한다."""
+    slides = parse_template_metadata(
+        {
+            "schema_version": 2,
+            "template_id": "ppt-v3",
+            "runtime_slides": [
+                {
+                    "slide_index": 1,
+                    "slide_number": 2,
+                    "slide_filename": "slide2.xml",
+                    "slide_part": "ppt/slides/slide2.xml",
+                },
+                {
+                    "slide_index": 3,
+                    "slide_number": 4,
+                    "slide_filename": "slide4.xml",
+                    "slide_part": "ppt/slides/slide4.xml",
+                },
+            ],
+        }
+    )
+
+    assert [slide.source_slide_id for slide in slides] == ["slide2", "slide4"]
+    assert [slide.category for slide in slides] == ["cover", "closing"]
+    assert [slide.slide_filename for slide in slides] == ["slide2.xml", "slide4.xml"]
+
+
+def test_parse_template_metadata_prefers_runtime_slide_filename() -> None:
+    """runtime_slides는 slide_index 유도값 대신 compiler가 저장한 실제 slide part를 쓴다."""
+    slides = parse_template_metadata(
+        {
+            "schema_version": 2,
+            "template_id": "ppt-v3",
+            "runtime_slides": [
+                {
+                    "slide_index": 10,
+                    "slide_number": 11,
+                    "slide_filename": "slide2.xml",
+                    "slide_part": "ppt/slides/slide2.xml",
+                },
+                {
+                    "slide_index": 11,
+                    "slide_number": 12,
+                    "slide_part": "ppt/slides/slide99.xml",
+                },
+            ],
+        }
+    )
+
+    assert [slide.source_slide_id for slide in slides] == ["slide11", "slide12"]
+    assert [slide.slide_filename for slide in slides] == ["slide2.xml", "slide99.xml"]
+
+
+def test_slide_plan_generator_accepts_compiler_runtime_slides_only() -> None:
+    """compiler-shaped runtime_slides 만 있어도 fallback category로 7장 plan을 통과시킨다."""
+    llm = FakeLLM(
+        [
+            {
+                "total_slides": 7,
+                "slide_plan": [
+                    _plan_item(1, "slide2"),
+                    _plan_item(2, "slide4"),
+                    _plan_item(3, "slide6"),
+                    _plan_item(4, "slide8"),
+                    _plan_item(5, "slide10"),
+                    _plan_item(6, "slide12"),
+                    _plan_item(7, "slide14"),
+                ],
+            }
+        ]
+    )
+    generator = LLMSlidePlanGenerator(llm=llm)
+
+    plan = generator.create_plan(
+        portfolio_text="Folioo 프로젝트에서 전환율을 42% 개선했습니다.",
+        template_metadata={
+            "schema_version": 2,
+            "template_id": "ppt-v3",
+            "runtime_slides": [
+                {
+                    "slide_index": index,
+                    "slide_number": index + 1,
+                    "slide_filename": f"slide{index + 1}.xml",
+                    "slide_part": f"ppt/slides/slide{index + 1}.xml",
+                }
+                for index in (1, 3, 5, 7, 9, 11, 13)
+            ],
+        },
+    )
+
+    assert plan.total_slides == 7
+    assert [slide.category for slide in plan.selected_slides] == [
+        "cover",
+        "toc",
+        "overview",
+        "problem",
+        "process",
+        "outcome",
+        "closing",
+    ]
+    assert [slide.slide_filename for slide in plan.selected_slides] == [
+        "slide2.xml",
+        "slide4.xml",
+        "slide6.xml",
+        "slide8.xml",
+        "slide10.xml",
+        "slide12.xml",
+        "slide14.xml",
+    ]
+
+
 def _plan_item(order: int, source_slide_id: str) -> dict[str, object]:
     return {
         "order": order,
@@ -658,6 +777,7 @@ def _template_meta(
         for index, slide in enumerate(slides):
             slide["slide_index"] = index
     return {
+        "schema_version": 2,
         "template_id": "blue",
         "template_file": "template.pptx",
         "slides": slides,
