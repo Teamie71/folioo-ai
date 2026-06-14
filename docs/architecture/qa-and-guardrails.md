@@ -27,7 +27,7 @@
 | 가드 | 규칙 |
 |---|---|
 | 변경 범위 | 사용자가 명시한 도형(shape_id) 만 (다른 도형은 절대 건드리지 마) |
-| 길이 제한 | 사전 max_chars 없음 → 변경 후 시각 QA 가 오버플로우 감지 시 폰트 축소/요약으로 자동 보정 |
+| 길이 제한 | 사전 max_chars 없음 → deterministic preflight 가 먼저 fitting 을 적용하고, 변경 후 시각 QA 가 오버플로우/잘림을 검출하면 fix-and-verify 로 보정 |
 | 자동 후속 | 변경 후 시각 QA **강제 실행** (오버플로우 방지) |
 | 의미 보존 | 모호한 요청("좀 더 멋있게")은 LLM이 해석하되 원본 의미 보존 |
 | 일관성 | MVP에서는 단일 슬라이드 단위로만 변경 (다른 슬라이드의 동일 정보는 자동 동기화 X) |
@@ -64,6 +64,24 @@ LLM 프롬프트 변경 (Phase 2 수정 호출):
 
 Anthropic PPTX 스킬의 핵심 프로세스 중 하나. 자동으로 결과물을 시각적으로 검증한다.
 
+### 6.0 1차 QA 책임 경계
+
+1차 범위에서 시각 QA 는 **렌더된 이미지의 검증자**다. geometry action 을 직접 만들거나
+slide XML 을 수정하지 않는다.
+
+| 단계 | 책임 |
+|---|---|
+| deterministic preflight | LLM fill 결과와 v2 metadata(`layout_groups`, `fit_policy`, `item_background`)를 기준으로 `layout_actions` 계산 |
+| OOXML 편집 | `apply_layout_actions()` 로 geometry 를 먼저 반영한 뒤 `apply_fills()` 로 text/remove/chart fill 적용 |
+| 시각 QA 1차 | 렌더 이미지와 기대 콘텐츠를 보고 오버플로우, 겹침, 미교체 문구, 가독성, 균형 이슈만 판정 |
+| fix-and-verify | 이슈 슬라이드를 다시 preflight/OOXML 수정 루프로 보내고 재렌더 후 영향 받은 슬라이드만 재검사 |
+
+시각 QA 1차 결과는 pass/fail 과 이슈 설명이다. `layout_actions`, `x_emu`/`y_emu`/`w_emu`/`h_emu`,
+`linked_shape_ids` 같은 geometry payload 를 만들지 않고, `currentFills` 나 워커→메인 callback body 에도
+넣지 않는다. 2차 개선에서 `suggested_remedy` 를 구조화할 수는 있지만, 그 값은
+`rerun_fit_policy`, `shorten_text`, `review_marker` 같은 후속 힌트일 뿐 1차 계약이나 자동 geometry
+명령이 아니다.
+
 ### 6.1 QA 프로세스
 
 ```python
@@ -92,6 +110,9 @@ class VisualQA:
         return parse_qa_result(result)
 ```
 
+`parse_qa_result()` 는 검증 결과를 구조화할 수 있지만, 여기서 나온 값은 편집 명령이 아니다.
+자동 보정은 deterministic preflight 와 OOXML 편집 경로가 담당한다.
+
 ### 6.2 Fix-and-Verify 루프
 
 ```mermaid
@@ -107,3 +128,5 @@ flowchart LR
 
 - Anthropic 스킬 문서 기준: **렌더→시각 QA 검증을 최소 한 번 거치기 전에는 성공 선언하지 말 것** (이슈가 없으면 그 1회 검증으로 통과, 있으면 fix-and-verify 반복)
 - 재검증 시 **영향 받은 슬라이드만** 검사
+- 시각 QA 는 이슈를 판정하고, 실제 geometry 변경은 `layout_actions` 재계산과 `apply_layout_actions()` 적용으로 수행
+- 구조화된 `suggested_remedy` 필드는 후속 범위다. 1차에서는 자연어 이슈 설명만으로도 fix-and-verify 큐에 적재할 수 있어야 한다.

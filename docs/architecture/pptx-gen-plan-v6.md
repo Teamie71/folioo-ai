@@ -201,10 +201,11 @@ pack 자체는 1회로 묶이지만, 시각 QA·프리뷰 업로드는 슬라이
 > `template-system.md` 의 같은 절을 가리킨다.
 
 **핵심 요약:**
-- Template 1개 = 색상 조합 1종. `template.pptx`(30~40장 Source Slide 풀) + `meta.json` + `thumbnail.jpg`
+- Template 1개 = 색상 조합 1종. `template.pptx`(짝수 runtime / 홀수 example slide pair 풀) + `meta.json` + `reference.json` + `thumbnail.jpg`
 - Source Slide 카테고리는 전 Template 공유 **표준 Enum** (`cover` / `overview` / `process` / `chart` / `closing` 등 10종)
-- `meta.json` 은 Source Slide 선택에 필요한 최소 정보만 — Source Slide 별 5개 필드(`slide_index` / `id` / `category` / `description` / `best_for`). 사전 Slot 명세 없음
-- Slot 은 런타임에 시각화 워커가 슬라이드 XML 의 `cNvPr/@id` + 좌표·텍스트·폰트로 LLM 에 넘겨 동적 식별 (§5.2 Step 3)
+- `meta.json` 은 `schema_version: 2` 런타임 계약이다. `runtime_slides`, `slots`, `layout_groups` 를 담고, 런타임 로더는 v2 가 아니면 fail fast 한다.
+- `reference.json` 은 example slide 매칭과 `output_text_color`, `item_background`, `container_shape` 추론 근거를 남기는 compiler/validator/audit 용 산출물이다.
+- Slot 은 runtime slide 의 정확한 `#FF0000` marker 에서 `meta.json.slots[]` 로 추출된다. 런타임은 이 v2 slot metadata 를 source of truth 로 사용하고, slide XML 추출값은 overlay/검증 입력으로만 사용한다.
 - 템플릿 등록은 자동 추출 → LLM 초안 → 운영자 검토 → 검증 → GCS 업로드의 반자동 파이프라인
 
 ---
@@ -222,7 +223,7 @@ pack 자체는 1회로 묶이지만, 시각 QA·프리뷰 업로드는 슬라이
 - Anthropic PPTX 스킬 도구 체인 (`unpack.py` / `clean.py` / `pack.py` / `validate.py` / `soffice.py` / `markitdown` 등)
 - python-pptx 가 아닌 **OOXML 직접 편집** — 디자이너 서식을 95~99% 보존 (코드 재생성은 70~80% 유사도)
 - XML 파서는 `defusedxml.minidom`, 텍스트는 명시적 노드 조작 (일괄 치환 금지), 도형 식별자는 `cNvPr/@id`
-- `SlideEditor.extract_slots()` → Slot 디스크립터 추출(LLM 입력), `apply_fills()` → Fill 을 XML 에 적용 (원본 서식 보존)
+- `SlideEditor.extract_slots()` → Slot overlay 추출(LLM 입력 보강), `apply_layout_actions()` → 내부 geometry action 적용, `apply_fills()` → `currentFills` 를 XML 에 적용 (원본 서식 보존)
 
 ---
 
@@ -285,8 +286,10 @@ Phase 3: 확정 & 내보내기 (한 번)
 │                                                       │
 │  Input:                                               │
 │  - 포트폴리오 텍스트 (텍스트 탭에서 생성된 내용)            │
-│  - 템플릿 meta.json (각 슬라이드의 id, category,          │
-│    description, best_for) ※ 사전 Slot 스펙은 없음       │
+│  - 템플릿 meta.json 의 runtime slide 선택 요약            │
+│    (slide id/category/description/best_for 가 있으면 사용, │
+│     누락 시 runtime slide fallback metadata 사용)       │
+│    ※ slot-level metadata 는 Step 3 에서 사용             │
 │  - Phase 1 구현은 텍스트 메타만 사용한다. 템플릿 썸네일      │
 │    multimodal 입력은 모델/비용/지연 정책 확정 뒤 후속 처리  │
 │                                                       │
@@ -411,20 +414,25 @@ Expected Output:
 │  하나의 샌드박스 안에서 XML 편집만 병렬:                     │
 │                                                       │
 │  ┌─ Thread per slide ─────────────────────────────┐    │
-│  │  ① SlideEditor.extract_slots(slide1.xml)        │    │
-│  │     → Slot 디스크립터 목록 (§4.4) 자동 생성        │    │
-│  │       [{shape_id, x_emu, y_emu, w_emu, h_emu,    │    │
-│  │         current_text, is_title_placeholder,      │    │
-│  │         font_size_pt, kind}, ...]                │    │
+│  │  ① v2 slot metadata 로드 + XML overlay 추출       │    │
+│  │     → meta.json.slots[] 를 source of truth 로 사용 │    │
+│  │     → SlideEditor.extract_slots(slide1.xml) 는    │    │
+│  │       cNvPr/@id, bbox, 현재 marker/text 를 검증·보강 │    │
+│  │       [{shape_id, slot_id, placeholder_text,      │    │
+│  │         example_text, output_text_color,          │    │
+│  │         fit_policy, layout_group_id,              │    │
+│  │         x_emu, y_emu, w_emu, h_emu, ...}, ...]    │    │
 │  │                                                  │    │
 │  │  ② LLM Call #2: Slot → Fill 결정                   │    │
 │  │     Input:                                        │    │
-│  │     - 위 Slot 디스크립터 목록                        │    │
+│  │     - 위 v2 Slot 디스크립터 목록                     │    │
 │  │     - content_brief (Step 1 의 해당 슬라이드 요지)   │    │
+│  │     - placeholder_text / example_text /           │    │
+│  │       fit_policy 기반 content hint                 │    │
 │  │     - (선택) slide1.xml markitdown 결과             │    │
-│  │     ※ 사전 Slot 스펙은 입력하지 않는다 —             │    │
-│  │       LLM 이 Slot 의 위치·크기·현재 텍스트만 보고      │    │
-│  │       역할(title/body/card_body/...) 을 스스로 판단 │    │
+│  │     ※ LLM 은 text/remove/chart fill 만 결정한다.     │    │
+│  │       geometry 조정은 deterministic preflight 가    │    │
+│  │       계산하는 내부 layout_actions 로 처리한다.      │    │
 │  │                                                  │    │
 │  │     Output:                                      │    │
 │  │     {                                            │    │
@@ -440,8 +448,18 @@ Expected Output:
 │  │       // 차트는 같은 맵에 action:"chart" 엔트리  │    │
 │  │     }                                            │    │
 │  │                                                  │    │
-│  │  ③ SlideEditor.apply_fills(slide1.xml, fills)    │    │
-│  │     → DrawingML 규칙 준수하며 텍스트/제거 적용      │    │
+│  │  ③ deterministic preflight                        │    │
+│  │     → fills + slot_metadata(layout_groups,         │    │
+│  │       fit_policy, item_background) 로              │    │
+│  │       내부 layout_actions 계산                     │    │
+│  │                                                  │    │
+│  │  ④ SlideEditor.apply_layout_actions(slide1.xml,   │    │
+│  │     layout_actions)                               │    │
+│  │     → resize/relayout/link background geometry 적용│    │
+│  │                                                  │    │
+│  │  ⑤ SlideEditor.apply_fills(slide1.xml, fills)     │    │
+│  │     → #FF0000 marker 를 output_text_color 로 대체  │    │
+│  │     → DrawingML 규칙 준수하며 텍스트/제거/차트 적용  │    │
 │  └──────────────────────────────────────────────────┘    │
 │  ┌─ Thread 2: slide2.xml (동일 과정) ──────────────┐     │
 │  └──────────────────────────────────────────────────┘    │
@@ -458,6 +476,9 @@ Expected Output:
 │                Body: { event: "slide_content_ready",     │
 │                        currentFills: {...} }             │
 │  [메인] DB 갱신 + EventEmitter emit → SSE                  │
+│  ※ callback payload 와 DB currentFills 에는 layout_actions, │
+│    geometry 좌표, layout_groups/fit_policy metadata 를 넣지 │
+│    않는다. geometry 는 최종 PPTX/PDF/preview 에만 반영된다. │
 │                                                          │
 │  특정 슬라이드의 Call #2 가 1회 timeout 재시도 후에도 실패하면 │
 │  템플릿 예시 문구가 노출되지 않도록 해당 슬라이드 XML 의 콘텐츠 │
@@ -530,8 +551,7 @@ Expected Output:
 │  │            slide-{slide_order:02d}.jpg (IAM PUT)  │    │
 │  │     [워커 → 메인] POST .../slides/{slide_id}/events│  │
 │  │            Body: { event: "slide_preview_ready", │    │
-│  │                    gcsPreviewKey: "...",          │    │
-│  │                    width, height, byteSize }     │    │
+│  │                    gcsPreviewKey: "..." }        │    │
 │  │     [메인] DB: slides[N].status = 'completed'    │    │
 │  │            gcs_preview_key 갱신                    │    │
 │  │            → EventEmitter emit → SSE              │    │
@@ -542,7 +562,10 @@ Expected Output:
 │  └────────────────────────────────────────────────┘    │
 │                                                        │
 │  Fix-and-verify 루프 (이슈 슬라이드만):                    │
-│  ① 이슈 슬라이드들의 XML을 LLM 지시대로 일괄 수정             │
+│  ① 이슈 슬라이드를 remedy 큐에 적재                         │
+│     - 1차에서는 QA 가 geometry action 을 직접 만들지 않음    │
+│     - deterministic preflight / content shortening /      │
+│       OOXML 수정 경로로 재처리                             │
 │  ② pack 1회 + PDF 변환 1회 (배치)                         │
 │  ③ 영향 받은 슬라이드만 다시 시각 QA                         │
 │  ④ 통과하면 위와 동일하게 업로드 + 이벤트 콜백                │
@@ -765,6 +788,7 @@ soffice 렌더 결과(`current.pdf`)를 그대로 보존해 둔 것이라, 별�
 
 **핵심 요약:**
 - 프리뷰 이미지를 LLM 에 넘겨 오버플로우/겹침/미교체 안내문구/가독성/균형을 검사 (§5.2 Step 6)
+- 1차 시각 QA 는 geometry action 을 직접 생성하지 않는다. `layout_actions` 는 Step 3 deterministic preflight 가 계산하고 `apply_layout_actions()` 로만 적용한다.
 - fix-and-verify: 이슈 발견 시 자동 수정 → 재프리뷰 → 재검사, **2회 시도에도 실패하면 에러**로 사용자에게 전달
 - Anthropic 스킬 기준: 렌더→시각 QA 검증을 최소 한 번 거치기 전에는 성공 선언 금지(이슈 없으면 1회 검증으로 통과). 재검증은 영향 받은 슬라이드만
 
@@ -939,6 +963,7 @@ sequenceDiagram
 
 → 메인이 콜백 수신 후 `gcs_preview_key` 로 signed URL을 발급해 SSE 페이로드에 동봉한다.
 → 워커는 signed URL 발급 책임이 없으므로 사용자 액세스 경로 변경에 영향 없음.
+→ 워커 콜백은 `layout_actions`, geometry 좌표, preview `width`/`height`/`byteSize` 를 보내지 않는다.
 
 **메인 → 프론트 SSE 이벤트 카탈로그 (정식):**
 
@@ -978,6 +1003,8 @@ sequenceDiagram
 ```
 
 - `event` 종류: §7.1 SSE 카탈로그와 동일 + `slide_plan_ready` 등 내부용
+- `currentFills` 는 text/remove/chart fill 상태만 담는다. `layout_actions`, geometry 좌표,
+  `layout_groups`, `fit_policy` 같은 preflight metadata 는 콜백과 DB 에 저장하지 않는다.
 - 콜백 중복 수신은 무해하다 — 모든 콜백이 멱등 UPDATE 거나 `ON CONFLICT DO NOTHING`
   INSERT 라서 두 번 처리해도 DB 상태가 같다 (§7.4.5)
 
@@ -1734,6 +1761,8 @@ CREATE INDEX idx_viz_slides_job ON visualization_slides(job_id);
 도형 식별은 PPT 의 `cNvPr/@id` (정수) 를 키로 사용한다.
 `role` 필드는 LLM 이 Slot 디스크립터를 보고 추론한 의미 라벨로, 디버깅·재생성 시 컨텍스트로만 활용된다 (DB 가드용은 아님).
 이 맵은 **래퍼 없이 평평하다** — `current_fills`·콜백 `currentFills`·LLM Call #2 출력·`apply_fills` 입력이 모두 `{ "<id>": {...} }` 그대로다 (`shapes`/`fills` 래퍼 폐기, §5.2 Step 3 출력도 동일).
+`current_fills` 는 text/remove/chart 상태만 저장하며, deterministic preflight 의 `layout_actions` 나
+`x_emu`/`y_emu`/`w_emu`/`h_emu` 같은 geometry 명령은 저장하지 않는다.
 차트도 같은 규칙 — `graphicFrame` 의 `cNvPr/@id` 를 key 로 `action:"chart"` 로 표현한다 (최상위 별도 `chart` 키 폐기, §5.2 Step 3 출력도 이 형태로 통일). 차트는 캐시(`chartN.xml`)만 편집하고 임베디드 워크북은 MVP 에서 동기화하지 않는다 — `ooxml-editing.md` §4.4.1 / ADR-0003.
 
 ```json
@@ -2122,6 +2151,9 @@ GET    {WORKER_URL}/metrics
 
 시각화 워커가 메인의 `/api/internal/visualizations/...` 로 호출하는 엔드포인트.
 모두 `X-API-Key` 인증, 멱등 보장 필수.
+이 `/api/internal` 경로는 프론트 공개 API 나 Cloud Tasks push handler 가 아니라
+**워커→메인 전용 callback/context API** 로 유지한다. 문서의 축약된 `POST .../events`
+표기는 반드시 아래 정식 엔드포인트 중 하나로 해석한다.
 
 ```
 # Step 1 직후: 슬라이드 구성 계획 제출
@@ -2164,7 +2196,7 @@ POST   /api/internal/visualizations/{job_id}/slides/{slide_id}/events
               | "slide_regenerated",
          slideOrder: 3,
          currentFills: { ... },               // event=*_ready 시
-          gcsPreviewKey: "jobs/.../previews/slide-03.jpg", // event=preview_ready 시
+         gcsPreviewKey: "jobs/.../previews/slide-03.jpg", // event=preview_ready 시
          message: "...",                       // event=*_error 시
          retryable: true,                      // error 시
          occurredAt: "2026-05-17T03:42:01Z",
@@ -2179,6 +2211,10 @@ POST   /api/internal/visualizations/{job_id}/slides/{slide_id}/events
          - slide_regenerated/slide_preview_ready 로 슬라이드가 completed 가 됐고
            job.status='partial_error' 이며 남은 비-completed 슬라이드가 없으면
            job.status→'completed' 재평가 (retry 성공 시 이벤트 기반 finalize, 크론 아님)
+       계약:
+         - `currentFills` 에는 `layout_actions` 또는 geometry payload 를 넣지 않는다.
+         - preview callback 은 `gcsPreviewKey` 만 저장 대상이다. 이미지 `width`/`height`/`byteSize`
+           는 현재 콜백/API 계약에 포함하지 않는다.
        Response: 204 No Content
 
        idempotencyKey 는 Cloud Tasks payload key 를 그대로 재사용하지 않고
@@ -2480,9 +2516,9 @@ LLM은 **"뭘 넣을지"와 "어떻게 조정할지"만 결정**하고, 실제 �
 |---|---|---|
 | 구조 분석 | 포트폴리오를 섹션으로 분리, 각 섹션 성격 분류 | — |
 | 템플릿 선택 | 후보 중 최적 레이아웃 선택 + 근거 | Rule-based 사전 필터링 |
-| 콘텐츠 적응 | 텍스트 리라이팅/요약, 폰트 크기 결정, 차트 데이터 변환 | XML에서 실제 텍스트/속성 교체 |
+| 콘텐츠 적응 | 텍스트 리라이팅/요약, 폰트 크기 결정, 차트 데이터 변환 | deterministic preflight 로 `layout_actions` 계산, XML에서 실제 텍스트/속성 교체 |
 | 수정 해석 | 자연어 수정 요청 → 구체적 변경 사항 도출 | XML에서 해당 속성 수정 |
-| 시각 QA | 슬라이드 이미지 보고 이슈 판별 | 프리뷰 이미지 생성, 재편집 실행 |
+| 시각 QA | 슬라이드 이미지 보고 이슈 판별 | 프리뷰 이미지 생성, preflight/OOXML 수정 루프 실행 |
 
 ---
 
@@ -2500,7 +2536,7 @@ LLM이 단순 텍스트 교체가 아닌, 레이아웃을 이해하고 조정하
 
 텍스트가 짧은 경우:
 ├─ 폰트 크기 확대 (원본 font_size_pt 의 +20% 이내, 공통 가드 10~48pt 준수)
-└─ 여백 활용한 레이아웃 조정
+└─ deterministic preflight 가 허용한 범위 안에서 여백 활용한 레이아웃 조정
 ```
 
 ---
