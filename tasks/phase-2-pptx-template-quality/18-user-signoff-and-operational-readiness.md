@@ -44,6 +44,7 @@ sprint: ""
 - [ ] `docs/ppt-v3.pptx` 기반 `templates/ppt-v3/` 신규 등록 템플릿을 acceptance fixture 로 유지할지, 별도 운영 자산으로 둘지 사용자 확인을 받는다.
 - [ ] 정상 acceptance deck 이 runtime/example pair, 정확한 `#FF0000` marker, non-red fixed text, chip group, metric slot 을 포함하는지 사용자 확인을 받는다.
 - [ ] `docs/ppt-v3.pptx` 또는 운영 acceptance deck 에서 fixed label 과 editable marker 가 한 텍스트 shape 안에 섞인 mixed-color run 을 분리할지 사용자 확인을 받는다. (2.02 compiler 는 mixed-color run 을 계약 위반으로 실패 처리한다.)
+- [ ] 2.15 기준 `docs/ppt-v3.pptx` 는 mixed-color marker 오류로 정상 acceptance deck 이 아니므로, synthetic fixture 정책을 유지할지 실제 PPTX 를 보정해 acceptance 자산으로 승격할지 사용자 확인을 받는다.
 - [x] mixed-color run, `#FE0000`/theme red, 예시 pair 누락 같은 negative case 는 정상 deck 과 분리한 invalid fixture 로 둔다.
 - [ ] `compile_template.py --strict` 를 CI 필수 게이트로 승격할 rollout 시점을 사용자 확인을 받는다.
 - [ ] Main backend 계약 변경이 불가피한 상황이 발견되면 변경 사유와 대안을 사용자에게 최종 확인받는다.

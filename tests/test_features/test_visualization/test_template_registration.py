@@ -24,6 +24,7 @@ from features.visualization.templates import (
     validate_template_directory,
 )
 from features.visualization.templates.thumbnail import PillowThumbnailBuilder
+from features.visualization.text_fit import EMU_PER_PT
 from scripts.templates.validate_template import main as validate_template_main
 
 _PRESENTATION_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -429,6 +430,55 @@ def test_validate_template_directory_accepts_valid_v2_metadata(tmp_path: Path) -
     assert result.errors == ()
 
 
+def test_validate_template_directory_accepts_ppt_v3_chip_acceptance_fixture(
+    tmp_path: Path,
+) -> None:
+    """ppt-v3 acceptance fixture는 marker, chip group, output color 계약을 만족한다."""
+    template_dir = _make_v2_chip_acceptance_template_dir(tmp_path)
+
+    result = validate_template_directory(template_dir, strict=True)
+
+    assert result.ok is True
+    assert result.errors == ()
+    assert not any("output_text_color를 찾지 못해" in warning for warning in result.warnings)
+
+    metadata = read_json_payload(template_dir / "meta.json")
+    reference = read_json_payload(template_dir / "reference.json")
+    assert {slot["marker_color"] for slot in metadata["slots"]} == {"#FF0000"}
+    assert {slot["output_text_color"] for slot in metadata["slots"]} == {"#123456"}
+    assert len(metadata["layout_groups"]) == 1
+    group = metadata["layout_groups"][0]
+    assert group["layout_type"] == "inline_label_group"
+    assert group["item_shape_ids"] == ["20", "22", "24"]
+    assert group["linked_background_by_item"] == {
+        "20": {
+            "slot_id": "slide2_shape20",
+            "background_shape_id": "19",
+            "background_shape_name": "Python chip background",
+            "match_score": group["linked_background_by_item"]["20"]["match_score"],
+            "resize_linked": True,
+        },
+        "22": {
+            "slot_id": "slide2_shape22",
+            "background_shape_id": "21",
+            "background_shape_name": "FastAPI chip background",
+            "match_score": group["linked_background_by_item"]["22"]["match_score"],
+            "resize_linked": True,
+        },
+        "24": {
+            "slot_id": "slide2_shape24",
+            "background_shape_id": "23",
+            "background_shape_name": "Postgres chip background",
+            "match_score": group["linked_background_by_item"]["24"]["match_score"],
+            "resize_linked": True,
+        },
+    }
+    assert all(
+        linked["match_score"] >= 0.72 for linked in group["linked_background_by_item"].values()
+    )
+    assert {match["output_text_color"] for match in reference["shape_matches"]} == {"#123456"}
+
+
 def test_validate_template_directory_rejects_v2_missing_thumbnail(tmp_path: Path) -> None:
     """v2 metadata 경로에서도 기존 thumbnail 검증을 유지한다."""
     template_dir = _make_v2_template_dir(tmp_path)
@@ -475,6 +525,43 @@ def test_validate_template_directory_strict_promotes_low_confidence_layout_group
             "layout_type": "inline_label_group",
             "item_shape_ids": ["10"],
             "linked_background_by_item": {},
+        }
+    ]
+    _write_json(template_dir / "meta.json", metadata)
+
+    default_result = validate_template_directory(template_dir)
+    strict_result = validate_template_directory(template_dir, strict=True)
+
+    assert default_result.ok is True
+    assert any(
+        "linked background 신뢰도가 낮습니다" in warning for warning in default_result.warnings
+    )
+    assert strict_result.ok is False
+    assert any("linked background 신뢰도가 낮습니다" in error for error in strict_result.errors)
+
+
+def test_validate_template_directory_strict_promotes_low_match_score_layout_group(
+    tmp_path: Path,
+) -> None:
+    """linked background match_score가 낮으면 strict 모드에서 실패한다."""
+    template_dir = _make_v2_template_dir(tmp_path)
+    metadata = read_json_payload(template_dir / "meta.json")
+    metadata["layout_groups"] = [
+        {
+            "group_id": "slide2_inline_label_group1",
+            "slide_index": 1,
+            "slide_number": 2,
+            "layout_type": "inline_label_group",
+            "item_shape_ids": ["10"],
+            "linked_background_by_item": {
+                "10": {
+                    "slot_id": "slide2_shape10",
+                    "background_shape_id": "9",
+                    "background_shape_name": "Weak chip background",
+                    "match_score": 0.1,
+                    "resize_linked": True,
+                }
+            },
         }
     ]
     _write_json(template_dir / "meta.json", metadata)
@@ -561,6 +648,197 @@ def test_validate_template_directory_strict_promotes_low_confidence_extraction_w
     assert any("background 신뢰도가 부족" in warning for warning in default_result.warnings)
     assert strict_result.ok is False
     assert any("background 신뢰도가 부족" in error for error in strict_result.errors)
+
+
+def test_validate_template_directory_warns_for_output_color_fallback_without_strict_failure(
+    tmp_path: Path,
+) -> None:
+    """output_text_color fallback은 warning으로 남고 strict failure로 승격하지 않는다."""
+    template_dir = tmp_path / "ppt-v3"
+    template_dir.mkdir()
+    _make_v2_template_pptx(
+        template_dir / "template.pptx",
+        (
+            _v2_slide_xml(1, ""),
+            _v2_slide_xml(
+                2,
+                _v2_shape_xml(
+                    20,
+                    "Marker",
+                    (_v2_run_xml("경험명", color="FF0000"),),
+                    x=_pt(100),
+                    y=_pt(100),
+                    width=_pt(80),
+                    height=_pt(24),
+                ),
+            ),
+            _v2_slide_xml(
+                3,
+                _v2_shape_xml(
+                    30,
+                    "Uncolored example",
+                    (_v2_run_xml("색상 없는 예시"),),
+                    x=_pt(100),
+                    y=_pt(100),
+                    width=_pt(80),
+                    height=_pt(24),
+                ),
+            ),
+        ),
+    )
+    compile_result = compile_template_v2(template_dir)
+    assert compile_result.ok is True
+    (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
+
+    default_result = validate_template_directory(template_dir)
+    strict_result = validate_template_directory(template_dir, strict=True)
+
+    assert default_result.ok is True
+    assert strict_result.ok is True
+    assert any(
+        "output_text_color를 찾지 못해 #000000" in warning for warning in default_result.warnings
+    )
+    assert any(
+        "output_text_color를 찾지 못해 #000000" in warning for warning in strict_result.warnings
+    )
+
+
+def test_validate_template_directory_strict_promotes_narrow_editable_slot_warning(
+    tmp_path: Path,
+) -> None:
+    """좁은 editable slot은 기본 warning, strict failure로 보고된다."""
+    template_dir = _make_v2_template_dir(tmp_path)
+    metadata = read_json_payload(template_dir / "meta.json")
+    metadata["slots"][0]["w_emu"] = _pt(8)
+    metadata["slots"][0]["h_emu"] = _pt(8)
+    _write_json(template_dir / "meta.json", metadata)
+
+    default_result = validate_template_directory(template_dir)
+    strict_result = validate_template_directory(template_dir, strict=True)
+
+    assert default_result.ok is True
+    assert any("editable slot이 좁습니다" in warning for warning in default_result.warnings)
+    assert strict_result.ok is False
+    assert any("editable slot이 좁습니다" in error for error in strict_result.errors)
+
+
+def test_validate_template_directory_strict_promotes_invalid_editable_slot_geometry(
+    tmp_path: Path,
+) -> None:
+    """0 이하 geometry는 좁은 slot보다 더 명확한 품질 위험으로 보고한다."""
+    template_dir = _make_v2_template_dir(tmp_path)
+    metadata = read_json_payload(template_dir / "meta.json")
+    metadata["slots"][0]["w_emu"] = 0
+    metadata["slots"][0]["h_emu"] = -1
+    _write_json(template_dir / "meta.json", metadata)
+
+    default_result = validate_template_directory(template_dir)
+    strict_result = validate_template_directory(template_dir, strict=True)
+
+    assert default_result.ok is True
+    assert any(
+        "editable slot geometry가 유효하지 않습니다" in warning
+        for warning in default_result.warnings
+    )
+    assert strict_result.ok is False
+    assert any(
+        "editable slot geometry가 유효하지 않습니다" in error for error in strict_result.errors
+    )
+
+
+def test_validate_template_directory_strict_promotes_placeholder_residue_warning(
+    tmp_path: Path,
+) -> None:
+    """example text가 placeholder와 같으면 잔존 위험을 strict failure로 승격한다."""
+    template_dir = tmp_path / "ppt-v3"
+    template_dir.mkdir()
+    _make_v2_template_pptx(
+        template_dir / "template.pptx",
+        (
+            _v2_slide_xml(1, ""),
+            _v2_slide_xml(
+                2,
+                _v2_shape_xml(
+                    20,
+                    "Marker",
+                    (_v2_run_xml("여기에 프로젝트명", color="FF0000"),),
+                    x=_pt(100),
+                    y=_pt(100),
+                    width=_pt(100),
+                    height=_pt(24),
+                ),
+            ),
+            _v2_slide_xml(
+                3,
+                _v2_shape_xml(
+                    30,
+                    "Placeholder example",
+                    (_v2_run_xml("여기에 프로젝트명", color="123456"),),
+                    x=_pt(100),
+                    y=_pt(100),
+                    width=_pt(100),
+                    height=_pt(24),
+                ),
+            ),
+        ),
+    )
+    compile_result = compile_template_v2(template_dir)
+    assert compile_result.ok is True
+    (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
+
+    default_result = validate_template_directory(template_dir)
+    strict_result = validate_template_directory(template_dir, strict=True)
+
+    assert default_result.ok is True
+    assert any("placeholder 잔존 위험" in warning for warning in default_result.warnings)
+    assert strict_result.ok is False
+    assert any("placeholder 잔존 위험" in error for error in strict_result.errors)
+
+
+def test_validate_template_directory_does_not_flag_normal_example_text_as_placeholder_residue(
+    tmp_path: Path,
+) -> None:
+    """정상 예시의 '입력/작성' 같은 일반 단어는 placeholder 잔존으로 보지 않는다."""
+    template_dir = tmp_path / "ppt-v3"
+    template_dir.mkdir()
+    _make_v2_template_pptx(
+        template_dir / "template.pptx",
+        (
+            _v2_slide_xml(1, ""),
+            _v2_slide_xml(
+                2,
+                _v2_shape_xml(
+                    20,
+                    "Marker",
+                    (_v2_run_xml("프로젝트명", color="FF0000"),),
+                    x=_pt(100),
+                    y=_pt(100),
+                    width=_pt(120),
+                    height=_pt(24),
+                ),
+            ),
+            _v2_slide_xml(
+                3,
+                _v2_shape_xml(
+                    30,
+                    "Legitimate example",
+                    (_v2_run_xml("데이터 입력 자동화 작성 시스템", color="123456"),),
+                    x=_pt(100),
+                    y=_pt(100),
+                    width=_pt(120),
+                    height=_pt(24),
+                ),
+            ),
+        ),
+    )
+    compile_result = compile_template_v2(template_dir)
+    assert compile_result.ok is True
+    (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
+
+    strict_result = validate_template_directory(template_dir, strict=True)
+
+    assert strict_result.ok is True
+    assert not any("placeholder 잔존 위험" in warning for warning in strict_result.warnings)
 
 
 def test_validate_template_directory_rejects_stale_reference_shape_match(
@@ -665,6 +943,40 @@ def test_validate_template_directory_rejects_runtime_slide_without_exact_marker(
                 2,
                 _v2_shape_xml(20, "Fixed non-red", (_v2_run_xml("고정 문구", color="222222"),)),
             ),
+            _v2_slide_xml(3, _v2_shape_xml(30, "Example", (_v2_run_xml("예시"),))),
+        ),
+    )
+    (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
+    _write_minimal_v2_meta(template_dir, slots=[])
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is False
+    assert any("정확한 #FF0000 editable marker가 없습니다" in error for error in result.errors)
+
+
+@pytest.mark.parametrize(
+    ("text", "color", "scheme_color"),
+    [
+        pytest.param("거의 빨강", "FE0000", None, id="almost-red"),
+        pytest.param("테마 빨강", None, "accent2", id="theme-red"),
+    ],
+)
+def test_validate_template_directory_rejects_non_exact_red_markers(
+    tmp_path: Path,
+    text: str,
+    color: str | None,
+    scheme_color: str | None,
+) -> None:
+    """#FE0000/theme red는 #FF0000 editable marker로 인정하지 않는다."""
+    run_xml = _v2_run_xml(text, color=color, scheme_color=scheme_color)
+    template_dir = tmp_path / "ppt-v3"
+    template_dir.mkdir()
+    _make_v2_template_pptx(
+        template_dir / "template.pptx",
+        (
+            _v2_slide_xml(1, ""),
+            _v2_slide_xml(2, _v2_shape_xml(20, "Non exact marker", (run_xml,))),
             _v2_slide_xml(3, _v2_shape_xml(30, "Example", (_v2_run_xml("예시"),))),
         ),
     )
@@ -862,6 +1174,72 @@ def _make_template_pptx(
             zf.writestr(name, content)
 
 
+def _make_v2_chip_acceptance_template_dir(tmp_path: Path) -> Path:
+    """chip group/output color 기준을 만족하는 ppt-v3 acceptance fixture를 만든다."""
+    template_dir = tmp_path / "ppt-v3-acceptance"
+    template_dir.mkdir()
+    chips = (
+        (19, 20, "Python", "Python 3.12", 90, 100, 50),
+        (21, 22, "FastAPI", "FastAPI 운영", 160, 170, 60),
+        (23, 24, "Postgres", "Postgres RDS", 240, 250, 70),
+    )
+    runtime_shapes: list[str] = []
+    example_shapes: list[str] = []
+    for index, (
+        background_id,
+        shape_id,
+        placeholder,
+        example,
+        background_x,
+        text_x,
+        width,
+    ) in enumerate(chips, start=1):
+        runtime_shapes.append(
+            _v2_shape_without_text_xml(
+                background_id,
+                f"{placeholder} chip background",
+                x=_pt(background_x),
+                y=_pt(95),
+                width=_pt(width + 8),
+                height=_pt(26),
+            )
+        )
+        runtime_shapes.append(
+            _v2_shape_xml(
+                shape_id,
+                f"{placeholder} chip",
+                (_v2_run_xml(placeholder, color="FF0000"),),
+                x=_pt(text_x),
+                y=_pt(100),
+                width=_pt(width),
+                height=_pt(18),
+            )
+        )
+        example_shapes.append(
+            _v2_shape_xml(
+                30 + index,
+                f"{placeholder} example",
+                (_v2_run_xml(example, color="123456"),),
+                x=_pt(text_x),
+                y=_pt(100),
+                width=_pt(width),
+                height=_pt(18),
+            )
+        )
+    _make_v2_template_pptx(
+        template_dir / "template.pptx",
+        (
+            _v2_slide_xml(1, ""),
+            _v2_slide_xml(2, "".join(runtime_shapes)),
+            _v2_slide_xml(3, "".join(example_shapes)),
+        ),
+    )
+    result = compile_template_v2(template_dir)
+    assert result.ok is True
+    (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
+    return template_dir
+
+
 def _make_v2_template_dir(tmp_path: Path) -> Path:
     """검증 가능한 v2 template dir fixture를 만든다."""
     template_dir = tmp_path / "ppt-v3"
@@ -1000,10 +1378,20 @@ def _v2_run_xml(
     text: str,
     *,
     color: str | None = None,
+    scheme_color: str | None = None,
     font_size: int = 1200,
 ) -> str:
-    fill_xml = f'<a:solidFill><a:srgbClr val="{color}"/></a:solidFill>' if color else ""
+    if color:
+        fill_xml = f'<a:solidFill><a:srgbClr val="{color}"/></a:solidFill>'
+    elif scheme_color:
+        fill_xml = f'<a:solidFill><a:schemeClr val="{scheme_color}"/></a:solidFill>'
+    else:
+        fill_xml = ""
     return f'<a:r><a:rPr sz="{font_size}">{fill_xml}</a:rPr><a:t>{escape(text)}</a:t></a:r>'
+
+
+def _pt(value: int | float) -> int:
+    return int(value * EMU_PER_PT)
 
 
 def _content_types(slide_count: int) -> str:
