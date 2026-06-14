@@ -68,10 +68,10 @@ Anthropic PPTX 스킬의 핵심 프로세스 중 하나. 자동으로 결과물�
 
 ```python
 class VisualQA:
-    
-    def check_slide(self, slide_image_path: str, 
+
+    def check_slide(self, slide_image_path: str,
                     expected_content: dict) -> dict:
-        
+
         prompt = f"""이 PPT 슬라이드 이미지를 검사해줘.
 
 체크리스트:
@@ -87,7 +87,7 @@ class VisualQA:
 - 채워진 주요 텍스트: {expected_content.get('texts_summary', 'N/A')[:200]}...
 
 이슈가 있으면 목록으로, 없으면 "통과"로 답해줘."""
-        
+
         result = call_llm_with_image(prompt, slide_image_path)
         return parse_qa_result(result)
 ```

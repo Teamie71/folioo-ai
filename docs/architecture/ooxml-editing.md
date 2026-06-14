@@ -217,65 +217,65 @@ class SlideEditor:
     def _replace_text(self, sp_element, fill):
         """
         텍스트 교체 - 원본 서식 완전 보존
-        
+
         - 첫 <a:r>의 <a:rPr>을 기준 서식으로 보존
         - 기존 <a:p> 모두 제거 후 새로 생성
         - 여러 항목은 개별 <a:p>로 분리
         - 공백 보존: xml:space="preserve"
         """
-        
+
         txBody = sp_element.getElementsByTagNameNS(
             self.DRAWINGML_NS, "txBody"
         )[0]
-        
+
         # 기준 서식 추출
         base_pPr = self._extract_paragraph_props(txBody)
         base_rPr = self._extract_run_props(txBody)
-        
+
         # 폰트 크기 오버라이드
         if fill.get("font_size_override"):
             size_val = str(int(fill["font_size_override"] * 100))
             base_rPr.setAttribute("sz", size_val)
-        
+
         # 제목이면 굵게
         if fill.get("is_title"):
             base_rPr.setAttribute("b", "1")
-        
+
         # 기존 <a:p> 모두 제거
         existing_paragraphs = txBody.getElementsByTagNameNS(
             self.DRAWINGML_NS, "p"
         )
         for p in list(existing_paragraphs):
             txBody.removeChild(p)
-        
+
         # 새 텍스트를 줄바꿈 기준으로 <a:p> 분리
         lines = fill["text"].split("\n")
         doc = sp_element.ownerDocument
-        
+
         for line in lines:
             new_p = doc.createElementNS(self.DRAWINGML_NS, "a:p")
-            
+
             if base_pPr:
                 new_p.appendChild(base_pPr.cloneNode(deep=True))
-            
+
             new_r = doc.createElementNS(self.DRAWINGML_NS, "a:r")
             new_r.appendChild(base_rPr.cloneNode(deep=True))
-            
+
             new_t = doc.createElementNS(self.DRAWINGML_NS, "a:t")
             if line.startswith(" ") or line.endswith(" ") or "\t" in line:
                 new_t.setAttribute("xml:space", "preserve")
-            
+
             new_t.appendChild(doc.createTextNode(line))
             new_r.appendChild(new_t)
             new_p.appendChild(new_r)
             txBody.appendChild(new_p)
-    
+
     def _extract_paragraph_props(self, txBody):
         pPr_list = txBody.getElementsByTagNameNS(self.DRAWINGML_NS, "pPr")
         if pPr_list:
             return pPr_list[0].cloneNode(deep=True)
         return None
-    
+
     def _extract_run_props(self, txBody):
         rPr_list = txBody.getElementsByTagNameNS(self.DRAWINGML_NS, "rPr")
         if rPr_list:

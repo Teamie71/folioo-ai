@@ -34,10 +34,10 @@ docker run --rm \
   apps/pptx-worker/scripts/verify_runtime_image.sh
 ```
 
-이미지 build smoke는 `ANTHROPIC_PPTX_SKILL_DIR` 미설정 시 빠르게 실패하는 경로만
-검증한다. 실제 skill directory를 Secret/volume/env로 runtime에 주입하는 배포에서는
-동일한 스크립트를 runtime 환경에서 실행해 `PptxToolchain.ensure_available()`까지
-확인한다.
+이미지 build smoke는 번들된 `ANTHROPIC_PPTX_SKILL_DIR` 을 기준으로
+`/app/apps/pptx-worker/toolchain` 경로를 검증하고, 환경변수 미설정 시 빠르게 실패하는
+경로도 함께 확인한다. 동일한 스크립트를 runtime 환경에서 실행해
+`PptxToolchain.ensure_available()`까지 확인한다.
 
 ## Deploy
 
