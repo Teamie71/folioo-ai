@@ -44,6 +44,8 @@ _FILL_SYSTEM_PROMPT = """PPTX 슬라이드 Slot 을 채우는 편집 데이터 �
 - required=false, editable=false, kind=decorative/background/layout slot 은 필수 채움 대상이 아닙니다.
 - 제공된 shape_id 만 key 로 사용하고, 각 slot 의 allowed_actions 범위 안에서만 action 을 선택하세요.
 - chart slot 은 action=chart 와 data.categories, data.series[].values 를 함께 제공하세요.
+- example_text 는 복사할 정답이 아니라 형식, 길이, 줄 수 참고용입니다.
+- placeholder_text, max_lines, nowrap, length_hint 를 우선해 slot 용량에 맞는 텍스트를 작성하세요.
 - 텍스트가 길면 먼저 폰트를 줄이되 원본의 60% 미만이나 10pt 미만으로 내리지 마세요.
 - 텍스트 요약이 필요하면 고유명사, 수치, 기술 스택, 성과 지표를 보존하세요.
 """
@@ -119,6 +121,10 @@ _METRIC_SLIDE_PATTERN = re.compile(
     r"chart|graph|metric|metrics|kpi|차트|그래프|지표|성과\s*지표|수치|통계|전환율|증감|비율",
     re.I,
 )
+_INLINE_LABEL_LAYOUT_TYPES = {"inline_label_group"}
+_INLINE_LABEL_FIT_POLICIES = {"resize_label", "inline_label_group"}
+_BASIC_TEXT_LAYOUT_TYPES = {"basic_text_area"}
+_BASIC_TEXT_FIT_POLICIES = {"basic_text_area", ""}
 
 
 class GenerationLLM(Protocol):
@@ -297,12 +303,13 @@ class LLMContentFillGenerator:
             return {}
 
         llm = self._llm or get_llm_uncached(temperature=0.1, timeout=120)
+        prompt_payload = _build_fill_prompt_payload(content_brief=content_brief, slots=slots)
         messages = [
             SystemMessage(content=_FILL_SYSTEM_PROMPT),
             HumanMessage(
                 content=(
                     "다음 슬라이드 요지와 Slot 정보를 보고 fills 를 작성하세요.\n"
-                    f"{json.dumps({'content_brief': content_brief, 'slots': list(slots)}, ensure_ascii=False, default=str)}"
+                    f"{json.dumps(prompt_payload, ensure_ascii=False, default=str)}"
                 )
             ),
         ]
@@ -536,6 +543,151 @@ def _build_plan_prompt(*, portfolio_text: str, source_slides: Sequence[SourceSli
         },
     }
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _build_fill_prompt_payload(
+    *,
+    content_brief: str,
+    slots: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """LLM Call #2에 전달할 slot capacity 중심 payload를 구성한다."""
+    return {
+        "content_brief": content_brief,
+        "slot_guidance": {
+            "placeholder_text": "slot 의 의미를 알려주는 입력 힌트입니다.",
+            "example_text": "복사 대상이 아니라 형식, 길이, 줄 수 참고용입니다.",
+            "length_hint": "텍스트 생성 시 우선 준수해야 하는 길이 제약입니다.",
+        },
+        "slots": [_build_fill_slot_prompt_payload(slot) for slot in slots],
+    }
+
+
+def _build_fill_slot_prompt_payload(slot: Mapping[str, Any]) -> dict[str, Any]:
+    """원본 slot descriptor에 prompt용 capacity hint를 보강한다."""
+    prompt_slot = dict(slot)
+    if not _slot_uses_text_capacity(slot):
+        return prompt_slot
+
+    placeholder_text = _slot_text(slot, "placeholder_text") or _slot_text(slot, "current_text")
+    example_text = _slot_text(slot, "example_text")
+    example_line_count = _positive_int(slot.get("example_line_count")) or _line_count(example_text)
+    max_lines = (
+        _positive_int(slot.get("max_lines"))
+        or example_line_count
+        or _line_count(placeholder_text)
+        or 1
+    )
+    nowrap = slot.get("nowrap")
+    if not isinstance(nowrap, bool):
+        nowrap = max_lines == 1
+
+    prompt_slot["placeholder_text"] = placeholder_text or None
+    prompt_slot["example_text"] = example_text or None
+    prompt_slot["example_line_count"] = example_line_count
+    prompt_slot["max_lines"] = max_lines
+    prompt_slot["nowrap"] = nowrap
+    if _positive_int(slot.get("example_char_count")) is None and example_text:
+        prompt_slot["example_char_count"] = len(example_text.replace("\n", ""))
+    prompt_slot["length_hint"] = _slot_length_hint(
+        slot=slot,
+        example_text=example_text,
+        example_line_count=example_line_count,
+        max_lines=max_lines,
+        nowrap=nowrap,
+    )
+    return prompt_slot
+
+
+def _slot_uses_text_capacity(slot: Mapping[str, Any]) -> bool:
+    return _slot_is_editable(slot) and "text" in _allowed_actions_for_slot(slot)
+
+
+def _slot_length_hint(
+    *,
+    slot: Mapping[str, Any],
+    example_text: str,
+    example_line_count: int | None,
+    max_lines: int,
+    nowrap: bool,
+) -> str:
+    """layout 유형별 LLM 길이 지침을 생성한다."""
+    layout_type = _normalized_slot_text(slot, "layout_type")
+    layout_group_type = _normalized_slot_text(slot, "layout_group_type")
+    fit_policy = _normalized_slot_text(slot, "fit_policy")
+
+    if (
+        layout_type in _INLINE_LABEL_LAYOUT_TYPES
+        or layout_group_type in _INLINE_LABEL_LAYOUT_TYPES
+        or fit_policy in _INLINE_LABEL_FIT_POLICIES
+    ):
+        return _inline_label_length_hint(example_text=example_text, nowrap=nowrap)
+
+    if (
+        layout_type in _BASIC_TEXT_LAYOUT_TYPES
+        or layout_group_type in _BASIC_TEXT_LAYOUT_TYPES
+        or fit_policy in _BASIC_TEXT_FIT_POLICIES
+    ):
+        return _basic_text_area_length_hint(
+            example_text=example_text,
+            example_line_count=example_line_count,
+            max_lines=max_lines,
+            nowrap=nowrap,
+        )
+
+    return _fallback_length_hint(
+        example_text=example_text,
+        example_line_count=example_line_count,
+        max_lines=max_lines,
+        nowrap=nowrap,
+    )
+
+
+def _inline_label_length_hint(*, example_text: str, nowrap: bool) -> str:
+    example_clause = _example_length_clause(example_text)
+    nowrap_clause = " 줄바꿈하지 말고 한 줄로 유지하세요." if nowrap else ""
+    return (
+        "짧은 chip/label 문구로 작성하세요. "
+        f"{example_clause}공백이 포함되어도 단일 label 처럼 읽혀야 합니다.{nowrap_clause}"
+    )
+
+
+def _basic_text_area_length_hint(
+    *,
+    example_text: str,
+    example_line_count: int | None,
+    max_lines: int,
+    nowrap: bool,
+) -> str:
+    example_clause = _example_length_clause(example_text)
+    line_clause = f"최대 {max_lines}줄 안에서 작성하세요."
+    if example_line_count is not None:
+        line_clause = f"예시는 {example_line_count}줄이며, 최대 {max_lines}줄 안에서 작성하세요."
+    nowrap_clause = " 줄바꿈하지 말고 한 줄로 요약하세요." if nowrap else ""
+    return f"일반 텍스트 영역입니다. {example_clause}{line_clause}{nowrap_clause}"
+
+
+def _fallback_length_hint(
+    *,
+    example_text: str,
+    example_line_count: int | None,
+    max_lines: int,
+    nowrap: bool,
+) -> str:
+    if nowrap:
+        return f"{_example_length_clause(example_text)}최대 {max_lines}줄, 한 줄 문구로 작성하세요."
+    if example_line_count is not None:
+        return (
+            f"{_example_length_clause(example_text)}"
+            f"예시는 {example_line_count}줄이며, 최대 {max_lines}줄 안에서 작성하세요."
+        )
+    return f"{_example_length_clause(example_text)}최대 {max_lines}줄 안에서 작성하세요."
+
+
+def _example_length_clause(example_text: str) -> str:
+    if not example_text:
+        return "예시가 없으면 placeholder_text의 의미를 기준으로 간결하게 작성하세요. "
+    char_count = len(example_text.replace("\n", ""))
+    return f"example_text는 복사하지 말고 {char_count}자 안팎의 형식과 길이만 참고하세요. "
 
 
 def _parse_plan_payload(
@@ -810,6 +962,37 @@ def _has_visual_signal(text: str) -> bool:
             flags=re.IGNORECASE,
         )
     )
+
+
+def _slot_text(slot: Mapping[str, Any], field: str) -> str:
+    value = slot.get(field)
+    if isinstance(value, str):
+        return value.strip()
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _normalized_slot_text(slot: Mapping[str, Any], field: str) -> str:
+    return _slot_text(slot, field).casefold()
+
+
+def _line_count(text: str) -> int | None:
+    if not text:
+        return None
+    return max(1, len(text.splitlines()))
+
+
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
 
 
 def _guard_font_size(value: Any, base_font_size: Any) -> float:
