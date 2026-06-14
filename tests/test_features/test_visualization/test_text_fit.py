@@ -9,6 +9,7 @@ from features.visualization.text_fit import (
     apply_text_fit_preflight,
     estimate_text_layout,
     evaluate_basic_text_area_fit,
+    evaluate_inline_label_group_fit,
     measure_text_width,
 )
 
@@ -167,6 +168,116 @@ def test_preflight_skips_explicit_non_basic_text_fit_policy() -> None:
     assert result.fills["2"] == {"action": "text", "text": "OpenAI API OpenAI API"}
 
 
+def test_inline_label_group_resizes_text_and_linked_background() -> None:
+    """공백 포함 label 은 nowrap 한 줄을 유지하며 text/background width 를 함께 늘린다."""
+    slots = [
+        _inline_slot("2", x_pt=0, width_pt=45, background_shape_id="12", row_right_pt=400),
+        _inline_slot("3", x_pt=120, width_pt=45, background_shape_id="13", row_right_pt=400),
+        _inline_slot("4", x_pt=240, width_pt=45, background_shape_id="14", row_right_pt=400),
+    ]
+
+    result = apply_text_fit_preflight(
+        slots=slots,
+        fills={
+            "2": {"action": "text", "text": "OpenAI API", "font_size_override": 12},
+            "3": {"action": "text", "text": "FastAPI", "font_size_override": 12},
+            "4": {"action": "text", "text": "RAG", "font_size_override": 12},
+        },
+    )
+
+    inline_result = result.inline_label_results[0]
+    first_item = inline_result.item_results[0]
+    assert result.results == ()
+    assert inline_result.status == "resized"
+    assert first_item.measurement.line_count == 1
+    assert first_item.applied_w_emu > first_item.original_w_emu
+    assert first_item.linked_applied_w_emu > first_item.linked_original_w_emu
+    assert any(
+        action["action"] == "resize_linked_shape" and action["shape_id"] == "2"
+        for action in result.layout_actions
+    )
+    assert any(action["action"] == "relayout_row" for action in result.layout_actions)
+    assert "layout_actions" not in result.fills["2"]
+
+
+def test_inline_label_group_shrinks_gap_without_overlap() -> None:
+    """row 폭이 부족하면 min_gap 이상으로 gap 을 줄여 item overlap 을 피한다."""
+    slots = [
+        _inline_slot("2", x_pt=0, width_pt=40, background_shape_id="12", row_right_pt=260),
+        _inline_slot("3", x_pt=100, width_pt=40, background_shape_id="13", row_right_pt=260),
+        _inline_slot("4", x_pt=200, width_pt=40, background_shape_id="14", row_right_pt=260),
+    ]
+
+    result = evaluate_inline_label_group_fit(
+        group_id="group-1",
+        slots=slots,
+        fills={
+            "2": {"action": "text", "text": "OpenAI", "font_size_override": 12},
+            "3": {"action": "text", "text": "FastAPI", "font_size_override": 12},
+            "4": {"action": "text", "text": "RAG", "font_size_override": 12},
+        },
+    )
+
+    assert result.status == "resized"
+    assert result.reason == "gap_shrunk"
+    assert result.min_gap_emu <= result.applied_gap_emu < result.desired_gap_emu
+    for previous, current in zip(
+        result.item_results,
+        result.item_results[1:],
+        strict=False,
+    ):
+        assert current.applied_x_emu - previous.right_emu >= result.applied_gap_emu
+
+
+def test_inline_label_group_overflow_requests_abbreviation_before_render() -> None:
+    """min gap 까지 줄여도 row 를 넘으면 렌더 전 약칭 fallback 대상으로 분류한다."""
+    slots = [
+        _inline_slot("2", x_pt=0, width_pt=40, background_shape_id="12", row_right_pt=160),
+        _inline_slot("3", x_pt=70, width_pt=40, background_shape_id="13", row_right_pt=160),
+        _inline_slot("4", x_pt=140, width_pt=40, background_shape_id="14", row_right_pt=160),
+    ]
+
+    result = evaluate_inline_label_group_fit(
+        group_id="group-1",
+        slots=slots,
+        fills={
+            "2": {"action": "text", "text": "OpenAI API Platform", "font_size_override": 12},
+            "3": {"action": "text", "text": "FastAPI Worker", "font_size_override": 12},
+            "4": {"action": "text", "text": "Vector Search", "font_size_override": 12},
+        },
+    )
+
+    assert result.status == "abbreviation_needed"
+    assert result.reason == "inline_label_group_row_overflow"
+    assert result.overflow_emu > 0
+    assert result.layout_actions == ()
+
+
+def test_preflight_raises_for_inline_label_group_overflow() -> None:
+    """inline_label_group overflow 는 preflight 에서 구조화된 차단 결과로 raise 된다."""
+    slots = [
+        _inline_slot("2", x_pt=0, width_pt=40, background_shape_id="12", row_right_pt=160),
+        _inline_slot("3", x_pt=70, width_pt=40, background_shape_id="13", row_right_pt=160),
+        _inline_slot("4", x_pt=140, width_pt=40, background_shape_id="14", row_right_pt=160),
+    ]
+
+    with pytest.raises(TextFitPreflightError) as exc_info:
+        apply_text_fit_preflight(
+            slots=slots,
+            fills={
+                "2": {"action": "text", "text": "OpenAI API Platform", "font_size_override": 12},
+                "3": {"action": "text", "text": "FastAPI Worker", "font_size_override": 12},
+                "4": {"action": "text", "text": "Vector Search", "font_size_override": 12},
+            },
+        )
+
+    inline_result = next(
+        result for result in exc_info.value.results if getattr(result, "group_id", "") == "group-1"
+    )
+    assert inline_result.status == "abbreviation_needed"
+    assert "target_id=group-1" in str(exc_info.value)
+
+
 def _slot(
     *,
     width_pt: float,
@@ -185,4 +296,44 @@ def _slot(
         "max_lines": 1,
         "nowrap": True,
         "allowed_actions": ["text", "remove"],
+    }
+
+
+def _inline_slot(
+    shape_id: str,
+    *,
+    x_pt: float,
+    width_pt: float,
+    background_shape_id: str,
+    row_right_pt: float,
+) -> dict[str, object]:
+    """테스트용 inline_label_group slot 을 생성한다."""
+    x_emu = int(x_pt * EMU_PER_PT)
+    width_emu = int(width_pt * EMU_PER_PT)
+    background_x_emu = int((x_pt - 4) * EMU_PER_PT)
+    background_width_emu = int((width_pt + 8) * EMU_PER_PT)
+    return {
+        "shape_id": shape_id,
+        "kind": "text",
+        "fit_policy": "resize_label",
+        "layout_group_id": "group-1",
+        "x_emu": x_emu,
+        "y_emu": int(100 * EMU_PER_PT),
+        "w_emu": width_emu,
+        "h_emu": int(18 * EMU_PER_PT),
+        "font_size_pt": 12,
+        "max_lines": 1,
+        "nowrap": True,
+        "padding_pt": 4,
+        "row_right_bound_emu": int(row_right_pt * EMU_PER_PT),
+        "min_gap_emu": int(10 * EMU_PER_PT),
+        "allowed_actions": ["text", "remove"],
+        "item_background": {
+            "shape_id": background_shape_id,
+            "x_emu": background_x_emu,
+            "y_emu": int(96 * EMU_PER_PT),
+            "w_emu": background_width_emu,
+            "h_emu": int(26 * EMU_PER_PT),
+            "resize_linked": True,
+        },
     }
