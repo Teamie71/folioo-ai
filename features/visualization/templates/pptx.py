@@ -23,6 +23,17 @@ _EXACT_MARKER_COLOR = "#FF0000"
 _REFERENCE_COLOR_FALLBACK = "#000000"
 _REFERENCE_MATCH_FAIL_SCORE = 0.3
 _REFERENCE_MATCH_LOW_CONFIDENCE_SCORE = 0.75
+_ITEM_BACKGROUND_MIN_SCORE = 0.72
+_ITEM_BACKGROUND_MIN_SLOT_COVERAGE = 0.75
+_ITEM_BACKGROUND_AMBIGUOUS_SLOT_COVERAGE = 0.45
+_ITEM_BACKGROUND_MAX_WIDTH_RATIO = 2.5
+_ITEM_BACKGROUND_MAX_HEIGHT_RATIO = 2.5
+_ITEM_BACKGROUND_MAX_AREA_RATIO = 5.0
+_CONTAINER_MIN_SLOT_COVERAGE = 0.85
+_CONTAINER_MIN_SLOT_COUNT = 2
+_CONTAINER_MIN_MAX_SLOT_AREA_RATIO = 3.0
+_CONTAINER_MIN_UNION_AREA_RATIO = 1.05
+_CONTAINER_MAX_UNION_AREA_RATIO = 8.0
 
 
 @dataclass(frozen=True)
@@ -56,6 +67,18 @@ class _TextShapeExtraction:
     line_count: int
     char_count: int
     output_text_color: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeShapeGeometry:
+    """runtime slide의 무텍스트 shape geometry."""
+
+    shape_id: str
+    shape_name: str
+    x_emu: int
+    y_emu: int
+    w_emu: int
+    h_emu: int
 
 
 def count_pptx_slides(pptx_path: Path | str) -> int:
@@ -99,6 +122,7 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
     runtime_slides: list[dict] = []
     slide_pairs: list[dict] = []
     shape_matches: list[dict] = []
+    shape_inferences: list[dict] = []
     slots: list[dict] = []
     errors: list[str] = []
     warnings: list[str] = []
@@ -151,6 +175,13 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
             )
             slots.extend(marker_result.slots)
             errors.extend(marker_result.errors)
+            inferred_shapes, shape_warnings = _infer_runtime_shape_relationships(
+                marker_result.slots,
+                _extract_non_text_shapes_from_slide(root),
+                runtime_slide_number=slide_number,
+            )
+            shape_inferences.extend(inferred_shapes)
+            warnings.extend(shape_warnings)
             if not marker_result.slots and not marker_result.has_marker_candidate:
                 errors.append(
                     f"runtime slide {slide_number}에 정확한 #FF0000 editable marker가 없습니다."
@@ -183,6 +214,7 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
         layout_groups=(),
         slide_pairs=tuple(slide_pairs),
         shape_matches=tuple(shape_matches),
+        shape_inferences=tuple(shape_inferences),
         errors=tuple(errors),
         warnings=tuple(warnings),
     )
@@ -428,6 +460,370 @@ def _text_shape_from_shape(shape: Element) -> _TextShapeExtraction | None:
     )
 
 
+def _extract_non_text_shapes_from_slide(
+    slide_root: Element,
+) -> tuple[_RuntimeShapeGeometry, ...]:
+    shapes: list[_RuntimeShapeGeometry] = []
+    for shape in slide_root.findall(f".//{{{_PRESENTATION_NS}}}sp"):
+        if _shape_has_visible_text(shape):
+            continue
+        geometry = _runtime_shape_geometry_from_shape(shape)
+        if geometry is not None:
+            shapes.append(geometry)
+    return tuple(shapes)
+
+
+def _shape_has_visible_text(shape: Element) -> bool:
+    return any(
+        bool((text_node.text or "").strip())
+        for text_node in shape.findall(f".//{{{_DRAWINGML_NS}}}t")
+    )
+
+
+def _runtime_shape_geometry_from_shape(shape: Element) -> _RuntimeShapeGeometry | None:
+    coordinates = _coordinates(shape)
+    x_emu = coordinates["x_emu"]
+    y_emu = coordinates["y_emu"]
+    w_emu = coordinates["w_emu"]
+    h_emu = coordinates["h_emu"]
+    if x_emu is None or y_emu is None or w_emu is None or h_emu is None:
+        return None
+    if min(w_emu, h_emu) <= 0:
+        return None
+    return _RuntimeShapeGeometry(
+        shape_id=_shape_id(shape) or "",
+        shape_name=_shape_name(shape),
+        x_emu=x_emu,
+        y_emu=y_emu,
+        w_emu=w_emu,
+        h_emu=h_emu,
+    )
+
+
+def _infer_runtime_shape_relationships(
+    slots: tuple[dict, ...],
+    non_text_shapes: tuple[_RuntimeShapeGeometry, ...],
+    *,
+    runtime_slide_number: int,
+) -> tuple[list[dict], list[str]]:
+    text_slots = tuple(slot for slot in slots if _bbox_tuple(slot) is not None)
+    if not text_slots or not non_text_shapes:
+        return [], []
+
+    container_inferences = _infer_container_shape_inferences(
+        text_slots,
+        non_text_shapes,
+        runtime_slide_number=runtime_slide_number,
+    )
+    container_shape_ids = {
+        str(inference.get("shape_id"))
+        for inference in container_inferences
+        if inference.get("shape_id") is not None
+    }
+    item_inferences, item_warnings = _infer_item_background_inferences(
+        text_slots,
+        non_text_shapes,
+        excluded_shape_ids=container_shape_ids,
+        runtime_slide_number=runtime_slide_number,
+    )
+    return [*container_inferences, *item_inferences], item_warnings
+
+
+def _infer_container_shape_inferences(
+    slots: tuple[dict, ...],
+    non_text_shapes: tuple[_RuntimeShapeGeometry, ...],
+    *,
+    runtime_slide_number: int,
+) -> list[dict]:
+    inferences: list[dict] = []
+    for shape in non_text_shapes:
+        contained_slots = _container_contained_slots(slots, shape)
+        if len(contained_slots) < _CONTAINER_MIN_SLOT_COUNT:
+            continue
+
+        score = _container_shape_score(contained_slots, shape)
+        if score is None:
+            continue
+
+        inference = _shape_inference_base(
+            "container_shape",
+            shape,
+            runtime_slide_index=_runtime_slide_index(contained_slots),
+            runtime_slide_number=runtime_slide_number,
+        )
+        inference.update(
+            {
+                "contained_slot_ids": [
+                    str(slot.get("slot_id")) for slot in _sort_slots_by_position(contained_slots)
+                ],
+                "match_score": score,
+                "resize_linked": False,
+                "allowed_actions": [],
+            }
+        )
+        inferences.append(inference)
+    return inferences
+
+
+def _container_contained_slots(
+    slots: tuple[dict, ...],
+    shape: _RuntimeShapeGeometry,
+) -> tuple[dict, ...]:
+    contained: list[dict] = []
+    for slot in slots:
+        slot_box = _bbox_tuple(slot)
+        if slot_box is None:
+            continue
+        if _box_coverage(slot_box, _shape_bbox(shape)) >= _CONTAINER_MIN_SLOT_COVERAGE:
+            contained.append(slot)
+    return tuple(contained)
+
+
+def _container_shape_score(
+    contained_slots: tuple[dict, ...],
+    shape: _RuntimeShapeGeometry,
+) -> float | None:
+    shape_box = _shape_bbox(shape)
+    shape_area = _box_area(shape_box)
+    slot_boxes = tuple(box for slot in contained_slots if (box := _bbox_tuple(slot)) is not None)
+    if not slot_boxes:
+        return None
+
+    max_slot_area = max(_box_area(slot_box) for slot_box in slot_boxes)
+    if shape_area < max_slot_area * _CONTAINER_MIN_MAX_SLOT_AREA_RATIO:
+        return None
+
+    union_box = _union_bbox(slot_boxes)
+    if union_box is None:
+        return None
+    union_area = _box_area(union_box)
+    if union_area <= 0:
+        return None
+    if shape_area < union_area * _CONTAINER_MIN_UNION_AREA_RATIO:
+        return None
+    if shape_area > union_area * _CONTAINER_MAX_UNION_AREA_RATIO:
+        return None
+
+    coverage_sum = sum(_box_coverage(slot_box, shape_box) for slot_box in slot_boxes)
+    average_slot_coverage = coverage_sum / len(slot_boxes)
+    union_coverage = _box_coverage(union_box, shape_box)
+    return round((average_slot_coverage * 0.7) + (union_coverage * 0.3), 4)
+
+
+def _infer_item_background_inferences(
+    slots: tuple[dict, ...],
+    non_text_shapes: tuple[_RuntimeShapeGeometry, ...],
+    *,
+    excluded_shape_ids: set[str],
+    runtime_slide_number: int,
+) -> tuple[list[dict], list[str]]:
+    warnings: list[str] = []
+    inferences: list[dict] = []
+    candidates_by_slot_id: dict[str, list[tuple[float, _RuntimeShapeGeometry, dict]]] = {}
+
+    for shape in non_text_shapes:
+        if shape.shape_id in excluded_shape_ids:
+            continue
+
+        overlapping_slots = _background_overlapping_slots(slots, shape)
+        candidate_scores = [
+            (score, slot)
+            for slot in slots
+            if (score := _item_background_score(slot, shape)) >= _ITEM_BACKGROUND_MIN_SCORE
+        ]
+        if len(overlapping_slots) >= 2 and candidate_scores:
+            ambiguous_slots = _sort_slots_by_position(overlapping_slots)
+            inferences.append(
+                _ambiguous_item_background_inference(
+                    shape,
+                    ambiguous_slots,
+                    max(score for score, _slot in candidate_scores),
+                    runtime_slide_number=runtime_slide_number,
+                )
+            )
+            warnings.append(
+                "runtime slide "
+                f"{runtime_slide_number} shape {shape.shape_id}가 여러 text slot "
+                f"({_slot_id_list_text(ambiguous_slots)})과 겹쳐 item_background 연결을 "
+                "건너뜁니다."
+            )
+            continue
+
+        for score, slot in candidate_scores:
+            slot_id = str(slot.get("slot_id"))
+            candidates_by_slot_id.setdefault(slot_id, []).append((score, shape, slot))
+
+    pending_by_shape_id: dict[str, list[tuple[float, _RuntimeShapeGeometry, dict]]] = {}
+    for slot_id, candidates in candidates_by_slot_id.items():
+        del slot_id
+        candidates.sort(key=lambda item: (-item[0], _shape_id_sort_key(item[1].shape_id)))
+        score, shape, slot = candidates[0]
+        pending_by_shape_id.setdefault(shape.shape_id, []).append((score, shape, slot))
+
+    for shape_id, links in pending_by_shape_id.items():
+        if len(links) >= 2:
+            slots_for_shape = _sort_slots_by_position(tuple(slot for _score, _shape, slot in links))
+            best_score = max(score for score, _shape, _slot in links)
+            shape = links[0][1]
+            inferences.append(
+                _ambiguous_item_background_inference(
+                    shape,
+                    slots_for_shape,
+                    best_score,
+                    runtime_slide_number=runtime_slide_number,
+                )
+            )
+            warnings.append(
+                "runtime slide "
+                f"{runtime_slide_number} shape {shape_id}가 여러 text slot "
+                f"({_slot_id_list_text(slots_for_shape)})의 item_background 후보라 연결을 "
+                "건너뜁니다."
+            )
+            continue
+
+        score, shape, slot = links[0]
+        inference = _shape_inference_base(
+            "item_background",
+            shape,
+            runtime_slide_index=slot.get("slide_index"),
+            runtime_slide_number=runtime_slide_number,
+        )
+        inference.update(
+            {
+                "slot_id": slot.get("slot_id"),
+                "slot_shape_id": slot.get("shape_id"),
+                "match_score": round(score, 4),
+                "resize_linked": True,
+            }
+        )
+        inferences.append(inference)
+
+    return inferences, warnings
+
+
+def _background_overlapping_slots(
+    slots: tuple[dict, ...],
+    shape: _RuntimeShapeGeometry,
+) -> tuple[dict, ...]:
+    overlapping: list[dict] = []
+    shape_box = _shape_bbox(shape)
+    for slot in slots:
+        slot_box = _bbox_tuple(slot)
+        if slot_box is None:
+            continue
+        if _box_coverage(slot_box, shape_box) >= _ITEM_BACKGROUND_AMBIGUOUS_SLOT_COVERAGE:
+            overlapping.append(slot)
+    return tuple(overlapping)
+
+
+def _item_background_score(slot: dict, shape: _RuntimeShapeGeometry) -> float:
+    slot_box = _bbox_tuple(slot)
+    if slot_box is None:
+        return 0.0
+
+    slot_x, slot_y, slot_w, slot_h = slot_box
+    shape_x, shape_y, shape_w, shape_h = _shape_bbox(shape)
+    if min(slot_w, slot_h, shape_w, shape_h) <= 0:
+        return 0.0
+
+    slot_area = _box_area(slot_box)
+    shape_area = _box_area(_shape_bbox(shape))
+    if slot_area <= 0 or shape_area <= 0:
+        return 0.0
+    if shape_w / slot_w > _ITEM_BACKGROUND_MAX_WIDTH_RATIO:
+        return 0.0
+    if shape_h / slot_h > _ITEM_BACKGROUND_MAX_HEIGHT_RATIO:
+        return 0.0
+    if shape_area / slot_area > _ITEM_BACKGROUND_MAX_AREA_RATIO:
+        return 0.0
+
+    slot_coverage = _box_coverage(slot_box, _shape_bbox(shape))
+    if slot_coverage < _ITEM_BACKGROUND_MIN_SLOT_COVERAGE:
+        return 0.0
+
+    center = _center_similarity(
+        slot_x,
+        slot_y,
+        slot_w,
+        slot_h,
+        shape_x,
+        shape_y,
+        shape_w,
+        shape_h,
+    )
+    size = (_axis_similarity(slot_w, shape_w) + _axis_similarity(slot_h, shape_h)) / 2
+    return (slot_coverage * 0.45) + (center * 0.35) + (size * 0.2)
+
+
+def _ambiguous_item_background_inference(
+    shape: _RuntimeShapeGeometry,
+    slots: tuple[dict, ...],
+    score: float,
+    *,
+    runtime_slide_number: int,
+) -> dict:
+    inference = _shape_inference_base(
+        "ambiguous_item_background",
+        shape,
+        runtime_slide_index=_runtime_slide_index(slots),
+        runtime_slide_number=runtime_slide_number,
+    )
+    inference.update(
+        {
+            "candidate_slot_ids": [str(slot.get("slot_id")) for slot in slots],
+            "match_score": round(score, 4),
+            "resize_linked": False,
+            "allowed_actions": [],
+        }
+    )
+    return inference
+
+
+def _shape_inference_base(
+    inference_type: str,
+    shape: _RuntimeShapeGeometry,
+    *,
+    runtime_slide_index: int | None,
+    runtime_slide_number: int,
+) -> dict:
+    return {
+        "inference_type": inference_type,
+        "runtime_slide_index": runtime_slide_index,
+        "runtime_slide_number": runtime_slide_number,
+        "shape_id": shape.shape_id,
+        "shape_name": shape.shape_name,
+        "x_emu": shape.x_emu,
+        "y_emu": shape.y_emu,
+        "w_emu": shape.w_emu,
+        "h_emu": shape.h_emu,
+    }
+
+
+def _runtime_slide_index(slots: tuple[dict, ...]) -> int | None:
+    if not slots:
+        return None
+    slide_index = slots[0].get("slide_index")
+    return (
+        slide_index if isinstance(slide_index, int) and not isinstance(slide_index, bool) else None
+    )
+
+
+def _sort_slots_by_position(slots: tuple[dict, ...]) -> tuple[dict, ...]:
+    return tuple(sorted(slots, key=_slot_position_sort_key))
+
+
+def _slot_position_sort_key(slot: dict) -> tuple[int, int, tuple[int, str]]:
+    slot_box = _bbox_tuple(slot)
+    if slot_box is None:
+        return (10**18, 10**18, _shape_id_sort_key(str(slot.get("shape_id") or "")))
+    x_emu, y_emu, _w_emu, _h_emu = slot_box
+    return (y_emu, x_emu, _shape_id_sort_key(str(slot.get("shape_id") or "")))
+
+
+def _slot_id_list_text(slots: tuple[dict, ...]) -> str:
+    return ", ".join(str(slot.get("slot_id")) for slot in slots)
+
+
 def _match_reference_shapes(
     slots: tuple[dict, ...],
     example_shapes: tuple[_TextShapeExtraction, ...],
@@ -548,6 +944,46 @@ def _bbox_tuple(source: dict) -> tuple[int, int, int, int] | None:
     if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
         return None
     return values
+
+
+def _shape_bbox(shape: _RuntimeShapeGeometry) -> tuple[int, int, int, int]:
+    return (shape.x_emu, shape.y_emu, shape.w_emu, shape.h_emu)
+
+
+def _box_area(box: tuple[int, int, int, int]) -> int:
+    _x, _y, width, height = box
+    return max(width, 0) * max(height, 0)
+
+
+def _box_coverage(
+    inner_box: tuple[int, int, int, int],
+    outer_box: tuple[int, int, int, int],
+) -> float:
+    inner_area = _box_area(inner_box)
+    if inner_area <= 0:
+        return 0.0
+    return _intersection_area(inner_box, outer_box) / inner_area
+
+
+def _intersection_area(
+    left_box: tuple[int, int, int, int],
+    right_box: tuple[int, int, int, int],
+) -> int:
+    left_x, left_y, left_w, left_h = left_box
+    right_x, right_y, right_w, right_h = right_box
+    overlap_w = max(0, min(left_x + left_w, right_x + right_w) - max(left_x, right_x))
+    overlap_h = max(0, min(left_y + left_h, right_y + right_h) - max(left_y, right_y))
+    return overlap_w * overlap_h
+
+
+def _union_bbox(boxes: tuple[tuple[int, int, int, int], ...]) -> tuple[int, int, int, int] | None:
+    if not boxes:
+        return None
+    min_x = min(box[0] for box in boxes)
+    min_y = min(box[1] for box in boxes)
+    max_x = max(box[0] + box[2] for box in boxes)
+    max_y = max(box[1] + box[3] for box in boxes)
+    return (min_x, min_y, max_x - min_x, max_y - min_y)
 
 
 def _intersection_over_union(

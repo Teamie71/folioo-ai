@@ -6,7 +6,8 @@ spec: "specs/phase-2/02-pptx-slot-layout-group-inference.md"
 depends_on: ["2.05"]
 blocks: ["2.07"]
 estimate: "M"
-status: "todo"
+status: "done"
+completed_at: "2026-06-14"
 owner: ""
 sprint: ""
 ---
@@ -22,23 +23,23 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] 작은 chip background 와 큰 카드 background fixture 구분
-- [ ] shape bbox overlap, containment, center distance 계산 유틸 위치 결정
+- [x] 작은 chip background 와 큰 카드 background fixture 구분
+- [x] shape bbox overlap, containment, center distance 계산 유틸 위치 결정
 
 ## 구현 체크리스트
 
-- [ ] 텍스트 없는 shape 중 text slot 을 감싸는 작은 후보를 `item_background` 로 score 계산
-- [ ] 동일 background 가 여러 slot 과 겹치는 ambiguous case 를 warning/fallback 으로 분리
-- [ ] 여러 text slot 을 담는 큰 shape 를 `container_shape` 로 분류
-- [ ] `container_shape` 는 참고 정보로만 기록하고 개별 resize 대상에서 제외
-- [ ] background/container 추론 단위 테스트와 origin fixture 기반 회귀 테스트 추가
+- [x] 텍스트 없는 shape 중 text slot 을 감싸는 작은 후보를 `item_background` 로 score 계산
+- [x] 동일 background 가 여러 slot 과 겹치는 ambiguous case 를 warning/fallback 으로 분리
+- [x] 여러 text slot 을 담는 큰 shape 를 `container_shape` 로 분류
+- [x] `container_shape` 는 참고 정보로만 기록하고 개별 resize 대상에서 제외
+- [x] background/container 추론 단위 테스트와 origin-style 합성 fixture 기반 회귀 테스트 추가
 
 ## Definition of Done
 
-- [ ] 작업 중 또는 완료 후 새 사용자 확인사항이 생기면 `tasks/phase-2-pptx-template-quality/18-user-signoff-and-operational-readiness.md` 에 추가했다.
-- [ ] chip text slot 이 1:1 `item_background` 와 연결된다
-- [ ] 큰 카드 배경은 `container_shape` 로 기록되고 resize linked 대상이 아니다
-- [ ] ambiguous background 후보는 억지로 연결되지 않고 warning 으로 남는다
+- [x] 작업 중 또는 완료 후 새 사용자 확인사항이 생기면 `tasks/phase-2-pptx-template-quality/18-user-signoff-and-operational-readiness.md` 에 추가했다.
+- [x] chip text slot 이 1:1 `item_background` 와 연결된다
+- [x] 큰 카드 배경은 `container_shape` 로 기록되고 resize linked 대상이 아니다
+- [x] ambiguous background 후보는 억지로 연결되지 않고 warning 으로 남는다
 
 ## 리스크 / 메모
 
