@@ -20,6 +20,9 @@ _SLIDE_RELATIONSHIP_TYPE = (
 )
 _EXACT_MARKER_RGB = "FF0000"
 _EXACT_MARKER_COLOR = "#FF0000"
+_REFERENCE_COLOR_FALLBACK = "#000000"
+_REFERENCE_MATCH_FAIL_SCORE = 0.3
+_REFERENCE_MATCH_LOW_CONFIDENCE_SCORE = 0.75
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,22 @@ class _MarkerShapeExtraction:
     slots: tuple[dict, ...]
     errors: tuple[str, ...]
     has_marker_candidate: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _TextShapeExtraction:
+    """예시 슬라이드 text shape 추출 결과."""
+
+    shape_id: str
+    shape_name: str
+    x_emu: int | None
+    y_emu: int | None
+    w_emu: int | None
+    h_emu: int | None
+    text: str
+    line_count: int
+    char_count: int
+    output_text_color: str | None
 
 
 def count_pptx_slides(pptx_path: Path | str) -> int:
@@ -79,6 +98,7 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
     slide_names = _ordered_slide_part_names(source)
     runtime_slides: list[dict] = []
     slide_pairs: list[dict] = []
+    shape_matches: list[dict] = []
     slots: list[dict] = []
     errors: list[str] = []
     warnings: list[str] = []
@@ -136,6 +156,24 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
                     f"runtime slide {slide_number}에 정확한 #FF0000 editable marker가 없습니다."
                 )
 
+            try:
+                example_xml = zf.read(example_name)
+            except KeyError as exc:
+                raise ValueError(f"PPTX 슬라이드 XML을 찾을 수 없습니다: {example_name}") from exc
+
+            example_root = _parse_xml(example_xml, f"{source}:{example_name}")
+            match_results = _match_reference_shapes(
+                marker_result.slots,
+                _extract_text_shapes_from_slide(example_root),
+                runtime_slide_number=slide_number,
+                example_slide_index=example_position,
+                example_slide_number=example_position + 1,
+                example_slide_part=example_name,
+            )
+            shape_matches.extend(match_results[0])
+            errors.extend(match_results[1])
+            warnings.extend(match_results[2])
+
     if not runtime_slides:
         errors.append("runtime 대상 슬라이드가 없습니다.")
 
@@ -144,7 +182,7 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
         slots=tuple(slots),
         layout_groups=(),
         slide_pairs=tuple(slide_pairs),
-        shape_matches=(),
+        shape_matches=tuple(shape_matches),
         errors=tuple(errors),
         warnings=tuple(warnings),
     )
@@ -336,6 +374,230 @@ def _marker_slot_from_shape(
         errors=(),
         has_marker_candidate=has_marker_candidate,
     )
+
+
+def _extract_text_shapes_from_slide(slide_root: Element) -> tuple[_TextShapeExtraction, ...]:
+    shapes: list[_TextShapeExtraction] = []
+    for shape in slide_root.findall(f".//{{{_PRESENTATION_NS}}}sp"):
+        extracted = _text_shape_from_shape(shape)
+        if extracted is not None:
+            shapes.append(extracted)
+    return tuple(shapes)
+
+
+def _text_shape_from_shape(shape: Element) -> _TextShapeExtraction | None:
+    tx_body = shape.find(f"{{{_PRESENTATION_NS}}}txBody")
+    if tx_body is None:
+        return None
+
+    paragraph_texts: list[str] = []
+    output_text_color: str | None = None
+    for paragraph in tx_body.findall(f"{{{_DRAWINGML_NS}}}p"):
+        parts: list[str] = []
+        for child in list(paragraph):
+            if child.tag == f"{{{_DRAWINGML_NS}}}br":
+                parts.append("\n")
+                continue
+            if child.tag != f"{{{_DRAWINGML_NS}}}r":
+                continue
+
+            run_text = _run_text(child)
+            parts.append(run_text)
+            if output_text_color is None and run_text.strip():
+                run_color = _run_srgb_color(child)
+                if run_color is not None:
+                    output_text_color = f"#{run_color}"
+        paragraph_texts.append("".join(parts))
+
+    text = "\n".join(paragraph_texts).strip()
+    if not text:
+        return None
+
+    coordinates = _coordinates(shape)
+    return _TextShapeExtraction(
+        shape_id=_shape_id(shape) or "",
+        shape_name=_shape_name(shape),
+        x_emu=coordinates["x_emu"],
+        y_emu=coordinates["y_emu"],
+        w_emu=coordinates["w_emu"],
+        h_emu=coordinates["h_emu"],
+        text=text,
+        line_count=len(text.splitlines()) or 1,
+        char_count=len(text.replace("\n", "")),
+        output_text_color=output_text_color,
+    )
+
+
+def _match_reference_shapes(
+    slots: tuple[dict, ...],
+    example_shapes: tuple[_TextShapeExtraction, ...],
+    *,
+    runtime_slide_number: int,
+    example_slide_index: int,
+    example_slide_number: int,
+    example_slide_part: str,
+) -> tuple[list[dict], list[str], list[str]]:
+    matches: list[dict] = []
+    errors: list[str] = []
+    warnings: list[str] = []
+    used_shape_ids: set[str] = set()
+
+    for slot in slots:
+        candidates = [
+            (_reference_match_score(slot, shape), shape)
+            for shape in example_shapes
+            if shape.shape_id not in used_shape_ids
+        ]
+        candidates.sort(key=lambda item: (-item[0], _shape_id_sort_key(item[1].shape_id)))
+        if not candidates:
+            errors.append(_reference_match_error(runtime_slide_number, slot))
+            continue
+
+        score, matched_shape = candidates[0]
+        if score < _REFERENCE_MATCH_FAIL_SCORE:
+            errors.append(_reference_match_error(runtime_slide_number, slot))
+            continue
+
+        used_shape_ids.add(matched_shape.shape_id)
+        confidence = "high" if score >= _REFERENCE_MATCH_LOW_CONFIDENCE_SCORE else "low"
+        if confidence == "low":
+            warnings.append(
+                "runtime slide "
+                f"{runtime_slide_number} slot {slot.get('slot_id')}의 example shape "
+                f"매칭 신뢰도가 낮습니다. (score: {score:.4f})"
+            )
+
+        output_text_color = matched_shape.output_text_color
+        if output_text_color is None:
+            output_text_color = _REFERENCE_COLOR_FALLBACK
+            warnings.append(
+                "runtime slide "
+                f"{runtime_slide_number} slot {slot.get('slot_id')}의 example shape "
+                f"{matched_shape.shape_id}에서 output_text_color를 찾지 못해 "
+                f"{_REFERENCE_COLOR_FALLBACK}을 사용합니다."
+            )
+
+        matches.append(
+            {
+                "slot_id": slot.get("slot_id"),
+                "runtime_slide_index": slot.get("slide_index"),
+                "runtime_slide_number": runtime_slide_number,
+                "runtime_shape_id": slot.get("shape_id"),
+                "example_slide_index": example_slide_index,
+                "example_slide_number": example_slide_number,
+                "example_slide_filename": Path(example_slide_part).name,
+                "example_slide_part": example_slide_part,
+                "example_shape_id": matched_shape.shape_id,
+                "example_shape_name": matched_shape.shape_name,
+                "example_text": matched_shape.text,
+                "example_char_count": matched_shape.char_count,
+                "example_line_count": matched_shape.line_count,
+                "output_text_color": output_text_color,
+                "match_score": round(score, 4),
+                "match_confidence": confidence,
+            }
+        )
+
+    return matches, errors, warnings
+
+
+def _reference_match_error(runtime_slide_number: int, slot: dict) -> str:
+    return (
+        "runtime slide "
+        f"{runtime_slide_number} slot {slot.get('slot_id')}의 example shape 매칭에 실패했습니다."
+    )
+
+
+def _reference_match_score(slot: dict, shape: _TextShapeExtraction) -> float:
+    slot_box = _bbox_tuple(slot)
+    shape_box = (shape.x_emu, shape.y_emu, shape.w_emu, shape.h_emu)
+    if slot_box is None or None in shape_box:
+        return 0.0
+
+    slot_x, slot_y, slot_w, slot_h = slot_box
+    shape_x, shape_y, shape_w, shape_h = shape_box
+    if shape_x is None or shape_y is None or shape_w is None or shape_h is None:
+        return 0.0
+    if min(slot_w, slot_h, shape_w, shape_h) <= 0:
+        return 0.0
+
+    overlap = _intersection_over_union(
+        slot_x, slot_y, slot_w, slot_h, shape_x, shape_y, shape_w, shape_h
+    )
+    center = _center_similarity(
+        slot_x,
+        slot_y,
+        slot_w,
+        slot_h,
+        shape_x,
+        shape_y,
+        shape_w,
+        shape_h,
+    )
+    size = (_axis_similarity(slot_w, shape_w) + _axis_similarity(slot_h, shape_h)) / 2
+    return (overlap * 0.5) + (center * 0.3) + (size * 0.2)
+
+
+def _bbox_tuple(source: dict) -> tuple[int, int, int, int] | None:
+    values = (
+        source.get("x_emu"),
+        source.get("y_emu"),
+        source.get("w_emu"),
+        source.get("h_emu"),
+    )
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+        return None
+    return values
+
+
+def _intersection_over_union(
+    left_x: int,
+    left_y: int,
+    left_w: int,
+    left_h: int,
+    right_x: int,
+    right_y: int,
+    right_w: int,
+    right_h: int,
+) -> float:
+    overlap_w = max(0, min(left_x + left_w, right_x + right_w) - max(left_x, right_x))
+    overlap_h = max(0, min(left_y + left_h, right_y + right_h) - max(left_y, right_y))
+    intersection = overlap_w * overlap_h
+    union = (left_w * left_h) + (right_w * right_h) - intersection
+    if union <= 0:
+        return 0.0
+    return intersection / union
+
+
+def _center_similarity(
+    left_x: int,
+    left_y: int,
+    left_w: int,
+    left_h: int,
+    right_x: int,
+    right_y: int,
+    right_w: int,
+    right_h: int,
+) -> float:
+    left_center_x = left_x + left_w / 2
+    left_center_y = left_y + left_h / 2
+    right_center_x = right_x + right_w / 2
+    right_center_y = right_y + right_h / 2
+    distance = (
+        (left_center_x - right_center_x) ** 2 + (left_center_y - right_center_y) ** 2
+    ) ** 0.5
+    reference_distance = max((left_w**2 + left_h**2) ** 0.5, 1.0)
+    return max(0.0, 1 - (distance / reference_distance))
+
+
+def _axis_similarity(left: int, right: int) -> float:
+    return min(left, right) / max(left, right)
+
+
+def _shape_id_sort_key(shape_id: str) -> tuple[int, str]:
+    if shape_id.isdigit():
+        return (int(shape_id), shape_id)
+    return (10**9, shape_id)
 
 
 def _shape_id(shape: Element) -> str | None:

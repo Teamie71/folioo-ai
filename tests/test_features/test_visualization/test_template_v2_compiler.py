@@ -141,6 +141,26 @@ def test_compile_template_v2_extracts_only_exact_red_marker_slots(tmp_path: Path
     ]
     assert reference["slide_pairs"][0]["runtime_slide_number"] == 2
     assert reference["slide_pairs"][0]["example_slide_number"] == 3
+    assert reference["shape_matches"] == [
+        {
+            "example_char_count": 8,
+            "example_line_count": 1,
+            "example_shape_id": "30",
+            "example_shape_name": "Example text",
+            "example_slide_filename": "slide3.xml",
+            "example_slide_index": 2,
+            "example_slide_number": 3,
+            "example_slide_part": "ppt/slides/slide3.xml",
+            "example_text": "실제 프로젝트명",
+            "match_confidence": "high",
+            "match_score": 1.0,
+            "output_text_color": "#123456",
+            "runtime_shape_id": "10",
+            "runtime_slide_index": 1,
+            "runtime_slide_number": 2,
+            "slot_id": "slide2_shape10",
+        }
+    ]
 
     assert len(metadata["slots"]) == 1
     slot = metadata["slots"][0]
@@ -196,6 +216,136 @@ def test_compile_template_v2_reports_mixed_color_run_as_contract_error(
     assert result.updated is False
     assert not (template_dir / "meta.json").exists()
     assert any("non-red run이 섞여 있습니다" in error for error in result.errors)
+
+
+def test_compile_template_v2_reports_reference_match_failure(tmp_path: Path) -> None:
+    """editable slot의 예시 shape 매칭 실패는 계약 오류로 보고한다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                _shape_xml(20, "Marker", (_run_xml("경험명", color="FF0000"),)),
+            ),
+            _slide_xml(
+                3,
+                _shape_xml(
+                    30,
+                    "Far example",
+                    (_run_xml("너무 먼 예시", color="123456"),),
+                    x=1000,
+                    y=1000,
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is False
+    assert result.updated is False
+    assert not (template_dir / "reference.json").exists()
+    assert any("example shape 매칭에 실패했습니다" in error for error in result.errors)
+
+
+def test_compile_template_v2_warns_on_low_confidence_reference_match(
+    tmp_path: Path,
+) -> None:
+    """낮은 신뢰도의 example shape 매칭은 warning으로 남기고 reference에는 기록한다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                _shape_xml(20, "Marker", (_run_xml("경험명", color="FF0000"),)),
+            ),
+            _slide_xml(
+                3,
+                _shape_xml(
+                    30,
+                    "Shifted example",
+                    (_run_xml("살짝 밀린 예시", color="123456"),),
+                    x=50,
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    assert any("매칭 신뢰도가 낮습니다" in warning for warning in result.warnings)
+    reference = read_json_payload(result.reference_path)
+    assert reference["shape_matches"][0]["match_confidence"] == "low"
+    assert reference["shape_matches"][0]["example_text"] == "살짝 밀린 예시"
+
+
+def test_compile_template_v2_falls_back_when_reference_color_missing(
+    tmp_path: Path,
+) -> None:
+    """example run 색상을 못 가져오면 검정 fallback과 warning을 기록한다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                _shape_xml(20, "Marker", (_run_xml("경험명", color="FF0000"),)),
+            ),
+            _slide_xml(
+                3,
+                _shape_xml(30, "Uncolored example", (_run_xml("색상 없는 예시"),)),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    assert any("output_text_color를 찾지 못해 #000000" in warning for warning in result.warnings)
+    reference = read_json_payload(result.reference_path)
+    assert reference["shape_matches"][0]["output_text_color"] == "#000000"
+
+
+def test_compile_template_v2_does_not_overtrust_large_containing_example_shape(
+    tmp_path: Path,
+) -> None:
+    """slot을 포함하는 큰 example shape는 high confidence로 보지 않는다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                _shape_xml(20, "Marker", (_run_xml("경험명", color="FF0000"),)),
+            ),
+            _slide_xml(
+                3,
+                _shape_xml(
+                    30,
+                    "Huge example",
+                    (_run_xml("큰 예시", color="123456"),),
+                    x=-450,
+                    y=-450,
+                    width=1000,
+                    height=1000,
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    reference = read_json_payload(result.reference_path)
+    assert reference["shape_matches"][0]["match_confidence"] == "low"
+    assert reference["shape_matches"][0]["match_score"] < 0.75
 
 
 def test_compile_template_v2_preserves_marker_soft_line_breaks(tmp_path: Path) -> None:
@@ -362,7 +512,18 @@ def _valid_v2_slide_xmls() -> tuple[str, ...]:
                 )
             ),
         ),
-        _slide_xml(3, _shape_xml(30, "Example text", (_run_xml("실제 프로젝트명"),))),
+        _slide_xml(
+            3,
+            _shape_xml(
+                30,
+                "Example text",
+                (_run_xml("실제 프로젝트명", color="123456"),),
+                x=100,
+                y=200,
+                width=300,
+                height=400,
+            ),
+        ),
     )
 
 
