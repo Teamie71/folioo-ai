@@ -128,6 +128,8 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
     """
     source = Path(pptx_path)
     slide_names = _ordered_slide_part_names(source)
+    slide_size = _slide_size_emu(source)
+    slide_width_emu = slide_size[0] if slide_size is not None else None
     runtime_slides: list[dict] = []
     slide_pairs: list[dict] = []
     shape_matches: list[dict] = []
@@ -196,6 +198,7 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
                 marker_result.slots,
                 inferred_shapes,
                 runtime_slide_number=slide_number,
+                slide_width_emu=slide_width_emu,
             )
             layout_groups.extend(inferred_groups)
             warnings.extend(group_warnings)
@@ -269,6 +272,27 @@ def _ordered_slide_part_names(pptx_path: Path) -> tuple[str, ...]:
             return tuple(slide_names)
 
         raise ValueError("PPTX 슬라이드 순서를 확인할 presentation relationship이 없습니다.")
+
+
+def _slide_size_emu(pptx_path: Path) -> tuple[int, int] | None:
+    with _open_pptx(pptx_path) as zf:
+        try:
+            presentation_root = _parse_xml(
+                zf.read("ppt/presentation.xml"),
+                f"{pptx_path}:ppt/presentation.xml",
+            )
+        except KeyError:
+            return None
+
+    slide_size = presentation_root.find(f"{{{_PRESENTATION_NS}}}sldSz")
+    if slide_size is None:
+        return None
+
+    width = _positive_int(slide_size.attrib.get("cx"))
+    height = _positive_int(slide_size.attrib.get("cy"))
+    if width is None or height is None:
+        return None
+    return (width, height)
 
 
 def _load_slide_relationships(
@@ -801,6 +825,7 @@ def _infer_inline_label_groups(
     shape_inferences: list[dict],
     *,
     runtime_slide_number: int,
+    slide_width_emu: int | None,
 ) -> tuple[list[dict], list[str]]:
     """반복되는 짧은 slot row를 inline label group으로 추론한다."""
     candidate_slots = tuple(slot for slot in slots if _inline_label_slot_candidate(slot))
@@ -816,6 +841,7 @@ def _infer_inline_label_groups(
             item_backgrounds_by_slot_id,
             runtime_slide_number=runtime_slide_number,
             group_index=len(groups) + 1,
+            slide_width_emu=slide_width_emu,
         )
         if group is None:
             if len(row) >= _INLINE_LABEL_GROUP_MIN_ITEMS:
@@ -915,6 +941,7 @@ def _inline_label_group_from_row(
     *,
     runtime_slide_number: int,
     group_index: int,
+    slide_width_emu: int | None,
 ) -> dict | None:
     if len(row) < _INLINE_LABEL_GROUP_MIN_ITEMS:
         return None
@@ -927,6 +954,7 @@ def _inline_label_group_from_row(
 
     gaps = _horizontal_gaps(row)
     slide_index = _runtime_slide_index(row)
+    row_left_emu, row_right_emu = _inline_label_row_bounds(row)
     group_id = f"slide{runtime_slide_number}_inline_label_group{group_index}"
     return {
         "group_id": group_id,
@@ -936,6 +964,12 @@ def _inline_label_group_from_row(
         "flow": "horizontal",
         "item_slot_ids": [str(slot.get("slot_id")) for slot in row],
         "item_shape_ids": [str(slot.get("shape_id")) for slot in row],
+        "row_left_emu": row_left_emu,
+        "row_right_bound_emu": (
+            slide_width_emu
+            if slide_width_emu is not None and slide_width_emu > row_right_emu
+            else row_right_emu
+        ),
         "gap_emu": _median_int(gaps),
         "min_gap_emu": min(gaps),
         "wrap_allowed": False,
@@ -997,6 +1031,16 @@ def _horizontal_gaps(row: tuple[dict, ...]) -> list[int]:
         right_x, _right_y, _right_w, _right_h = right_box
         gaps.append(right_x - (left_x + left_w))
     return gaps
+
+
+def _inline_label_row_bounds(row: tuple[dict, ...]) -> tuple[int, int]:
+    boxes = tuple(box for slot in row if (box := _bbox_tuple(slot)) is not None)
+    if not boxes:
+        return (0, 0)
+    return (
+        min(x for x, _y, _width, _height in boxes),
+        max(x + width for x, _y, width, _height in boxes),
+    )
 
 
 def _linked_background_by_item(
@@ -1369,6 +1413,18 @@ def _int_attr(element: Element | None, attr_name: str) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _positive_int(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
 
 
 def _is_slide_part_name(part_name: str) -> bool:

@@ -6,7 +6,8 @@ spec: "specs/phase-2/03-pptx-deterministic-text-fit-preflight.md"
 depends_on: ["2.07", "2.08"]
 blocks: ["2.11", "2.13", "2.15"]
 estimate: "M"
-status: "todo"
+status: "done"
+completed_at: "2026-06-14"
 owner: ""
 sprint: ""
 ---
@@ -23,23 +24,23 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] `resize_shape`, `resize_linked_shape`, `relayout_row` action payload 초안 정리
-- [ ] row overflow 시 약칭 재요청과 실패 처리 경계 정리
+- [x] `resize_shape`, `resize_linked_shape`, `relayout_row` action payload 초안 정리
+- [x] row overflow 시 약칭 재요청과 실패 처리 경계 정리
 
 ## 구현 체크리스트
 
-- [ ] chip text required width 계산과 linked background width 계산 구현
-- [ ] 같은 row item 들의 x 좌표, gap 축소, overlap 여부를 사전 계산
-- [ ] 성공 시 `resize_shape`, `resize_linked_shape`, `relayout_row` layout action 목록 생성
-- [ ] row overflow 는 약칭 fallback 또는 실패로 분류
-- [ ] `OpenAI API` 공백 포함 label 이 nowrap 으로 유지되는 테스트 추가
+- [x] chip text required width 계산과 linked background width 계산 구현
+- [x] 같은 row item 들의 x 좌표, gap 축소, overlap 여부를 사전 계산
+- [x] 성공 시 `resize_shape`, `resize_linked_shape`, `relayout_row` layout action 목록 생성
+- [x] row overflow 는 약칭 fallback 또는 실패로 분류
+- [x] `OpenAI API` 공백 포함 label 이 nowrap 으로 유지되는 테스트 추가
 
 ## Definition of Done
 
-- [ ] 작업 중 또는 완료 후 새 사용자 확인사항이 생기면 `tasks/phase-2-pptx-template-quality/18-user-signoff-and-operational-readiness.md` 에 추가했다.
-- [ ] chip text box 와 background width 를 함께 조정하는 layout action 이 계산된다
-- [ ] 같은 row 의 chip 들이 relayout 후 겹치지 않는다
-- [ ] row overflow 는 렌더 전에 실패 또는 약칭 fallback 으로 분류된다
+- [x] 작업 중 또는 완료 후 새 사용자 확인사항이 생기면 `tasks/phase-2-pptx-template-quality/18-user-signoff-and-operational-readiness.md` 에 추가했다.
+- [x] chip text box 와 background width 를 함께 조정하는 layout action 이 계산된다
+- [x] 같은 row 의 chip 들이 relayout 후 겹치지 않는다
+- [x] row overflow 는 렌더 전에 실패 또는 약칭 fallback 으로 분류된다
 
 ## 리스크 / 메모
 

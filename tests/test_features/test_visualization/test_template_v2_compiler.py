@@ -229,6 +229,8 @@ def test_v2_payload_writer_maps_layout_group_by_item_shape_ids() -> None:
                     "layout_type": "inline_label_group",
                     "flow": "horizontal",
                     "item_shape_ids": ["20", "22"],
+                    "row_left_emu": 100,
+                    "row_right_bound_emu": 2000,
                     "gap_emu": 50,
                     "min_gap_emu": 50,
                     "wrap_allowed": False,
@@ -243,6 +245,10 @@ def test_v2_payload_writer_maps_layout_group_by_item_shape_ids() -> None:
     ]
     assert {slot["fit_policy"] for slot in payloads.metadata["slots"]} == {"resize_label"}
     assert all(slot["nowrap"] is True for slot in payloads.metadata["slots"])
+    assert {slot["gap_emu"] for slot in payloads.metadata["slots"]} == {50}
+    assert {slot["min_gap_emu"] for slot in payloads.metadata["slots"]} == {50}
+    assert {slot["row_left_emu"] for slot in payloads.metadata["slots"]} == {100}
+    assert {slot["row_right_bound_emu"] for slot in payloads.metadata["slots"]} == {2000}
     assert payloads.metadata["layout_groups"][0]["item_shape_ids"] == ["20", "22"]
 
 
@@ -897,6 +903,8 @@ def test_compile_template_v2_groups_origin_style_inline_label_chips(
     assert group["flow"] == "horizontal"
     assert group["item_slot_ids"] == ["slide2_shape20", "slide2_shape22", "slide2_shape24"]
     assert group["item_shape_ids"] == ["20", "22", "24"]
+    assert group["row_left_emu"] == 100
+    assert group["row_right_bound_emu"] == 2000
     assert group["gap_emu"] == 55
     assert group["min_gap_emu"] == 50
     assert group["wrap_allowed"] is False
@@ -908,6 +916,10 @@ def test_compile_template_v2_groups_origin_style_inline_label_chips(
         assert slot["fit_policy"] == "resize_label"
         assert slot["max_lines"] == 1
         assert slot["nowrap"] is True
+        assert slot["gap_emu"] == 55
+        assert slot["min_gap_emu"] == 50
+        assert slot["row_left_emu"] == 100
+        assert slot["row_right_bound_emu"] == 2000
         assert "layout_type" not in slot
 
 
@@ -1693,6 +1705,7 @@ def _presentation(slide_count: int) -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         f'<p:presentation xmlns:p="{_PRESENTATION_NS}" xmlns:r="{_RELATIONSHIPS_NS}">'
+        '<p:sldSz cx="2000" cy="1200"/>'
         f"<p:sldIdLst>{slide_ids}</p:sldIdLst>"
         "</p:presentation>"
     )

@@ -325,6 +325,20 @@ def _apply_layout_group_slot_metadata(
         slot["fit_policy"] = "resize_label"
         slot["max_lines"] = 1
         slot["nowrap"] = True
+        _copy_layout_group_number(slot, layout_group, "gap_emu")
+        _copy_layout_group_number(slot, layout_group, "min_gap_emu")
+        _copy_layout_group_number(slot, layout_group, "row_left_emu")
+        _copy_layout_group_number(slot, layout_group, "row_right_bound_emu")
+
+
+def _copy_layout_group_number(
+    slot: dict[str, Any],
+    layout_group: Mapping[str, Any],
+    field_name: str,
+) -> None:
+    value = layout_group.get(field_name)
+    if _json_number(value) is not None:
+        slot[field_name] = value
 
 
 def _slot_item_background(item_background: Mapping[str, Any]) -> dict[str, Any]:

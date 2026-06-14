@@ -20,11 +20,15 @@ ABSOLUTE_MIN_FONT_PT = 8.0
 LINE_HEIGHT_MULTIPLIER = 1.2
 SHRINK_STEP_PT = 0.5
 LOG_LINE_WIDTH_LIMIT = 8
+DEFAULT_INLINE_LABEL_MIN_GAP_EMU = 50_000
 
 _BASIC_TEXT_TYPES = {"basic_text_area"}
 _BASIC_TEXT_POLICIES = {"basic_text_area"}
+_INLINE_LABEL_TYPES = {"inline_label_group"}
+_INLINE_LABEL_POLICIES = {"resize_label", "inline_label_group"}
 
 TextFitStatus = Literal["fit", "shrunk", "summarize_needed", "failed"]
+InlineLabelFitStatus = Literal["fit", "resized", "abbreviation_needed", "failed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,22 +201,129 @@ class BasicTextFitResult:
 
 
 @dataclass(frozen=True, slots=True)
+class InlineLabelItemFitResult:
+    """`inline_label_group` 단일 item 의 resize/relayout 계획."""
+
+    shape_id: str
+    linked_shape_id: str | None
+    text_length: int
+    original_x_emu: int
+    applied_x_emu: int
+    original_w_emu: int
+    required_w_emu: int
+    applied_w_emu: int
+    linked_original_x_emu: int | None
+    linked_applied_x_emu: int | None
+    linked_original_w_emu: int | None
+    linked_applied_w_emu: int | None
+    measurement: TextMeasurement
+
+    @property
+    def resized(self) -> bool:
+        """text/background 폭이 실제 변경되는지 반환한다."""
+        return self.applied_w_emu != self.original_w_emu or (
+            self.linked_original_w_emu is not None
+            and self.linked_applied_w_emu != self.linked_original_w_emu
+        )
+
+    @property
+    def moved(self) -> bool:
+        """text/background x 좌표가 실제 변경되는지 반환한다."""
+        return self.applied_x_emu != self.original_x_emu or (
+            self.linked_original_x_emu is not None
+            and self.linked_applied_x_emu != self.linked_original_x_emu
+        )
+
+    @property
+    def right_emu(self) -> int:
+        """적용 후 text box 오른쪽 좌표."""
+        return self.applied_x_emu + self.applied_w_emu
+
+    def to_log_dict(self) -> dict[str, Any]:
+        """structured log 에 넣을 dict 로 변환한다."""
+        return {
+            "shape_id": self.shape_id,
+            "linked_shape_id": self.linked_shape_id,
+            "text_length": self.text_length,
+            "original_x_emu": self.original_x_emu,
+            "applied_x_emu": self.applied_x_emu,
+            "original_w_emu": self.original_w_emu,
+            "required_w_emu": self.required_w_emu,
+            "applied_w_emu": self.applied_w_emu,
+            "linked_original_x_emu": self.linked_original_x_emu,
+            "linked_applied_x_emu": self.linked_applied_x_emu,
+            "linked_original_w_emu": self.linked_original_w_emu,
+            "linked_applied_w_emu": self.linked_applied_w_emu,
+            "measurement": self.measurement.to_log_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class InlineLabelGroupFitResult:
+    """`inline_label_group` row fit 판정과 layout action 계획."""
+
+    group_id: str
+    status: InlineLabelFitStatus
+    reason: str | None
+    row_left_emu: int
+    row_right_bound_emu: int
+    current_row_width_emu: int
+    required_row_width_emu: int
+    desired_gap_emu: int
+    min_gap_emu: int
+    applied_gap_emu: int
+    overflow_emu: int
+    item_results: tuple[InlineLabelItemFitResult, ...]
+    layout_actions: tuple[dict[str, Any], ...]
+
+    @property
+    def is_blocking(self) -> bool:
+        """OOXML 적용을 중단해야 하는 결과인지 반환한다."""
+        return self.status in {"abbreviation_needed", "failed"}
+
+    def to_log_dict(self) -> dict[str, Any]:
+        """structured log 에 넣을 dict 로 변환한다."""
+        return {
+            "group_id": self.group_id,
+            "fit_policy": "resize_label",
+            "status": self.status,
+            "reason": self.reason,
+            "row_left_emu": self.row_left_emu,
+            "row_right_bound_emu": self.row_right_bound_emu,
+            "current_row_width_emu": self.current_row_width_emu,
+            "required_row_width_emu": self.required_row_width_emu,
+            "desired_gap_emu": self.desired_gap_emu,
+            "min_gap_emu": self.min_gap_emu,
+            "applied_gap_emu": self.applied_gap_emu,
+            "overflow_emu": self.overflow_emu,
+            "layout_action_count": len(self.layout_actions),
+            "items": [item.to_log_dict() for item in self.item_results],
+        }
+
+
+TextFitResultEntry = BasicTextFitResult | InlineLabelGroupFitResult
+
+
+@dataclass(frozen=True, slots=True)
 class TextFitPreflightResult:
     """fill 맵에 대한 text fit preflight 전체 결과."""
 
     fills: dict[str, dict[str, Any]]
     results: tuple[BasicTextFitResult, ...]
+    inline_label_results: tuple[InlineLabelGroupFitResult, ...] = ()
+    layout_actions: tuple[dict[str, Any], ...] = ()
 
 
 class TextFitPreflightError(ValueError):
     """텍스트 fit preflight 가 차단 결과로 끝났을 때 발생한다."""
 
-    def __init__(self, results: Sequence[BasicTextFitResult]) -> None:
+    def __init__(self, results: Sequence[TextFitResultEntry]) -> None:
         self.results = tuple(results)
         first = next((result for result in self.results if result.is_blocking), self.results[0])
+        target_id = getattr(first, "shape_id", None) or getattr(first, "group_id", "")
         super().__init__(
-            "basic_text_area 텍스트가 slot 용량을 초과했습니다. "
-            f"shape_id={first.shape_id}, status={first.status}, reason={first.reason}"
+            "PPTX 텍스트가 slot 용량을 초과했습니다. "
+            f"target_id={target_id}, status={first.status}, reason={first.reason}"
         )
 
 
@@ -401,6 +512,109 @@ def evaluate_basic_text_area_fit(
     )
 
 
+def evaluate_inline_label_group_fit(
+    *,
+    group_id: str,
+    slots: Sequence[Mapping[str, Any]],
+    fills: Mapping[str, Mapping[str, Any]],
+) -> InlineLabelGroupFitResult:
+    """단일 `inline_label_group` row 의 resize/relayout action 을 계산한다."""
+    sorted_slots = _sort_slots_by_x(slots)
+    if len(sorted_slots) < 2:
+        return _inline_label_group_failure(
+            group_id=group_id,
+            reason="inline_label_group_item_count_too_small",
+        )
+
+    item_plans = [
+        _inline_label_item_plan(slot=slot, fill=fills.get(str(slot.get("shape_id") or ""), {}))
+        for slot in sorted_slots
+    ]
+    if any(plan is None for plan in item_plans):
+        return _inline_label_group_failure(
+            group_id=group_id,
+            reason="inline_label_group_invalid_item_geometry",
+        )
+
+    plans = [plan for plan in item_plans if plan is not None]
+    row_left = min(plan["item_left_emu"] for plan in plans)
+    row_right_bound = _group_row_right_bound_emu(sorted_slots) or max(
+        plan["item_right_emu"] for plan in plans
+    )
+    current_width = max(0, row_right_bound - row_left)
+    desired_gap = _group_gap_emu(sorted_slots, plans)
+    min_gap = _group_min_gap_emu(sorted_slots, desired_gap)
+    required_width_at_desired_gap = _required_inline_label_row_width(plans, desired_gap)
+    required_width_at_min_gap = _required_inline_label_row_width(plans, min_gap)
+
+    if current_width <= 0:
+        return _inline_label_group_failure(
+            group_id=group_id,
+            reason="inline_label_group_row_width_too_small",
+            row_left_emu=row_left,
+            row_right_bound_emu=row_right_bound,
+            current_row_width_emu=current_width,
+            required_row_width_emu=required_width_at_min_gap,
+            desired_gap_emu=desired_gap,
+            min_gap_emu=min_gap,
+            overflow_emu=max(0, required_width_at_min_gap - current_width),
+        )
+
+    if required_width_at_desired_gap <= current_width:
+        applied_gap = desired_gap
+        required_row_width = required_width_at_desired_gap
+        overflow = 0
+    elif required_width_at_min_gap <= current_width:
+        applied_gap = _largest_gap_that_fits(
+            current_width=current_width,
+            required_item_width=sum(plan["applied_item_width_emu"] for plan in plans),
+            item_count=len(plans),
+            desired_gap=desired_gap,
+            min_gap=min_gap,
+        )
+        required_row_width = _required_inline_label_row_width(plans, applied_gap)
+        overflow = 0
+    else:
+        return _inline_label_group_failure(
+            group_id=group_id,
+            reason="inline_label_group_row_overflow",
+            row_left_emu=row_left,
+            row_right_bound_emu=row_right_bound,
+            current_row_width_emu=current_width,
+            required_row_width_emu=required_width_at_min_gap,
+            desired_gap_emu=desired_gap,
+            min_gap_emu=min_gap,
+            overflow_emu=max(0, required_width_at_min_gap - current_width),
+            status="abbreviation_needed",
+            item_results=_inline_label_item_results(plans, row_left, min_gap),
+        )
+
+    item_results = _inline_label_item_results(plans, row_left, applied_gap)
+    layout_actions = _inline_label_layout_actions(group_id, item_results, applied_gap, min_gap)
+    status: InlineLabelFitStatus = "fit"
+    reason: str | None = None
+    if layout_actions:
+        status = "resized"
+        if applied_gap < desired_gap:
+            reason = "gap_shrunk"
+
+    return InlineLabelGroupFitResult(
+        group_id=group_id,
+        status=status,
+        reason=reason,
+        row_left_emu=row_left,
+        row_right_bound_emu=row_right_bound,
+        current_row_width_emu=current_width,
+        required_row_width_emu=required_row_width,
+        desired_gap_emu=desired_gap,
+        min_gap_emu=min_gap,
+        applied_gap_emu=applied_gap,
+        overflow_emu=overflow,
+        item_results=tuple(item_results),
+        layout_actions=tuple(layout_actions),
+    )
+
+
 def apply_text_fit_preflight(
     *,
     slots: Sequence[Mapping[str, Any]],
@@ -415,7 +629,21 @@ def apply_text_fit_preflight(
     slots_by_id = {str(slot.get("shape_id")): slot for slot in slots if slot.get("shape_id")}
     adjusted = {str(shape_id): dict(fill) for shape_id, fill in fills.items()}
     results: list[BasicTextFitResult] = []
-    blocking: list[BasicTextFitResult] = []
+    inline_results: list[InlineLabelGroupFitResult] = []
+    layout_actions: list[dict[str, Any]] = []
+    blocking: list[TextFitResultEntry] = []
+
+    for group_id, group_slots in _inline_label_groups(slots).items():
+        result = evaluate_inline_label_group_fit(
+            group_id=group_id,
+            slots=group_slots,
+            fills=adjusted,
+        )
+        inline_results.append(result)
+        if result.is_blocking:
+            blocking.append(result)
+            continue
+        layout_actions.extend(result.layout_actions)
 
     for shape_id, fill in adjusted.items():
         slot = slots_by_id.get(shape_id)
@@ -435,8 +663,13 @@ def apply_text_fit_preflight(
             fill["font_size_override"] = result.applied_font_pt
 
     if blocking:
-        raise TextFitPreflightError(results)
-    return TextFitPreflightResult(fills=adjusted, results=tuple(results))
+        raise TextFitPreflightError((*results, *inline_results))
+    return TextFitPreflightResult(
+        fills=adjusted,
+        results=tuple(results),
+        inline_label_results=tuple(inline_results),
+        layout_actions=tuple(layout_actions),
+    )
 
 
 def emu_to_pt(value: Any) -> float | None:
@@ -445,6 +678,383 @@ def emu_to_pt(value: Any) -> float | None:
     if number is None:
         return None
     return _round_pt(number / EMU_PER_PT)
+
+
+def pt_to_emu(value: Any) -> int | None:
+    """pt 값을 EMU 로 변환한다."""
+    number = _positive_float(value)
+    if number is None:
+        return None
+    return round(number * EMU_PER_PT)
+
+
+def _inline_label_groups(
+    slots: Sequence[Mapping[str, Any]],
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    groups: dict[str, list[Mapping[str, Any]]] = {}
+    for slot in slots:
+        if not _uses_inline_label_group(slot):
+            continue
+        group_id = _slot_group_id(slot)
+        if not group_id:
+            continue
+        groups.setdefault(group_id, []).append(slot)
+    return {
+        group_id: tuple(_sort_slots_by_x(group_slots))
+        for group_id, group_slots in groups.items()
+        if len(group_slots) >= 2
+    }
+
+
+def _uses_inline_label_group(slot: Mapping[str, Any]) -> bool:
+    if str(slot.get("kind") or "text").casefold() != "text":
+        return False
+    layout_type = str(slot.get("layout_type") or "").strip().casefold()
+    layout_group_type = str(slot.get("layout_group_type") or "").strip().casefold()
+    fit_policy = str(slot.get("fit_policy") or "").strip().casefold()
+    if fit_policy:
+        return fit_policy in _INLINE_LABEL_POLICIES
+    return layout_type in _INLINE_LABEL_TYPES or layout_group_type in _INLINE_LABEL_TYPES
+
+
+def _slot_group_id(slot: Mapping[str, Any]) -> str:
+    for field in ("layout_group_id", "group_id"):
+        value = slot.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _sort_slots_by_x(slots: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
+    return tuple(sorted(slots, key=_slot_x_sort_key))
+
+
+def _slot_x_sort_key(slot: Mapping[str, Any]) -> tuple[int, str]:
+    return (_int_value(slot.get("x_emu")) or 0, str(slot.get("shape_id") or ""))
+
+
+def _inline_label_item_plan(
+    *,
+    slot: Mapping[str, Any],
+    fill: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    shape_id = str(slot.get("shape_id") or "").strip()
+    if not shape_id:
+        return None
+
+    slot_box = _slot_box(slot)
+    if slot_box is None:
+        return None
+    slot_x, slot_y, slot_w, slot_h = slot_box
+    text = str(fill.get("text") or slot.get("current_text") or slot.get("placeholder_text") or "")
+    font_size = _fill_font_size(slot, fill)
+    measurement = measure_text_width(text, font_size_pt=font_size)
+    required_w = max(slot_w, _required_inline_text_width_emu(slot, measurement))
+
+    background = _slot_item_background(slot)
+    linked_shape_id = str(background.get("shape_id") or "").strip() if background else ""
+    linked_box = _background_box(background) if background else None
+    item_left = slot_x
+    item_right = slot_x + slot_w
+    linked_margin_w = 0
+    if linked_box is not None:
+        bg_x, _bg_y, bg_w, _bg_h = linked_box
+        item_left = min(item_left, bg_x)
+        item_right = max(item_right, bg_x + bg_w)
+        linked_margin_w = max(0, bg_w - slot_w)
+
+    linked_required_w = None
+    if linked_box is not None:
+        linked_required_w = max(linked_box[2], required_w + linked_margin_w)
+
+    text_offset_x = slot_x - item_left
+    linked_offset_x = linked_box[0] - item_left if linked_box is not None else None
+    applied_item_width = max(text_offset_x + required_w, item_right - item_left)
+    if linked_box is not None and linked_required_w is not None and linked_offset_x is not None:
+        applied_item_width = max(applied_item_width, linked_offset_x + linked_required_w)
+
+    return {
+        "shape_id": shape_id,
+        "linked_shape_id": linked_shape_id or None,
+        "text": text,
+        "text_length": len(text),
+        "measurement": measurement,
+        "slot_x_emu": slot_x,
+        "slot_y_emu": slot_y,
+        "slot_w_emu": slot_w,
+        "slot_h_emu": slot_h,
+        "required_w_emu": required_w,
+        "linked_box": linked_box,
+        "linked_required_w_emu": linked_required_w,
+        "text_offset_x_emu": text_offset_x,
+        "linked_offset_x_emu": linked_offset_x,
+        "item_left_emu": item_left,
+        "item_right_emu": item_right,
+        "item_width_emu": item_right - item_left,
+        "applied_item_width_emu": applied_item_width,
+    }
+
+
+def _required_inline_text_width_emu(
+    slot: Mapping[str, Any],
+    measurement: TextMeasurement,
+) -> int:
+    padding_left = _slot_padding_pt(slot, "left", DEFAULT_HORIZONTAL_PADDING_PT)
+    padding_right = _slot_padding_pt(slot, "right", DEFAULT_HORIZONTAL_PADDING_PT)
+    safety_margin = _safety_margin_ratio(slot.get("safety_margin_ratio"))
+    width_pt = (measurement.width_pt * (1.0 + safety_margin)) + padding_left + padding_right
+    return pt_to_emu(width_pt) or 0
+
+
+def _slot_box(slot: Mapping[str, Any]) -> tuple[int, int, int, int] | None:
+    x_emu = _int_value(slot.get("x_emu"))
+    y_emu = _int_value(slot.get("y_emu"))
+    w_emu = _positive_int(slot.get("w_emu"))
+    h_emu = _positive_int(slot.get("h_emu"))
+    if x_emu is None or y_emu is None or w_emu is None or h_emu is None:
+        return None
+    return (x_emu, y_emu, w_emu, h_emu)
+
+
+def _slot_item_background(slot: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = slot.get("item_background")
+    if isinstance(value, Mapping):
+        return value
+    return {}
+
+
+def _background_box(background: Mapping[str, Any]) -> tuple[int, int, int, int] | None:
+    x_emu = _int_value(background.get("x_emu"))
+    y_emu = _int_value(background.get("y_emu"))
+    w_emu = _positive_int(background.get("w_emu"))
+    h_emu = _positive_int(background.get("h_emu"))
+    if x_emu is None or y_emu is None or w_emu is None or h_emu is None:
+        return None
+    return (x_emu, y_emu, w_emu, h_emu)
+
+
+def _group_row_right_bound_emu(slots: Sequence[Mapping[str, Any]]) -> int | None:
+    for field in ("row_right_bound_emu", "max_x_emu"):
+        value = _first_positive_int(slots, field)
+        if value is not None:
+            return value
+
+    row_width = _first_positive_int(slots, "row_width_emu")
+    if row_width is None:
+        return None
+    row_left = min((_int_value(slot.get("x_emu")) or 0 for slot in slots), default=0)
+    return row_left + row_width
+
+
+def _group_gap_emu(slots: Sequence[Mapping[str, Any]], plans: Sequence[Mapping[str, Any]]) -> int:
+    configured = _first_positive_int(slots, "gap_emu")
+    if configured is not None:
+        return configured
+
+    gaps = _current_inline_label_gaps(plans)
+    if not gaps:
+        return DEFAULT_INLINE_LABEL_MIN_GAP_EMU
+    return _median_int(gaps)
+
+
+def _group_min_gap_emu(slots: Sequence[Mapping[str, Any]], desired_gap: int) -> int:
+    configured = _first_positive_int(slots, "min_gap_emu")
+    if configured is not None:
+        return min(configured, desired_gap)
+    return min(DEFAULT_INLINE_LABEL_MIN_GAP_EMU, desired_gap)
+
+
+def _first_positive_int(slots: Sequence[Mapping[str, Any]], field: str) -> int | None:
+    for slot in slots:
+        value = _positive_int(slot.get(field))
+        if value is not None:
+            return value
+    return None
+
+
+def _current_inline_label_gaps(plans: Sequence[Mapping[str, Any]]) -> tuple[int, ...]:
+    gaps: list[int] = []
+    for left, right in zip(plans, plans[1:], strict=False):
+        gaps.append(max(0, int(right["item_left_emu"]) - int(left["item_right_emu"])))
+    return tuple(gaps)
+
+
+def _required_inline_label_row_width(
+    plans: Sequence[Mapping[str, Any]],
+    gap_emu: int,
+) -> int:
+    if not plans:
+        return 0
+    item_width = sum(int(plan["applied_item_width_emu"]) for plan in plans)
+    return item_width + (gap_emu * (len(plans) - 1))
+
+
+def _largest_gap_that_fits(
+    *,
+    current_width: int,
+    required_item_width: int,
+    item_count: int,
+    desired_gap: int,
+    min_gap: int,
+) -> int:
+    if item_count <= 1:
+        return 0
+    remaining = current_width - required_item_width
+    if remaining <= 0:
+        return min_gap
+    return min(desired_gap, max(min_gap, remaining // (item_count - 1)))
+
+
+def _inline_label_item_results(
+    plans: Sequence[Mapping[str, Any]],
+    row_left: int,
+    applied_gap: int,
+) -> list[InlineLabelItemFitResult]:
+    results: list[InlineLabelItemFitResult] = []
+    item_left = row_left
+    for plan in plans:
+        applied_x = item_left + int(plan["text_offset_x_emu"])
+        linked_box = plan["linked_box"]
+        linked_offset_x = plan["linked_offset_x_emu"]
+        linked_applied_x = None
+        linked_original_x = None
+        linked_original_w = None
+        linked_applied_w = None
+        if linked_box is not None and linked_offset_x is not None:
+            linked_original_x = linked_box[0]
+            linked_original_w = linked_box[2]
+            linked_applied_x = item_left + int(linked_offset_x)
+            linked_applied_w = int(plan["linked_required_w_emu"] or linked_original_w)
+
+        results.append(
+            InlineLabelItemFitResult(
+                shape_id=str(plan["shape_id"]),
+                linked_shape_id=plan["linked_shape_id"],
+                text_length=int(plan["text_length"]),
+                original_x_emu=int(plan["slot_x_emu"]),
+                applied_x_emu=applied_x,
+                original_w_emu=int(plan["slot_w_emu"]),
+                required_w_emu=int(plan["required_w_emu"]),
+                applied_w_emu=int(plan["required_w_emu"]),
+                linked_original_x_emu=linked_original_x,
+                linked_applied_x_emu=linked_applied_x,
+                linked_original_w_emu=linked_original_w,
+                linked_applied_w_emu=linked_applied_w,
+                measurement=plan["measurement"],
+            )
+        )
+        item_left += int(plan["applied_item_width_emu"]) + applied_gap
+    return results
+
+
+def _inline_label_layout_actions(
+    group_id: str,
+    item_results: Sequence[InlineLabelItemFitResult],
+    applied_gap: int,
+    min_gap: int,
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for item in item_results:
+        if not item.resized:
+            continue
+        if item.linked_shape_id:
+            action = {
+                "action": "resize_linked_shape",
+                "shape_id": item.shape_id,
+                "linked_shape_ids": [item.linked_shape_id],
+                "w_emu": item.applied_w_emu,
+            }
+            if item.linked_applied_w_emu is not None:
+                action["linked_w_emu"] = item.linked_applied_w_emu
+        else:
+            action = {
+                "action": "resize_shape",
+                "shape_id": item.shape_id,
+                "w_emu": item.applied_w_emu,
+            }
+        actions.append(action)
+
+    if any(item.moved for item in item_results):
+        actions.append(
+            {
+                "action": "relayout_row",
+                "group_id": group_id,
+                "gap_emu": applied_gap,
+                "min_gap_emu": min_gap,
+                "items": [
+                    _relayout_row_item_payload(item)
+                    for item in item_results
+                    if item.moved or item.resized or item.linked_shape_id is not None
+                ],
+            }
+        )
+    return actions
+
+
+def _relayout_row_item_payload(item: InlineLabelItemFitResult) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "shape_id": item.shape_id,
+        "x_emu": item.applied_x_emu,
+        "w_emu": item.applied_w_emu,
+    }
+    if item.linked_shape_id:
+        payload["linked_shape_ids"] = [item.linked_shape_id]
+    if item.linked_applied_x_emu is not None:
+        payload["linked_x_emu"] = item.linked_applied_x_emu
+    if item.linked_applied_w_emu is not None:
+        payload["linked_w_emu"] = item.linked_applied_w_emu
+    return payload
+
+
+def _inline_label_group_failure(
+    *,
+    group_id: str,
+    reason: str,
+    row_left_emu: int = 0,
+    row_right_bound_emu: int = 0,
+    current_row_width_emu: int = 0,
+    required_row_width_emu: int = 0,
+    desired_gap_emu: int = 0,
+    min_gap_emu: int = 0,
+    overflow_emu: int = 0,
+    status: InlineLabelFitStatus = "failed",
+    item_results: Sequence[InlineLabelItemFitResult] = (),
+) -> InlineLabelGroupFitResult:
+    return InlineLabelGroupFitResult(
+        group_id=group_id,
+        status=status,
+        reason=reason,
+        row_left_emu=row_left_emu,
+        row_right_bound_emu=row_right_bound_emu,
+        current_row_width_emu=current_row_width_emu,
+        required_row_width_emu=required_row_width_emu,
+        desired_gap_emu=desired_gap_emu,
+        min_gap_emu=min_gap_emu,
+        applied_gap_emu=min_gap_emu,
+        overflow_emu=overflow_emu,
+        item_results=tuple(item_results),
+        layout_actions=(),
+    )
+
+
+def _median_int(values: Sequence[int]) -> int:
+    sorted_values = sorted(values)
+    if not sorted_values:
+        return 0
+    middle = len(sorted_values) // 2
+    if len(sorted_values) % 2 == 1:
+        return sorted_values[middle]
+    return round((sorted_values[middle - 1] + sorted_values[middle]) / 2)
+
+
+def _int_value(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number
 
 
 def _character_width_unit(char: str) -> tuple[str, float]:
@@ -676,8 +1286,13 @@ def _limited_log_line_widths(line_widths: Sequence[float]) -> list[float]:
 __all__ = [
     "ABSOLUTE_MIN_FONT_PT",
     "BasicTextFitResult",
+    "DEFAULT_INLINE_LABEL_MIN_GAP_EMU",
+    "InlineLabelFitStatus",
+    "InlineLabelGroupFitResult",
+    "InlineLabelItemFitResult",
     "TextFitPreflightError",
     "TextFitPreflightResult",
+    "TextFitResultEntry",
     "TextLayoutEstimate",
     "TextMeasurement",
     "TextWidthBreakdown",
@@ -685,5 +1300,7 @@ __all__ = [
     "emu_to_pt",
     "estimate_text_layout",
     "evaluate_basic_text_area_fit",
+    "evaluate_inline_label_group_fit",
     "measure_text_width",
+    "pt_to_emu",
 ]

@@ -37,6 +37,7 @@ from features.visualization.storage.gcs_client import GcsClient, job_workdir, pr
 from features.visualization.templates import require_template_v2_metadata
 from features.visualization.text_fit import (
     BasicTextFitResult,
+    InlineLabelGroupFitResult,
     TextFitPreflightError,
     apply_text_fit_preflight,
 )
@@ -1110,6 +1111,26 @@ def _preflight_text_fills(
             slide_order=slide_order,
             result=result,
         )
+    for result in preflight.inline_label_results:
+        _log_text_fit_result(
+            job_id=job_id,
+            slide_id=slide_id,
+            slide_order=slide_order,
+            result=result,
+        )
+    if preflight.layout_actions:
+        logger.info(
+            "pptx layout actions calculated",
+            extra={
+                "pptx_layout_actions": {
+                    "job_id": job_id,
+                    "slide_id": slide_id,
+                    "slide_order": slide_order,
+                    "layout_action_count": len(preflight.layout_actions),
+                    "layout_actions": list(preflight.layout_actions),
+                }
+            },
+        )
     return preflight.fills
 
 
@@ -1118,7 +1139,7 @@ def _log_text_fit_result(
     job_id: str,
     slide_id: str,
     slide_order: int,
-    result: BasicTextFitResult,
+    result: BasicTextFitResult | InlineLabelGroupFitResult,
 ) -> None:
     """fit 결과와 실패 사유를 structured log 로 남긴다."""
     logger.info(
