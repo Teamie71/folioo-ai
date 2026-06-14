@@ -1,5 +1,6 @@
 """슬라이드 XML Slot 추출과 Fill 적용을 담당하는 OOXML 편집기."""
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from xml.dom import Node
@@ -31,6 +32,7 @@ class SlideEditor:
     _TITLE_PLACEHOLDER_TYPES = frozenset({"title", "ctrTitle", "subTitle"})
     _TEXT_ALLOWED_ACTIONS = ("text", "remove")
     _CHART_ALLOWED_ACTIONS = ("chart",)
+    _GEOMETRY_SHAPE_TAGS = ("sp", "pic", "graphicFrame")
 
     def extract_slots(self, slide_xml_path: str) -> list[dict[str, Any]]:
         """
@@ -107,6 +109,44 @@ class SlideEditor:
 
         self._write_document(Path(slide_xml_path), doc)
 
+    def apply_layout_actions(
+        self,
+        slide_xml_path: str,
+        layout_actions: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """
+        워커 내부 layout action 을 슬라이드 OOXML geometry 에 적용한다.
+
+        Args:
+            slide_xml_path: 편집 대상 `slideN.xml` 파일 경로
+            layout_actions: `resize_shape`, `resize_linked_shape` action 목록
+
+        Raises:
+            ValueError: action 종류, shape id, geometry payload 가 유효하지 않은 경우
+        """
+        if not layout_actions:
+            return
+
+        doc = parse(slide_xml_path)
+        sp_tree = self._first_descendant(doc, self.PML_NS, "spTree")
+        if sp_tree is None:
+            return
+
+        shapes_by_id = self._geometry_shapes_by_id(sp_tree)
+        for action in layout_actions:
+            if not isinstance(action, Mapping):
+                raise ValueError("layout action 은 mapping 이어야 합니다.")
+
+            action_type = action.get("action")
+            if action_type == "resize_shape":
+                self._apply_resize_shape_action(action, shapes_by_id)
+            elif action_type == "resize_linked_shape":
+                self._apply_resize_linked_shape_action(action, shapes_by_id)
+            else:
+                raise ValueError(f"지원하지 않는 layout action 입니다: {action_type}")
+
+        self._write_document(Path(slide_xml_path), doc)
+
     def clear_content(self, slide_xml_path: str) -> None:
         """
         슬라이드의 가시 콘텐츠 도형을 모두 제거해 빈 페이지로 만든다.
@@ -129,6 +169,161 @@ class SlideEditor:
                 child.unlink()
 
         self._write_document(Path(slide_xml_path), doc)
+
+    def _apply_resize_shape_action(
+        self,
+        action: Mapping[str, Any],
+        shapes_by_id: dict[str, Element],
+    ) -> None:
+        """단일 shape geometry 를 action payload 대로 변경한다."""
+        shape = self._required_geometry_shape(action.get("shape_id"), shapes_by_id)
+        updates = self._geometry_updates(action)
+        if not updates:
+            raise ValueError("resize_shape action 에는 geometry 값이 필요합니다.")
+        self._apply_geometry_updates(shape, updates)
+
+    def _apply_resize_linked_shape_action(
+        self,
+        action: Mapping[str, Any],
+        shapes_by_id: dict[str, Element],
+    ) -> None:
+        """텍스트 shape 와 연결된 배경 shape geometry 를 함께 변경한다."""
+        text_shape = self._required_geometry_shape(action.get("shape_id"), shapes_by_id)
+        text_updates = self._geometry_updates(action)
+        if not text_updates:
+            raise ValueError("resize_linked_shape action 에는 text geometry 값이 필요합니다.")
+
+        linked_shape_ids = self._linked_shape_ids(action)
+        linked_updates = self._linked_geometry_updates(action)
+        if not linked_updates:
+            raise ValueError("resize_linked_shape action 에는 linked geometry 값이 필요합니다.")
+
+        self._apply_geometry_updates(text_shape, text_updates)
+        for linked_shape_id in linked_shape_ids:
+            linked_shape = self._required_geometry_shape(linked_shape_id, shapes_by_id)
+            self._apply_geometry_updates(linked_shape, linked_updates)
+
+    def _geometry_shapes_by_id(self, sp_tree: Element) -> dict[str, Element]:
+        """geometry action 대상이 될 수 있는 shape 를 cNvPr/@id 로 색인한다."""
+        shapes_by_id: dict[str, Element] = {}
+        for tag_name in self._GEOMETRY_SHAPE_TAGS:
+            for element in self._descendants(sp_tree, self.PML_NS, tag_name):
+                shape_id = self._get_shape_id(element)
+                if shape_id is not None and shape_id not in shapes_by_id:
+                    shapes_by_id[shape_id] = element
+        return shapes_by_id
+
+    def _required_geometry_shape(
+        self,
+        shape_id_value: Any,
+        shapes_by_id: dict[str, Element],
+    ) -> Element:
+        shape_id = self._required_shape_id(shape_id_value)
+        shape = shapes_by_id.get(shape_id)
+        if shape is None:
+            raise ValueError(f"layout action 대상 shape_id 를 찾을 수 없습니다: {shape_id}")
+        return shape
+
+    def _required_shape_id(self, shape_id_value: Any) -> str:
+        if shape_id_value is None:
+            raise ValueError("layout action 에는 shape_id 가 필요합니다.")
+
+        shape_id = str(shape_id_value).strip()
+        if not shape_id:
+            raise ValueError("layout action shape_id 는 비어 있을 수 없습니다.")
+        return shape_id
+
+    def _linked_shape_ids(self, action: Mapping[str, Any]) -> list[str]:
+        linked_shape_ids = action.get("linked_shape_ids")
+        if linked_shape_ids is None and action.get("linked_shape_id") is not None:
+            linked_shape_ids = [action.get("linked_shape_id")]
+
+        if not isinstance(linked_shape_ids, Sequence) or isinstance(linked_shape_ids, str | bytes):
+            raise ValueError("resize_linked_shape action 에는 linked_shape_ids 목록이 필요합니다.")
+
+        shape_ids = [self._required_shape_id(shape_id) for shape_id in linked_shape_ids]
+        if not shape_ids:
+            raise ValueError("resize_linked_shape action 에는 linked_shape_ids 목록이 필요합니다.")
+        return shape_ids
+
+    def _geometry_updates(self, action: Mapping[str, Any]) -> dict[str, int]:
+        updates: dict[str, int] = {}
+        for field_name in ("x_emu", "y_emu", "w_emu", "h_emu"):
+            if field_name not in action:
+                continue
+            updates[field_name] = self._geometry_int(
+                action[field_name],
+                field_name,
+                positive=field_name in {"w_emu", "h_emu"},
+            )
+        return updates
+
+    def _linked_geometry_updates(self, action: Mapping[str, Any]) -> dict[str, int]:
+        updates: dict[str, int] = {}
+        for field_name in ("x_emu", "y_emu", "w_emu", "h_emu"):
+            linked_field_name = f"linked_{field_name}"
+            if linked_field_name in action:
+                updates[field_name] = self._geometry_int(
+                    action[linked_field_name],
+                    linked_field_name,
+                    positive=field_name in {"w_emu", "h_emu"},
+                )
+            elif field_name in {"w_emu", "h_emu"} and field_name in action:
+                updates[field_name] = self._geometry_int(
+                    action[field_name],
+                    field_name,
+                    positive=True,
+                )
+        return updates
+
+    def _geometry_int(self, value: Any, field_name: str, *, positive: bool) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{field_name} 값은 정수여야 합니다.")
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"{field_name} 값은 정수여야 합니다.")
+
+        try:
+            parsed_value = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} 값은 정수여야 합니다.") from exc
+
+        if positive and parsed_value <= 0:
+            raise ValueError(f"{field_name} 값은 0보다 커야 합니다.")
+        return parsed_value
+
+    def _apply_geometry_updates(self, element: Element, updates: Mapping[str, int]) -> None:
+        xfrm = self._geometry_xfrm(element)
+        if xfrm is None:
+            shape_id = self._get_shape_id(element) or "(unknown)"
+            raise ValueError(f"shape_id {shape_id} 의 xfrm 정보를 찾을 수 없습니다.")
+
+        if "x_emu" in updates or "y_emu" in updates:
+            off = self._first_child(xfrm, self.DRAWINGML_NS, "off")
+            if off is None:
+                shape_id = self._get_shape_id(element) or "(unknown)"
+                raise ValueError(f"shape_id {shape_id} 의 off 정보를 찾을 수 없습니다.")
+            if "x_emu" in updates:
+                off.setAttribute("x", str(updates["x_emu"]))
+            if "y_emu" in updates:
+                off.setAttribute("y", str(updates["y_emu"]))
+
+        if "w_emu" in updates or "h_emu" in updates:
+            ext = self._first_child(xfrm, self.DRAWINGML_NS, "ext")
+            if ext is None:
+                shape_id = self._get_shape_id(element) or "(unknown)"
+                raise ValueError(f"shape_id {shape_id} 의 ext 정보를 찾을 수 없습니다.")
+            if "w_emu" in updates:
+                ext.setAttribute("cx", str(updates["w_emu"]))
+            if "h_emu" in updates:
+                ext.setAttribute("cy", str(updates["h_emu"]))
+
+    def _geometry_xfrm(self, element: Element) -> Element | None:
+        """shape 종류별 실제 geometry xfrm 요소를 반환한다."""
+        if element.namespaceURI == self.PML_NS and element.localName == "graphicFrame":
+            return self._first_child(element, self.PML_NS, "xfrm")
+
+        shape_properties = self._first_child(element, self.PML_NS, "spPr")
+        return self._first_child(shape_properties, self.DRAWINGML_NS, "xfrm")
 
     def _get_shape_id(self, element: Element) -> str | None:
         """cNvPr/@id 값을 추출한다."""

@@ -189,6 +189,19 @@ def _shape_by_id(doc: Document, shape_id: str) -> Element:
     raise AssertionError(f"도형을 찾을 수 없습니다: {shape_id}")
 
 
+def _shape_geometry(doc: Document, shape_id: str) -> dict[str, int]:
+    shape = _shape_by_id(doc, shape_id)
+    xfrm = shape.getElementsByTagNameNS(DRAWINGML_NS, "xfrm")[0]
+    off = xfrm.getElementsByTagNameNS(DRAWINGML_NS, "off")[0]
+    ext = xfrm.getElementsByTagNameNS(DRAWINGML_NS, "ext")[0]
+    return {
+        "x": int(off.getAttribute("x")),
+        "y": int(off.getAttribute("y")),
+        "cx": int(ext.getAttribute("cx")),
+        "cy": int(ext.getAttribute("cy")),
+    }
+
+
 def _cache_values(cache: Element) -> list[str]:
     values = []
     for point in cache.getElementsByTagNameNS(CHART_NS, "pt"):
@@ -328,6 +341,105 @@ def test_extract_slots_rejects_chart_target_outside_package(tmp_path: Path) -> N
 
     with pytest.raises(ValueError, match="패키지 범위"):
         SlideEditor().extract_slots(str(slide_path))
+
+
+def test_apply_layout_actions_resizes_shape_ext(tmp_path: Path) -> None:
+    """resize_shape action 은 대상 shape 의 ext 값을 변경한다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+
+    SlideEditor().apply_layout_actions(
+        str(slide_path),
+        [
+            {
+                "action": "resize_shape",
+                "shape_id": "3",
+                "w_emu": 6_000_000,
+                "h_emu": 1_500_000,
+            }
+        ],
+    )
+
+    geometry = _shape_geometry(parse(str(slide_path)), "3")
+    assert geometry == {
+        "x": 914400,
+        "y": 1600200,
+        "cx": 6_000_000,
+        "cy": 1_500_000,
+    }
+
+
+def test_apply_layout_actions_resizes_linked_shape_widths(tmp_path: Path) -> None:
+    """resize_linked_shape action 은 text box 와 배경 shape 폭을 함께 변경한다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    slide_xml = slide_path.read_text(encoding="utf-8").replace(
+        "      <p:graphicFrame>",
+        """      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="4" name="Body Background"/>
+          <p:cNvSpPr/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="900000" y="1580000"/>
+            <a:ext cx="5600000" cy="1410000"/>
+          </a:xfrm>
+          <a:solidFill><a:srgbClr val="EEEEEE"/></a:solidFill>
+        </p:spPr>
+      </p:sp>
+      <p:graphicFrame>""",
+    )
+    slide_path.write_text(slide_xml, encoding="utf-8")
+
+    SlideEditor().apply_layout_actions(
+        str(slide_path),
+        [
+            {
+                "action": "resize_linked_shape",
+                "shape_id": "3",
+                "linked_shape_ids": ["4"],
+                "w_emu": 6_000_000,
+                "linked_w_emu": 6_200_000,
+            }
+        ],
+    )
+
+    doc = parse(str(slide_path))
+    text_geometry = _shape_geometry(doc, "3")
+    background_geometry = _shape_geometry(doc, "4")
+
+    assert text_geometry["cx"] == 6_000_000
+    assert text_geometry["cy"] == 1371600
+    assert background_geometry["cx"] == 6_200_000
+    assert background_geometry["cy"] == 1410000
+
+
+def test_apply_layout_actions_raises_for_missing_shape_id(tmp_path: Path) -> None:
+    """존재하지 않는 shape_id 는 잘못된 layout action 으로 거부한다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+
+    with pytest.raises(ValueError, match="shape_id"):
+        SlideEditor().apply_layout_actions(
+            str(slide_path),
+            [{"action": "resize_shape", "shape_id": "404", "w_emu": 6_000_000}],
+        )
+
+
+def test_apply_layout_actions_raises_for_invalid_geometry_value(tmp_path: Path) -> None:
+    """유효하지 않은 width/height payload 는 OOXML 에 반영하지 않는다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+
+    with pytest.raises(ValueError, match="w_emu"):
+        SlideEditor().apply_layout_actions(
+            str(slide_path),
+            [{"action": "resize_shape", "shape_id": "3", "w_emu": 0}],
+        )
+
+    with pytest.raises(ValueError, match="w_emu"):
+        SlideEditor().apply_layout_actions(
+            str(slide_path),
+            [{"action": "resize_shape", "shape_id": "3", "w_emu": 1.2}],
+        )
 
 
 def test_apply_text_preserves_shape_and_text_style_with_overrides(tmp_path: Path) -> None:
