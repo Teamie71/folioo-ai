@@ -269,20 +269,52 @@ class FakeToolchain:
 class FakeEditor:
     """SlideEditor 대역."""
 
-    def __init__(self, slots: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        slots: list[dict[str, Any]] | None = None,
+        *,
+        layout_action_error: Exception | None = None,
+    ) -> None:
         self.slots = slots or [
             {"shape_id": "2", "font_size_pt": 20, "kind": "text"},
         ]
         self.applied: list[tuple[str, dict[str, dict[str, Any]]]] = []
+        self.applied_slot_metadata: list[dict[str, dict[str, Any]]] = []
+        self.layout_actions: list[tuple[str, tuple[dict[str, Any], ...]]] = []
+        self.layout_action_error = layout_action_error
         self.cleared: list[str] = []
+        self.operations: list[tuple[str, str]] = []
 
     def extract_slots(self, slide_xml_path: str) -> list[dict[str, Any]]:
         return [dict(slot, path=slide_xml_path) for slot in self.slots]
 
-    def apply_fills(self, slide_xml_path: str, fills: dict[str, dict[str, Any]]) -> None:
+    def apply_layout_actions(
+        self,
+        slide_xml_path: str,
+        layout_actions: tuple[dict[str, Any], ...],
+    ) -> None:
+        self.operations.append(("layout_actions", slide_xml_path))
+        self.layout_actions.append(
+            (slide_xml_path, tuple(dict(action) for action in layout_actions))
+        )
+        if self.layout_action_error is not None:
+            raise self.layout_action_error
+
+    def apply_fills(
+        self,
+        slide_xml_path: str,
+        fills: dict[str, dict[str, Any]],
+        slot_metadata: dict[str, dict[str, Any]] | None = None,
+    ) -> list[str]:
+        self.operations.append(("fills", slide_xml_path))
         self.applied.append((slide_xml_path, fills))
+        self.applied_slot_metadata.append(
+            {shape_id: dict(metadata) for shape_id, metadata in (slot_metadata or {}).items()}
+        )
+        return []
 
     def clear_content(self, slide_xml_path: str) -> None:
+        self.operations.append(("clear", slide_xml_path))
         self.cleared.append(slide_xml_path)
         Path(slide_xml_path).write_text(
             "<p:sld><p:cSld><p:spTree/></p:cSld></p:sld>", encoding="utf-8"
@@ -394,10 +426,12 @@ class FakeQAStep:
         main_client: FakeMainClient,
         storage: FakeStorage | None = None,
         statuses: dict[int, str] | None = None,
+        outcome_fills: dict[int, dict[str, Any]] | None = None,
     ) -> None:
         self.main_client = main_client
         self.storage = storage
         self.statuses = statuses or {}
+        self.outcome_fills = outcome_fills or {}
         self.received_orders: list[int] = []
 
     async def process(self, *, job_id: str, slides: list[Any], **kwargs: Any) -> FakeQAResult:
@@ -452,7 +486,12 @@ class FakeQAStep:
                     slide.slide_order,
                     status,
                     gcs_preview_key=gcs_preview_key,
-                    current_fills=dict(getattr(slide, "current_fills", {}) or {}),
+                    current_fills=dict(
+                        self.outcome_fills.get(
+                            slide.slide_order,
+                            getattr(slide, "current_fills", {}) or {},
+                        )
+                    ),
                 )
             )
         return FakeQAResult(outcomes=tuple(outcomes))
@@ -617,6 +656,101 @@ async def test_generate_enriches_slots_from_template_metadata_before_preflight()
 
 
 @pytest.mark.asyncio
+async def test_generate_applies_layout_actions_and_sanitizes_current_fills() -> None:
+    """초기 생성은 layout action 을 먼저 적용하고 callback 에 내부 action 을 노출하지 않는다."""
+    editor = FakeEditor(slots=_inline_label_slots())
+    filler = FakeFillGenerator(
+        responses={
+            3: [
+                {
+                    "2": {
+                        "action": "text",
+                        "text": "OpenAI API OpenAI API OpenAI API",
+                        "font_size_override": 20,
+                        "layout_actions": [{"action": "internal"}],
+                    },
+                    "3": {
+                        "action": "text",
+                        "text": "KPI 개선",
+                        "font_size_override": 20,
+                    },
+                    "layout_actions": {"action": "internal"},
+                }
+            ]
+        }
+    )
+    context = PipelineContext(editor=editor, filler=filler, max_content_concurrency=1)
+    context.storage.template_metadata = _template_metadata_with_inline_label_layout()
+
+    await context.service.generate(_task())
+
+    slide3_ops = [name for name, path in editor.operations if path.endswith("slide3.xml")]
+    assert slide3_ops[:2] == ["layout_actions", "fills"]
+    assert editor.layout_actions
+    layout_action_path, layout_actions = editor.layout_actions[0]
+    assert layout_action_path.endswith("slide3.xml")
+    assert {action["action"] for action in layout_actions} >= {
+        "resize_linked_shape",
+        "relayout_row",
+    }
+
+    slide3_apply_index = next(
+        index for index, (path, _fills) in enumerate(editor.applied) if path.endswith("slide3.xml")
+    )
+    assert editor.applied_slot_metadata[slide3_apply_index]["2"]["marker_color"] == "#FF0000"
+    assert editor.applied_slot_metadata[slide3_apply_index]["2"]["output_text_color"] == "#1F4D1D"
+
+    ready_event = next(
+        event
+        for event in _events(context.main_client, "slide_content_ready")
+        if event["slide_order"] == 3
+    )
+    assert "layout_actions" not in ready_event["current_fills"]
+    assert "layout_actions" not in ready_event["current_fills"]["2"]
+    assert context.main_client.job_events[-1]["summary"] == {"completed": 7, "failed": 0}
+    assert context.storage.uploaded_pptx
+
+
+@pytest.mark.asyncio
+async def test_generate_layout_action_failure_blanks_slide_and_continues() -> None:
+    """layout action 실패는 slide_content_error 와 clear_content 로 격리된다."""
+    editor = FakeEditor(
+        slots=_inline_label_slots(),
+        layout_action_error=ValueError("layout action failed"),
+    )
+    filler = FakeFillGenerator(
+        responses={
+            3: [
+                {
+                    "2": {
+                        "action": "text",
+                        "text": "OpenAI API OpenAI API OpenAI API",
+                        "font_size_override": 20,
+                    },
+                    "3": {
+                        "action": "text",
+                        "text": "KPI 개선",
+                        "font_size_override": 20,
+                    },
+                }
+            ]
+        }
+    )
+    context = PipelineContext(editor=editor, filler=filler, max_content_concurrency=1)
+    context.storage.template_metadata = _template_metadata_with_inline_label_layout()
+
+    await context.service.generate(_task())
+
+    error_events = _events(context.main_client, "slide_content_error")
+    assert len(error_events) == 1
+    assert error_events[0]["slide_order"] == 3
+    assert "layout action failed" in error_events[0]["message"]
+    assert len(editor.cleared) == 1
+    assert editor.cleared[0].endswith("slide3.xml")
+    assert context.main_client.job_events[-1]["summary"] == {"completed": 6, "failed": 1}
+
+
+@pytest.mark.asyncio
 async def test_all_content_failures_send_error_without_render_or_upload() -> None:
     """모든 슬라이드 콘텐츠 생성 실패는 전체 실패 final callback 으로 마감한다."""
     filler = FakeFillGenerator(
@@ -775,6 +909,133 @@ async def test_regenerate_enriches_slots_from_downloaded_template_metadata() -> 
     assert len(_events(context.main_client, "slide_regenerated")) == 1
     assert context.change_generator.calls[0]["slots"][0]["fit_policy"] == "resize_label"
     assert context.change_generator.calls[0]["slots"][0]["layout_type"] == "inline_label_group"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_applies_layout_actions_before_fills_with_slot_metadata() -> None:
+    """재생성도 layout action 을 먼저 적용하고 marker style metadata 를 전달한다."""
+    main_client = FakeMainClient()
+    main_client.job_context["template_id"] = "blue"
+    editor = FakeEditor(slots=_inline_label_slots())
+    change_generator = FakeChangeGenerator(
+        response={
+            "2": {
+                "action": "text",
+                "text": "OpenAI API OpenAI API OpenAI API",
+                "font_size_override": 20,
+                "layout_actions": [{"action": "internal"}],
+            },
+            "3": {
+                "action": "text",
+                "text": "KPI 개선",
+                "font_size_override": 20,
+            },
+            "layout_actions": {"action": "internal"},
+        }
+    )
+    context = PipelineContext(
+        main_client=main_client,
+        editor=editor,
+        change_generator=change_generator,
+    )
+    context.storage.template_metadata = _template_metadata_with_inline_label_layout()
+
+    await context.service.regenerate(_regenerate_task(user_request="라벨을 자세히 써줘"))
+
+    slide3_ops = [name for name, path in editor.operations if path.endswith("slide3.xml")]
+    assert slide3_ops[:2] == ["layout_actions", "fills"]
+    assert editor.applied_slot_metadata[0]["2"]["output_text_color"] == "#1F4D1D"
+
+    regenerated_event = _events(context.main_client, "slide_regenerated")[0]
+    assert "layout_actions" not in regenerated_event["current_fills"]
+    assert "layout_actions" not in regenerated_event["current_fills"]["2"]
+    assert regenerated_event["current_fills"]["3"]["text"] == "KPI 개선"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_sanitizes_qa_outcome_current_fills() -> None:
+    """QA/fix 결과가 내부 layout action 을 되돌려도 최종 callback 에 노출하지 않는다."""
+    qa_step = FakeQAStep(
+        FakeMainClient(),
+        outcome_fills={
+            3: {
+                "2": {
+                    "action": "text",
+                    "text": "수정된 제목",
+                    "layout_actions": [{"action": "internal"}],
+                },
+                "layout_actions": {"action": "internal"},
+            }
+        },
+    )
+    context = PipelineContext(qa_step=qa_step)
+
+    await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
+
+    regenerated_event = _events(context.main_client, "slide_regenerated")[0]
+    assert regenerated_event["current_fills"] == {"2": {"action": "text", "text": "수정된 제목"}}
+
+
+@pytest.mark.asyncio
+async def test_regenerate_layout_action_failure_sends_preview_error_without_upload() -> None:
+    """재생성 layout action 실패는 preview error 로 격리하고 attempt 산출물을 만들지 않는다."""
+    main_client = FakeMainClient()
+    main_client.job_context["template_id"] = "blue"
+    editor = FakeEditor(
+        slots=_inline_label_slots(),
+        layout_action_error=ValueError("layout action failed"),
+    )
+    change_generator = FakeChangeGenerator(
+        response={
+            "2": {
+                "action": "text",
+                "text": "OpenAI API OpenAI API OpenAI API",
+                "font_size_override": 20,
+            },
+            "3": {
+                "action": "text",
+                "text": "KPI 개선",
+                "font_size_override": 20,
+            },
+        }
+    )
+    context = PipelineContext(
+        main_client=main_client,
+        editor=editor,
+        change_generator=change_generator,
+    )
+    context.storage.template_metadata = _template_metadata_with_inline_label_layout()
+
+    await context.service.regenerate(_regenerate_task(user_request="라벨을 자세히 써줘"))
+
+    assert _events(context.main_client, "slide_regenerated") == []
+    error_events = _events(context.main_client, "slide_preview_error")
+    assert len(error_events) == 1
+    assert error_events[0]["slide_order"] == 3
+    assert error_events[0]["retryable"] is False
+    assert "layout action failed" in error_events[0]["message"]
+    assert context.storage.uploaded_attempt_pptx == []
+    assert context.storage.uploaded_attempt_pdf == []
+    assert context.storage.uploaded_attempt_previews == []
+    assert context.storage.promoted_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_regenerate_sanitizes_stored_current_fills_before_change_generation() -> None:
+    """backend 저장 current_fills 가 오염되어도 변경 생성기와 callback 계약에는 넘기지 않는다."""
+    main_client = FakeMainClient()
+    main_client.slide_context["current_fills"]["2"]["layout_actions"] = [{"action": "internal"}]
+    main_client.slide_context["current_fills"]["layout_actions"] = {"action": "internal"}
+    context = PipelineContext(main_client=main_client)
+
+    await context.service.regenerate(_regenerate_task(user_request="제목 크기 키워줘"))
+
+    generator_current_fills = context.change_generator.calls[0]["current_fills"]
+    assert "layout_actions" not in generator_current_fills
+    assert "layout_actions" not in generator_current_fills["2"]
+    regenerated_event = _events(context.main_client, "slide_regenerated")[0]
+    assert "layout_actions" not in regenerated_event["current_fills"]
+    assert "layout_actions" not in regenerated_event["current_fills"]["2"]
 
 
 @pytest.mark.asyncio
@@ -1095,5 +1356,72 @@ def _template_metadata_with_resize_label_slot() -> dict[str, Any]:
                 "max_lines": 1,
                 "nowrap": True,
             }
+        ],
+    }
+
+
+def _inline_label_slots() -> list[dict[str, Any]]:
+    """pipeline test 에서 metadata overlay 를 받을 inline label shape 목록."""
+    return [
+        {"shape_id": "2", "font_size_pt": 20, "kind": "text", "current_text": "기존 라벨"},
+        {"shape_id": "3", "font_size_pt": 20, "kind": "text", "current_text": "기존 값"},
+    ]
+
+
+def _template_metadata_with_inline_label_layout() -> dict[str, Any]:
+    """slide3 inline label group 이 layout action 을 만들도록 하는 v2 metadata."""
+    return {
+        "schema_version": 2,
+        "template_id": "blue",
+        "runtime_slides": [],
+        "layout_groups": [
+            {
+                "group_id": "slide3_labels",
+                "slide_filename": "slide3.xml",
+                "layout_type": "inline_label_group",
+            }
+        ],
+        "slots": [
+            {
+                "slot_id": "slide3_shape2",
+                "slide_filename": "slide3.xml",
+                "shape_id": "2",
+                "kind": "text",
+                "fit_policy": "resize_label",
+                "layout_type": "inline_label_group",
+                "layout_group_id": "slide3_labels",
+                "x_emu": 1_100_000,
+                "y_emu": 1_000_000,
+                "w_emu": 220_000,
+                "h_emu": 240_000,
+                "row_right_bound_emu": 12_000_000,
+                "gap_emu": 400_000,
+                "min_gap_emu": 100_000,
+                "marker_color": "#FF0000",
+                "output_text_color": "#1F4D1D",
+                "item_background": {
+                    "shape_id": "12",
+                    "x_emu": 1_000_000,
+                    "y_emu": 940_000,
+                    "w_emu": 420_000,
+                    "h_emu": 360_000,
+                },
+            },
+            {
+                "slot_id": "slide3_shape3",
+                "slide_filename": "slide3.xml",
+                "shape_id": "3",
+                "kind": "text",
+                "fit_policy": "resize_label",
+                "layout_type": "inline_label_group",
+                "layout_group_id": "slide3_labels",
+                "x_emu": 2_100_000,
+                "y_emu": 1_000_000,
+                "w_emu": 220_000,
+                "h_emu": 240_000,
+                "row_right_bound_emu": 12_000_000,
+                "gap_emu": 400_000,
+                "min_gap_emu": 100_000,
+            },
         ],
     }

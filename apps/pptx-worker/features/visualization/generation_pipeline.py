@@ -39,6 +39,7 @@ from features.visualization.text_fit import (
     BasicTextFitResult,
     InlineLabelGroupFitResult,
     TextFitPreflightError,
+    TextFitPreflightResult,
     apply_text_fit_preflight,
 )
 
@@ -414,14 +415,15 @@ class VisualizationTaskService:
                         content_brief=content_brief,
                         slots=slots,
                     )
-                    updated_fills = _preflight_text_fills(
+                    preflight = _preflight_text_fills(
                         job_id=task.job_id,
                         slide_id=registered_slide.slide_id,
                         slide_order=registered_slide.slide_order,
                         slots=slots,
                         fills=updated_fills,
                     )
-                    await asyncio.to_thread(editor.apply_fills, str(slide_xml_path), updated_fills)
+                    await _apply_preflighted_fills(editor, str(slide_xml_path), preflight, slots)
+                    updated_fills = _public_current_fills(preflight.fills)
                 else:
                     if task.user_request is None:
                         raise ValueError("일반 재생성에는 user_request 가 필요합니다.")
@@ -432,15 +434,17 @@ class VisualizationTaskService:
                     )
                     if not changes:
                         raise ValueError("재생성 변경 지시가 비어 있습니다.")
-                    changes = _preflight_text_fills(
+                    preflight = _preflight_text_fills(
                         job_id=task.job_id,
                         slide_id=registered_slide.slide_id,
                         slide_order=registered_slide.slide_order,
                         slots=slots,
                         fills=changes,
                     )
-                    await asyncio.to_thread(editor.apply_fills, str(slide_xml_path), changes)
+                    await _apply_preflighted_fills(editor, str(slide_xml_path), preflight, slots)
+                    changes = _public_current_fills(preflight.fills)
                     updated_fills = merge_current_fills(current_fills, changes)
+                    updated_fills = _public_current_fills(updated_fills)
 
                 self._pack_and_validate(
                     toolchain=toolchain,
@@ -493,7 +497,9 @@ class VisualizationTaskService:
                 final_pptx = (
                     fixed_pptx if qa_result.pack_count and fixed_pptx.is_file() else updated_pptx
                 )
-                final_fills = dict(getattr(ready_outcome, "current_fills", None) or updated_fills)
+                final_fills = _public_current_fills(
+                    getattr(ready_outcome, "current_fills", None) or updated_fills
+                )
                 final_pdf = render_result.pdf_path
                 if final_pptx != updated_pptx:
                     final_pdf = renderer.render(
@@ -840,14 +846,15 @@ class VisualizationTaskService:
                     content_brief=planned_slide.content_brief,
                     slots=slots,
                 )
-                fills = _preflight_text_fills(
+                preflight = _preflight_text_fills(
                     job_id=task.job_id,
                     slide_id=registered_slide.slide_id,
                     slide_order=registered_slide.slide_order,
                     slots=slots,
                     fills=fills,
                 )
-                await asyncio.to_thread(editor.apply_fills, str(slide_xml_path), fills)
+                await _apply_preflighted_fills(editor, str(slide_xml_path), preflight, slots)
+                fills = _public_current_fills(preflight.fills)
             except Exception as exc:
                 logger.warning(
                     "slide content generation failed: job_id=%s slide_order=%s error=%s",
@@ -1090,8 +1097,8 @@ def _preflight_text_fills(
     slide_order: int,
     slots: Sequence[Mapping[str, Any]],
     fills: Mapping[str, Mapping[str, Any]],
-) -> dict[str, dict[str, Any]]:
-    """OOXML 적용 전 `basic_text_area` 텍스트 fit 정책을 실행한다."""
+) -> TextFitPreflightResult:
+    """OOXML 적용 전 deterministic text fit preflight 를 실행한다."""
     try:
         preflight = apply_text_fit_preflight(slots=slots, fills=fills)
     except TextFitPreflightError as exc:
@@ -1131,7 +1138,31 @@ def _preflight_text_fills(
                 }
             },
         )
-    return preflight.fills
+    return preflight
+
+
+async def _apply_preflighted_fills(
+    editor: SlideEditor,
+    slide_xml_path: str,
+    preflight: TextFitPreflightResult,
+    slots: Sequence[Mapping[str, Any]],
+) -> None:
+    """layout action 을 먼저 적용한 뒤 fill 과 slot style metadata 를 적용한다."""
+    if preflight.layout_actions:
+        await asyncio.to_thread(
+            editor.apply_layout_actions,
+            slide_xml_path,
+            preflight.layout_actions,
+        )
+
+    warnings = await asyncio.to_thread(
+        editor.apply_fills,
+        slide_xml_path,
+        preflight.fills,
+        _slot_metadata_by_shape_id(slots),
+    )
+    for warning in warnings or []:
+        logger.warning("pptx fill warning: %s", warning)
 
 
 def _log_text_fit_result(
@@ -1393,7 +1424,34 @@ def _current_fills_from_context(slide_context: Mapping[str, Any]) -> dict[str, A
     normalized: dict[str, Any] = {}
     for shape_id, fill in current_fills.items():
         normalized[str(shape_id)] = dict(fill) if isinstance(fill, Mapping) else fill
-    return normalized
+    return _public_current_fills(normalized)
+
+
+def _slot_metadata_by_shape_id(
+    slots: Sequence[Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]]:
+    """v2 slot metadata 를 SlideEditor 에 전달할 shape_id index 로 변환한다."""
+    indexed: dict[str, Mapping[str, Any]] = {}
+    for slot in slots:
+        shape_id = str(slot.get("shape_id") or "")
+        if shape_id:
+            indexed[shape_id] = slot
+    return indexed
+
+
+def _public_current_fills(fills: Mapping[str, Any]) -> dict[str, Any]:
+    """워커 내부 layout action 값을 currentFills callback 계약에서 제거한다."""
+    public_fills: dict[str, Any] = {}
+    for shape_id, fill in fills.items():
+        if str(shape_id) == "layout_actions":
+            continue
+        if isinstance(fill, Mapping):
+            public_fills[str(shape_id)] = {
+                str(key): value for key, value in fill.items() if str(key) != "layout_actions"
+            }
+        else:
+            public_fills[str(shape_id)] = fill
+    return public_fills
 
 
 def _content_brief_for_slide(
