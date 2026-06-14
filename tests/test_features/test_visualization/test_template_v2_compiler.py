@@ -55,6 +55,99 @@ def test_v2_payload_writer_generates_deterministic_skeleton(tmp_path: Path) -> N
     assert canonical_json_text(payloads.metadata) == expected_meta
 
 
+def test_v2_payload_writer_enriches_slot_capacity_deterministically() -> None:
+    """reference match를 slot capacity 필드로 병합해 deterministic 하게 직렬화한다."""
+    payloads = build_template_v2_payloads(
+        "ppt-v3",
+        extraction=TemplateV2Extraction(
+            slots=(
+                {
+                    "slot_id": "slide2_shape26",
+                    "shape_id": "26",
+                    "kind": "text",
+                    "editable": True,
+                    "required": True,
+                    "marker_color": "#FF0000",
+                    "placeholder_text": "사용 기술",
+                    "font_size_pt": 10.0,
+                },
+            ),
+            shape_matches=(
+                {
+                    "slot_id": "slide2_shape26",
+                    "example_text": "OpenAI API",
+                    "example_char_count": 10,
+                    "example_line_count": 1,
+                    "output_text_color": "#000000",
+                },
+            ),
+        ),
+    )
+
+    expected_meta = """{
+  "layout_groups": [],
+  "runtime_slides": [],
+  "schema_version": 2,
+  "slots": [
+    {
+      "allowed_actions": [
+        "text",
+        "remove"
+      ],
+      "editable": true,
+      "example_char_count": 10,
+      "example_line_count": 1,
+      "example_text": "OpenAI API",
+      "fit_policy": "basic_text_area",
+      "font_size_pt": 10.0,
+      "kind": "text",
+      "marker_color": "#FF0000",
+      "max_font_pt": 10.0,
+      "max_lines": 1,
+      "min_font_pt": 10.0,
+      "nowrap": true,
+      "output_text_color": "#000000",
+      "placeholder_text": "사용 기술",
+      "required": true,
+      "shape_id": "26",
+      "slot_id": "slide2_shape26"
+    }
+  ],
+  "template_id": "ppt-v3"
+}
+"""
+    assert canonical_json_text(payloads.metadata) == expected_meta
+    assert "role_hint" not in payloads.metadata["slots"][0]
+
+
+def test_v2_payload_writer_preserves_non_text_allowed_action_defaults() -> None:
+    """capacity 확장 후에도 chart/remove/decorative action 계약은 유지한다."""
+    payloads = build_template_v2_payloads(
+        "ppt-v3",
+        extraction=TemplateV2Extraction(
+            slots=(
+                {
+                    "slot_id": "chart_slot",
+                    "shape_id": "8",
+                    "kind": "chart",
+                    "editable": True,
+                    "required": True,
+                },
+                {
+                    "slot_id": "decorative_slot",
+                    "shape_id": "9",
+                    "kind": "decorative",
+                    "editable": False,
+                    "required": False,
+                },
+            )
+        ),
+    )
+
+    assert payloads.metadata["slots"][0]["allowed_actions"] == ["chart"]
+    assert payloads.metadata["slots"][1]["allowed_actions"] == []
+
+
 def test_json_normalized_equal_ignores_key_order_and_detects_semantic_changes() -> None:
     """JSON normalize 비교는 key 순서 차이만 무시하고 의미 차이는 감지한다."""
     left = {"b": 1, "a": [{"z": "value", "y": 2}]}
@@ -165,12 +258,21 @@ def test_compile_template_v2_extracts_only_exact_red_marker_slots(tmp_path: Path
     assert len(metadata["slots"]) == 1
     slot = metadata["slots"][0]
     assert slot == {
-        "allowed_actions": ["text"],
+        "allowed_actions": ["text", "remove"],
         "editable": True,
+        "example_char_count": 8,
+        "example_line_count": 1,
+        "example_text": "실제 프로젝트명",
+        "fit_policy": "basic_text_area",
         "font_size_pt": 18.0,
         "h_emu": 400,
         "kind": "text",
         "marker_color": "#FF0000",
+        "max_font_pt": 18.0,
+        "max_lines": 1,
+        "min_font_pt": 10.8,
+        "nowrap": True,
+        "output_text_color": "#123456",
         "placeholder_text": "프로젝트명",
         "required": True,
         "shape_id": "10",

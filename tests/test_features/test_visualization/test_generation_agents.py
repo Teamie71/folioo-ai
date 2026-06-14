@@ -258,6 +258,73 @@ def test_content_fill_generator_does_not_require_optional_decorative_slot() -> N
     assert prompt_payload["slots"][1]["editable"] is False
 
 
+def test_content_fill_generator_accepts_v2_capacity_slot_without_role_hint() -> None:
+    """role_hint 없는 v2 capacity slot 도 prompt payload 와 fill 검증에서 그대로 통과한다."""
+    llm = FakeLLM([{"fills": {"26": {"action": "text", "text": "OpenAI API"}}}])
+    generator = LLMContentFillGenerator(llm=llm)
+
+    fills = generator.create_fills(
+        content_brief="사용 기술을 간결하게 작성",
+        slots=[
+            {
+                "shape_id": "26",
+                "kind": "text",
+                "editable": True,
+                "required": True,
+                "placeholder_text": "사용 기술",
+                "example_text": "OpenAI API",
+                "example_char_count": 10,
+                "example_line_count": 1,
+                "output_text_color": "#000000",
+                "min_font_pt": 10.0,
+                "max_font_pt": 10.0,
+                "max_lines": 1,
+                "nowrap": True,
+                "fit_policy": "basic_text_area",
+                "allowed_actions": ["text", "remove"],
+            },
+        ],
+    )
+
+    assert fills == {"26": {"action": "text", "text": "OpenAI API"}}
+    prompt_payload = json.loads(llm.messages[0][1].content.rsplit("\n", maxsplit=1)[1])
+    slot_payload = prompt_payload["slots"][0]
+    assert "role_hint" not in slot_payload
+    assert slot_payload["placeholder_text"] == "사용 기술"
+    assert slot_payload["example_text"] == "OpenAI API"
+
+
+def test_content_fill_generator_accepts_v2_capacity_remove_without_role_hint() -> None:
+    """role_hint 없는 v2 capacity slot 에서 remove action 도 계약대로 허용한다."""
+    llm = FakeLLM([{"fills": {"26": {"action": "remove"}}}])
+    generator = LLMContentFillGenerator(llm=llm)
+
+    fills = generator.create_fills(
+        content_brief="사용 기술이 없으면 제거",
+        slots=[
+            {
+                "shape_id": "26",
+                "kind": "text",
+                "editable": True,
+                "required": False,
+                "placeholder_text": "사용 기술",
+                "example_text": "OpenAI API",
+                "example_char_count": 10,
+                "example_line_count": 1,
+                "output_text_color": "#000000",
+                "min_font_pt": 10.0,
+                "max_font_pt": 10.0,
+                "max_lines": 1,
+                "nowrap": True,
+                "fit_policy": "basic_text_area",
+                "allowed_actions": ["text", "remove"],
+            },
+        ],
+    )
+
+    assert fills == {"26": {"action": "remove"}}
+
+
 def test_content_fill_generator_rejects_fill_for_non_editable_slot() -> None:
     """LLM 이 비편집 slot 을 채우려 하면 적용 전에 거부한다."""
     llm = FakeLLM(
