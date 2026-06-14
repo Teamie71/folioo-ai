@@ -9,6 +9,8 @@ from xml.etree.ElementTree import Element, ParseError
 from defusedxml import ElementTree
 from defusedxml.common import DefusedXmlException
 
+from .v2 import TemplateV2Extraction
+
 _PRESENTATION_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 _DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 _REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -16,6 +18,8 @@ _PACKAGE_RELATIONSHIPS_NS = "http://schemas.openxmlformats.org/package/2006/rela
 _SLIDE_RELATIONSHIP_TYPE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
 )
+_EXACT_MARKER_RGB = "FF0000"
+_EXACT_MARKER_COLOR = "#FF0000"
 
 
 @dataclass(frozen=True)
@@ -24,6 +28,15 @@ class SlideText:
 
     slide_index: int
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class _MarkerShapeExtraction:
+    """단일 runtime slide의 marker shape 추출 결과."""
+
+    slots: tuple[dict, ...]
+    errors: tuple[str, ...]
+    has_marker_candidate: bool
 
 
 def count_pptx_slides(pptx_path: Path | str) -> int:
@@ -53,6 +66,88 @@ def extract_slide_texts(pptx_path: Path | str) -> tuple[SlideText, ...]:
             slide_texts.append(SlideText(slide_index=index, text="\n".join(texts)))
 
     return tuple(slide_texts)
+
+
+def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction:
+    """PPTX convention에서 v2 runtime slide pair와 marker slot을 추출한다.
+
+    1-based 짝수 슬라이드를 runtime 유형 슬라이드로 보고, 바로 뒤 1-based 홀수
+    슬라이드를 example slide로 매칭한다. 첫 안내 슬라이드나 example slide의 red text는
+    runtime editable slot 후보로 보지 않는다.
+    """
+    source = Path(pptx_path)
+    slide_names = _ordered_slide_part_names(source)
+    runtime_slides: list[dict] = []
+    slide_pairs: list[dict] = []
+    slots: list[dict] = []
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    with _open_pptx(source) as zf:
+        for slide_position, slide_name in enumerate(slide_names):
+            slide_number = slide_position + 1
+            if slide_number % 2 != 0:
+                continue
+
+            example_position = slide_position + 1
+            if example_position >= len(slide_names):
+                errors.append(
+                    f"runtime slide {slide_number}의 example slide pair를 찾을 수 없습니다."
+                )
+                continue
+
+            example_name = slide_names[example_position]
+            runtime_slide = {
+                "slide_index": slide_position,
+                "slide_number": slide_number,
+                "slide_filename": Path(slide_name).name,
+                "slide_part": slide_name,
+            }
+            runtime_slides.append(runtime_slide)
+            slide_pairs.append(
+                {
+                    "runtime_slide_index": slide_position,
+                    "runtime_slide_number": slide_number,
+                    "runtime_slide_filename": Path(slide_name).name,
+                    "runtime_slide_part": slide_name,
+                    "example_slide_index": example_position,
+                    "example_slide_number": example_position + 1,
+                    "example_slide_filename": Path(example_name).name,
+                    "example_slide_part": example_name,
+                }
+            )
+
+            try:
+                slide_xml = zf.read(slide_name)
+            except KeyError as exc:
+                raise ValueError(f"PPTX 슬라이드 XML을 찾을 수 없습니다: {slide_name}") from exc
+
+            root = _parse_xml(slide_xml, f"{source}:{slide_name}")
+            marker_result = _extract_marker_slots_from_slide(
+                root,
+                slide_index=slide_position,
+                slide_number=slide_number,
+                slide_part=slide_name,
+            )
+            slots.extend(marker_result.slots)
+            errors.extend(marker_result.errors)
+            if not marker_result.slots and not marker_result.has_marker_candidate:
+                errors.append(
+                    f"runtime slide {slide_number}에 정확한 #FF0000 editable marker가 없습니다."
+                )
+
+    if not runtime_slides:
+        errors.append("runtime 대상 슬라이드가 없습니다.")
+
+    return TemplateV2Extraction(
+        runtime_slides=tuple(runtime_slides),
+        slots=tuple(slots),
+        layout_groups=(),
+        slide_pairs=tuple(slide_pairs),
+        shape_matches=(),
+        errors=tuple(errors),
+        warnings=tuple(warnings),
+    )
 
 
 def _ordered_slide_part_names(pptx_path: Path) -> tuple[str, ...]:
@@ -121,6 +216,198 @@ def _resolve_slide_part_name(target: str, names: set[str]) -> str:
     if slide_name not in names:
         raise ValueError(f"PPTX 슬라이드 XML을 찾을 수 없습니다: {slide_name}")
     return slide_name
+
+
+def _extract_marker_slots_from_slide(
+    slide_root: Element,
+    *,
+    slide_index: int,
+    slide_number: int,
+    slide_part: str,
+) -> _MarkerShapeExtraction:
+    slots: list[dict] = []
+    errors: list[str] = []
+    has_marker_candidate = False
+
+    for shape in slide_root.findall(f".//{{{_PRESENTATION_NS}}}sp"):
+        result = _marker_slot_from_shape(
+            shape,
+            slide_index=slide_index,
+            slide_number=slide_number,
+            slide_part=slide_part,
+        )
+        if result is None:
+            continue
+
+        has_marker_candidate = has_marker_candidate or result.has_marker_candidate
+        slots.extend(result.slots)
+        errors.extend(result.errors)
+
+    return _MarkerShapeExtraction(
+        slots=tuple(slots),
+        errors=tuple(errors),
+        has_marker_candidate=has_marker_candidate,
+    )
+
+
+def _marker_slot_from_shape(
+    shape: Element,
+    *,
+    slide_index: int,
+    slide_number: int,
+    slide_part: str,
+) -> _MarkerShapeExtraction | None:
+    tx_body = shape.find(f"{{{_PRESENTATION_NS}}}txBody")
+    if tx_body is None:
+        return None
+
+    red_text_parts: list[str] = []
+    non_red_text_parts: list[str] = []
+    red_font_size_pt: float | None = None
+
+    for paragraph_index, paragraph in enumerate(tx_body.findall(f"{{{_DRAWINGML_NS}}}p")):
+        if paragraph_index > 0 and red_text_parts and red_text_parts[-1] != "\n":
+            red_text_parts.append("\n")
+
+        for child in list(paragraph):
+            if child.tag == f"{{{_DRAWINGML_NS}}}br":
+                if red_text_parts and not non_red_text_parts and red_text_parts[-1] != "\n":
+                    red_text_parts.append("\n")
+                continue
+
+            if child.tag != f"{{{_DRAWINGML_NS}}}r":
+                continue
+
+            run_text = _run_text(child)
+            if not run_text:
+                continue
+
+            color = _run_srgb_color(child)
+            if color == _EXACT_MARKER_RGB:
+                red_text_parts.append(run_text)
+                if red_font_size_pt is None:
+                    red_font_size_pt = _run_font_size_pt(child)
+            elif run_text.strip():
+                non_red_text_parts.append(run_text)
+
+    if not red_text_parts and not non_red_text_parts:
+        return None
+
+    shape_id = _shape_id(shape) or ""
+    shape_name = _shape_name(shape)
+    has_marker_candidate = bool(red_text_parts)
+    if red_text_parts and non_red_text_parts:
+        return _MarkerShapeExtraction(
+            slots=(),
+            errors=(
+                "runtime slide "
+                f"{slide_number} shape {shape_id or '(unknown)'}에 "
+                "#FF0000 marker와 non-red run이 섞여 있습니다.",
+            ),
+            has_marker_candidate=True,
+        )
+
+    if not red_text_parts:
+        return _MarkerShapeExtraction(slots=(), errors=(), has_marker_candidate=False)
+
+    placeholder_text = "".join(red_text_parts).strip()
+    if not placeholder_text:
+        return _MarkerShapeExtraction(slots=(), errors=(), has_marker_candidate=False)
+
+    slot = {
+        "slot_id": f"slide{slide_number}_shape{shape_id}",
+        "slide_index": slide_index,
+        "slide_number": slide_number,
+        "slide_filename": Path(slide_part).name,
+        "slide_part": slide_part,
+        "shape_id": shape_id,
+        "shape_name": shape_name,
+        **_coordinates(shape),
+        "placeholder_text": placeholder_text,
+        "marker_color": _EXACT_MARKER_COLOR,
+        "font_size_pt": red_font_size_pt,
+        "kind": "text",
+        "editable": True,
+        "required": True,
+        "allowed_actions": ["text"],
+    }
+    return _MarkerShapeExtraction(
+        slots=(slot,),
+        errors=(),
+        has_marker_candidate=has_marker_candidate,
+    )
+
+
+def _shape_id(shape: Element) -> str | None:
+    cnv_pr = _cnv_pr(shape)
+    return cnv_pr.attrib.get("id") if cnv_pr is not None else None
+
+
+def _shape_name(shape: Element) -> str:
+    cnv_pr = _cnv_pr(shape)
+    return cnv_pr.attrib.get("name", "") if cnv_pr is not None else ""
+
+
+def _cnv_pr(shape: Element) -> Element | None:
+    return shape.find(
+        f"{{{_PRESENTATION_NS}}}nvSpPr/{{{_PRESENTATION_NS}}}cNvPr",
+    )
+
+
+def _coordinates(shape: Element) -> dict[str, int | None]:
+    xfrm = shape.find(
+        f"{{{_PRESENTATION_NS}}}spPr/{{{_DRAWINGML_NS}}}xfrm",
+    )
+    off = xfrm.find(f"{{{_DRAWINGML_NS}}}off") if xfrm is not None else None
+    ext = xfrm.find(f"{{{_DRAWINGML_NS}}}ext") if xfrm is not None else None
+    return {
+        "x_emu": _int_attr(off, "x"),
+        "y_emu": _int_attr(off, "y"),
+        "w_emu": _int_attr(ext, "cx"),
+        "h_emu": _int_attr(ext, "cy"),
+    }
+
+
+def _run_text(run: Element) -> str:
+    return "".join(text_node.text or "" for text_node in run.findall(f".//{{{_DRAWINGML_NS}}}t"))
+
+
+def _run_srgb_color(run: Element) -> str | None:
+    color = run.find(
+        f"{{{_DRAWINGML_NS}}}rPr/{{{_DRAWINGML_NS}}}solidFill/{{{_DRAWINGML_NS}}}srgbClr"
+    )
+    if color is None:
+        return None
+    if list(color):
+        return None
+
+    raw_value = color.attrib.get("val")
+    if raw_value is None:
+        return None
+    return raw_value.upper()
+
+
+def _run_font_size_pt(run: Element) -> float | None:
+    run_props = run.find(f"{{{_DRAWINGML_NS}}}rPr")
+    if run_props is None:
+        return None
+
+    size = run_props.attrib.get("sz")
+    if size is None:
+        return None
+    try:
+        return int(size) / 100
+    except ValueError:
+        return None
+
+
+def _int_attr(element: Element | None, attr_name: str) -> int | None:
+    if element is None:
+        return None
+    value = element.attrib.get(attr_name)
+    if value is None:
+        return None
+    return int(value)
 
 
 def _is_slide_part_name(part_name: str) -> bool:
