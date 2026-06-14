@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.10 — inline_label_group fit policy와 layout_actions 계산
 
 > Spec: [`specs/phase-2/03-pptx-deterministic-text-fit-preflight.md`](../../specs/phase-2/03-pptx-deterministic-text-fit-preflight.md)
+> GitHub Issue: [#265](https://github.com/Teamie71/folioo-ai/issues/265)
 
 ## 의존성
 

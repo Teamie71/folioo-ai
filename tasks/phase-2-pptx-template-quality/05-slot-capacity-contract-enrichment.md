@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.05 — Slot capacity 계약 확장
 
 > Spec: [`specs/phase-2/02-pptx-slot-layout-group-inference.md`](../../specs/phase-2/02-pptx-slot-layout-group-inference.md)
+> GitHub Issue: [#260](https://github.com/Teamie71/folioo-ai/issues/260)
 
 ## 의존성
 

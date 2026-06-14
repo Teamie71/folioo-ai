@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.18 — 사용자 확인사항 취합과 운영 반영 승인
 
 > Spec: [`specs/phase-2/06-pptx-template-quality-doc-alignment.md`](../../specs/phase-2/06-pptx-template-quality-doc-alignment.md)
+> GitHub Issue: [#274](https://github.com/Teamie71/folioo-ai/issues/274)
 
 ## 의존성
 

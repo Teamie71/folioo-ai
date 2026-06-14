@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.15 — Validator 품질 warning과 신규 템플릿 acceptance fixture
 
 > Spec: [`specs/phase-2/05-pptx-template-validator-v2-strict-mode.md`](../../specs/phase-2/05-pptx-template-validator-v2-strict-mode.md)
+> GitHub Issue: [#270](https://github.com/Teamie71/folioo-ai/issues/270)
 
 ## 의존성
 

@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.04 — compile_template CLI check 모드와 런타임 v2 fail-fast
 
 > Spec: [`specs/phase-2/01-pptx-template-v2-compiler.md`](../../specs/phase-2/01-pptx-template-v2-compiler.md)
+> GitHub Issue: [#259](https://github.com/Teamie71/folioo-ai/issues/259)
 
 ## 의존성
 

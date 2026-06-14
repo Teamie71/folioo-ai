@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.13 — Pipeline layout_actions 통합과 currentFills 계약 유지
 
 > Spec: [`specs/phase-2/04-pptx-layout-action-application.md`](../../specs/phase-2/04-pptx-layout-action-application.md)
+> GitHub Issue: [#268](https://github.com/Teamie71/folioo-ai/issues/268)
 
 ## 의존성
 

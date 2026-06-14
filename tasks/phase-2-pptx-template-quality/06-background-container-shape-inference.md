@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.06 — item_background와 container_shape 추론
 
 > Spec: [`specs/phase-2/02-pptx-slot-layout-group-inference.md`](../../specs/phase-2/02-pptx-slot-layout-group-inference.md)
+> GitHub Issue: [#261](https://github.com/Teamie71/folioo-ai/issues/261)
 
 ## 의존성
 

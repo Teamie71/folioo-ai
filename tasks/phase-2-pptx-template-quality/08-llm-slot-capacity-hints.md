@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.08 — LLM Slot prompt capacity hint 적용
 
 > Spec: [`specs/phase-2/03-pptx-deterministic-text-fit-preflight.md`](../../specs/phase-2/03-pptx-deterministic-text-fit-preflight.md)
+> GitHub Issue: [#263](https://github.com/Teamie71/folioo-ai/issues/263)
 
 ## 의존성
 

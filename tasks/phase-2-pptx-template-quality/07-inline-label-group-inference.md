@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.07 — inline_label_group 추론
 
 > Spec: [`specs/phase-2/02-pptx-slot-layout-group-inference.md`](../../specs/phase-2/02-pptx-slot-layout-group-inference.md)
+> GitHub Issue: [#262](https://github.com/Teamie71/folioo-ai/issues/262)
 
 ## 의존성
 

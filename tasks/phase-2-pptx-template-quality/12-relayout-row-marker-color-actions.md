@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.12 — relayout_row와 marker color 대체 action
 
 > Spec: [`specs/phase-2/04-pptx-layout-action-application.md`](../../specs/phase-2/04-pptx-layout-action-application.md)
+> GitHub Issue: [#267](https://github.com/Teamie71/folioo-ai/issues/267)
 
 ## 의존성
 

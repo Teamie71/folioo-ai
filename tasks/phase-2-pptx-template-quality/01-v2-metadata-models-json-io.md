@@ -15,6 +15,7 @@ sprint: ""
 # Task 2.01 — v2 메타데이터 모델과 JSON 입출력 기반
 
 > Spec: [`specs/phase-2/01-pptx-template-v2-compiler.md`](../../specs/phase-2/01-pptx-template-v2-compiler.md)
+> GitHub Issue: [#256](https://github.com/Teamie71/folioo-ai/issues/256)
 
 ## 의존성
 

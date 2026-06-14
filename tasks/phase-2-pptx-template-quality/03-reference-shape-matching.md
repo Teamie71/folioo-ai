@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.03 — 예시 슬라이드 reference 매칭과 reference.json 생성
 
 > Spec: [`specs/phase-2/01-pptx-template-v2-compiler.md`](../../specs/phase-2/01-pptx-template-v2-compiler.md)
+> GitHub Issue: [#258](https://github.com/Teamie71/folioo-ai/issues/258)
 
 ## 의존성
 

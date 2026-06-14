@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.02 — PPTX slide pair와 #FF0000 marker 추출
 
 > Spec: [`specs/phase-2/01-pptx-template-v2-compiler.md`](../../specs/phase-2/01-pptx-template-v2-compiler.md)
+> GitHub Issue: [#257](https://github.com/Teamie71/folioo-ai/issues/257)
 
 ## 의존성
 

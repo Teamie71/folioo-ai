@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.11 — SlideEditor resize layout action 적용
 
 > Spec: [`specs/phase-2/04-pptx-layout-action-application.md`](../../specs/phase-2/04-pptx-layout-action-application.md)
+> GitHub Issue: [#266](https://github.com/Teamie71/folioo-ai/issues/266)
 
 ## 의존성
 

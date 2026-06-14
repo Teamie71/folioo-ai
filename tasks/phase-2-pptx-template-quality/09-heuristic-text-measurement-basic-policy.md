@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.09 — Heuristic text measurement와 basic_text_area 정책
 
 > Spec: [`specs/phase-2/03-pptx-deterministic-text-fit-preflight.md`](../../specs/phase-2/03-pptx-deterministic-text-fit-preflight.md)
+> GitHub Issue: [#264](https://github.com/Teamie71/folioo-ai/issues/264)
 
 ## 의존성
 

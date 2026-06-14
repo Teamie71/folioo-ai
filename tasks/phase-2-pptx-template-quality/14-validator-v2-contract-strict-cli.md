@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.14 — Validator v2 계약 검증과 strict CLI
 
 > Spec: [`specs/phase-2/05-pptx-template-validator-v2-strict-mode.md`](../../specs/phase-2/05-pptx-template-validator-v2-strict-mode.md)
+> GitHub Issue: [#269](https://github.com/Teamie71/folioo-ai/issues/269)
 
 ## 의존성
 

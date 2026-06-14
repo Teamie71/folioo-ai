@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.17 — QA/생성 계획 문서 정합성 감사
 
 > Spec: [`specs/phase-2/06-pptx-template-quality-doc-alignment.md`](../../specs/phase-2/06-pptx-template-quality-doc-alignment.md)
+> GitHub Issue: [#273](https://github.com/Teamie71/folioo-ai/issues/273)
 
 ## 의존성
 

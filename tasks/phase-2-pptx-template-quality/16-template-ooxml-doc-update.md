@@ -14,6 +14,7 @@ sprint: ""
 # Task 2.16 — template-system과 ooxml-editing 문서 업데이트
 
 > Spec: [`specs/phase-2/06-pptx-template-quality-doc-alignment.md`](../../specs/phase-2/06-pptx-template-quality-doc-alignment.md)
+> GitHub Issue: [#271](https://github.com/Teamie71/folioo-ai/issues/271)
 
 ## 의존성
 
