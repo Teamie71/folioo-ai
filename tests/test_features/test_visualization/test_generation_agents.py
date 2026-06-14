@@ -37,6 +37,11 @@ class FakeLLM:
         return LLMResponse(self.responses.pop(0))
 
 
+def _last_fill_prompt_payload(llm: FakeLLM) -> dict[str, object]:
+    """마지막 fill 생성 호출의 HumanMessage JSON payload를 반환한다."""
+    return json.loads(llm.messages[-1][1].content.rsplit("\n", maxsplit=1)[1])
+
+
 def test_slide_plan_generator_validates_required_rules() -> None:
     """cover/closing 포함, 7~12장, 연속 카테고리 회피 plan 을 생성한다."""
     llm = FakeLLM(
@@ -252,10 +257,122 @@ def test_content_fill_generator_does_not_require_optional_decorative_slot() -> N
 
     assert fills == {"2": {"action": "text", "text": "핵심 요약"}}
     system_prompt = llm.messages[0][0].content
-    prompt_payload = json.loads(llm.messages[0][1].content.rsplit("\n", maxsplit=1)[1])
+    prompt_payload = _last_fill_prompt_payload(llm)
     assert "required=false" in system_prompt
     assert "성과 지표" in system_prompt
     assert prompt_payload["slots"][1]["editable"] is False
+
+
+def test_content_fill_prompt_includes_capacity_hint_payload() -> None:
+    """LLM Call #2 payload에는 slot capacity hint와 예시 사용 안내가 포함된다."""
+    llm = FakeLLM([{"fills": {"26": {"action": "text", "text": "Folioo AI"}}}])
+    generator = LLMContentFillGenerator(llm=llm)
+
+    generator.create_fills(
+        content_brief="프로젝트 이름을 작성",
+        slots=[
+            {
+                "shape_id": "26",
+                "kind": "text",
+                "editable": True,
+                "required": True,
+                "placeholder_text": "프로젝트명",
+                "example_text": "Folioo AI",
+                "example_char_count": 9,
+                "example_line_count": 1,
+                "max_lines": 1,
+                "nowrap": True,
+                "fit_policy": "basic_text_area",
+                "allowed_actions": ["text"],
+            }
+        ],
+    )
+
+    system_prompt = llm.messages[0][0].content
+    prompt_payload = _last_fill_prompt_payload(llm)
+    slot_payload = prompt_payload["slots"][0]
+    assert "example_text 는 복사할 정답이 아니라" in system_prompt
+    assert prompt_payload["slot_guidance"]["example_text"] == (
+        "복사 대상이 아니라 형식, 길이, 줄 수 참고용입니다."
+    )
+    assert slot_payload["placeholder_text"] == "프로젝트명"
+    assert slot_payload["example_text"] == "Folioo AI"
+    assert slot_payload["example_line_count"] == 1
+    assert slot_payload["max_lines"] == 1
+    assert slot_payload["nowrap"] is True
+    assert "length_hint" in slot_payload
+
+
+def test_content_fill_prompt_uses_inline_label_one_line_length_hint() -> None:
+    """짧은 chip 예시는 inline_label_group 한 줄 label 길이 힌트로 전달된다."""
+    llm = FakeLLM([{"fills": {"26": {"action": "text", "text": "OpenAI API"}}}])
+    generator = LLMContentFillGenerator(llm=llm)
+
+    generator.create_fills(
+        content_brief="사용 기술을 chip 문구로 작성",
+        slots=[
+            {
+                "shape_id": "26",
+                "kind": "text",
+                "editable": True,
+                "required": True,
+                "placeholder_text": "사용 기술",
+                "example_text": "OpenAI API",
+                "example_line_count": 1,
+                "max_lines": 1,
+                "nowrap": True,
+                "layout_type": "inline_label_group",
+                "fit_policy": "resize_label",
+                "allowed_actions": ["text", "remove"],
+            }
+        ],
+    )
+
+    slot_payload = _last_fill_prompt_payload(llm)["slots"][0]
+    assert slot_payload["example_text"] == "OpenAI API"
+    assert slot_payload["length_hint"].startswith("짧은 chip/label 문구")
+    assert "한 줄" in slot_payload["length_hint"]
+    assert "줄바꿈하지 말고" in slot_payload["length_hint"]
+
+
+def test_content_fill_prompt_does_not_add_text_capacity_hint_to_chart_slot() -> None:
+    """chart slot 에는 text length hint를 붙여 action 계약을 흐리지 않는다."""
+    llm = FakeLLM(
+        [
+            {
+                "fills": {
+                    "8": {
+                        "action": "chart",
+                        "data": {
+                            "categories": ["전", "후"],
+                            "series": [{"name": "전환율", "values": [10, 42]}],
+                        },
+                    }
+                }
+            }
+        ]
+    )
+    generator = LLMContentFillGenerator(llm=llm)
+
+    fills = generator.create_fills(
+        content_brief="전환율 차트를 작성",
+        slots=[
+            {
+                "shape_id": "8",
+                "kind": "chart",
+                "editable": True,
+                "required": True,
+                "allowed_actions": ["chart"],
+            }
+        ],
+    )
+
+    assert fills["8"]["action"] == "chart"
+    slot_payload = _last_fill_prompt_payload(llm)["slots"][0]
+    assert slot_payload["allowed_actions"] == ["chart"]
+    assert "length_hint" not in slot_payload
+    assert "max_lines" not in slot_payload
+    assert "nowrap" not in slot_payload
 
 
 def test_content_fill_generator_accepts_v2_capacity_slot_without_role_hint() -> None:
@@ -287,11 +404,40 @@ def test_content_fill_generator_accepts_v2_capacity_slot_without_role_hint() -> 
     )
 
     assert fills == {"26": {"action": "text", "text": "OpenAI API"}}
-    prompt_payload = json.loads(llm.messages[0][1].content.rsplit("\n", maxsplit=1)[1])
+    prompt_payload = _last_fill_prompt_payload(llm)
     slot_payload = prompt_payload["slots"][0]
     assert "role_hint" not in slot_payload
     assert slot_payload["placeholder_text"] == "사용 기술"
     assert slot_payload["example_text"] == "OpenAI API"
+    assert "일반 텍스트 영역" in slot_payload["length_hint"]
+    assert "최대 1줄" in slot_payload["length_hint"]
+
+
+def test_content_fill_prompt_falls_back_for_legacy_slot_without_capacity_fields() -> None:
+    """legacy slot 에 capacity 필드가 없어도 prompt payload를 안전하게 만든다."""
+    llm = FakeLLM([{"fills": {"2": {"action": "text", "text": "Folioo AI"}}}])
+    generator = LLMContentFillGenerator(llm=llm)
+
+    fills = generator.create_fills(
+        content_brief="프로젝트명 작성",
+        slots=[
+            {
+                "shape_id": "2",
+                "font_size_pt": 20,
+                "kind": "text",
+                "current_text": "여기에 프로젝트명",
+            }
+        ],
+    )
+
+    assert fills == {"2": {"action": "text", "text": "Folioo AI"}}
+    slot_payload = _last_fill_prompt_payload(llm)["slots"][0]
+    assert slot_payload["placeholder_text"] == "여기에 프로젝트명"
+    assert slot_payload["example_text"] is None
+    assert slot_payload["example_line_count"] is None
+    assert slot_payload["max_lines"] == 1
+    assert slot_payload["nowrap"] is True
+    assert "placeholder_text" in slot_payload["length_hint"]
 
 
 def test_content_fill_generator_accepts_v2_capacity_remove_without_role_hint() -> None:
