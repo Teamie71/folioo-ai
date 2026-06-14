@@ -21,6 +21,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=_DEFAULT_CATEGORY_SCHEMA_PATH,
         help="표준 카테고리 스키마 JSON 경로",
     )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="v2 배포 전 품질 warning을 실패로 승격합니다.",
+    )
     return parser.parse_args(argv)
 
 
@@ -29,7 +34,11 @@ def main(argv: list[str] | None = None) -> int:
     from features.visualization.templates import validate_template_directory
 
     args = parse_args(argv)
-    result = validate_template_directory(args.template_dir, category_schema_path=args.categories)
+    result = validate_template_directory(
+        args.template_dir,
+        category_schema_path=args.categories,
+        strict=args.strict,
+    )
 
     for warning in result.warnings:
         print(f"WARNING: {warning}", file=sys.stderr)

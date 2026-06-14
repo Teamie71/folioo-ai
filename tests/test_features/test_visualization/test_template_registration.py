@@ -5,6 +5,7 @@ import json
 import zipfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 
 import pytest
@@ -16,8 +17,10 @@ from features.visualization.templates import (
     SlideText,
     TextExtractionResult,
     build_template_metadata,
+    compile_template_v2,
     count_pptx_slides,
     extract_slide_texts,
+    read_json_payload,
     validate_template_directory,
 )
 from features.visualization.templates.thumbnail import PillowThumbnailBuilder
@@ -416,6 +419,317 @@ def test_validate_template_cli_returns_nonzero_on_validation_errors(tmp_path: Pa
     assert validate_template_main([str(template_dir)]) == 1
 
 
+def test_validate_template_directory_accepts_valid_v2_metadata(tmp_path: Path) -> None:
+    """검증기는 v2 meta/reference 계약과 기존 thumbnail 검증을 함께 통과시킨다."""
+    template_dir = _make_v2_template_dir(tmp_path)
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is True
+    assert result.errors == ()
+
+
+def test_validate_template_directory_rejects_v2_missing_thumbnail(tmp_path: Path) -> None:
+    """v2 metadata 경로에서도 기존 thumbnail 검증을 유지한다."""
+    template_dir = _make_v2_template_dir(tmp_path)
+    (template_dir / "thumbnail.jpg").unlink()
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is False
+    assert any("thumbnail.jpg 파일을 찾을 수 없습니다" in error for error in result.errors)
+
+
+def test_validate_template_cli_strict_promotes_unknown_layout_warning(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """editable unknown layout은 기본 모드 warning, strict 모드 실패로 처리한다."""
+    template_dir = _make_v2_template_dir(tmp_path)
+    metadata = read_json_payload(template_dir / "meta.json")
+    metadata["slots"][0]["fit_policy"] = "unknown"
+    _write_json(template_dir / "meta.json", metadata)
+
+    assert validate_template_main([str(template_dir)]) == 0
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+    assert "unknown" in captured.err
+
+    assert validate_template_main([str(template_dir), "--strict"]) == 1
+    captured = capsys.readouterr()
+    assert "ERROR" in captured.err
+    assert "unknown" in captured.err
+
+
+def test_validate_template_directory_strict_promotes_low_confidence_layout_group(
+    tmp_path: Path,
+) -> None:
+    """linked background 신뢰도가 낮은 inline_label_group은 strict 모드에서 실패한다."""
+    template_dir = _make_v2_template_dir(tmp_path)
+    metadata = read_json_payload(template_dir / "meta.json")
+    metadata["layout_groups"] = [
+        {
+            "group_id": "slide2_inline_label_group1",
+            "slide_index": 1,
+            "slide_number": 2,
+            "layout_type": "inline_label_group",
+            "item_shape_ids": ["10"],
+            "linked_background_by_item": {},
+        }
+    ]
+    _write_json(template_dir / "meta.json", metadata)
+
+    default_result = validate_template_directory(template_dir)
+    strict_result = validate_template_directory(template_dir, strict=True)
+
+    assert default_result.ok is True
+    assert any(
+        "linked background 신뢰도가 낮습니다" in warning for warning in default_result.warnings
+    )
+    assert strict_result.ok is False
+    assert any("linked background 신뢰도가 낮습니다" in error for error in strict_result.errors)
+
+
+def test_validate_template_directory_strict_promotes_low_confidence_extraction_warning(
+    tmp_path: Path,
+) -> None:
+    """PPTX 재추출 중 발견한 낮은 신뢰도 inline_label_group 후보도 strict 실패로 본다."""
+    template_dir = tmp_path / "ppt-v3"
+    template_dir.mkdir()
+    chip_specs = (
+        (19, 20, "Python", 90, 100, 240),
+        (21, 22, "FastAPI", 360, 370, 260),
+        (23, 24, "Postgres", 650, 660, 280),
+        (None, 25, "LangGraph", 960, 970, 300),
+    )
+    runtime_shapes: list[str] = []
+    example_shapes: list[str] = []
+    for index, (background_id, shape_id, text, background_x, text_x, width) in enumerate(
+        chip_specs,
+        start=1,
+    ):
+        if background_id is not None:
+            runtime_shapes.append(
+                _v2_shape_without_text_xml(
+                    background_id,
+                    f"{text} chip background",
+                    x=background_x,
+                    y=790,
+                    width=width + 20,
+                    height=120,
+                )
+            )
+        runtime_shapes.append(
+            _v2_shape_xml(
+                shape_id,
+                f"{text} chip",
+                (_v2_run_xml(text, color="FF0000"),),
+                x=text_x,
+                y=800,
+                width=width,
+                height=100,
+            )
+        )
+        example_shapes.append(
+            _v2_shape_xml(
+                30 + index,
+                f"{text} example",
+                (_v2_run_xml(text, color="123456"),),
+                x=text_x,
+                y=800,
+                width=width,
+                height=100,
+            )
+        )
+    _make_v2_template_pptx(
+        template_dir / "template.pptx",
+        (
+            _v2_slide_xml(1, ""),
+            _v2_slide_xml(2, "".join(runtime_shapes)),
+            _v2_slide_xml(3, "".join(example_shapes)),
+        ),
+    )
+    compile_result = compile_template_v2(template_dir)
+    assert compile_result.ok is True
+    assert any("background 신뢰도가 부족" in warning for warning in compile_result.warnings)
+    (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
+
+    default_result = validate_template_directory(template_dir)
+    strict_result = validate_template_directory(template_dir, strict=True)
+
+    assert default_result.ok is True
+    assert any("background 신뢰도가 부족" in warning for warning in default_result.warnings)
+    assert strict_result.ok is False
+    assert any("background 신뢰도가 부족" in error for error in strict_result.errors)
+
+
+def test_validate_template_directory_rejects_stale_reference_shape_match(
+    tmp_path: Path,
+) -> None:
+    """reference.json shape match 핵심 필드는 template.pptx 재추출 결과와 일치해야 한다."""
+    template_dir = _make_v2_template_dir(tmp_path)
+    reference = read_json_payload(template_dir / "reference.json")
+    reference["shape_matches"][0]["example_text"] = "오래된 예시 텍스트"
+    _write_json(template_dir / "reference.json", reference)
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is False
+    assert any(
+        "reference.json.shape_matches[0].example_text" in error
+        and "template.pptx 추출 결과와 일치하지 않습니다" in error
+        for error in result.errors
+    )
+
+
+def test_validate_template_directory_rejects_example_slide_in_runtime_slides(
+    tmp_path: Path,
+) -> None:
+    """예시 슬라이드가 runtime 후보에 포함된 v2 metadata는 실패한다."""
+    template_dir = _make_v2_template_dir(tmp_path)
+    metadata = read_json_payload(template_dir / "meta.json")
+    metadata["runtime_slides"].append(
+        {
+            "slide_index": 2,
+            "slide_number": 3,
+            "slide_filename": "slide3.xml",
+            "slide_part": "ppt/slides/slide3.xml",
+        }
+    )
+    _write_json(template_dir / "meta.json", metadata)
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is False
+    assert any("example slide" in error for error in result.errors)
+
+
+def test_validate_template_directory_rejects_mixed_color_run(tmp_path: Path) -> None:
+    """red run과 non-red run이 섞인 runtime shape는 기본 모드에서도 실패한다."""
+    template_dir = tmp_path / "ppt-v3"
+    template_dir.mkdir()
+    _make_v2_template_pptx(
+        template_dir / "template.pptx",
+        (
+            _v2_slide_xml(1, ""),
+            _v2_slide_xml(
+                2,
+                _v2_shape_xml(
+                    20,
+                    "Mixed marker",
+                    (
+                        _v2_run_xml("경험명", color="FF0000"),
+                        _v2_run_xml(" - 고정 문구"),
+                    ),
+                ),
+            ),
+            _v2_slide_xml(3, _v2_shape_xml(30, "Example", (_v2_run_xml("경험명 예시"),))),
+        ),
+    )
+    (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
+    _write_json(
+        template_dir / "meta.json",
+        {
+            "schema_version": 2,
+            "template_id": "ppt-v3",
+            "runtime_slides": [
+                {
+                    "slide_index": 1,
+                    "slide_number": 2,
+                    "slide_filename": "slide2.xml",
+                    "slide_part": "ppt/slides/slide2.xml",
+                }
+            ],
+            "slots": [],
+            "layout_groups": [],
+        },
+    )
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is False
+    assert any("non-red run이 섞여 있습니다" in error for error in result.errors)
+
+
+def test_validate_template_directory_rejects_runtime_slide_without_exact_marker(
+    tmp_path: Path,
+) -> None:
+    """정확한 #FF0000 marker가 없는 runtime slide는 기본 모드에서도 실패한다."""
+    template_dir = tmp_path / "ppt-v3"
+    template_dir.mkdir()
+    _make_v2_template_pptx(
+        template_dir / "template.pptx",
+        (
+            _v2_slide_xml(1, ""),
+            _v2_slide_xml(
+                2,
+                _v2_shape_xml(20, "Fixed non-red", (_v2_run_xml("고정 문구", color="222222"),)),
+            ),
+            _v2_slide_xml(3, _v2_shape_xml(30, "Example", (_v2_run_xml("예시"),))),
+        ),
+    )
+    (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
+    _write_minimal_v2_meta(template_dir, slots=[])
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is False
+    assert any("정확한 #FF0000 editable marker가 없습니다" in error for error in result.errors)
+
+
+def test_validate_template_directory_rejects_reference_match_failure(tmp_path: Path) -> None:
+    """editable slot의 example shape 매칭 실패는 기본 모드에서도 실패한다."""
+    template_dir = tmp_path / "ppt-v3"
+    template_dir.mkdir()
+    _make_v2_template_pptx(
+        template_dir / "template.pptx",
+        (
+            _v2_slide_xml(1, ""),
+            _v2_slide_xml(2, _v2_shape_xml(20, "Marker", (_v2_run_xml("경험명", color="FF0000"),))),
+            _v2_slide_xml(
+                3,
+                _v2_shape_xml(
+                    30,
+                    "Far example",
+                    (_v2_run_xml("너무 먼 예시", color="123456"),),
+                    x=1000,
+                    y=1000,
+                ),
+            ),
+        ),
+    )
+    (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
+    _write_minimal_v2_meta(
+        template_dir,
+        slots=[
+            {
+                "slot_id": "slide2_shape20",
+                "slide_index": 1,
+                "slide_number": 2,
+                "slide_filename": "slide2.xml",
+                "slide_part": "ppt/slides/slide2.xml",
+                "shape_id": "20",
+                "shape_name": "Marker",
+                "x_emu": 0,
+                "y_emu": 0,
+                "w_emu": 100,
+                "h_emu": 100,
+                "placeholder_text": "경험명",
+                "marker_color": "#FF0000",
+                "kind": "text",
+                "editable": True,
+                "required": True,
+                "allowed_actions": ["text", "remove"],
+            }
+        ],
+    )
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is False
+    assert any("example shape 매칭에 실패했습니다" in error for error in result.errors)
+
+
 def _valid_slides() -> list[dict[str, object]]:
     """유효한 meta.json slides fixture를 만든다.
 
@@ -474,6 +788,32 @@ def _write_meta(
         (template_dir / "thumbnail.jpg").write_bytes(thumbnail_content)
 
 
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    """테스트용 JSON 파일을 작성한다."""
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_minimal_v2_meta(template_dir: Path, *, slots: list[dict[str, object]]) -> None:
+    """테스트용 최소 v2 meta.json 파일을 작성한다."""
+    _write_json(
+        template_dir / "meta.json",
+        {
+            "schema_version": 2,
+            "template_id": "ppt-v3",
+            "runtime_slides": [
+                {
+                    "slide_index": 1,
+                    "slide_number": 2,
+                    "slide_filename": "slide2.xml",
+                    "slide_part": "ppt/slides/slide2.xml",
+                }
+            ],
+            "slots": slots,
+            "layout_groups": [],
+        },
+    )
+
+
 def _make_template_pptx(
     path: Path,
     *,
@@ -520,6 +860,150 @@ def _make_template_pptx(
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, content in entries.items():
             zf.writestr(name, content)
+
+
+def _make_v2_template_dir(tmp_path: Path) -> Path:
+    """검증 가능한 v2 template dir fixture를 만든다."""
+    template_dir = tmp_path / "ppt-v3"
+    template_dir.mkdir()
+    _make_v2_template_pptx(template_dir / "template.pptx", _valid_v2_slide_xmls())
+    result = compile_template_v2(template_dir)
+    assert result.ok is True
+    (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
+    return template_dir
+
+
+def _valid_v2_slide_xmls() -> tuple[str, ...]:
+    """기본 v2 validator 테스트용 slide pair fixture를 만든다."""
+    return (
+        _v2_slide_xml(1, ""),
+        _v2_slide_xml(
+            2,
+            _v2_shape_xml(
+                10,
+                "Exact red marker",
+                (_v2_run_xml("프로젝트명", color="FF0000", font_size=1800),),
+                x=100,
+                y=200,
+                width=300,
+                height=400,
+            ),
+        ),
+        _v2_slide_xml(
+            3,
+            _v2_shape_xml(
+                30,
+                "Example text",
+                (_v2_run_xml("실제 프로젝트명", color="123456"),),
+                x=100,
+                y=200,
+                width=300,
+                height=400,
+            ),
+        ),
+    )
+
+
+def _make_v2_template_pptx(path: Path, slide_xmls: tuple[str, ...]) -> None:
+    """테스트용 최소 v2 PPTX 패키지를 생성한다."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    slide_count = len(slide_xmls)
+    entries: dict[str, str] = {
+        "[Content_Types].xml": _content_types(slide_count),
+        "_rels/.rels": (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<Relationships xmlns="{_PACKAGE_RELATIONSHIPS_NS}">'
+            '<Relationship Id="rId1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+            'Target="ppt/presentation.xml"/>'
+            "</Relationships>"
+        ),
+        "ppt/presentation.xml": _presentation(slide_count),
+        "ppt/_rels/presentation.xml.rels": _presentation_rels(slide_count),
+    }
+    for index, slide_xml in enumerate(slide_xmls, start=1):
+        entries[f"ppt/slides/slide{index}.xml"] = slide_xml
+        entries[f"ppt/slides/_rels/slide{index}.xml.rels"] = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<Relationships xmlns="{_PACKAGE_RELATIONSHIPS_NS}"/>'
+        )
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, content in entries.items():
+            zf.writestr(name, content)
+
+
+def _v2_slide_xml(index: int, shapes_xml: str) -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<p:sld xmlns:p="{_PRESENTATION_NS}" xmlns:a="{_DRAWINGML_NS}" '
+        f'xmlns:r="{_RELATIONSHIPS_NS}">'
+        "<p:cSld><p:spTree>"
+        f'<p:nvGrpSpPr><p:cNvPr id="{index}" name=""/><p:cNvGrpSpPr/><p:nvPr/>'
+        "</p:nvGrpSpPr><p:grpSpPr/>"
+        f"{shapes_xml}"
+        "</p:spTree></p:cSld></p:sld>"
+    )
+
+
+def _v2_shape_xml(
+    shape_id: int,
+    name: str,
+    runs_xml: tuple[str, ...],
+    *,
+    x: int = 0,
+    y: int = 0,
+    width: int = 100,
+    height: int = 100,
+) -> str:
+    return (
+        "<p:sp>"
+        "<p:nvSpPr>"
+        f'<p:cNvPr id="{shape_id}" name="{escape(name)}"/>'
+        '<p:cNvSpPr txBox="1"/><p:nvPr/>'
+        "</p:nvSpPr>"
+        "<p:spPr>"
+        f'<a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{width}" cy="{height}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+        "</p:spPr>"
+        "<p:txBody><a:bodyPr/><a:lstStyle/><a:p>"
+        f"{''.join(runs_xml)}"
+        "</a:p></p:txBody>"
+        "</p:sp>"
+    )
+
+
+def _v2_shape_without_text_xml(
+    shape_id: int,
+    name: str,
+    *,
+    x: int = 0,
+    y: int = 0,
+    width: int = 100,
+    height: int = 100,
+) -> str:
+    return (
+        "<p:sp>"
+        "<p:nvSpPr>"
+        f'<p:cNvPr id="{shape_id}" name="{escape(name)}"/>'
+        "<p:cNvSpPr/><p:nvPr/>"
+        "</p:nvSpPr>"
+        "<p:spPr>"
+        f'<a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{width}" cy="{height}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+        "</p:spPr>"
+        "</p:sp>"
+    )
+
+
+def _v2_run_xml(
+    text: str,
+    *,
+    color: str | None = None,
+    font_size: int = 1200,
+) -> str:
+    fill_xml = f'<a:solidFill><a:srgbClr val="{color}"/></a:solidFill>' if color else ""
+    return f'<a:r><a:rPr sz="{font_size}">{fill_xml}</a:rPr><a:t>{escape(text)}</a:t></a:r>'
 
 
 def _content_types(slide_count: int) -> str:

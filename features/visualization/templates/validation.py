@@ -2,18 +2,31 @@
 
 import json
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .categories import DEFAULT_CATEGORY_SCHEMA_PATH, CategorySchema, load_category_schema
-from .pptx import count_pptx_slides
+from .pptx import count_pptx_slides, extract_template_v2_from_pptx
+from .v2 import SCHEMA_VERSION_V2
 
 _REQUIRED_TOP_LEVEL_FIELDS = ("template_id", "template_file", "theme", "slides")
 _REQUIRED_THEME_FIELDS = ("primary_color", "name")
 _REQUIRED_SLIDE_FIELDS = ("slide_index", "id", "category", "description", "best_for")
+_REQUIRED_V2_META_ARRAY_FIELDS = ("runtime_slides", "slots", "layout_groups")
+_REQUIRED_V2_REFERENCE_ARRAY_FIELDS = ("slide_pairs", "shape_matches")
 _TEMPLATE_FILE_NAME = "template.pptx"
 _THUMBNAIL_FILE_NAME = "thumbnail.jpg"
+_REFERENCE_FILE_NAME = "reference.json"
+_EXACT_MARKER_COLOR = "#FF0000"
+_STRICT_EXTRACTION_WARNING_SNIPPETS = (("inline_label_group", "background 신뢰도가 부족"),)
+_REFERENCE_MATCH_FRESH_FIELDS = (
+    "runtime_shape_id",
+    "example_shape_id",
+    "example_text",
+    "output_text_color",
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +46,7 @@ def validate_template_directory(
     template_dir: Path | str,
     *,
     category_schema_path: Path | str = DEFAULT_CATEGORY_SCHEMA_PATH,
+    strict: bool = False,
 ) -> TemplateValidationResult:
     """템플릿 디렉터리의 template.pptx/meta.json 무결성을 검증한다."""
     root = Path(template_dir)
@@ -43,8 +57,19 @@ def validate_template_directory(
 
     meta_path = root / "meta.json"
     metadata = _load_meta_json(meta_path, errors)
+    if metadata is None:
+        return TemplateValidationResult(errors=tuple(errors), warnings=tuple(warnings))
+
+    schema_version = metadata.get("schema_version")
+    if schema_version == SCHEMA_VERSION_V2:
+        _validate_v2_template(root, metadata, strict=strict, errors=errors, warnings=warnings)
+        return TemplateValidationResult(errors=tuple(errors), warnings=tuple(warnings))
+
+    if "schema_version" in metadata:
+        errors.append(f"meta.json schema_version은 2여야 합니다. 현재 값: {schema_version!r}")
+
     schema = _load_schema(category_schema_path, errors)
-    if metadata is None or schema is None:
+    if schema is None:
         return TemplateValidationResult(errors=tuple(errors), warnings=tuple(warnings))
 
     _validate_required_schema(metadata, errors)
@@ -65,6 +90,400 @@ def validate_template_directory(
         _validate_slides(slides, schema, pptx_slide_count, errors, warnings)
 
     return TemplateValidationResult(errors=tuple(errors), warnings=tuple(warnings))
+
+
+def _validate_v2_template(
+    root: Path,
+    metadata: dict[str, Any],
+    *,
+    strict: bool,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    _validate_non_empty_file(root / _TEMPLATE_FILE_NAME, _TEMPLATE_FILE_NAME, errors)
+    _validate_v2_meta_schema(metadata, errors)
+
+    reference = _load_optional_json(root / _REFERENCE_FILE_NAME, _REFERENCE_FILE_NAME, errors)
+    if reference is not None:
+        _validate_v2_reference_schema(reference, metadata, errors)
+
+    extraction = None
+    template_path = root / _TEMPLATE_FILE_NAME
+    if template_path.is_file() and _file_has_content(template_path):
+        try:
+            extraction = extract_template_v2_from_pptx(template_path)
+        except ValueError as exc:
+            errors.append(str(exc))
+        else:
+            errors.extend(extraction.errors)
+            _append_extraction_warnings(extraction.warnings, strict, errors, warnings)
+
+    _validate_v2_runtime_contract(metadata, reference, extraction, errors)
+    _validate_v2_slot_contract(metadata, reference, extraction, strict, errors, warnings)
+    _validate_v2_layout_groups(metadata, strict, errors, warnings)
+
+
+def _validate_v2_meta_schema(metadata: dict[str, Any], errors: list[str]) -> None:
+    if metadata.get("schema_version") != SCHEMA_VERSION_V2:
+        errors.append(
+            f"meta.json schema_version은 2여야 합니다. 현재 값: {metadata.get('schema_version')!r}"
+        )
+    _validate_required_string(metadata.get("template_id"), "meta.json.template_id", errors)
+    for field in _REQUIRED_V2_META_ARRAY_FIELDS:
+        if not isinstance(metadata.get(field), list):
+            errors.append(f"meta.json.{field} 필드는 배열이어야 합니다.")
+
+
+def _validate_v2_reference_schema(
+    reference: dict[str, Any],
+    metadata: dict[str, Any],
+    errors: list[str],
+) -> None:
+    if reference.get("schema_version") != SCHEMA_VERSION_V2:
+        errors.append(
+            "reference.json schema_version은 2여야 합니다. "
+            f"현재 값: {reference.get('schema_version')!r}"
+        )
+    _validate_required_string(reference.get("template_id"), "reference.json.template_id", errors)
+    if (
+        isinstance(reference.get("template_id"), str)
+        and isinstance(metadata.get("template_id"), str)
+        and reference.get("template_id") != metadata.get("template_id")
+    ):
+        errors.append("reference.json.template_id가 meta.json.template_id와 일치하지 않습니다.")
+    for field in _REQUIRED_V2_REFERENCE_ARRAY_FIELDS:
+        if not isinstance(reference.get(field), list):
+            errors.append(f"reference.json.{field} 필드는 배열이어야 합니다.")
+    if "shape_inferences" in reference and not isinstance(reference.get("shape_inferences"), list):
+        errors.append("reference.json.shape_inferences 필드는 배열이어야 합니다.")
+
+
+def _validate_v2_runtime_contract(
+    metadata: dict[str, Any],
+    reference: dict[str, Any] | None,
+    extraction: Any,
+    errors: list[str],
+) -> None:
+    runtime_slides = _list_value(metadata.get("runtime_slides"))
+    if runtime_slides is None:
+        return
+    if not runtime_slides:
+        errors.append("meta.json runtime_slides에 runtime 대상 슬라이드가 없습니다.")
+
+    runtime_indexes: set[int] = set()
+    runtime_parts: set[str] = set()
+    for position, slide in enumerate(runtime_slides):
+        label = f"meta.json.runtime_slides[{position}]"
+        if not isinstance(slide, dict):
+            errors.append(f"{label} 항목은 객체여야 합니다.")
+            continue
+        slide_index = _required_int(slide.get("slide_index"), f"{label}.slide_index", errors)
+        slide_number = _required_int(slide.get("slide_number"), f"{label}.slide_number", errors)
+        slide_part = _required_string(slide.get("slide_part"), f"{label}.slide_part", errors)
+        _required_string(slide.get("slide_filename"), f"{label}.slide_filename", errors)
+        if slide_index is not None:
+            runtime_indexes.add(slide_index)
+        if slide_part is not None:
+            runtime_parts.add(slide_part)
+        if slide_number is not None and slide_number % 2 != 0:
+            errors.append(f"{label}에 example slide가 runtime 후보로 포함되어 있습니다.")
+
+    if extraction is not None:
+        extracted_runtime_parts = {
+            str(slide.get("slide_part"))
+            for slide in extraction.runtime_slides
+            if isinstance(slide, dict) and slide.get("slide_part")
+        }
+        missing_parts = sorted(runtime_parts - extracted_runtime_parts)
+        if missing_parts:
+            errors.append(
+                "meta.json.runtime_slides에 template.pptx runtime 대상이 아닌 슬라이드가 "
+                f"포함되어 있습니다: {', '.join(missing_parts)}"
+            )
+
+    if reference is not None:
+        _validate_v2_slide_pairs(reference, runtime_indexes, errors)
+
+
+def _validate_v2_slide_pairs(
+    reference: dict[str, Any],
+    runtime_indexes: set[int],
+    errors: list[str],
+) -> None:
+    slide_pairs = _list_value(reference.get("slide_pairs"))
+    if slide_pairs is None:
+        return
+
+    pair_runtime_indexes: set[int] = set()
+    pair_example_indexes: set[int] = set()
+    for position, pair in enumerate(slide_pairs):
+        label = f"reference.json.slide_pairs[{position}]"
+        if not isinstance(pair, dict):
+            errors.append(f"{label} 항목은 객체여야 합니다.")
+            continue
+        runtime_index = _required_int(
+            pair.get("runtime_slide_index"), f"{label}.runtime_slide_index", errors
+        )
+        example_index = _required_int(
+            pair.get("example_slide_index"), f"{label}.example_slide_index", errors
+        )
+        if runtime_index is not None:
+            pair_runtime_indexes.add(runtime_index)
+        if example_index is not None:
+            pair_example_indexes.add(example_index)
+        if (
+            runtime_index is not None
+            and example_index is not None
+            and runtime_index == example_index
+        ):
+            errors.append(f"{label}의 runtime/example slide가 동일합니다.")
+
+    missing_pairs = sorted(runtime_indexes - pair_runtime_indexes)
+    if missing_pairs:
+        errors.append(
+            "reference.json에 필수 example slide pair가 없습니다. "
+            f"runtime_slide_index: {missing_pairs}"
+        )
+
+    leaked_examples = sorted(runtime_indexes & pair_example_indexes)
+    if leaked_examples:
+        errors.append(
+            f"example slide가 runtime 후보에 포함되어 있습니다. slide_index: {leaked_examples}"
+        )
+
+
+def _validate_v2_slot_contract(
+    metadata: dict[str, Any],
+    reference: dict[str, Any] | None,
+    extraction: Any,
+    strict: bool,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    slots = _list_value(metadata.get("slots"))
+    if slots is None:
+        return
+
+    slot_ids: list[str] = []
+    editable_text_slot_ids: set[str] = set()
+    for position, slot in enumerate(slots):
+        label = f"meta.json.slots[{position}]"
+        if not isinstance(slot, dict):
+            errors.append(f"{label} 항목은 객체여야 합니다.")
+            continue
+        slot_id = _required_string(slot.get("slot_id"), f"{label}.slot_id", errors)
+        _required_string(slot.get("shape_id"), f"{label}.shape_id", errors)
+        if slot_id is not None:
+            slot_ids.append(slot_id)
+
+        if _is_editable_text_slot(slot):
+            if slot_id is not None:
+                editable_text_slot_ids.add(slot_id)
+            _validate_v2_editable_text_slot(slot, label, strict, errors, warnings)
+
+    duplicate_slot_ids = sorted({slot_id for slot_id in slot_ids if slot_ids.count(slot_id) > 1})
+    if duplicate_slot_ids:
+        errors.append(f"meta.json slot_id 중복: {', '.join(duplicate_slot_ids)}")
+
+    if extraction is not None:
+        extracted_slot_ids = {
+            str(slot.get("slot_id"))
+            for slot in extraction.slots
+            if isinstance(slot, dict) and slot.get("slot_id")
+        }
+        metadata_slot_ids = set(slot_ids)
+        missing_slot_ids = sorted(extracted_slot_ids - metadata_slot_ids)
+        extra_slot_ids = sorted(editable_text_slot_ids - extracted_slot_ids)
+        if missing_slot_ids:
+            errors.append(
+                "meta.json.slots에 template.pptx editable marker slot이 누락되었습니다: "
+                f"{', '.join(missing_slot_ids)}"
+            )
+        if extra_slot_ids:
+            errors.append(
+                "meta.json.slots에 template.pptx #FF0000 marker가 아닌 editable slot이 "
+                f"포함되어 있습니다: {', '.join(extra_slot_ids)}"
+            )
+
+    if reference is not None:
+        _validate_v2_reference_matches(reference, editable_text_slot_ids, errors)
+        if extraction is not None:
+            _validate_v2_reference_matches_against_extraction(reference, extraction, errors)
+
+
+def _validate_v2_editable_text_slot(
+    slot: dict[str, Any],
+    label: str,
+    strict: bool,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    _required_string(slot.get("placeholder_text"), f"{label}.placeholder_text", errors)
+    marker_color = str(slot.get("marker_color") or "").upper()
+    if marker_color != _EXACT_MARKER_COLOR:
+        errors.append(f"{label}.marker_color는 정확한 #FF0000 이어야 합니다.")
+
+    layout_name = _editable_slot_layout_name(slot)
+    if layout_name == "unknown":
+        _append_warning_or_strict_error(
+            f"{label} editable slot layout이 unknown입니다.",
+            strict,
+            errors,
+            warnings,
+        )
+
+
+def _validate_v2_reference_matches(
+    reference: dict[str, Any],
+    editable_text_slot_ids: set[str],
+    errors: list[str],
+) -> None:
+    shape_matches = _list_value(reference.get("shape_matches"))
+    if shape_matches is None:
+        return
+
+    matched_slot_ids: set[str] = set()
+    for position, match in enumerate(shape_matches):
+        label = f"reference.json.shape_matches[{position}]"
+        if not isinstance(match, dict):
+            errors.append(f"{label} 항목은 객체여야 합니다.")
+            continue
+        slot_id = _required_string(match.get("slot_id"), f"{label}.slot_id", errors)
+        _required_string(match.get("example_shape_id"), f"{label}.example_shape_id", errors)
+        _required_string(match.get("example_text"), f"{label}.example_text", errors)
+        if slot_id is not None:
+            matched_slot_ids.add(slot_id)
+
+    unmatched_slot_ids = sorted(editable_text_slot_ids - matched_slot_ids)
+    if unmatched_slot_ids:
+        errors.append(
+            "editable slot의 example shape 매칭에 실패했습니다. "
+            f"slot_id: {', '.join(unmatched_slot_ids)}"
+        )
+
+
+def _validate_v2_reference_matches_against_extraction(
+    reference: dict[str, Any],
+    extraction: Any,
+    errors: list[str],
+) -> None:
+    shape_matches = _list_value(reference.get("shape_matches"))
+    if shape_matches is None:
+        return
+
+    extracted_by_slot_id: dict[str, dict[str, Any]] = {}
+    for extracted_match in extraction.shape_matches:
+        if not isinstance(extracted_match, dict):
+            continue
+        slot_id = extracted_match.get("slot_id")
+        if not isinstance(slot_id, str) or not slot_id.strip():
+            continue
+        extracted_by_slot_id[slot_id] = extracted_match
+
+    for position, match in enumerate(shape_matches):
+        label = f"reference.json.shape_matches[{position}]"
+        if not isinstance(match, dict):
+            continue
+        slot_id = match.get("slot_id")
+        if not isinstance(slot_id, str) or not slot_id.strip():
+            continue
+
+        extracted_match = extracted_by_slot_id.get(slot_id)
+        if extracted_match is None:
+            errors.append(f"{label}.slot_id {slot_id!r}는 template.pptx 추출 결과에 없습니다.")
+            continue
+
+        for field in _REFERENCE_MATCH_FRESH_FIELDS:
+            reference_value = match.get(field)
+            extracted_value = extracted_match.get(field)
+            if reference_value != extracted_value:
+                errors.append(
+                    f"{label}.{field}가 template.pptx 추출 결과와 일치하지 않습니다. "
+                    f"reference.json={reference_value!r}, template.pptx={extracted_value!r}"
+                )
+
+
+def _validate_v2_layout_groups(
+    metadata: dict[str, Any],
+    strict: bool,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    layout_groups = _list_value(metadata.get("layout_groups"))
+    if layout_groups is None:
+        return
+
+    for position, group in enumerate(layout_groups):
+        label = f"meta.json.layout_groups[{position}]"
+        if not isinstance(group, dict):
+            errors.append(f"{label} 항목은 객체여야 합니다.")
+            continue
+        if str(group.get("layout_type") or "") != "inline_label_group":
+            continue
+        if not _inline_label_group_linked_backgrounds_are_confident(group):
+            _append_warning_or_strict_error(
+                f"{label} inline_label_group linked background 신뢰도가 낮습니다.",
+                strict,
+                errors,
+                warnings,
+            )
+
+
+def _inline_label_group_linked_backgrounds_are_confident(group: dict[str, Any]) -> bool:
+    item_shape_ids = _string_list(group.get("item_shape_ids"))
+    linked_background_by_item = group.get("linked_background_by_item")
+    if not item_shape_ids or not isinstance(linked_background_by_item, dict):
+        return False
+    for item_shape_id in item_shape_ids:
+        linked = linked_background_by_item.get(item_shape_id)
+        if not isinstance(linked, dict):
+            return False
+        if linked.get("resize_linked") is not True:
+            return False
+        if not str(linked.get("background_shape_id") or "").strip():
+            return False
+        match_score = linked.get("match_score")
+        if isinstance(match_score, bool) or not isinstance(match_score, int | float):
+            return False
+    return True
+
+
+def _append_extraction_warnings(
+    extraction_warnings: Sequence[str],
+    strict: bool,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    for warning in extraction_warnings:
+        if strict and _is_strict_extraction_warning(warning):
+            errors.append(warning)
+            continue
+        warnings.append(warning)
+
+
+def _is_strict_extraction_warning(warning: str) -> bool:
+    return any(
+        all(snippet in warning for snippet in snippets)
+        for snippets in _STRICT_EXTRACTION_WARNING_SNIPPETS
+    )
+
+
+def _load_optional_json(path: Path, label: str, errors: list[str]) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        errors.append(f"{label}을 읽을 수 없습니다: {exc}")
+        return None
+    except json.JSONDecodeError as exc:
+        errors.append(f"{label} JSON 형식이 올바르지 않습니다: {exc}")
+        return None
+
+    if not isinstance(loaded, dict):
+        errors.append(f"{label} 최상위 값은 객체여야 합니다.")
+        return None
+    return loaded
 
 
 def _load_meta_json(path: Path, errors: list[str]) -> dict[str, Any] | None:
@@ -100,6 +519,13 @@ def _validate_non_empty_file(path: Path, label: str, errors: list[str]) -> None:
             errors.append(f"{label} 파일이 비어 있습니다: {path}")
     except OSError as exc:
         errors.append(f"{label} 파일을 확인할 수 없습니다: {exc}")
+
+
+def _file_has_content(path: Path) -> bool:
+    try:
+        return path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _validate_required_schema(metadata: dict[str, Any], errors: list[str]) -> None:
@@ -213,3 +639,55 @@ def _append_distribution_warnings(
 def _validate_required_string(value: Any, label: str, errors: list[str]) -> None:
     if not isinstance(value, str) or not value.strip():
         errors.append(f"{label}는 비어 있지 않은 문자열이어야 합니다.")
+
+
+def _required_string(value: Any, label: str, errors: list[str]) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{label}는 비어 있지 않은 문자열이어야 합니다.")
+        return None
+    return value
+
+
+def _required_int(value: Any, label: str, errors: list[str]) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        errors.append(f"{label}는 정수여야 합니다.")
+        return None
+    return value
+
+
+def _list_value(value: Any) -> list[Any] | None:
+    if isinstance(value, list):
+        return value
+    return None
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _is_editable_text_slot(slot: dict[str, Any]) -> bool:
+    if slot.get("editable") is False:
+        return False
+    return str(slot.get("kind") or "text").casefold() == "text"
+
+
+def _editable_slot_layout_name(slot: dict[str, Any]) -> str:
+    for field in ("layout_type", "fit_policy"):
+        value = slot.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip().casefold()
+    return ""
+
+
+def _append_warning_or_strict_error(
+    message: str,
+    strict: bool,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    if strict:
+        errors.append(message)
+        return
+    warnings.append(message)
