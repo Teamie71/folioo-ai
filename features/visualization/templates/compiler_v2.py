@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from .pptx import extract_template_v2_from_pptx
 from .v2 import (
     META_JSON_NAME,
     REFERENCE_JSON_NAME,
@@ -45,9 +46,20 @@ def compile_template_v2(
     _validate_template_dir(root)
 
     target_dir = Path(output_dir) if output_dir is not None else root
-    payloads = build_template_v2_payloads(root.name, extraction=extraction)
+    source_extraction = extraction or extract_template_v2_from_pptx(root / TEMPLATE_PPTX_NAME)
     meta_path = target_dir / META_JSON_NAME
     reference_path = target_dir / REFERENCE_JSON_NAME
+    if source_extraction.errors:
+        return TemplateV2CompileResult(
+            meta_path=meta_path,
+            reference_path=reference_path,
+            checked=check,
+            updated=False,
+            errors=tuple(source_extraction.errors),
+            warnings=tuple(source_extraction.warnings),
+        )
+
+    payloads = build_template_v2_payloads(root.name, extraction=source_extraction)
 
     if check:
         errors = tuple(
@@ -64,6 +76,7 @@ def compile_template_v2(
             checked=True,
             updated=False,
             errors=errors,
+            warnings=tuple(source_extraction.warnings),
         )
 
     write_json_payload(meta_path, payloads.metadata)
@@ -73,6 +86,7 @@ def compile_template_v2(
         reference_path=reference_path,
         checked=False,
         updated=True,
+        warnings=tuple(source_extraction.warnings),
     )
 
 

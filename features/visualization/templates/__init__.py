@@ -12,7 +12,12 @@ from .builder import (
 )
 from .categories import CategoryDefinition, CategorySchema, load_category_schema
 from .compiler_v2 import TemplateV2CompileResult, compile_template_v2
-from .pptx import SlideText, count_pptx_slides, extract_slide_texts
+from .pptx import (
+    SlideText,
+    count_pptx_slides,
+    extract_slide_texts,
+    extract_template_v2_from_pptx,
+)
 from .v2 import (
     SCHEMA_VERSION_V2,
     TemplateV2Extraction,
@@ -49,6 +54,7 @@ __all__ = [
     "compile_template_v2",
     "count_pptx_slides",
     "extract_slide_texts",
+    "extract_template_v2_from_pptx",
     "json_file_normalized_equal",
     "json_normalized_equal",
     "load_category_schema",

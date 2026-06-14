@@ -16,8 +16,8 @@ TEMPLATE_PPTX_NAME = "template.pptx"
 class TemplateV2Extraction:
     """v2 compiler 추출 결과.
 
-    Task 2.01 단계에서는 빈 추출 결과를 안정적으로 직렬화하는 기반만 제공한다.
-    slide pair, marker, reference shape 매칭은 후속 task 가 이 구조를 채운다.
+    PPTX에서 추출한 runtime slide, editable marker slot, reference skeleton 정보를 담는다.
+    reference shape 매칭과 layout group 추론은 후속 task 가 이 구조를 확장한다.
     """
 
     runtime_slides: Sequence[Mapping[str, Any]] = ()
@@ -25,6 +25,8 @@ class TemplateV2Extraction:
     layout_groups: Sequence[Mapping[str, Any]] = ()
     slide_pairs: Sequence[Mapping[str, Any]] = ()
     shape_matches: Sequence[Mapping[str, Any]] = ()
+    errors: Sequence[str] = ()
+    warnings: Sequence[str] = ()
 
 
 @dataclass(frozen=True, slots=True)
