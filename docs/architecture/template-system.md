@@ -11,12 +11,14 @@
 ```
 templates/
 ├── blue/
-│   ├── template.pptx          ← 파란색 조합, 30~40장 Source Slide 풀
-│   ├── meta.json              ← Source Slide 별 메타데이터
+│   ├── template.pptx          ← 짝수/홀수 slide pair 를 담은 Source Slide 풀
+│   ├── meta.json              ← v2 runtime slot 계약
+│   ├── reference.json         ← v2 예시 slide 매칭/추론 근거
 │   └── thumbnail.jpg          ← 그리드 썸네일 (런타임 선택 LLM/운영자 참고용)
 ├── green/
 │   ├── template.pptx          ← 초록색 조합 (같은 레이아웃, 다른 색)
 │   ├── meta.json
+│   ├── reference.json
 │   └── thumbnail.jpg
 ├── dark/
 │   └── ...
@@ -27,18 +29,24 @@ templates/
 ### 3.2 하나의 Template PPTX 내부
 
 ```
-templates/blue/template.pptx (30~40장의 Source Slide 풀)
-├── Source Slide 1: 표지 레이아웃 A (cover_A)
-├── Source Slide 2: 표지 레이아웃 B (cover_B)
-├── Source Slide 3: 개요 레이아웃 A (overview_A)
-├── Source Slide 4: 개요 레이아웃 B (overview_B)
-├── Source Slide 5: 개요 레이아웃 C (overview_C)
-├── Source Slide 6: 문제정의 레이아웃 A
-├── Source Slide 7: 프로세스/타임라인 레이아웃 A
+templates/blue/template.pptx
+├── Slide 1: 안내/검수용 슬라이드 (런타임 대상 아님)
+├── Slide 2: runtime 유형 슬라이드 A
+├── Slide 3: Slide 2 의 example/reference 슬라이드
+├── Slide 4: runtime 유형 슬라이드 B
+├── Slide 5: Slide 4 의 example/reference 슬라이드
+├── Slide 6: runtime 유형 슬라이드 C
+├── Slide 7: Slide 6 의 example/reference 슬라이드
 ├── ...
-├── Source Slide 30: 마무리 레이아웃 B
+├── 짝수 slide: 포트폴리오 내용으로 교체될 유형 슬라이드
+├── 바로 뒤 홀수 slide: 같은 레이아웃의 실제 예시/reference
 └── 모든 Source Slide 가 같은 마스터/테마/디자인 시스템 공유
 ```
+
+v2 compiler 는 **1-based 짝수 slide 를 runtime 유형 슬라이드**로 보고, 바로 뒤의
+**1-based 홀수 slide 를 example/reference slide** 로 매칭한다. 마지막 짝수 slide 뒤에
+example slide 가 없으면 계약 위반이다. 홀수 slide 는 editable 대상이 아니며, 예시 텍스트와
+최종 텍스트 색상(`output_text_color`)을 추출하는 reference 로만 사용한다.
 
 ### 3.3 Source Slide 카테고리 (표준 Enum)
 
@@ -51,8 +59,9 @@ templates/blue/template.pptx (30~40장의 Source Slide 풀)
 
 **관리 방식:**
 - `templates/_schema/categories.json` 에 표준 Enum 정의 (단일 소스 오브 트루스)
-- 모든 Template 의 `meta.json`은 이 Enum 안의 값만 `category` 로 사용
-- 템플릿 등록 스크립트에서 카테고리 유효성 검증
+- v2 `runtime_slides[]` 의 `category` 는 선택 보강값이다. 운영자가 추가하는 경우 이 Enum 안의 값을 사용한다.
+- v2 validator 는 pair/marker/reference/layout 계약을 검증하고, category 는 누락 시 런타임 fallback 을 사용한다.
+- legacy `slides[]` 형식의 `category` 는 템플릿 등록 스크립트에서 Enum 유효성을 검증한다.
 
 | 카테고리 키 | 설명 | 권장 변형 수 |
 |---|---|---|
@@ -69,87 +78,79 @@ templates/blue/template.pptx (30~40장의 Source Slide 풀)
 
 신규 카테고리가 필요한 경우 → 별도 PR로 Enum 자체를 확장하고 모든 템플릿에 영향 범위를 검토.
 
-### 3.4 메타데이터 파일 (meta.json) — **최소화**
+### 3.4 메타데이터 파일 (meta.json / reference.json) — **v2 계약**
 
-> **설계 변경 (Anthropic PPTX 스킬 방식 채택)**
-> 이전 버전에서는 디자이너가 각 도형에 표준 이름을 부여하고 `meta.json` 에
-> 이전 설계의 placeholder 별 `name`, `type`, `purpose`, `max_chars` 까지 직접 적었다.
-> **이 방식은 운영 부담이 너무 크다** (디자이너의 도형 이름 부여 + 후속 메타 수기 입력).
->
-> Anthropic 의 PPTX 스킬이 그러하듯, **사전에 Slot 을 일일이 명시하지 않고**
-> 런타임에 슬라이드 XML 자체를 LLM에게 컨텍스트로 제공해 자동 식별하는 방식으로 전환한다.
-> `meta.json` 은 LLM의 **Source Slide 선택**(Source Slide 풀에서 어떤 페이지를 쓸지)에 필요한 최소 정보만 담는다.
+`template.pptx` 가 source of truth 이고, `scripts/templates/compile_template.py` 가
+`schema_version: 2` 형식의 `meta.json` 과 `reference.json` 을 생성한다. 런타임 로더는
+`meta.json.schema_version != 2` 인 템플릿을 fail fast 한다.
 
 ```json
 {
+  "schema_version": 2,
   "template_id": "blue",
-  "template_file": "template.pptx",
-  "theme": {
-    "primary_color": "#4A6CF7",
-    "name": "블루 클린"
-  },
-  "slides": [
-    {
-      "slide_index": 0,
-      "id": "cover_A",
-      "category": "cover",
-      "description": "중앙 정렬 표지. 프로젝트명 + 이름 + 날짜. 심플한 느낌.",
-      "best_for": "짧은 프로젝트명, 깔끔한 첫인상"
-    },
+  "runtime_slides": [
     {
       "slide_index": 1,
-      "id": "cover_B",
-      "category": "cover",
-      "description": "좌측 정렬 표지. 프로젝트명이 길 때 적합. 배경 이미지 영역 있음.",
-      "best_for": "긴 프로젝트명, 시각적 임팩트 필요할 때"
-    },
-    {
-      "slide_index": 2,
-      "id": "overview_A",
-      "category": "overview",
-      "description": "4칸 카드형 개요. 역할/기간/도구/팀 구성을 카드로 분리.",
-      "best_for": "구조화된 정보가 4개 항목일 때"
+      "slide_number": 2,
+      "slide_filename": "slide2.xml",
+      "slide_part": "ppt/slides/slide2.xml"
     }
-    // ... 30~40개
-  ]
+  ],
+  "slots": [],
+  "layout_groups": []
 }
 ```
 
-빌더가 만든 초안에는 운영자 검토를 알리는 `_draft_notice` 가 추가될 수 있다.
-런타임 Source Slide 선택에 쓰이는 각 Source Slide 엔트리는 다음 5개 필드만 유지한다:
+`meta.json` 의 책임:
 
 | 필드 | 용도 |
 |---|---|
-| `slide_index` | Template PPTX 내부 Source Slide 순서 (0-based) |
-| `id` | 등록 파이프라인이 자동 부여하고 운영자가 검토하는 Source Slide 식별자 (예: `cover_A`) |
-| `category` | §3.3 표준 Enum 중 하나 |
-| `description` | LLM 이 Source Slide 풀에서 선택할 때 참고하는 짧은 설명 |
-| `best_for` | 어떤 콘텐츠에 적합한지 한 줄 가이드 |
+| `schema_version` | v2 계약 식별자. 값은 반드시 `2` |
+| `template_id` | 템플릿 디렉터리명 기반 식별자 |
+| `runtime_slides` | 실제 생성에 사용할 짝수 runtime slide 목록 |
+| `slots` | editable marker 에서 추출한 slot descriptor 목록 |
+| `layout_groups` | `inline_label_group` 같은 group 단위 layout 계약 |
 
-**제거된 항목 (이전 버전 대비):**
-- 이전 설계의 `placeholders[]` 배열 전체 — 도형 이름·max_chars·purpose 모두 사전 정의 X
-- 디자이너의 도형 이름 부여 의무 — XML이 자동 생성하는 `cNvPr/@id` 만으로 충분
+`slots[]` 는 런타임 LLM prompt 와 deterministic fitting 의 입력이다. 주요 필드는
+`slot_id`, `slide_index`, `slide_number`, `shape_id`, `shape_name`, `x_emu`, `y_emu`,
+`w_emu`, `h_emu`, `kind`, `editable`, `required`, `allowed_actions`,
+`marker_color`, `placeholder_text`, `font_size_pt`, `example_text`,
+`example_char_count`, `example_line_count`, `output_text_color`, `min_font_pt`,
+`max_font_pt`, `max_lines`, `nowrap`, `fit_policy`, `item_background`,
+`layout_group_id` 이다.
 
-LLM 이 콘텐츠를 채워 넣을 때 필요한 Slot 정보는 `pptx-gen-plan-v6.md` §5.2 Step 3 에서
-**시각화 워커가 슬라이드 XML 을 그 자리에서 분석해 동적으로 추출한다.**
+`reference.json` 은 runtime 실행의 필수 입력이 아니라 compiler/validator/audit 용 근거 파일이다.
+같은 `schema_version: 2` 와 `template_id` 를 가지며, `slide_pairs`, `shape_matches`,
+`shape_inferences` 를 기록한다. `shape_matches` 는 example slide 에서 매칭한
+`example_text` 와 `output_text_color` 의 출처이고, `shape_inferences` 는
+`item_background`, `container_shape` 같은 추론 근거를 남긴다. `reference.json` 없이도
+`meta.json` 만으로 기본 생성은 가능하지만, 품질 검수와 strict validator 에서는 함께 다룬다.
+
+정확한 `#FF0000` marker 규칙:
+
+- runtime slide 에서 **정확한 RGB `#FF0000` 텍스트 run** 만 editable slot 이다.
+- `#FE0000`, theme red, tint/shade red 는 marker 가 아니다.
+- 같은 shape 안에 `#FF0000` run 과 non-red run 이 섞이면 계약 위반이다.
+- non-red 텍스트는 fixed/decorative 로 유지되며 fill 대상이 아니다.
+- `#FF0000` 은 최종 출력 색상이 아니라 editable marker 이다. 최종 text color 는
+  example slide 의 `output_text_color` 로 대체한다.
 
 ### 3.5 템플릿 등록 파이프라인 (디자이너 ppt 완성 이후)
 
-> **요약 — `meta.json` 은 "완전 자동 생성" 이 아니다.**
-> `slide_index` 같은 기계적 필드는 자동 추출, `description` / `best_for` / `category` 같은
-> 의미 필드는 **LLM 이 초안을 생성하고 운영자가 검토·확정**하는 반자동 방식이다.
-> 디자이너가 도형 이름을 수기로 부여하거나 Slot 별 max_chars 를 작성하는 작업은 없다.
+> **요약 — v2 `meta.json` / `reference.json` 은 `compile_template.py` 산출물이다.**
+> 디자이너가 도형 이름을 수기로 부여하거나 Slot 별 `max_chars` 를 작성하지 않는다.
+> 운영자는 PPTX pair convention 과 marker convention 을 지키고, 컴파일 결과의 warning/error 를 검토한다.
 
 #### 3.5.1 전체 단계 한눈에
 
 ```mermaid
 flowchart TD
-    D["[디자이너] template.pptx 완성<br/>(색상 · 레이아웃 · 예시 텍스트만)"]
-    D --> S1["[1] 자동 추출 (스크립트, 운영자 1회 실행)<br/>· PPTX 슬라이드 수 / slide_index<br/>· 슬라이드별 임시 텍스트 (markitdown)<br/>· 슬라이드별 썸네일 + 그리드 썸네일"]
-    S1 --> S2["[2] LLM 보조 — meta.json 초안 생성<br/>· 입력: 슬라이드별 (썸네일 + 임시 텍스트)<br/>· 출력: category 후보 + description + best_for<br/>· id 자동 부여 (같은 카테고리 내 알파벳 순)"]
-    S2 --> S3["[3] 운영자 검토 (사람의 손)<br/>· category 분류 보정 (cover ↔ closing 등)<br/>· description / best_for 다듬기<br/>· id 직관성 검토<br/>· 시각적 문제 → 디자이너 회신"]
-    S3 --> S4["[4] 자동 검증 (운영자 또는 CI 잡)<br/>· template_file = template.pptx<br/>· thumbnail.jpg 존재<br/>· category 표준 Enum 범위 내<br/>· slide_index ↔ 실제 슬라이드 수 일치<br/>· 같은 템플릿 내 id 중복 없음<br/>· 카테고리 분포 권장 범위 (경고만)"]
-    S4 --> S5["[5] GCS 업로드 (운영자 또는 CD 파이프라인)<br/>gs://folioo-visualizations/templates/{template_id}/<br/>template.pptx · meta.json · thumbnail.jpg"]
+    D["[디자이너] template.pptx 완성<br/>짝수 runtime + 바로 뒤 홀수 example"]
+    D --> S1["[1] compile_template.py<br/>· runtime slide pair 추출<br/>· #FF0000 marker slot 추출<br/>· example reference 매칭"]
+    S1 --> S2["[2] v2 metadata 생성<br/>meta.json · reference.json"]
+    S2 --> S3["[3] 운영자 검토<br/>error/warning 확인<br/>marker, pair, reference 품질 보정"]
+    S3 --> S4["[4] compile --check / validate 검증<br/>CI 또는 배포 전 gate"]
+    S4 --> S5["[5] GCS 업로드<br/>template.pptx · meta.json · reference.json · thumbnail.jpg"]
 ```
 
 #### 3.5.2 실행 커맨드 예시
@@ -157,90 +158,36 @@ flowchart TD
 스크립트는 **운영자 로컬 또는 CI 잡**에서 실행한다. 런타임 시각화 워커는 이 단계에 관여하지 않는다.
 
 ```bash
-# [1] + [2] 한 번에 실행 — meta.json 초안 생성
-python scripts/templates/build_meta.py \
-    --pptx ./templates/blue/template.pptx \
-    --template-id blue \
-    --primary-color "#4A6CF7" \
-    --output ./templates/blue/meta.json
-
-# 내부적으로 수행하는 일:
-#   1) soffice 로 PDF 변환 후 pdftoppm 으로 슬라이드별 JPG 추출
-#      (기본 위치: 배포 디렉터리 밖의 work dir, --work-dir 로 override 가능)
-#   2) 그리드 썸네일 생성 (templates/blue/thumbnail.jpg)
-#   3) markitdown 으로 슬라이드별 임시 텍스트 추출 (기본 위치: work dir/slide_text.md)
-#   4) LLM 에 (썸네일 + 텍스트) 묶음 입력 →
-#      슬라이드별 { category, description, best_for } 초안 생성
-#   5) 같은 카테고리끼리 묶어 id 알파벳 자동 부여
-#   6) meta.json 초안을 디스크에 작성 (운영자가 이후 수정 가능)
-
-# [3] 운영자가 IDE 에서 meta.json 직접 검토/수정 (사람의 손)
-
-# [4] 검증 — 운영자 또는 CI 잡에서 실행
-python scripts/templates/validate_template.py ./templates/blue
-
-# 검증 내용:
-#   - meta.json 스키마 (필수 필드 누락 X)
-#   - template_file 이 경로 없이 정확히 template.pptx 인지
-#   - thumbnail.jpg 가 존재하고 비어 있지 않은지
-#   - category 가 templates/_schema/categories.json 안에 있는지 (unknown 이면 실패 — 운영자가 실제 카테고리로 교체해야 통과)
-#   - slide_index 가 0..N-1 연속인지, PPTX 내 슬라이드 수와 일치하는지
-#   - 같은 템플릿 내 id 중복 없는지
-
-# [5] 업로드
+uv run python scripts/templates/compile_template.py templates/blue
+uv run python scripts/templates/compile_template.py templates/blue --check
+uv run python scripts/templates/validate_template.py templates/blue
+uv run python scripts/templates/validate_template.py templates/blue --strict
 gcloud storage rsync ./templates/blue/ gs://folioo-visualizations/templates/blue/
 ```
 
-#### 3.5.3 meta.json 필드별 생성 주체
+#### 3.5.3 v2 필드별 생성 주체
 
 | 필드 | 생성 주체 | 비고 |
 |---|---|---|
-| `template_id` | 운영자 (스크립트 인자) | "blue", "green" 등 |
-| `template_file` | 자동 | 항상 `template.pptx` |
-| `theme.primary_color` | 운영자 (스크립트 인자) | |
-| `theme.name` | 운영자 또는 LLM 보조 | "블루 클린" 같은 한국어 표시명 |
-| `slides[].slide_index` | **자동** | PPTX 파싱 |
-| `slides[].id` | **LLM 자동 부여 → 운영자 검토** | 같은 카테고리 내 알파벳 순 |
-| `slides[].category` | **LLM 초안 → 운영자 검토 필수** | §3.3 표준 Enum 한정 |
-| `slides[].description` | **LLM 초안 → 운영자 다듬기** | 한 줄, Source Slide 풀 선택 시 LLM 참고 |
-| `slides[].best_for` | **LLM 초안 → 운영자 다듬기** | 한 줄, 어떤 콘텐츠에 적합한지 |
+| `schema_version` | 자동 | 항상 `2` |
+| `template_id` | 자동 | 템플릿 디렉터리명 |
+| `runtime_slides[]` | 자동 | 짝수 runtime slide 에서 추출 |
+| `slots[].shape_id` / bbox | 자동 | runtime slide OOXML 의 `cNvPr/@id`, `a:xfrm` |
+| `slots[].marker_color` | 자동 | 정확한 `#FF0000` marker 만 허용 |
+| `slots[].placeholder_text` | 자동 | runtime slide 의 marker 텍스트 |
+| `slots[].example_text` / `output_text_color` | 자동 | example slide reference 매칭 결과 |
+| `slots[].fit_policy` / capacity 필드 | 자동 | layout group 과 slot geometry 기반 기본값 |
+| `layout_groups[]` | 자동 | `inline_label_group` 등 group 추론 결과 |
+| `reference.json` 의 match/inference | 자동 | 검수와 validator 용 근거 |
 
-→ **운영자가 절대 손대지 않는 필드: `slide_index`, `template_file`.**
-→ **운영자가 반드시 검토하는 필드: `category` (잘못 분류되면 LLM 추천 풀이 망가짐).**
-
-#### 3.5.4 메타 작성 보조 LLM 프롬프트 (참고)
-
-```
-System:
-"너는 PPT 슬라이드 분류 전문가야. 슬라이드 썸네일과 임시 텍스트를 보고
- 다음 표준 카테고리 중 하나로 분류해. 잘 모르겠으면 'unknown' 으로."
-
-[표준 카테고리 목록 (§3.3)]
-cover, toc, overview, problem, process, outcome, chart, visual, text, closing
-
-User (슬라이드마다 반복):
-"[슬라이드 N번 썸네일]
- [텍스트]: '여기에 프로젝트명', '2024.01 - 2024.06', ...
-
- 다음 JSON 형식으로 출력해:
- {
-   \"category\": \"...\",
-   \"description\": \"한 줄로 레이아웃과 구성 요약 (35자 내외)\",
-   \"best_for\": \"어떤 콘텐츠에 적합한지 한 줄 (35자 내외)\"
- }"
-```
-
-위 프롬프트는 `scripts/templates/build_meta.py` 안에서 슬라이드마다 한 번씩 호출된다.
-빌드 단계의 LLM 호출이므로 **런타임 사용자 비용에는 영향 없음**.
-
-#### 3.5.5 과거 버전 대비 제거된 작업
+#### 3.5.4 과거 버전 대비 제거된 작업
 
 | 작업 | 이전 버전 | 현재 (v6) |
 |---|---|---|
-| 디자이너가 도형마다 영문 이름 부여 | 필수 | **제거** (런타임에 `cNvPr/@id` 자동 식별) |
-| 이전 설계의 placeholder 별 `max_chars` 수기 입력 | 필수 | **제거** (시각 QA 가 사후 보정, §3.7.2) |
-| 이전 설계의 placeholder 별 `name`/`type`/`purpose` JSON 작성 | 필수 | **제거** (`meta.json` 의 5개 필드만 유지) |
-| 명명 검증 스크립트 (`scripts/validate_template.py` 의 이전 설계 placeholder 명명 검사) | 필수 | **제거** (검증 항목은 §3.5.1 [4] 로 단순화) |
+| 디자이너가 도형마다 영문 이름 부여 | 필수 | **제거** (`cNvPr/@id` 자동 식별) |
+| 이전 설계의 placeholder 별 `max_chars` 수기 입력 | 필수 | **제거** (`fit_policy`, `max_lines`, `nowrap` 등 자동 추론) |
+| 이전 설계의 placeholder 별 `name`/`type`/`purpose` JSON 작성 | 필수 | **제거** (`#FF0000` marker 와 reference 매칭으로 추출) |
+| 런타임에서 XML만 보고 slot 계약을 처음부터 추론 | 필수 | **제거** (`meta.json` 계약을 source of truth 로 사용하고, XML 추출값은 overlay/검증 입력으로만 사용) |
 
 ### 3.6 디자인 일관성 보장
 
@@ -250,20 +197,19 @@ User (슬라이드마다 반복):
 - 도형 스타일, 그림자, 간격 등 디자이너가 한 번에 관리
 - 어떤 조합으로 골라도 "같은 PPT 느낌" 보장
 
-### 3.7 디자이너 워크플로우 — **단순화**
+### 3.7 디자이너 워크플로우 — **v2 pair convention**
 
 ```
 디자이너가 할 일:
 1. PowerPoint에서 하나의 파일 열고
-2. 다양한 레이아웃 페이지를 쭉 만들고
-3. 각 Slot 후보 자리에 실제로 들어갈 콘텐츠와 비슷한 예시 텍스트 입력
-   (예: "여기에 프로젝트명", "도구: Figma, Notion" 등 — LLM 이 의미를 이해할 단서)
-4. 색상 바꿔서 다른 이름으로 저장 → 새 템플릿 파일
+2. 각 레이아웃을 "짝수 runtime slide + 바로 뒤 홀수 example slide" pair 로 구성
+3. runtime slide 의 교체 대상 텍스트만 정확한 #FF0000 으로 표시
+4. example slide 에 실제 출력에 가까운 예시 텍스트와 최종 색상 입력
 5. 색상별 template.pptx 를 운영자 등록 파이프라인에 전달
 
 → 도형마다 영문 이름을 부여하는 작업 X
 → max_chars 같은 후속 메타 수기 입력 X
-→ 코드 몰라도 됨, PPT만 잘 만들면 됨
+→ JSON 직접 편집 X
 ```
 
 #### 3.7.1 자동 Slot 인식 원리
@@ -272,62 +218,56 @@ User (슬라이드마다 반복):
 
 - 모든 도형은 PowerPoint 가 자동 부여하는 **숫자 ID** 가 있다 — `<p:cNvPr id="3" name="..."/>`
   의 `id` 속성. **이 `id` 가 코드의 1차 식별자**.
-- 시각화 워커는 슬라이드 XML 을 unpack 한 뒤, 텍스트가 들어있는 도형들을 자동으로 스캔해
-  다음과 같은 **Slot 디스크립터** 를 만든다:
+- v2 compiler 는 runtime slide XML 을 unpack 한 뒤, 정확한 `#FF0000` run 만 스캔해
+  다음과 같은 **Slot 디스크립터** 를 `meta.json.slots[]` 에 만든다:
   ```json
   {
+    "slot_id": "slide2_shape3",
     "shape_id": "3",
-    "shape_name": "TextBox 2",
-    "x_emu": 685800, "y_emu": 457200,
-    "w_emu": 7772400, "h_emu": 914400,
-    "current_text": "여기에 프로젝트명",
-    "is_title_placeholder": true,
+    "marker_color": "#FF0000",
+    "placeholder_text": "사용 기술",
+    "example_text": "OpenAI API",
+    "output_text_color": "#000000",
     "font_size_pt": 40,
+    "fit_policy": "basic_text_area",
     "kind": "text"
   }
   ```
-- 이 Slot 디스크립터들을 슬라이드의 Slot 카탈로그로 LLM 에 넘긴다.
-  LLM 은 위치(좌표)·크기·현재 텍스트·폰트 크기를 보고 "이 Slot 은 제목이구나",
-  "이 4 개 Slot 은 카드 본문이구나" 같은 역할을 **스스로 파악**한다.
-- LLM 응답은 도형 이름이 아닌 `shape_id` 를 키로 사용한다.
-
-```xml
-<!-- 디자이너가 별도로 이름을 안 바꿔도 OK -->
-<p:sp>
-  <p:nvSpPr>
-    <p:cNvPr id="3" name="TextBox 2"/>   <!-- ← name 은 PowerPoint 기본값 그대로 OK -->
-  </p:nvSpPr>
-  ...
-  <p:txBody>
-    <a:p><a:r><a:t>여기에 프로젝트명</a:t></a:r></a:p>
-                <!-- ↑ 디자이너가 자유롭게 적은 안내 텍스트.
-                     LLM 이 위치·폰트 크기와 함께 보고 역할을 추론 -->
-  </p:txBody>
-</p:sp>
-```
+- `placeholder_text` 는 LLM prompt 의 1차 content hint 이다. `role_hint` 가 없어도
+  `placeholder_text`, `example_text`, 위치/크기, `fit_policy` 로 생성이 가능해야 한다.
+- LLM 응답과 `currentFills` 는 도형 이름이 아닌 `shape_id` 를 키로 사용한다.
+- OOXML 레벨에서는 `cNvPr/@id` 가 `shape_id` 이고, `srgbClr val="FF0000"` run 만
+  editable marker 로 인정한다. `cNvPr/@name` 은 참고용 힌트일 뿐 계약 키가 아니다.
 
 #### 3.7.2 길이 초과·오버플로우 대응
 
-이전 버전의 `max_chars` 사전 명시는 **사후 시각 QA + 폰트 자동 축소** 로 대체된다.
+이전 버전의 수기 `max_chars` 는 v2 metadata 의 capacity hint 와 deterministic fitting 으로 대체된다.
 
 | 상황 | 처리 방식 |
 |---|---|
-| LLM 이 생성한 텍스트가 Slot 에 비해 길다 | Step 6 시각 QA 가 텍스트 잘림/오버플로우 감지 → fix-and-verify 루프에서 폰트 축소 또는 요약 |
-| LLM 이 생성한 텍스트가 Slot 에 비해 짧다 | 폰트 자동 확대 또는 그대로 유지 (`pptx-gen-plan-v6.md` §16) |
-| 도형 자체가 콘텐츠에 맞지 않음 (예: 카드 4개인데 콘텐츠는 3개) | 빈 Slot 에 해당하는 `<p:sp>` 전체 제거 (`ooxml-editing.md` §4.3 항목 수 불일치 규칙) |
+| LLM 이 생성한 텍스트가 Slot 에 비해 길다 | `fit_policy`, `min_font_pt`, `max_lines`, `nowrap` 기준으로 축소·요약·실패를 결정 |
+| inline label/chip 이 길어진다 | `layout_groups` 와 `item_background` 로 `layout_actions` 를 계산 |
+| 도형 자체가 콘텐츠에 맞지 않음 | 빈 Slot 은 `currentFills[shape_id].action = "remove"` 로 제거 |
 
-→ 사전 제약(`max_chars`) 으로 LLM 출력을 막는 대신, **런타임에 결과를 보고 자동 조정** 한다.
-이 방식은 Anthropic 스킬의 "완료 전 최소 한 번 시각 QA 검증" 원칙과 정확히 같은 철학이다.
+`layout_actions` 는 워커 내부 geometry 조정이고, `currentFills` 에 섞지 않는다. `currentFills` 는
+텍스트/삭제/차트 fill 상태만 표현한다. 상세 책임 경계는 `ooxml-editing.md` §4.4 참조.
 
-#### 3.7.3 디자이너 가이드 — 권장 사항 (강제 아님)
+#### 3.7.3 디자이너 가이드 — 필수/권장 사항
 
-LLM 이 Slot 역할을 더 잘 추론하도록, 디자이너가 PPTX 안에 적어두는 예시 텍스트는
-**실제 콘텐츠 톤에 가까운 한국어 안내문** 을 권장한다:
+| 구분 | 규칙 |
+|---|---|
+| 필수 | runtime slide 의 editable 텍스트는 정확한 `#FF0000` |
+| 필수 | fixed label 과 editable value 는 같은 shape 안에 섞지 않음 |
+| 필수 | 각 runtime slide 바로 뒤에 같은 레이아웃의 example slide 배치 |
+| 권장 | example slide 텍스트는 실제 포트폴리오 출력 톤에 가깝게 작성 |
+| 권장 | chip/label 배경은 text slot 을 감싸는 작은 별도 shape 로 유지 |
+| 금지 | 최종 출력에서 빨간색을 원한다는 의미로 `#FF0000` 사용 |
 
 | 안 좋은 예 | 좋은 예 |
 |---|---|
-| `Lorem ipsum...` | `여기에 프로젝트명 (20자 내외)` |
-| `Text 1`, `Text 2` | `역할: ` / `기간: ` / `사용 도구: ` |
-| 빈 텍스트박스 | `이 영역에는 핵심 성과 한 줄을 작성하세요` |
+| 한 shape 안에 `역할: ` 과 빨간 `PM` 을 섞음 | `역할:` fixed shape + `PM` editable shape 분리 |
+| runtime slide 에 theme red marker 사용 | 정확한 RGB `#FF0000` 사용 |
+| example slide 를 생략 | runtime/example pair 유지 |
 
-이는 강제 규칙이 아니며, 위반해도 동작은 한다. LLM 추론 정확도에 영향만 미친다.
+위 필수 규칙을 어기면 compiler/validator 가 실패해야 한다. 권장 규칙 위반은 품질 warning 으로
+남기고, 필요한 경우 운영자가 template.pptx 를 보정한다.
