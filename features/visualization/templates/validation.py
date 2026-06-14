@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from features.visualization.text_fit import emu_to_pt
+
 from .categories import DEFAULT_CATEGORY_SCHEMA_PATH, CategorySchema, load_category_schema
 from .pptx import count_pptx_slides, extract_template_v2_from_pptx
 from .v2 import SCHEMA_VERSION_V2
@@ -26,6 +28,15 @@ _REFERENCE_MATCH_FRESH_FIELDS = (
     "example_shape_id",
     "example_text",
     "output_text_color",
+)
+_MIN_EDITABLE_SLOT_WIDTH_PT = 24.0
+_MIN_EDITABLE_SLOT_HEIGHT_PT = 10.0
+_MIN_LINKED_BACKGROUND_MATCH_SCORE = 0.72
+_PLACEHOLDER_RESIDUE_MARKERS = (
+    "여기에",
+    "placeholder",
+    "{{",
+    "}}",
 )
 
 
@@ -331,6 +342,82 @@ def _validate_v2_editable_text_slot(
             errors,
             warnings,
         )
+    _validate_v2_editable_slot_quality(slot, label, strict, errors, warnings)
+
+
+def _validate_v2_editable_slot_quality(
+    slot: dict[str, Any],
+    label: str,
+    strict: bool,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    _validate_v2_editable_slot_size(slot, label, strict, errors, warnings)
+    _validate_v2_placeholder_residue(slot, label, strict, errors, warnings)
+
+
+def _validate_v2_editable_slot_size(
+    slot: dict[str, Any],
+    label: str,
+    strict: bool,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    width_emu = _numeric_emu(slot.get("w_emu"))
+    height_emu = _numeric_emu(slot.get("h_emu"))
+    if width_emu is None or height_emu is None:
+        return
+
+    shape_id = str(slot.get("shape_id") or "").strip() or "unknown"
+    if width_emu <= 0 or height_emu <= 0:
+        _append_warning_or_strict_error(
+            f"{label} shape_id={shape_id} editable slot geometry가 유효하지 않습니다. "
+            f"w_emu={width_emu:g}, h_emu={height_emu:g}.",
+            strict,
+            errors,
+            warnings,
+        )
+        return
+
+    width_pt = emu_to_pt(width_emu)
+    height_pt = emu_to_pt(height_emu)
+    if width_pt is None or height_pt is None:
+        return
+    if width_pt >= _MIN_EDITABLE_SLOT_WIDTH_PT and height_pt >= _MIN_EDITABLE_SLOT_HEIGHT_PT:
+        return
+
+    _append_warning_or_strict_error(
+        f"{label} shape_id={shape_id} editable slot이 좁습니다. "
+        f"width_pt={width_pt:.2f}, height_pt={height_pt:.2f}.",
+        strict,
+        errors,
+        warnings,
+    )
+
+
+def _validate_v2_placeholder_residue(
+    slot: dict[str, Any],
+    label: str,
+    strict: bool,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    placeholder_text = _normalized_text(slot.get("placeholder_text"))
+    example_text = _normalized_text(slot.get("example_text"))
+    if not placeholder_text or not example_text:
+        return
+    if example_text != placeholder_text and not any(
+        marker.casefold() in example_text.casefold() for marker in _PLACEHOLDER_RESIDUE_MARKERS
+    ):
+        return
+
+    shape_id = str(slot.get("shape_id") or "").strip() or "unknown"
+    _append_warning_or_strict_error(
+        f"{label} shape_id={shape_id} placeholder 잔존 위험이 있습니다.",
+        strict,
+        errors,
+        warnings,
+    )
 
 
 def _validate_v2_reference_matches(
@@ -444,6 +531,8 @@ def _inline_label_group_linked_backgrounds_are_confident(group: dict[str, Any]) 
             return False
         match_score = linked.get("match_score")
         if isinstance(match_score, bool) or not isinstance(match_score, int | float):
+            return False
+        if match_score < _MIN_LINKED_BACKGROUND_MATCH_SCORE:
             return False
     return True
 
@@ -665,6 +754,24 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item).strip()]
+
+
+def _normalized_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())
+
+
+def _numeric_emu(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not number == number or number in (float("inf"), float("-inf")):
+        return None
+    return number
 
 
 def _is_editable_text_slot(slot: dict[str, Any]) -> bool:
