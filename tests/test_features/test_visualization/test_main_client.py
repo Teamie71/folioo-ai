@@ -730,9 +730,7 @@ class TestGetSlideContext:
             return_value={"isSuccess": True, "result": {}},
         ) as mock_rwr:
             await client.get_slide_context("job-xyz", "slide-abc")
-        mock_rwr.assert_called_once_with(
-            "GET", "/internal/visualizations/job-xyz/slides/slide-abc"
-        )
+        mock_rwr.assert_called_once_with("GET", "/internal/visualizations/job-xyz/slides/slide-abc")
 
     @pytest.mark.asyncio
     async def test_non_dict_result_raises(self):

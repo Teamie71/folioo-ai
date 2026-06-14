@@ -117,6 +117,7 @@ def mock_gcs(tmp_path):
         client = GcsClient(bucket_name="folioo-visualizations")
         yield client, mock_bucket, mock_blob, tmp_path
 
+
 def test_gcs_client_uses_gcs_bucket_env_when_bucket_name_is_not_explicit(monkeypatch):
     """기본 생성자는 Cloud Run GCS_BUCKET env 값을 버킷 이름으로 사용한다."""
     monkeypatch.setenv("GCS_BUCKET", "folioo-498017-visualizations")
