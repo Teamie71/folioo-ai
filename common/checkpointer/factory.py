@@ -5,8 +5,12 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
 
 load_dotenv()
+
+# 체크아웃 시 연결 생존을 능동 검증하는 함수 (mock 패치와 분리하기 위해 미리 캡처)
+_CHECK_CONNECTION = AsyncConnectionPool.check_connection
 
 # 모듈 레벨 싱글톤
 _checkpointer: AsyncPostgresSaver | None = None
@@ -28,7 +32,14 @@ async def setup_checkpointer():
             "CHECKPOINT_DATABASE_URL 또는 DATABASE_URL 환경변수가 설정되지 않았습니다."
         )
 
-    async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
+    async with AsyncConnectionPool(
+        conninfo=db_url,
+        max_size=20,
+        max_idle=240,
+        check=_CHECK_CONNECTION,
+        kwargs={"autocommit": True, "prepare_threshold": 0},
+    ) as pool:
+        checkpointer = AsyncPostgresSaver(pool)
         await checkpointer.setup()
         _checkpointer = checkpointer
         try:
