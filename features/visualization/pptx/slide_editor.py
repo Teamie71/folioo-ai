@@ -138,7 +138,7 @@ class SlideEditor:
             return fill
 
         merged_fill: dict[str, Any] | None = None
-        for field_name in ("marker_color", "output_text_color"):
+        for field_name in ("marker_color", "output_text_color", "text_replacement_mode"):
             if field_name in fill or not metadata.get(field_name):
                 continue
             if merged_fill is None:
@@ -601,6 +601,11 @@ class SlideEditor:
             tx_body = self._create_text_body(doc)
             sp_element.appendChild(tx_body)
 
+        if fill.get("text_replacement_mode") == "marker_runs":
+            warnings = self._replace_marker_runs(sp_element, tx_body, fill)
+            if warnings is not None:
+                return warnings
+
         base_p_pr = self._extract_paragraph_props(tx_body)
         base_r_pr = self._extract_run_props(tx_body, doc)
 
@@ -634,6 +639,65 @@ class SlideEditor:
             tx_body.appendChild(new_p)
 
         return warnings
+
+    def _replace_marker_runs(
+        self,
+        sp_element: Element,
+        tx_body: Element,
+        fill: dict[str, Any],
+    ) -> list[str] | None:
+        """mixed-color shape에서 #FF0000 marker run만 생성 텍스트로 교체한다."""
+        text = str(fill.get("text", ""))
+        marker_applied = False
+        warnings: list[str] = []
+
+        for paragraph in self._children(tx_body, self.DRAWINGML_NS, "p"):
+            for run in self._children(paragraph, self.DRAWINGML_NS, "r"):
+                run_props = self._first_child(run, self.DRAWINGML_NS, "rPr")
+                if run_props is None or not self._is_marker_run(run_props, fill):
+                    continue
+
+                if marker_applied:
+                    self._replace_run_text(run, "")
+                    continue
+
+                self._apply_text_style_overrides(run_props, fill)
+                warnings.extend(self._apply_text_output_color(sp_element, run_props, fill))
+                self._replace_run_text(run, text)
+                marker_applied = True
+
+        if not marker_applied:
+            return None
+        return warnings
+
+    def _apply_text_style_overrides(self, run_props: Element, fill: Mapping[str, Any]) -> None:
+        if fill.get("font_size_override") is not None:
+            size_val = str(int(round(float(fill["font_size_override"]) * 100)))
+            run_props.setAttribute("sz", size_val)
+        if fill.get("is_title"):
+            run_props.setAttribute("b", "1")
+
+    def _replace_run_text(self, run: Element, value: str) -> None:
+        text_nodes = self._children(run, self.DRAWINGML_NS, "t")
+        if text_nodes:
+            target = text_nodes[0]
+            for extra in text_nodes[1:]:
+                run.removeChild(extra)
+        else:
+            target = run.ownerDocument.createElementNS(self.DRAWINGML_NS, "a:t")
+            run.appendChild(target)
+
+        target.setAttribute("xml:space", "preserve")
+        self._replace_text_node(target, value)
+
+    def _is_marker_run(self, run_props: Element, fill: Mapping[str, Any]) -> bool:
+        marker_color = fill.get("marker_color")
+        marker_rgb = (
+            self._normalize_rgb_color(marker_color, "marker_color")
+            if marker_color
+            else self._EXACT_MARKER_RGB
+        )
+        return self._run_srgb_color(run_props) == marker_rgb
 
     def _apply_text_output_color(
         self,
