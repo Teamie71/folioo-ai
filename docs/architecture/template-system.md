@@ -130,8 +130,12 @@ example slide 가 없으면 계약 위반이다. 홀수 slide 는 editable 대�
 
 - runtime slide 에서 **정확한 RGB `#FF0000` 텍스트 run** 만 editable slot 이다.
 - `#FE0000`, theme red, tint/shade red 는 marker 가 아니다.
-- 같은 shape 안에 `#FF0000` run 과 non-red run 이 섞이면 계약 위반이다.
-- non-red 텍스트는 fixed/decorative 로 유지되며 fill 대상이 아니다.
+- 같은 shape 안에 `#FF0000` run 과 non-red run 이 섞일 수 있다. 이때 compiler 는
+  `text_replacement_mode` 를 기록해 교체 범위를 구분한다.
+- `text_replacement_mode: "marker_runs"` 는 non-red run 을 fixed/decorative 로 보존하고,
+  `#FF0000` marker run 만 생성 텍스트로 교체한다.
+- `text_replacement_mode: "shape"` 는 여러 marker segment 가 구분자와 함께 한 의미를 이룰 때
+  shape 전체 텍스트를 하나의 placeholder 로 보고 교체한다. 예: `경험명 - 본인 역할`.
 - `#FF0000` 은 최종 출력 색상이 아니라 editable marker 이다. 최종 text color 는
   example slide 의 `output_text_color` 로 대체한다.
 
@@ -175,6 +179,7 @@ gcloud storage rsync ./templates/blue/ gs://folioo-visualizations/templates/blue
 | `slots[].shape_id` / bbox | 자동 | runtime slide OOXML 의 `cNvPr/@id`, `a:xfrm` |
 | `slots[].marker_color` | 자동 | 정확한 `#FF0000` marker 만 허용 |
 | `slots[].placeholder_text` | 자동 | runtime slide 의 marker 텍스트 |
+| `slots[].text_replacement_mode` | 자동 | mixed-color shape 의 교체 범위. `marker_runs` 또는 `shape` |
 | `slots[].example_text` / `output_text_color` | 자동 | example slide reference 매칭 결과 |
 | `slots[].fit_policy` / capacity 필드 | 자동 | layout group 과 slot geometry 기반 기본값 |
 | `layout_groups[]` | 자동 | `inline_label_group` 등 group 추론 결과 |
@@ -238,6 +243,11 @@ gcloud storage rsync ./templates/blue/ gs://folioo-visualizations/templates/blue
 - LLM 응답과 `currentFills` 는 도형 이름이 아닌 `shape_id` 를 키로 사용한다.
 - OOXML 레벨에서는 `cNvPr/@id` 가 `shape_id` 이고, `srgbClr val="FF0000"` run 만
   editable marker 로 인정한다. `cNvPr/@name` 은 참고용 힌트일 뿐 계약 키가 아니다.
+- mixed-color shape 는 run 구조에 따라 `text_replacement_mode` 를 추가한다.
+  - non-red fixed text 안에 하나의 red marker segment 가 있으면 `marker_runs` 로 기록한다.
+    런타임은 non-red run 을 그대로 두고 red marker run 만 교체한다.
+  - non-red 구분자를 사이에 둔 여러 red marker segment 가 있으면 `shape` 로 기록한다.
+    이때 `placeholder_text` 는 전체 shape 텍스트다. 예: `경험명 - 본인 역할`.
 
 #### 3.7.2 길이 초과·오버플로우 대응
 
@@ -257,17 +267,20 @@ gcloud storage rsync ./templates/blue/ gs://folioo-visualizations/templates/blue
 | 구분 | 규칙 |
 |---|---|
 | 필수 | runtime slide 의 editable 텍스트는 정확한 `#FF0000` |
-| 필수 | fixed label 과 editable value 는 같은 shape 안에 섞지 않음 |
 | 필수 | 각 runtime slide 바로 뒤에 같은 레이아웃의 example slide 배치 |
+| 권장 | bullet `-`, 라벨, 구분자처럼 결과에도 남아야 하는 텍스트는 non-red run 으로 둔다 |
+| 권장 | 하나의 값만 교체하고 주변 fixed text 를 보존하려면 red marker segment 를 1개로 유지한다 |
+| 권장 | `경험명 - 본인 역할` 처럼 여러 marker 조각이 한 문장을 이룰 때는 example slide 에 완성형 예시를 넣는다 |
 | 권장 | example slide 텍스트는 실제 포트폴리오 출력 톤에 가깝게 작성 |
 | 권장 | chip/label 배경은 text slot 을 감싸는 작은 별도 shape 로 유지 |
 | 금지 | 최종 출력에서 빨간색을 원한다는 의미로 `#FF0000` 사용 |
 
 | 안 좋은 예 | 좋은 예 |
 |---|---|
-| 한 shape 안에 `역할: ` 과 빨간 `PM` 을 섞음 | `역할:` fixed shape + `PM` editable shape 분리 |
+| bullet 까지 빨간색으로 칠함 | black `- ` + red `세부 업무` |
+| `경험명 - 본인 역할` 의 example 이 placeholder 그대로임 | `Folioo - 백엔드 개발` 같은 완성형 예시 입력 |
 | runtime slide 에 theme red marker 사용 | 정확한 RGB `#FF0000` 사용 |
 | example slide 를 생략 | runtime/example pair 유지 |
 
-위 필수 규칙을 어기면 compiler/validator 가 실패해야 한다. 권장 규칙 위반은 품질 warning 으로
-남기고, 필요한 경우 운영자가 template.pptx 를 보정한다.
+위 필수 규칙을 어기면 compiler/validator 가 실패해야 한다. 권장 규칙 위반은 품질 warning 또는
+생성 품질 저하로 이어질 수 있으므로, 필요한 경우 운영자가 template.pptx 또는 example slide 를 보정한다.

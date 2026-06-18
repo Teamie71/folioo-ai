@@ -374,14 +374,20 @@ def _marker_slot_from_shape(
 
     red_text_parts: list[str] = []
     non_red_text_parts: list[str] = []
+    full_text_parts: list[str] = []
+    red_segment_count = 0
+    in_red_segment = False
     red_font_size_pt: float | None = None
 
     for paragraph_index, paragraph in enumerate(tx_body.findall(f"{{{_DRAWINGML_NS}}}p")):
+        if paragraph_index > 0 and full_text_parts and full_text_parts[-1] != "\n":
+            full_text_parts.append("\n")
         if paragraph_index > 0 and red_text_parts and red_text_parts[-1] != "\n":
             red_text_parts.append("\n")
 
         for child in list(paragraph):
             if child.tag == f"{{{_DRAWINGML_NS}}}br":
+                full_text_parts.append("\n")
                 if red_text_parts and not non_red_text_parts and red_text_parts[-1] != "\n":
                     red_text_parts.append("\n")
                 continue
@@ -394,12 +400,17 @@ def _marker_slot_from_shape(
                 continue
 
             color = _run_srgb_color(child)
+            full_text_parts.append(run_text)
             if color == _EXACT_MARKER_RGB:
                 red_text_parts.append(run_text)
+                if run_text.strip() and not in_red_segment:
+                    red_segment_count += 1
+                    in_red_segment = True
                 if red_font_size_pt is None:
                     red_font_size_pt = _run_font_size_pt(child)
             elif run_text.strip():
                 non_red_text_parts.append(run_text)
+                in_red_segment = False
 
     if not red_text_parts and not non_red_text_parts:
         return None
@@ -407,21 +418,19 @@ def _marker_slot_from_shape(
     shape_id = _shape_id(shape) or ""
     shape_name = _shape_name(shape)
     has_marker_candidate = bool(red_text_parts)
-    if red_text_parts and non_red_text_parts:
-        return _MarkerShapeExtraction(
-            slots=(),
-            errors=(
-                "runtime slide "
-                f"{slide_number} shape {shape_id or '(unknown)'}에 "
-                "#FF0000 marker와 non-red run이 섞여 있습니다.",
-            ),
-            has_marker_candidate=True,
-        )
 
     if not red_text_parts:
         return _MarkerShapeExtraction(slots=(), errors=(), has_marker_candidate=False)
 
-    placeholder_text = "".join(red_text_parts).strip()
+    replacement_mode = _mixed_text_replacement_mode(
+        has_non_red_text=bool(non_red_text_parts),
+        red_segment_count=red_segment_count,
+    )
+    placeholder_text = _marker_placeholder_text(
+        red_text_parts=red_text_parts,
+        full_text_parts=full_text_parts,
+        replacement_mode=replacement_mode,
+    )
     if not placeholder_text:
         return _MarkerShapeExtraction(slots=(), errors=(), has_marker_candidate=False)
 
@@ -442,11 +451,36 @@ def _marker_slot_from_shape(
         "required": True,
         "allowed_actions": ["text", "remove"],
     }
+    if replacement_mode is not None:
+        slot["text_replacement_mode"] = replacement_mode
     return _MarkerShapeExtraction(
         slots=(slot,),
         errors=(),
         has_marker_candidate=has_marker_candidate,
     )
+
+
+def _mixed_text_replacement_mode(
+    *,
+    has_non_red_text: bool,
+    red_segment_count: int,
+) -> str | None:
+    if not has_non_red_text:
+        return None
+    if red_segment_count <= 1:
+        return "marker_runs"
+    return "shape"
+
+
+def _marker_placeholder_text(
+    *,
+    red_text_parts: list[str],
+    full_text_parts: list[str],
+    replacement_mode: str | None,
+) -> str:
+    if replacement_mode == "shape":
+        return "".join(full_text_parts).strip()
+    return "".join(red_text_parts).strip()
 
 
 def _extract_text_shapes_from_slide(slide_root: Element) -> tuple[_TextShapeExtraction, ...]:
@@ -1153,12 +1187,22 @@ def _match_reference_shapes(
         ]
         candidates.sort(key=lambda item: (-item[0], _shape_id_sort_key(item[1].shape_id)))
         if not candidates:
-            errors.append(_reference_match_error(runtime_slide_number, slot))
+            _append_reference_match_failure(
+                slot,
+                runtime_slide_number=runtime_slide_number,
+                errors=errors,
+                warnings=warnings,
+            )
             continue
 
         score, matched_shape = candidates[0]
         if score < _REFERENCE_MATCH_FAIL_SCORE:
-            errors.append(_reference_match_error(runtime_slide_number, slot))
+            _append_reference_match_failure(
+                slot,
+                runtime_slide_number=runtime_slide_number,
+                errors=errors,
+                warnings=warnings,
+            )
             continue
 
         used_shape_ids.add(matched_shape.shape_id)
@@ -1204,6 +1248,24 @@ def _match_reference_shapes(
     return matches, errors, warnings
 
 
+def _append_reference_match_failure(
+    slot: dict,
+    *,
+    runtime_slide_number: int,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    message = _reference_match_error(runtime_slide_number, slot)
+    if _slot_requires_reference_match(slot):
+        errors.append(message)
+        return
+    warnings.append(f"{message} marker_runs slot이므로 reference match 없이 진행합니다.")
+
+
+def _slot_requires_reference_match(slot: dict) -> bool:
+    return slot.get("text_replacement_mode") != "marker_runs"
+
+
 def _reference_match_error(runtime_slide_number: int, slot: dict) -> str:
     return (
         "runtime slide "
@@ -1215,14 +1277,14 @@ def _reference_match_score(slot: dict, shape: _TextShapeExtraction) -> float:
     slot_box = _bbox_tuple(slot)
     shape_box = (shape.x_emu, shape.y_emu, shape.w_emu, shape.h_emu)
     if slot_box is None or None in shape_box:
-        return 0.0
+        return _shape_id_reference_score(slot, shape)
 
     slot_x, slot_y, slot_w, slot_h = slot_box
     shape_x, shape_y, shape_w, shape_h = shape_box
     if shape_x is None or shape_y is None or shape_w is None or shape_h is None:
-        return 0.0
+        return _shape_id_reference_score(slot, shape)
     if min(slot_w, slot_h, shape_w, shape_h) <= 0:
-        return 0.0
+        return _shape_id_reference_score(slot, shape)
 
     overlap = _intersection_over_union(
         slot_x, slot_y, slot_w, slot_h, shape_x, shape_y, shape_w, shape_h
@@ -1238,7 +1300,15 @@ def _reference_match_score(slot: dict, shape: _TextShapeExtraction) -> float:
         shape_h,
     )
     size = (_axis_similarity(slot_w, shape_w) + _axis_similarity(slot_h, shape_h)) / 2
-    return (overlap * 0.5) + (center * 0.3) + (size * 0.2)
+    geometry_score = (overlap * 0.5) + (center * 0.3) + (size * 0.2)
+    return max(geometry_score, _shape_id_reference_score(slot, shape))
+
+
+def _shape_id_reference_score(slot: dict, shape: _TextShapeExtraction) -> float:
+    slot_shape_id = str(slot.get("shape_id") or "").strip()
+    if slot_shape_id and slot_shape_id == shape.shape_id:
+        return 0.85
+    return 0.0
 
 
 def _bbox_tuple(source: dict) -> tuple[int, int, int, int] | None:

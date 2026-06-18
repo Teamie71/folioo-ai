@@ -673,6 +673,68 @@ def test_apply_text_merges_output_text_color_from_slot_metadata(tmp_path: Path) 
     assert _first_text_run_color(parse(str(slide_path)), "2") == "445566"
 
 
+def test_apply_text_replaces_marker_runs_and_preserves_fixed_text(tmp_path: Path) -> None:
+    """mixed-color slot 은 non-red run을 보존하고 #FF0000 marker run만 교체한다."""
+    slide_path, _ = _make_sample_package(tmp_path)
+    slide_xml = slide_path.read_text(encoding="utf-8").replace(
+        """            <a:r>
+              <a:rPr lang="ko-KR" sz="4000" b="0">
+                <a:solidFill><a:srgbClr val="123456"/></a:solidFill>
+                <a:latin typeface="Pretendard"/>
+              </a:rPr>
+              <a:t>여기에 프로젝트명</a:t>
+            </a:r>""",
+        """            <a:r>
+              <a:rPr lang="ko-KR" sz="4000" b="0">
+                <a:solidFill><a:srgbClr val="111111"/></a:solidFill>
+                <a:latin typeface="Pretendard"/>
+              </a:rPr>
+              <a:t>- </a:t>
+            </a:r>
+            <a:r>
+              <a:rPr lang="ko-KR" sz="4000" b="0">
+                <a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>
+                <a:latin typeface="Pretendard"/>
+              </a:rPr>
+              <a:t>세부 업무 </a:t>
+            </a:r>
+            <a:r>
+              <a:rPr lang="ko-KR" sz="4000" b="0">
+                <a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>
+                <a:latin typeface="Pretendard"/>
+              </a:rPr>
+              <a:t>1</a:t>
+            </a:r>""",
+    )
+    slide_path.write_text(slide_xml, encoding="utf-8")
+
+    warnings = SlideEditor().apply_fills(
+        str(slide_path),
+        {"2": {"action": "text", "text": "신규 사용자 온보딩 개선"}},
+        slot_metadata={
+            "2": {
+                "marker_color": "#FF0000",
+                "output_text_color": "#223344",
+                "text_replacement_mode": "marker_runs",
+            }
+        },
+    )
+
+    doc = parse(str(slide_path))
+    shape = _shape_by_id(doc, "2")
+    runs = shape.getElementsByTagNameNS(DRAWINGML_NS, "r")
+
+    assert warnings == []
+    assert [_node_text(run.getElementsByTagNameNS(DRAWINGML_NS, "t")[0]) for run in runs] == [
+        "- ",
+        "신규 사용자 온보딩 개선",
+        "",
+    ]
+    assert [
+        run.getElementsByTagNameNS(DRAWINGML_NS, "srgbClr")[0].getAttribute("val") for run in runs
+    ] == ["111111", "223344", "FF0000"]
+
+
 def test_apply_text_uses_color_fallback_when_output_text_color_missing(tmp_path: Path) -> None:
     """output_text_color 가 없으면 marker red 를 검정 fallback 으로 대체하고 warning 을 남긴다."""
     slide_path, _ = _make_sample_package(tmp_path)

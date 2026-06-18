@@ -492,10 +492,10 @@ def test_compile_template_v2_extracts_only_exact_red_marker_slots(tmp_path: Path
     }
 
 
-def test_compile_template_v2_reports_mixed_color_run_as_contract_error(
+def test_compile_template_v2_accepts_mixed_color_label_marker_runs(
     tmp_path: Path,
 ) -> None:
-    """red/non-red mixed run은 보정하지 않고 fail 대상 오류로 보고한다."""
+    """검정 라벨과 빨간 marker가 섞인 shape는 marker run 교체 slot으로 추출한다."""
     template_dir = _make_template_dir(
         tmp_path,
         "ppt-v3",
@@ -507,21 +507,121 @@ def test_compile_template_v2_reports_mixed_color_run_as_contract_error(
                     20,
                     "Mixed marker",
                     (
-                        _run_xml("경험명", color="FF0000"),
-                        _run_xml(" - 고정 문구", color=None),
+                        _run_xml("- 진행 기간: ", color=None),
+                        _run_xml("프로젝트 진행 기간", color="FF0000"),
                     ),
+                    width=300,
+                    height=100,
                 ),
             ),
-            _slide_xml(3, _shape_xml(30, "Example", (_run_xml("경험명 예시"),))),
+            _slide_xml(
+                3,
+                _shape_xml(
+                    30,
+                    "Example",
+                    (_run_xml("- 진행 기간: 2025.01-2025.03", color="123456"),),
+                    width=300,
+                    height=100,
+                ),
+            ),
         ),
     )
 
     result = compile_template_v2(template_dir)
 
-    assert result.ok is False
-    assert result.updated is False
-    assert not (template_dir / "meta.json").exists()
-    assert any("non-red run이 섞여 있습니다" in error for error in result.errors)
+    assert result.ok is True
+    metadata = read_json_payload(result.meta_path)
+    slot = metadata["slots"][0]
+    assert slot["placeholder_text"] == "프로젝트 진행 기간"
+    assert slot["text_replacement_mode"] == "marker_runs"
+    assert slot["output_text_color"] == "#123456"
+
+
+def test_compile_template_v2_allows_marker_runs_without_reference_match(
+    tmp_path: Path,
+) -> None:
+    """marker_runs slot은 example 매칭이 없어도 fallback 가능한 warning으로 처리한다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                _shape_xml(
+                    20,
+                    "Mixed marker",
+                    (
+                        _run_xml("- 대상: ", color=None),
+                        _run_xml("대상 및 타깃", color="FF0000"),
+                    ),
+                ),
+            ),
+            _slide_xml(
+                3,
+                _shape_xml(
+                    30,
+                    "Far example",
+                    (_run_xml("너무 먼 예시", color="123456"),),
+                    x=1000,
+                    y=1000,
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    assert any("reference match 없이 진행합니다" in warning for warning in result.warnings)
+    reference = read_json_payload(result.reference_path)
+    assert reference["shape_matches"] == []
+
+
+def test_compile_template_v2_uses_shape_replacement_for_split_red_marker(
+    tmp_path: Path,
+) -> None:
+    """검정 구분자 양쪽에 marker가 있으면 기존 shape 단위 fill 계약을 유지한다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                _shape_xml(
+                    20,
+                    "Split marker title",
+                    (
+                        _run_xml("경험명", color="FF0000"),
+                        _run_xml(" - ", color=None),
+                        _run_xml("본인 역할", color="FF0000"),
+                    ),
+                    width=300,
+                    height=100,
+                ),
+            ),
+            _slide_xml(
+                3,
+                _shape_xml(
+                    30,
+                    "Example",
+                    (_run_xml("Folioo - 백엔드 개발", color="123456"),),
+                    width=300,
+                    height=100,
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    metadata = read_json_payload(result.meta_path)
+    slot = metadata["slots"][0]
+    assert slot["placeholder_text"] == "경험명 - 본인 역할"
+    assert slot["text_replacement_mode"] == "shape"
+    assert slot["output_text_color"] == "#123456"
 
 
 def test_compile_template_v2_reports_reference_match_failure(tmp_path: Path) -> None:
@@ -554,6 +654,40 @@ def test_compile_template_v2_reports_reference_match_failure(tmp_path: Path) -> 
     assert result.updated is False
     assert not (template_dir / "reference.json").exists()
     assert any("example shape 매칭에 실패했습니다" in error for error in result.errors)
+
+
+def test_compile_template_v2_matches_reference_by_shape_id_when_geometry_changes(
+    tmp_path: Path,
+) -> None:
+    """paired slide의 같은 shape_id는 geometry가 달라도 reference 후보로 인정한다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                _shape_xml(20, "Marker", (_run_xml("경험명", color="FF0000"),)),
+            ),
+            _slide_xml(
+                3,
+                _shape_xml(
+                    20,
+                    "Moved example",
+                    (_run_xml("Teamie", color="123456"),),
+                    x=1000,
+                    y=1000,
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    reference = read_json_payload(result.reference_path)
+    assert reference["shape_matches"][0]["example_shape_id"] == "20"
+    assert reference["shape_matches"][0]["match_score"] == 0.85
 
 
 def test_compile_template_v2_warns_on_low_confidence_reference_match(

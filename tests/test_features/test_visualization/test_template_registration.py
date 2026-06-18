@@ -882,8 +882,8 @@ def test_validate_template_directory_rejects_example_slide_in_runtime_slides(
     assert any("example slide" in error for error in result.errors)
 
 
-def test_validate_template_directory_rejects_mixed_color_run(tmp_path: Path) -> None:
-    """red run과 non-red run이 섞인 runtime shape는 기본 모드에서도 실패한다."""
+def test_validate_template_directory_accepts_mixed_color_run(tmp_path: Path) -> None:
+    """red run과 non-red run이 섞인 runtime shape는 marker mode metadata로 검증한다."""
     template_dir = tmp_path / "ppt-v3"
     template_dir.mkdir()
     _make_v2_template_pptx(
@@ -896,37 +896,74 @@ def test_validate_template_directory_rejects_mixed_color_run(tmp_path: Path) -> 
                     20,
                     "Mixed marker",
                     (
-                        _v2_run_xml("경험명", color="FF0000"),
-                        _v2_run_xml(" - 고정 문구"),
+                        _v2_run_xml("- 진행 기간: "),
+                        _v2_run_xml("프로젝트 진행 기간", color="FF0000"),
                     ),
+                    width=300,
+                    height=100,
                 ),
             ),
-            _v2_slide_xml(3, _v2_shape_xml(30, "Example", (_v2_run_xml("경험명 예시"),))),
+            _v2_slide_xml(
+                3,
+                _v2_shape_xml(
+                    30,
+                    "Example",
+                    (_v2_run_xml("- 진행 기간: 2025.01-2025.03", color="123456"),),
+                    width=300,
+                    height=100,
+                ),
+            ),
         ),
     )
     (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
-    _write_json(
-        template_dir / "meta.json",
-        {
-            "schema_version": 2,
-            "template_id": "ppt-v3",
-            "runtime_slides": [
-                {
-                    "slide_index": 1,
-                    "slide_number": 2,
-                    "slide_filename": "slide2.xml",
-                    "slide_part": "ppt/slides/slide2.xml",
-                }
-            ],
-            "slots": [],
-            "layout_groups": [],
-        },
-    )
+    compile_result = compile_template_v2(template_dir)
+    assert compile_result.ok is True
 
     result = validate_template_directory(template_dir)
 
-    assert result.ok is False
-    assert any("non-red run이 섞여 있습니다" in error for error in result.errors)
+    assert result.ok is True
+
+
+def test_validate_template_directory_allows_marker_runs_without_reference_match(
+    tmp_path: Path,
+) -> None:
+    """marker_runs slot은 reference match가 없어도 fallback 가능한 v2 metadata로 인정한다."""
+    template_dir = tmp_path / "ppt-v3"
+    template_dir.mkdir()
+    _make_v2_template_pptx(
+        template_dir / "template.pptx",
+        (
+            _v2_slide_xml(1, ""),
+            _v2_slide_xml(
+                2,
+                _v2_shape_xml(
+                    20,
+                    "Mixed marker",
+                    (
+                        _v2_run_xml("- 대상: "),
+                        _v2_run_xml("대상 및 타깃", color="FF0000"),
+                    ),
+                ),
+            ),
+            _v2_slide_xml(
+                3,
+                _v2_shape_xml(
+                    30,
+                    "Far example",
+                    (_v2_run_xml("너무 먼 예시", color="123456"),),
+                    x=1000,
+                    y=1000,
+                ),
+            ),
+        ),
+    )
+    (template_dir / "thumbnail.jpg").write_bytes(b"thumbnail")
+    compile_result = compile_template_v2(template_dir)
+    assert compile_result.ok is True
+
+    result = validate_template_directory(template_dir)
+
+    assert result.ok is True
 
 
 def test_validate_template_directory_rejects_runtime_slide_without_exact_marker(

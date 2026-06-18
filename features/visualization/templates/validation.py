@@ -277,6 +277,7 @@ def _validate_v2_slot_contract(
 
     slot_ids: list[str] = []
     editable_text_slot_ids: set[str] = set()
+    reference_required_slot_ids: set[str] = set()
     for position, slot in enumerate(slots):
         label = f"meta.json.slots[{position}]"
         if not isinstance(slot, dict):
@@ -290,6 +291,8 @@ def _validate_v2_slot_contract(
         if _is_editable_text_slot(slot):
             if slot_id is not None:
                 editable_text_slot_ids.add(slot_id)
+                if _requires_v2_reference_match(slot):
+                    reference_required_slot_ids.add(slot_id)
             _validate_v2_editable_text_slot(slot, label, strict, errors, warnings)
 
     duplicate_slot_ids = sorted({slot_id for slot_id in slot_ids if slot_ids.count(slot_id) > 1})
@@ -317,9 +320,13 @@ def _validate_v2_slot_contract(
             )
 
     if reference is not None:
-        _validate_v2_reference_matches(reference, editable_text_slot_ids, errors)
+        _validate_v2_reference_matches(reference, reference_required_slot_ids, errors)
         if extraction is not None:
             _validate_v2_reference_matches_against_extraction(reference, extraction, errors)
+
+
+def _requires_v2_reference_match(slot: dict[str, Any]) -> bool:
+    return slot.get("text_replacement_mode") != "marker_runs"
 
 
 def _validate_v2_editable_text_slot(
@@ -333,6 +340,10 @@ def _validate_v2_editable_text_slot(
     marker_color = str(slot.get("marker_color") or "").upper()
     if marker_color != _EXACT_MARKER_COLOR:
         errors.append(f"{label}.marker_color는 정확한 #FF0000 이어야 합니다.")
+
+    replacement_mode = slot.get("text_replacement_mode")
+    if replacement_mode is not None and replacement_mode not in {"marker_runs", "shape"}:
+        errors.append(f"{label}.text_replacement_mode은 marker_runs 또는 shape 이어야 합니다.")
 
     layout_name = _editable_slot_layout_name(slot)
     if layout_name == "unknown":
