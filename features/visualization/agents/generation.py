@@ -58,6 +58,7 @@ _FIT_RETRY_SYSTEM_PROMPT = """PPTX text-fit preflight 실패를 복구하는 편
 - 실패한 text slot 은 반드시 더 짧게 다시 작성하세요.
 - nowrap=true 또는 max_lines=1 slot 은 줄바꿈 없이 한 줄 문구로 작성하세요.
 - reason 이 nowrap_width_overflow, width_overflow, height_overflow 이면 핵심 명사, 수치, 기술 스택만 남기세요.
+- fit_issues.max_recommended_char_count 가 있으면 해당 글자 수 이하로 줄이세요.
 - 고유명사, 수치, 기술 스택, 성과 지표를 우선 보존하고 설명형 수식어를 제거하세요.
 - action, chart data, remove 결정은 current_fills 의 의도를 유지하세요.
 - layout_actions, 좌표, geometry, XML, 임의 필드를 만들지 마세요.

@@ -41,6 +41,7 @@ from features.visualization.text_fit import (
     TextFitPreflightError,
     TextFitPreflightResult,
     apply_text_fit_preflight,
+    evaluate_basic_text_area_fit,
 )
 
 logger = logging.getLogger(__name__)
@@ -952,13 +953,45 @@ class VisualizationTaskService:
                     current_fills=fills,
                     fit_issues=fit_issues,
                 )
-                preflight = _preflight_text_fills(
-                    job_id=job_id,
-                    slide_id=slide_id,
-                    slide_order=slide_order,
-                    slots=slots,
-                    fills=revised_fills,
-                )
+                try:
+                    preflight = _preflight_text_fills(
+                        job_id=job_id,
+                        slide_id=slide_id,
+                        slide_order=slide_order,
+                        slots=slots,
+                        fills=revised_fills,
+                    )
+                except TextFitPreflightError as retry_exc:
+                    if not _text_fit_error_retryable(retry_exc):
+                        raise
+                    fallback_fills = _condense_text_fills_for_fit(
+                        slots=slots,
+                        fills=revised_fills,
+                        exc=retry_exc,
+                    )
+                    logger.info(
+                        "slide content fit deterministic fallback: "
+                        "job_id=%s slide_order=%s blocking_slots=%s",
+                        job_id,
+                        slide_order,
+                        ",".join(
+                            str(issue.get("shape_id"))
+                            for issue in _text_fit_retry_issues(retry_exc, revised_fills)
+                        ),
+                    )
+                    preflight = _preflight_text_fills(
+                        job_id=job_id,
+                        slide_id=slide_id,
+                        slide_order=slide_order,
+                        slots=slots,
+                        fills=fallback_fills,
+                    )
+                    logger.info(
+                        "slide content fit deterministic fallback succeeded: "
+                        "job_id=%s slide_order=%s",
+                        job_id,
+                        slide_order,
+                    )
             except Exception:
                 logger.warning(
                     "slide content fit retry failed: job_id=%s slide_order=%s",
@@ -1238,10 +1271,173 @@ def _text_fit_retry_issues(
                 "min_font_pt": result.min_font_pt,
                 "available_width_pt": result.constraints.available_width_pt,
                 "final_max_line_width_pt": result.final_layout.max_line_width_pt,
+                "max_recommended_char_count": _recommended_fit_char_count(
+                    result,
+                    current_text,
+                ),
                 "overflow_reasons": list(result.final_layout.overflow_reasons),
             }
         )
     return issues
+
+
+def _recommended_fit_char_count(result: BasicTextFitResult, current_text: str) -> int:
+    """LLM retry 가 참고할 text-fit 기반 권장 글자 수를 계산한다."""
+    current_count = len(current_text.replace("\n", ""))
+    if current_count <= 0:
+        return 0
+    available_width = result.constraints.available_width_pt
+    final_width = result.final_layout.max_line_width_pt
+    if available_width <= 0 or final_width <= 0:
+        return max(1, current_count // 2)
+    fit_ratio = min(1.0, available_width / final_width)
+    return max(1, int(current_count * fit_ratio * 0.85))
+
+
+def _condense_text_fills_for_fit(
+    *,
+    slots: Sequence[Mapping[str, Any]],
+    fills: Mapping[str, Mapping[str, Any]],
+    exc: TextFitPreflightError,
+) -> dict[str, dict[str, Any]]:
+    """LLM retry 이후에도 넘치는 basic text slot 을 측정 기반으로 축약한다."""
+    slots_by_id = {str(slot.get("shape_id")): slot for slot in slots if slot.get("shape_id")}
+    adjusted = {str(shape_id): dict(fill) for shape_id, fill in fills.items()}
+    for result in exc.results:
+        if not isinstance(result, BasicTextFitResult) or result.status != "summarize_needed":
+            continue
+        shape_id = result.shape_id
+        slot = slots_by_id.get(shape_id)
+        fill = adjusted.get(shape_id)
+        if slot is None or fill is None or str(fill.get("action") or "text") != "text":
+            continue
+        text = str(fill.get("text") or "")
+        condensed = _condense_text_to_fit(slot=slot, fill=fill, result=result, text=text)
+        if condensed is None:
+            continue
+        next_fill = dict(fill)
+        next_fill["text"] = condensed
+        next_fill["font_size_override"] = result.min_font_pt
+        adjusted[shape_id] = next_fill
+    return adjusted
+
+
+def _condense_text_to_fit(
+    *,
+    slot: Mapping[str, Any],
+    fill: Mapping[str, Any],
+    result: BasicTextFitResult,
+    text: str,
+) -> str | None:
+    """단일 text slot 에 들어가는 가장 긴 prefix 후보를 찾는다."""
+    normalized = _normalize_fit_text(text)
+    if not normalized:
+        return normalized if _text_candidate_fits(slot, fill, result, normalized) else None
+    if _text_candidate_fits(slot, fill, result, normalized):
+        return normalized
+
+    for candidate in _dash_preserving_candidates(normalized):
+        if _text_candidate_fits(slot, fill, result, candidate):
+            return candidate
+
+    token_prefix = _longest_fitting_token_prefix(slot, fill, result, normalized)
+    if token_prefix:
+        return token_prefix
+    return _longest_fitting_char_prefix(slot, fill, result, normalized)
+
+
+def _normalize_fit_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_DASH_SEPARATOR_PATTERN = re.compile("\\s+([-\\u2013\\u2014])\\s+")
+
+
+def _dash_preserving_candidates(text: str) -> list[str]:
+    """`경험명 - 역할` 형태는 양쪽 핵심을 남긴 후보를 우선 시도한다."""
+    match = _DASH_SEPARATOR_PATTERN.search(text)
+    if match is None:
+        return []
+
+    left_tokens = _text_tokens(text[: match.start()])
+    right_tokens = _text_tokens(text[match.end() :])
+    if not left_tokens or not right_tokens:
+        return []
+
+    separator = f" {match.group(1)} "
+    candidates: set[str] = set()
+    for left_count in range(len(left_tokens), 0, -1):
+        for right_count in range(len(right_tokens), 0, -1):
+            candidates.add(
+                f"{' '.join(left_tokens[:left_count])}"
+                f"{separator}"
+                f"{' '.join(right_tokens[:right_count])}"
+            )
+    return sorted(candidates, key=len, reverse=True)
+
+
+def _longest_fitting_token_prefix(
+    slot: Mapping[str, Any],
+    fill: Mapping[str, Any],
+    result: BasicTextFitResult,
+    text: str,
+) -> str | None:
+    tokens = _text_tokens(text)
+    if not tokens:
+        return None
+
+    best: str | None = None
+    low = 1
+    high = len(tokens)
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = _clean_condensed_text(" ".join(tokens[:mid]))
+        if candidate and _text_candidate_fits(slot, fill, result, candidate):
+            best = candidate
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
+def _longest_fitting_char_prefix(
+    slot: Mapping[str, Any],
+    fill: Mapping[str, Any],
+    result: BasicTextFitResult,
+    text: str,
+) -> str | None:
+    best: str | None = None
+    low = 1
+    high = len(text)
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = _clean_condensed_text(text[:mid])
+        if candidate and _text_candidate_fits(slot, fill, result, candidate):
+            best = candidate
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
+def _text_candidate_fits(
+    slot: Mapping[str, Any],
+    fill: Mapping[str, Any],
+    result: BasicTextFitResult,
+    text: str,
+) -> bool:
+    candidate_fill = dict(fill)
+    candidate_fill["text"] = text
+    candidate_fill["font_size_override"] = result.min_font_pt
+    return not evaluate_basic_text_area_fit(slot=slot, fill=candidate_fill).is_blocking
+
+
+def _text_tokens(text: str) -> list[str]:
+    return [token for token in _normalize_fit_text(text).split(" ") if token]
+
+
+def _clean_condensed_text(text: str) -> str:
+    return text.strip().rstrip(" -\u2013\u2014").strip()
 
 
 async def _apply_preflighted_fills(

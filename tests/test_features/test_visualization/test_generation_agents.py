@@ -392,6 +392,7 @@ def test_content_fill_generator_revises_fills_with_fit_issue_payload() -> None:
     system_prompt = llm.messages[0][0].content
     prompt_payload = _last_fill_prompt_payload(llm)
     assert "text-fit preflight 실패" in system_prompt
+    assert "max_recommended_char_count" in system_prompt
     assert "current_fills" in prompt_payload
     assert prompt_payload["current_fills"]["26"]["text"].startswith("이커머스")
     assert prompt_payload["fit_issues"][0]["reason"] == "nowrap_width_overflow"
