@@ -32,6 +32,7 @@ _REFERENCE_MATCH_FRESH_FIELDS = (
 _MIN_EDITABLE_SLOT_WIDTH_PT = 24.0
 _MIN_EDITABLE_SLOT_HEIGHT_PT = 10.0
 _MIN_LINKED_BACKGROUND_MATCH_SCORE = 0.72
+_TEXT_BOX_POLICY_DIRECTIONS = {"right", "down"}
 _PLACEHOLDER_RESIDUE_MARKERS = (
     "여기에",
     "placeholder",
@@ -364,7 +365,57 @@ def _validate_v2_editable_slot_quality(
     warnings: list[str],
 ) -> None:
     _validate_v2_editable_slot_size(slot, label, strict, errors, warnings)
+    _validate_v2_text_box_policy(slot, label, errors)
     _validate_v2_placeholder_residue(slot, label, strict, errors, warnings)
+
+
+def _validate_v2_text_box_policy(
+    slot: dict[str, Any],
+    label: str,
+    errors: list[str],
+) -> None:
+    policy = slot.get("text_box_policy")
+    if policy is None:
+        return
+    if not isinstance(policy, dict):
+        errors.append(f"{label}.text_box_policy 필드는 객체여야 합니다.")
+        return
+
+    if policy.get("mode") != "expandable":
+        errors.append(f"{label}.text_box_policy.mode은 expandable 이어야 합니다.")
+    if policy.get("anchor") != "left_top":
+        errors.append(f"{label}.text_box_policy.anchor는 left_top 이어야 합니다.")
+
+    directions = _string_list(policy.get("directions"))
+    if not directions:
+        errors.append(f"{label}.text_box_policy.directions 필드는 비어 있을 수 없습니다.")
+    elif not set(directions).issubset(_TEXT_BOX_POLICY_DIRECTIONS):
+        errors.append(
+            f"{label}.text_box_policy.directions는 right/down 만 허용합니다. "
+            f"현재 값: {directions!r}"
+        )
+
+    max_w_emu = _numeric_emu(policy.get("max_w_emu"))
+    max_h_emu = _numeric_emu(policy.get("max_h_emu"))
+    width_emu = _numeric_emu(slot.get("w_emu"))
+    height_emu = _numeric_emu(slot.get("h_emu"))
+    if max_w_emu is None or max_w_emu <= 0:
+        errors.append(f"{label}.text_box_policy.max_w_emu는 양수여야 합니다.")
+    if max_h_emu is None or max_h_emu <= 0:
+        errors.append(f"{label}.text_box_policy.max_h_emu는 양수여야 합니다.")
+    if width_emu is not None and max_w_emu is not None and max_w_emu < width_emu:
+        errors.append(f"{label}.text_box_policy.max_w_emu가 slot w_emu보다 작습니다.")
+    if height_emu is not None and max_h_emu is not None and max_h_emu < height_emu:
+        errors.append(f"{label}.text_box_policy.max_h_emu가 slot h_emu보다 작습니다.")
+
+    confidence = policy.get("confidence")
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, int | float)
+        or confidence <= 0
+        or confidence > 1
+    ):
+        errors.append(f"{label}.text_box_policy.confidence는 0 초과 1 이하 숫자여야 합니다.")
 
 
 def _validate_v2_editable_slot_size(

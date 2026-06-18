@@ -128,6 +128,16 @@
       "slide_number": 2,
       "slide_part": "ppt/slides/slide2.xml",
       "slot_id": "slide2_shape3",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 784830,
+        "max_w_emu": 10427974,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "shape",
       "w_emu": 4352929,
       "x_emu": 1276346,
@@ -161,6 +171,16 @@
       "slide_number": 2,
       "slide_part": "ppt/slides/slide2.xml",
       "slot_id": "slide2_shape5",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427972,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 2543178,
       "x_emu": 1276348,
@@ -194,6 +214,16 @@
       "slide_number": 2,
       "slide_part": "ppt/slides/slide2.xml",
       "slot_id": "slide2_shape8",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427974,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 3667127,
       "x_emu": 1276346,
@@ -227,6 +257,16 @@
       "slide_number": 2,
       "slide_part": "ppt/slides/slide2.xml",
       "slot_id": "slide2_shape9",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427974,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 2257429,
       "x_emu": 1276346,
@@ -356,6 +396,16 @@
       "slide_number": 4,
       "slide_part": "ppt/slides/slide4.xml",
       "slot_id": "slide4_shape3",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 784830,
+        "max_w_emu": 10427974,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "shape",
       "w_emu": 4352929,
       "x_emu": 1276346,
@@ -389,6 +439,16 @@
       "slide_number": 4,
       "slide_part": "ppt/slides/slide4.xml",
       "slot_id": "slide4_shape5",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427972,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 2543178,
       "x_emu": 1276348,
@@ -422,6 +482,16 @@
       "slide_number": 6,
       "slide_part": "ppt/slides/slide6.xml",
       "slot_id": "slide6_shape7",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -454,6 +524,16 @@
       "slide_number": 6,
       "slide_part": "ppt/slides/slide6.xml",
       "slot_id": "slide6_shape17",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7835,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 4264344,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 7126499,
       "y_emu": 3130909
@@ -486,6 +566,16 @@
       "slide_number": 6,
       "slide_part": "ppt/slides/slide6.xml",
       "slot_id": "slide6_shape5",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7354,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 477054,
+        "max_w_emu": 3588069,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 7802774,
       "y_emu": 2525367
@@ -518,6 +608,16 @@
       "slide_number": 6,
       "slide_part": "ppt/slides/slide6.xml",
       "slot_id": "slide6_shape4",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.8051,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 5961593,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 3667127,
       "x_emu": 819150,
@@ -547,6 +647,16 @@
       "slide_number": 6,
       "slide_part": "ppt/slides/slide6.xml",
       "slot_id": "slide6_shape8",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.88,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 5961593,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 2257429,
       "x_emu": 819150,
@@ -676,6 +786,16 @@
       "slide_number": 8,
       "slide_part": "ppt/slides/slide8.xml",
       "slot_id": "slide8_shape7",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -708,6 +828,16 @@
       "slide_number": 8,
       "slide_part": "ppt/slides/slide8.xml",
       "slot_id": "slide8_shape17",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7835,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 4264344,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 1042986,
       "y_emu": 3986628
@@ -772,6 +902,16 @@
       "slide_number": 8,
       "slide_part": "ppt/slides/slide8.xml",
       "slot_id": "slide8_shape5",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7354,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 477054,
+        "max_w_emu": 3588069,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 1719261,
       "y_emu": 3381086
@@ -804,6 +944,16 @@
       "slide_number": 10,
       "slide_part": "ppt/slides/slide10.xml",
       "slot_id": "slide10_shape21",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7731,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 4264344,
+        "mode": "expandable"
+      },
       "w_emu": 2909889,
       "x_emu": 1042986,
       "y_emu": 4873351
@@ -868,6 +1018,16 @@
       "slide_number": 10,
       "slide_part": "ppt/slides/slide10.xml",
       "slot_id": "slide10_shape2",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7403,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 477054,
+        "max_w_emu": 3656445,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 1650885,
       "y_emu": 4218163
@@ -900,6 +1060,16 @@
       "slide_number": 10,
       "slide_part": "ppt/slides/slide10.xml",
       "slot_id": "slide10_shape3",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -932,6 +1102,16 @@
       "slide_number": 12,
       "slide_part": "ppt/slides/slide12.xml",
       "slot_id": "slide12_shape21",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7731,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 4264344,
+        "mode": "expandable"
+      },
       "w_emu": 2909889,
       "x_emu": 1042986,
       "y_emu": 4873351
@@ -964,6 +1144,16 @@
       "slide_number": 12,
       "slide_part": "ppt/slides/slide12.xml",
       "slot_id": "slide12_shape2",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7403,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 477054,
+        "max_w_emu": 3656445,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 1650885,
       "y_emu": 4218163
@@ -996,6 +1186,16 @@
       "slide_number": 12,
       "slide_part": "ppt/slides/slide12.xml",
       "slot_id": "slide12_shape3",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -1028,6 +1228,16 @@
       "slide_number": 12,
       "slide_part": "ppt/slides/slide12.xml",
       "slot_id": "slide12_shape4",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7731,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 4264344,
+        "mode": "expandable"
+      },
       "w_emu": 2909889,
       "x_emu": 6986586,
       "y_emu": 4873351
@@ -1060,6 +1270,16 @@
       "slide_number": 12,
       "slide_part": "ppt/slides/slide12.xml",
       "slot_id": "slide12_shape7",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7403,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 477054,
+        "max_w_emu": 3656445,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 7594485,
       "y_emu": 4218163
@@ -1092,6 +1312,16 @@
       "slide_number": 14,
       "slide_part": "ppt/slides/slide14.xml",
       "slot_id": "slide14_shape12",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7354,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 477054,
+        "max_w_emu": 3588069,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 1719261,
       "y_emu": 4762211
@@ -1124,6 +1354,16 @@
       "slide_number": 14,
       "slide_part": "ppt/slides/slide14.xml",
       "slot_id": "slide14_shape17",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7835,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 4264344,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 1042986,
       "y_emu": 5367753
@@ -1188,6 +1428,16 @@
       "slide_number": 14,
       "slide_part": "ppt/slides/slide14.xml",
       "slot_id": "slide14_shape8",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7354,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 477054,
+        "max_w_emu": 3588069,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 4691061,
       "y_emu": 2605672
@@ -1220,6 +1470,16 @@
       "slide_number": 14,
       "slide_part": "ppt/slides/slide14.xml",
       "slot_id": "slide14_shape9",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7835,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 4264344,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 4014786,
       "y_emu": 3211214
@@ -1252,6 +1512,16 @@
       "slide_number": 14,
       "slide_part": "ppt/slides/slide14.xml",
       "slot_id": "slide14_shape14",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -1284,6 +1554,16 @@
       "slide_number": 16,
       "slide_part": "ppt/slides/slide16.xml",
       "slot_id": "slide16_shape12",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7354,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 477054,
+        "max_w_emu": 3588069,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 1719261,
       "y_emu": 4762211
@@ -1316,6 +1596,16 @@
       "slide_number": 16,
       "slide_part": "ppt/slides/slide16.xml",
       "slot_id": "slide16_shape17",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7835,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 4264344,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 1042986,
       "y_emu": 5367753
@@ -1380,6 +1670,16 @@
       "slide_number": 16,
       "slide_part": "ppt/slides/slide16.xml",
       "slot_id": "slide16_shape14",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -1412,6 +1712,16 @@
       "slide_number": 16,
       "slide_part": "ppt/slides/slide16.xml",
       "slot_id": "slide16_shape2",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7354,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 477054,
+        "max_w_emu": 3588069,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 1719261,
       "y_emu": 2597508
@@ -1444,6 +1754,16 @@
       "slide_number": 16,
       "slide_part": "ppt/slides/slide16.xml",
       "slot_id": "slide16_shape3",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7835,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 4264344,
+        "mode": "expandable"
+      },
       "w_emu": 2809878,
       "x_emu": 1042986,
       "y_emu": 3203050
@@ -1508,6 +1828,16 @@
       "slide_number": 18,
       "slide_part": "ppt/slides/slide18.xml",
       "slot_id": "slide18_shape14",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 400110,
+        "max_w_emu": 6384609,
+        "mode": "expandable"
+      },
       "w_emu": 2462213,
       "x_emu": 5319711,
       "y_emu": 2662653
@@ -1540,6 +1870,16 @@
       "slide_number": 18,
       "slide_part": "ppt/slides/slide18.xml",
       "slot_id": "slide18_shape15",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 276999,
+        "max_w_emu": 6384609,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 1414464,
       "x_emu": 5319711,
@@ -1573,6 +1913,16 @@
       "slide_number": 18,
       "slide_part": "ppt/slides/slide18.xml",
       "slot_id": "slide18_shape16",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 276999,
+        "max_w_emu": 6384609,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 1414464,
       "x_emu": 5319711,
@@ -1606,6 +1956,16 @@
       "slide_number": 18,
       "slide_part": "ppt/slides/slide18.xml",
       "slot_id": "slide18_shape21",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -1634,6 +1994,16 @@
       "slide_number": 20,
       "slide_part": "ppt/slides/slide20.xml",
       "slot_id": "slide20_shape15",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.88,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 276999,
+        "max_w_emu": 4697730,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 1414464,
       "x_emu": 1009650,
@@ -1663,6 +2033,16 @@
       "slide_number": 20,
       "slide_part": "ppt/slides/slide20.xml",
       "slot_id": "slide20_shape16",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.88,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 276999,
+        "max_w_emu": 4697730,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 1414464,
       "x_emu": 1009650,
@@ -1692,6 +2072,16 @@
       "slide_number": 20,
       "slide_part": "ppt/slides/slide20.xml",
       "slot_id": "slide20_shape19",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.88,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 276999,
+        "max_w_emu": 4697730,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 1414464,
       "x_emu": 6553203,
@@ -1721,6 +2111,16 @@
       "slide_number": 20,
       "slide_part": "ppt/slides/slide20.xml",
       "slot_id": "slide20_shape20",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.88,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 276999,
+        "max_w_emu": 4697730,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 1414464,
       "x_emu": 6553203,
@@ -1754,6 +2154,16 @@
       "slide_number": 20,
       "slide_part": "ppt/slides/slide20.xml",
       "slot_id": "slide20_shape22",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.819,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 400110,
+        "max_w_emu": 4697730,
+        "mode": "expandable"
+      },
       "w_emu": 2771775,
       "x_emu": 1009650,
       "y_emu": 3560605
@@ -1786,6 +2196,16 @@
       "slide_number": 20,
       "slide_part": "ppt/slides/slide20.xml",
       "slot_id": "slide20_shape24",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.8178,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 400110,
+        "max_w_emu": 4697730,
+        "mode": "expandable"
+      },
       "w_emu": 2781297,
       "x_emu": 6553203,
       "y_emu": 3560605
@@ -1818,6 +2238,16 @@
       "slide_number": 20,
       "slide_part": "ppt/slides/slide20.xml",
       "slot_id": "slide20_shape27",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -1948,6 +2378,16 @@
       "slide_number": 22,
       "slide_part": "ppt/slides/slide22.xml",
       "slot_id": "slide22_shape27",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -2172,6 +2612,16 @@
       "slide_number": 24,
       "slide_part": "ppt/slides/slide24.xml",
       "slot_id": "slide24_shape18",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.8276,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 337400,
+        "max_w_emu": 4459605,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 2565800,
       "x_emu": 1009651,
@@ -2205,6 +2655,16 @@
       "slide_number": 24,
       "slide_part": "ppt/slides/slide24.xml",
       "slot_id": "slide24_shape25",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.8176,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 337400,
+        "max_w_emu": 4459606,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 2642001,
       "x_emu": 1009650,
@@ -2238,6 +2698,16 @@
       "slide_number": 24,
       "slide_part": "ppt/slides/slide24.xml",
       "slot_id": "slide24_shape27",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7211,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 337400,
+        "max_w_emu": 4459604,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 3699276,
       "x_emu": 6791326,
@@ -2300,6 +2770,16 @@
       "slide_number": 24,
       "slide_part": "ppt/slides/slide24.xml",
       "slot_id": "slide24_shape33",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.88,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 337400,
+        "max_w_emu": 10241279,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 3717470,
       "x_emu": 1009651,
@@ -2333,6 +2813,16 @@
       "slide_number": 24,
       "slide_part": "ppt/slides/slide24.xml",
       "slot_id": "slide24_shape34",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.88,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 337400,
+        "max_w_emu": 10241280,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 3774621,
       "x_emu": 1009650,
@@ -2366,6 +2856,16 @@
       "slide_number": 24,
       "slide_part": "ppt/slides/slide24.xml",
       "slot_id": "slide24_shape37",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 400110,
+        "max_w_emu": 10885170,
+        "mode": "expandable"
+      },
       "w_emu": 2977243,
       "x_emu": 819150,
       "y_emu": 1949494
@@ -2398,6 +2898,16 @@
       "slide_number": 24,
       "slide_part": "ppt/slides/slide24.xml",
       "slot_id": "slide24_shape41",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -2430,6 +2940,16 @@
       "slide_number": 26,
       "slide_part": "ppt/slides/slide26.xml",
       "slot_id": "slide26_shape41",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -2660,6 +3180,16 @@
       "slide_number": 28,
       "slide_part": "ppt/slides/slide28.xml",
       "slot_id": "slide28_shape41",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -2758,6 +3288,16 @@
       "slide_number": 28,
       "slide_part": "ppt/slides/slide28.xml",
       "slot_id": "slide28_shape14",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7272,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 336631,
+        "max_w_emu": 4746035,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 3839254,
       "x_emu": 6504898,
@@ -2791,6 +3331,16 @@
       "slide_number": 28,
       "slide_part": "ppt/slides/slide28.xml",
       "slot_id": "slide28_shape19",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7272,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 336631,
+        "max_w_emu": 4746036,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 3839254,
       "x_emu": 6504897,
@@ -2824,6 +3374,16 @@
       "slide_number": 28,
       "slide_part": "ppt/slides/slide28.xml",
       "slot_id": "slide28_shape42",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7909,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 337400,
+        "max_w_emu": 10207948,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 6566129,
       "x_emu": 1042985,
@@ -2857,6 +3417,16 @@
       "slide_number": 28,
       "slide_part": "ppt/slides/slide28.xml",
       "slot_id": "slide28_shape43",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7909,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 337400,
+        "max_w_emu": 10207948,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 6566129,
       "x_emu": 1042985,
@@ -2890,6 +3460,16 @@
       "slide_number": 30,
       "slide_part": "ppt/slides/slide30.xml",
       "slot_id": "slide30_shape41",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -2988,6 +3568,16 @@
       "slide_number": 30,
       "slide_part": "ppt/slides/slide30.xml",
       "slot_id": "slide30_shape14",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7272,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 336631,
+        "max_w_emu": 4746035,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 3839254,
       "x_emu": 6504898,
@@ -3021,6 +3611,16 @@
       "slide_number": 30,
       "slide_part": "ppt/slides/slide30.xml",
       "slot_id": "slide30_shape19",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7272,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 336631,
+        "max_w_emu": 4746036,
+        "mode": "expandable"
+      },
       "text_replacement_mode": "marker_runs",
       "w_emu": 3839254,
       "x_emu": 6504897,
@@ -3054,6 +3654,16 @@
       "slide_number": 32,
       "slide_part": "ppt/slides/slide32.xml",
       "slot_id": "slide32_shape41",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.93,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 323165,
+        "max_w_emu": 10427973,
+        "mode": "expandable"
+      },
       "w_emu": 707233,
       "x_emu": 1276347,
       "y_emu": 647699
@@ -3086,6 +3696,16 @@
       "slide_number": 32,
       "slide_part": "ppt/slides/slide32.xml",
       "slot_id": "slide32_shape42",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7774,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 337400,
+        "max_w_emu": 9763483,
+        "mode": "expandable"
+      },
       "w_emu": 6566129,
       "x_emu": 1487448,
       "y_emu": 2881085
@@ -3118,6 +3738,16 @@
       "slide_number": 32,
       "slide_part": "ppt/slides/slide32.xml",
       "slot_id": "slide32_shape43",
+      "text_box_policy": {
+        "anchor": "left_top",
+        "confidence": 0.7774,
+        "directions": [
+          "right"
+        ],
+        "max_h_emu": 337400,
+        "max_w_emu": 9763483,
+        "mode": "expandable"
+      },
       "w_emu": 6566129,
       "x_emu": 1487448,
       "y_emu": 3349652

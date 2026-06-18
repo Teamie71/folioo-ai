@@ -168,12 +168,14 @@ def _enrich_slot_descriptors(
 ) -> list[dict[str, Any]]:
     matches_by_slot_id = _shape_matches_by_slot_id(shape_matches)
     item_backgrounds_by_slot_id = _item_backgrounds_by_slot_id(shape_inferences)
+    text_box_expansions_by_slot_id = _text_box_expansions_by_slot_id(shape_inferences)
     layout_groups_by_slot_id = _layout_groups_by_slot_id(slots, layout_groups)
     return [
         _enrich_slot_descriptor(
             slot,
             matches_by_slot_id.get(str(slot.get("slot_id"))),
             item_backgrounds_by_slot_id.get(str(slot.get("slot_id"))),
+            text_box_expansions_by_slot_id.get(str(slot.get("slot_id"))),
             layout_groups_by_slot_id.get(str(slot.get("slot_id"))),
         )
         for slot in slots
@@ -214,6 +216,27 @@ def _item_backgrounds_by_slot_id(
         for slot_id, candidates in candidates_by_slot_id.items()
         if len(candidates) == 1
     }
+
+
+def _text_box_expansions_by_slot_id(
+    shape_inferences: Sequence[Mapping[str, Any]],
+) -> dict[str, Mapping[str, Any]]:
+    expansions_by_slot_id: dict[str, Mapping[str, Any]] = {}
+    for inference in shape_inferences:
+        if not isinstance(inference, Mapping):
+            continue
+        if inference.get("inference_type") != "text_box_expansion":
+            continue
+        if not _valid_text_box_expansion(inference):
+            continue
+        slot_id = inference.get("slot_id")
+        if slot_id is None:
+            continue
+        normalized_slot_id = str(slot_id)
+        if normalized_slot_id in expansions_by_slot_id:
+            continue
+        expansions_by_slot_id[normalized_slot_id] = inference
+    return expansions_by_slot_id
 
 
 def _layout_groups_by_slot_id(
@@ -280,6 +303,30 @@ def _valid_item_background_inference(inference: Mapping[str, Any]) -> bool:
     return width is not None and height is not None and width > 0 and height > 0
 
 
+def _valid_text_box_expansion(inference: Mapping[str, Any]) -> bool:
+    if str(inference.get("anchor") or "") != "left_top":
+        return False
+    directions = _string_sequence(inference.get("directions"))
+    if not directions or not set(directions).issubset({"right", "down"}):
+        return False
+    max_w_emu = _json_number(inference.get("max_w_emu"))
+    max_h_emu = _json_number(inference.get("max_h_emu"))
+    width = _json_number(inference.get("w_emu"))
+    height = _json_number(inference.get("h_emu"))
+    confidence = _json_number(inference.get("confidence"))
+    if None in (max_w_emu, max_h_emu, width, height, confidence):
+        return False
+    if (
+        max_w_emu is None
+        or max_h_emu is None
+        or width is None
+        or height is None
+        or confidence is None
+    ):
+        return False
+    return max_w_emu >= width > 0 and max_h_emu >= height > 0 and confidence > 0
+
+
 _ITEM_BACKGROUND_FIELDS = (
     "runtime_slide_index",
     "runtime_slide_number",
@@ -295,6 +342,7 @@ def _enrich_slot_descriptor(
     slot: Mapping[str, Any],
     shape_match: Mapping[str, Any] | None,
     item_background: Mapping[str, Any] | None,
+    text_box_expansion: Mapping[str, Any] | None,
     layout_group: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     enriched = dict(slot)
@@ -305,6 +353,8 @@ def _enrich_slot_descriptor(
                     enriched[field_name] = shape_match[field_name]
         if item_background is not None:
             enriched["item_background"] = _slot_item_background(item_background)
+        if text_box_expansion is not None:
+            enriched["text_box_policy"] = _slot_text_box_policy(text_box_expansion)
         if layout_group is not None:
             _apply_layout_group_slot_metadata(enriched, layout_group)
         _apply_text_capacity_defaults(enriched)
@@ -353,6 +403,17 @@ def _slot_item_background(item_background: Mapping[str, Any]) -> dict[str, Any]:
         "h_emu": item_background.get("h_emu"),
         "match_score": item_background.get("match_score"),
         "resize_linked": item_background.get("resize_linked") is True,
+    }
+
+
+def _slot_text_box_policy(text_box_expansion: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "mode": "expandable",
+        "anchor": text_box_expansion.get("anchor"),
+        "directions": list(_string_sequence(text_box_expansion.get("directions"))),
+        "max_w_emu": text_box_expansion.get("max_w_emu"),
+        "max_h_emu": text_box_expansion.get("max_h_emu"),
+        "confidence": text_box_expansion.get("confidence"),
     }
 
 
