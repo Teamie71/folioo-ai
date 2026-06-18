@@ -703,13 +703,18 @@ async def test_text_fit_summarize_needed_retries_with_shorter_fills() -> None:
     assert retry_call["fit_issues"][0]["shape_id"] == "2"
     assert retry_call["fit_issues"][0]["status"] == "summarize_needed"
     assert retry_call["fit_issues"][0]["reason"] in {"nowrap_width_overflow", "width_overflow"}
+    assert retry_call["fit_issues"][0]["max_recommended_char_count"] < len(
+        "OpenAI API OpenAI API OpenAI API"
+    )
     slide3_fills = [fills for path, fills in editor.applied if path.endswith("slide3.xml")][0]
     assert slide3_fills["2"]["text"] == "AI 상담"
 
 
 @pytest.mark.asyncio
-async def test_text_fit_retry_failure_keeps_original_overflow_error() -> None:
-    """짧게 재요청한 fill 도 실패하면 원래 overflow 오류로 콘텐츠 실패를 전송한다."""
+async def test_text_fit_retry_failure_uses_deterministic_fallback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """짧게 재요청한 fill 도 실패하면 측정 기반 축약으로 콘텐츠 생성을 복구한다."""
     editor = FakeEditor(
         slots=[
             {
@@ -751,15 +756,69 @@ async def test_text_fit_retry_failure_keeps_original_overflow_error() -> None:
     )
     context = PipelineContext(editor=editor, filler=filler, max_content_concurrency=1)
 
+    with caplog.at_level(logging.INFO, logger="features.visualization.generation_pipeline"):
+        await context.service.generate(_task())
+
+    error_events = _events(context.main_client, "slide_content_error")
+    assert error_events == []
+    assert context.main_client.job_events[-1]["summary"] == {"completed": 7, "failed": 0}
+    assert len(filler.revise_calls) == 1
+    slide3_fills = [fills for path, fills in editor.applied if path.endswith("slide3.xml")][0]
+    assert len(slide3_fills["2"]["text"]) < len("여전히 너무 긴 OpenAI API 상담 서비스 설명 문구")
+    assert slide3_fills["2"]["font_size_override"] == 10
+    assert "slide content fit deterministic fallback succeeded" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_text_fit_deterministic_fallback_preserves_dash_role_pair() -> None:
+    """경험명-역할 형태는 fallback 축약 시 하이픈 양쪽 핵심을 우선 보존한다."""
+    editor = FakeEditor(
+        slots=[
+            {
+                "shape_id": "2",
+                "font_size_pt": 12,
+                "min_font_pt": 10,
+                "kind": "text",
+                "fit_policy": "basic_text_area",
+                "w_emu": int(120 * EMU_PER_PT),
+                "h_emu": int(30 * EMU_PER_PT),
+                "max_lines": 1,
+                "nowrap": True,
+            }
+        ]
+    )
+    filler = FakeFillGenerator(
+        responses={
+            3: [
+                {
+                    "2": {
+                        "action": "text",
+                        "text": "이커머스 고객센터 AI 상담 서비스 구축 프로젝트 - 백엔드 리드",
+                        "font_size_override": 12,
+                    }
+                }
+            ]
+        },
+        revise_responses={
+            3: [
+                {
+                    "2": {
+                        "action": "text",
+                        "text": "이커머스 고객센터 AI 상담 서비스 구축 프로젝트 - 백엔드 리드",
+                        "font_size_override": 12,
+                    }
+                }
+            ]
+        },
+    )
+    context = PipelineContext(editor=editor, filler=filler, max_content_concurrency=1)
+
     await context.service.generate(_task())
 
     error_events = _events(context.main_client, "slide_content_error")
-    assert len(error_events) == 1
-    assert error_events[0]["slide_order"] == 3
-    assert "summarize_needed" in error_events[0]["message"]
-    assert len(filler.revise_calls) == 1
-    assert len(context.editor.cleared) == 1
-    assert context.main_client.job_events[-1]["summary"] == {"completed": 6, "failed": 1}
+    assert error_events == []
+    slide3_fills = [fills for path, fills in editor.applied if path.endswith("slide3.xml")][0]
+    assert slide3_fills["2"]["text"] == "이커머스 - 백엔드"
 
 
 @pytest.mark.asyncio
