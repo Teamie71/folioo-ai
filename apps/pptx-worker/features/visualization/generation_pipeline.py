@@ -846,10 +846,11 @@ class VisualizationTaskService:
                     content_brief=planned_slide.content_brief,
                     slots=slots,
                 )
-                preflight = _preflight_text_fills(
+                preflight = await self._preflight_text_fills_with_fit_retry(
                     job_id=task.job_id,
                     slide_id=registered_slide.slide_id,
                     slide_order=registered_slide.slide_order,
+                    content_brief=planned_slide.content_brief,
                     slots=slots,
                     fills=fills,
                 )
@@ -913,6 +914,65 @@ class VisualizationTaskService:
                 status="ready",
                 current_fills=fills,
             )
+
+    async def _preflight_text_fills_with_fit_retry(
+        self,
+        *,
+        job_id: str,
+        slide_id: str,
+        slide_order: int,
+        content_brief: str,
+        slots: Sequence[Mapping[str, Any]],
+        fills: Mapping[str, Mapping[str, Any]],
+    ) -> TextFitPreflightResult:
+        """summarize_needed text-fit 실패는 LLM에 한 번 짧게 재요청한다."""
+        try:
+            return _preflight_text_fills(
+                job_id=job_id,
+                slide_id=slide_id,
+                slide_order=slide_order,
+                slots=slots,
+                fills=fills,
+            )
+        except TextFitPreflightError as exc:
+            if not _text_fit_error_retryable(exc):
+                raise
+            fit_issues = _text_fit_retry_issues(exc, fills)
+            logger.info(
+                "slide content fit retry: job_id=%s slide_order=%s blocking_slots=%s",
+                job_id,
+                slide_order,
+                ",".join(str(issue.get("shape_id")) for issue in fit_issues),
+            )
+            try:
+                revised_fills = await asyncio.to_thread(
+                    self._content_fill_generator.revise_fills_for_fit,
+                    content_brief=content_brief,
+                    slots=slots,
+                    current_fills=fills,
+                    fit_issues=fit_issues,
+                )
+                preflight = _preflight_text_fills(
+                    job_id=job_id,
+                    slide_id=slide_id,
+                    slide_order=slide_order,
+                    slots=slots,
+                    fills=revised_fills,
+                )
+            except Exception:
+                logger.warning(
+                    "slide content fit retry failed: job_id=%s slide_order=%s",
+                    job_id,
+                    slide_order,
+                    exc_info=True,
+                )
+                raise exc
+            logger.info(
+                "slide content fit retry succeeded: job_id=%s slide_order=%s",
+                job_id,
+                slide_order,
+            )
+            return preflight
 
     async def _create_fills_with_timeout_retry(
         self,
@@ -1139,6 +1199,49 @@ def _preflight_text_fills(
             },
         )
     return preflight
+
+
+def _text_fit_error_retryable(exc: TextFitPreflightError) -> bool:
+    """LLM 재요약으로 복구 가능한 text-fit 실패인지 판정한다."""
+    blocking = [
+        result
+        for result in exc.results
+        if isinstance(result, BasicTextFitResult) and result.is_blocking
+    ]
+    if not blocking:
+        return False
+    return all(result.status == "summarize_needed" for result in blocking)
+
+
+def _text_fit_retry_issues(
+    exc: TextFitPreflightError,
+    fills: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """LLM 재요약 prompt에 넣을 text-fit 실패 요약을 만든다."""
+    issues: list[dict[str, Any]] = []
+    for result in exc.results:
+        if not isinstance(result, BasicTextFitResult) or not result.is_blocking:
+            continue
+        shape_id = result.shape_id
+        current_fill = fills.get(shape_id, {})
+        current_text = str(current_fill.get("text") or "")
+        issues.append(
+            {
+                "shape_id": shape_id,
+                "status": result.status,
+                "reason": result.reason,
+                "current_text": current_text,
+                "current_char_count": len(current_text.replace("\n", "")),
+                "nowrap": result.nowrap,
+                "max_lines": result.max_lines,
+                "applied_font_pt": result.applied_font_pt,
+                "min_font_pt": result.min_font_pt,
+                "available_width_pt": result.constraints.available_width_pt,
+                "final_max_line_width_pt": result.final_layout.max_line_width_pt,
+                "overflow_reasons": list(result.final_layout.overflow_reasons),
+            }
+        )
+    return issues
 
 
 async def _apply_preflighted_fills(
