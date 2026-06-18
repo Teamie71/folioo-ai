@@ -94,6 +94,11 @@ runtime slide 의 `#FF0000` 은 editable marker 이지 최종 출력 색상이 �
 text fill 을 적용할 때 slot metadata 또는 fill payload 의 `marker_color` 와 `output_text_color` 를
 사용한다.
 
+mixed-color shape 는 compiler 가 slot metadata 에 기록한 `text_replacement_mode` 를 따른다.
+`marker_runs` 는 shape 안의 non-red run 을 보존하고 `#FF0000` marker run 만 교체한다. 여러 marker
+run 이 이어진 경우 첫 marker run 에 생성 텍스트를 넣고 나머지 marker run 은 비워 중복 출력을 막는다.
+`shape` 는 기존 text fill 경로처럼 shape 텍스트 전체를 하나의 생성 텍스트로 교체한다.
+
 | 입력 | 처리 |
 |---|---|
 | `output_text_color` 있음 | 기준 run 의 색상을 해당 RGB 로 교체 |

@@ -205,7 +205,7 @@ pack 자체는 1회로 묶이지만, 시각 QA·프리뷰 업로드는 슬라이
 - Source Slide 카테고리는 전 Template 공유 **표준 Enum** (`cover` / `overview` / `process` / `chart` / `closing` 등 10종)
 - `meta.json` 은 `schema_version: 2` 런타임 계약이다. `runtime_slides`, `slots`, `layout_groups` 를 담고, 런타임 로더는 v2 가 아니면 fail fast 한다.
 - `reference.json` 은 example slide 매칭과 `output_text_color`, `item_background`, `container_shape` 추론 근거를 남기는 compiler/validator/audit 용 산출물이다.
-- Slot 은 runtime slide 의 정확한 `#FF0000` marker 에서 `meta.json.slots[]` 로 추출된다. 런타임은 이 v2 slot metadata 를 source of truth 로 사용하고, slide XML 추출값은 overlay/검증 입력으로만 사용한다.
+- Slot 은 runtime slide 의 정확한 `#FF0000` marker 에서 `meta.json.slots[]` 로 추출된다. mixed-color shape 는 `text_replacement_mode` 로 marker run 단위 교체와 shape 단위 교체를 구분한다. 런타임은 이 v2 slot metadata 를 source of truth 로 사용하고, slide XML 추출값은 overlay/검증 입력으로만 사용한다.
 - 템플릿 등록은 자동 추출 → LLM 초안 → 운영자 검토 → 검증 → GCS 업로드의 반자동 파이프라인
 
 ---
@@ -459,6 +459,7 @@ Expected Output:
 │  │                                                  │    │
 │  │  ⑤ SlideEditor.apply_fills(slide1.xml, fills)     │    │
 │  │     → #FF0000 marker 를 output_text_color 로 대체  │    │
+│  │     → marker_runs 는 non-red fixed run 보존         │    │
 │  │     → DrawingML 규칙 준수하며 텍스트/제거/차트 적용  │    │
 │  └──────────────────────────────────────────────────┘    │
 │  ┌─ Thread 2: slide2.xml (동일 과정) ──────────────┐     │
