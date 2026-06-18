@@ -335,6 +335,69 @@ def test_content_fill_prompt_uses_inline_label_one_line_length_hint() -> None:
     assert "줄바꿈하지 말고" in slot_payload["length_hint"]
 
 
+def test_content_fill_generator_revises_fills_with_fit_issue_payload() -> None:
+    """text-fit 재요청은 기존 fills와 overflow issue를 전달하고 같은 fill schema를 반환한다."""
+    llm = FakeLLM(
+        [
+            {
+                "fills": {
+                    "26": {
+                        "action": "text",
+                        "text": "AI 상담",
+                        "font_size_override": 12,
+                    }
+                }
+            }
+        ]
+    )
+    generator = LLMContentFillGenerator(llm=llm)
+
+    fills = generator.revise_fills_for_fit(
+        content_brief="AI 상담 서비스 표지",
+        slots=[
+            {
+                "shape_id": "26",
+                "kind": "text",
+                "editable": True,
+                "required": True,
+                "placeholder_text": "프로젝트명",
+                "example_text": "Folioo AI",
+                "font_size_pt": 20,
+                "max_lines": 1,
+                "nowrap": True,
+                "fit_policy": "basic_text_area",
+                "allowed_actions": ["text"],
+            }
+        ],
+        current_fills={
+            "26": {
+                "action": "text",
+                "text": "이커머스 고객센터 AI 상담 서비스 구축 프로젝트",
+                "font_size_override": 20,
+            }
+        },
+        fit_issues=[
+            {
+                "shape_id": "26",
+                "status": "summarize_needed",
+                "reason": "nowrap_width_overflow",
+                "current_char_count": 26,
+                "nowrap": True,
+                "max_lines": 1,
+            }
+        ],
+    )
+
+    assert fills == {"26": {"action": "text", "text": "AI 상담", "font_size_override": 12}}
+    system_prompt = llm.messages[0][0].content
+    prompt_payload = _last_fill_prompt_payload(llm)
+    assert "text-fit preflight 실패" in system_prompt
+    assert "current_fills" in prompt_payload
+    assert prompt_payload["current_fills"]["26"]["text"].startswith("이커머스")
+    assert prompt_payload["fit_issues"][0]["reason"] == "nowrap_width_overflow"
+    assert prompt_payload["slots"][0]["nowrap"] is True
+
+
 def test_content_fill_prompt_does_not_add_text_capacity_hint_to_chart_slot() -> None:
     """chart slot 에는 text length hint를 붙여 action 계약을 흐리지 않는다."""
     llm = FakeLLM(

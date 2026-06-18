@@ -346,10 +346,16 @@ class FakePlanGenerator:
 class FakeFillGenerator:
     """슬라이드별 fill 생성 결과/예외를 반환한다."""
 
-    def __init__(self, responses: dict[int, list[object]] | None = None) -> None:
+    def __init__(
+        self,
+        responses: dict[int, list[object]] | None = None,
+        revise_responses: dict[int, list[object]] | None = None,
+    ) -> None:
         self.responses = responses or {}
+        self.revise_responses = revise_responses or {}
         self.calls: list[int] = []
         self.slot_calls: list[tuple[int, list[dict[str, Any]]]] = []
+        self.revise_calls: list[dict[str, Any]] = []
 
     def create_fills(
         self, *, content_brief: str, slots: list[dict[str, Any]]
@@ -366,6 +372,33 @@ class FakeFillGenerator:
         return {
             "2": {"action": "text", "text": f"슬라이드 {slide_order}", "font_size_override": 18}
         }
+
+    def revise_fills_for_fit(
+        self,
+        *,
+        content_brief: str,
+        slots: list[dict[str, Any]],
+        current_fills: dict[str, dict[str, Any]],
+        fit_issues: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        slide_order = int(content_brief.rsplit("-", maxsplit=1)[1])
+        self.revise_calls.append(
+            {
+                "slide_order": slide_order,
+                "slots": [dict(slot) for slot in slots],
+                "current_fills": {
+                    str(shape_id): dict(fill) for shape_id, fill in current_fills.items()
+                },
+                "fit_issues": [dict(issue) for issue in fit_issues],
+            }
+        )
+        responses = self.revise_responses.get(slide_order)
+        if responses:
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result  # type: ignore[return-value]
+        raise AssertionError("fit retry 응답이 없습니다.")
 
 
 class FakeChangeGenerator:
@@ -614,6 +647,119 @@ async def test_text_fit_overflow_logs_structured_result_and_continues_partial(
     assert overflow_log["reason"] in {"nowrap_width_overflow", "width_overflow"}
     assert overflow_log["applied_font_pt"] == 10
     assert overflow_log["final_layout"]["overflow_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_text_fit_summarize_needed_retries_with_shorter_fills() -> None:
+    """summarize_needed overflow 는 한 번 더 짧은 fill 을 요청하고 성공 경로로 복구한다."""
+    editor = FakeEditor(
+        slots=[
+            {
+                "shape_id": "2",
+                "font_size_pt": 12,
+                "min_font_pt": 10,
+                "kind": "text",
+                "fit_policy": "basic_text_area",
+                "w_emu": int(80 * EMU_PER_PT),
+                "h_emu": int(30 * EMU_PER_PT),
+                "max_lines": 1,
+                "nowrap": True,
+            }
+        ]
+    )
+    filler = FakeFillGenerator(
+        responses={
+            3: [
+                {
+                    "2": {
+                        "action": "text",
+                        "text": "OpenAI API OpenAI API OpenAI API",
+                        "font_size_override": 12,
+                    }
+                }
+            ]
+        },
+        revise_responses={
+            3: [
+                {
+                    "2": {
+                        "action": "text",
+                        "text": "AI 상담",
+                        "font_size_override": 12,
+                    }
+                }
+            ]
+        },
+    )
+    context = PipelineContext(editor=editor, filler=filler, max_content_concurrency=1)
+
+    await context.service.generate(_task())
+
+    assert _events(context.main_client, "slide_content_error") == []
+    assert context.main_client.job_events[-1]["summary"] == {"completed": 7, "failed": 0}
+    assert len(filler.revise_calls) == 1
+    retry_call = filler.revise_calls[0]
+    assert retry_call["slide_order"] == 3
+    assert retry_call["fit_issues"][0]["shape_id"] == "2"
+    assert retry_call["fit_issues"][0]["status"] == "summarize_needed"
+    assert retry_call["fit_issues"][0]["reason"] in {"nowrap_width_overflow", "width_overflow"}
+    slide3_fills = [fills for path, fills in editor.applied if path.endswith("slide3.xml")][0]
+    assert slide3_fills["2"]["text"] == "AI 상담"
+
+
+@pytest.mark.asyncio
+async def test_text_fit_retry_failure_keeps_original_overflow_error() -> None:
+    """짧게 재요청한 fill 도 실패하면 원래 overflow 오류로 콘텐츠 실패를 전송한다."""
+    editor = FakeEditor(
+        slots=[
+            {
+                "shape_id": "2",
+                "font_size_pt": 12,
+                "min_font_pt": 10,
+                "kind": "text",
+                "fit_policy": "basic_text_area",
+                "w_emu": int(80 * EMU_PER_PT),
+                "h_emu": int(30 * EMU_PER_PT),
+                "max_lines": 1,
+                "nowrap": True,
+            }
+        ]
+    )
+    filler = FakeFillGenerator(
+        responses={
+            3: [
+                {
+                    "2": {
+                        "action": "text",
+                        "text": "OpenAI API OpenAI API OpenAI API",
+                        "font_size_override": 12,
+                    }
+                }
+            ]
+        },
+        revise_responses={
+            3: [
+                {
+                    "2": {
+                        "action": "text",
+                        "text": "여전히 너무 긴 OpenAI API 상담 서비스 설명 문구",
+                        "font_size_override": 12,
+                    }
+                }
+            ]
+        },
+    )
+    context = PipelineContext(editor=editor, filler=filler, max_content_concurrency=1)
+
+    await context.service.generate(_task())
+
+    error_events = _events(context.main_client, "slide_content_error")
+    assert len(error_events) == 1
+    assert error_events[0]["slide_order"] == 3
+    assert "summarize_needed" in error_events[0]["message"]
+    assert len(filler.revise_calls) == 1
+    assert len(context.editor.cleared) == 1
+    assert context.main_client.job_events[-1]["summary"] == {"completed": 6, "failed": 1}
 
 
 @pytest.mark.asyncio

@@ -50,6 +50,19 @@ _FILL_SYSTEM_PROMPT = """PPTX 슬라이드 Slot 을 채우는 편집 데이터 �
 - 텍스트 요약이 필요하면 고유명사, 수치, 기술 스택, 성과 지표를 보존하세요.
 """
 
+_FIT_RETRY_SYSTEM_PROMPT = """PPTX text-fit preflight 실패를 복구하는 편집 데이터 수정기입니다.
+응답은 반드시 JSON 객체 하나로만 작성하세요.
+스키마: {"fills": {"shape_id": {"action": "text"|"remove"|"chart", "text": string, "font_size_override": number|null, "is_title": boolean|null, "data": object|null}}}
+지침:
+- current_fills 와 동일한 shape_id 집합을 반환하세요. 새 shape_id 를 추가하지 마세요.
+- 실패한 text slot 은 반드시 더 짧게 다시 작성하세요.
+- nowrap=true 또는 max_lines=1 slot 은 줄바꿈 없이 한 줄 문구로 작성하세요.
+- reason 이 nowrap_width_overflow, width_overflow, height_overflow 이면 핵심 명사, 수치, 기술 스택만 남기세요.
+- 고유명사, 수치, 기술 스택, 성과 지표를 우선 보존하고 설명형 수식어를 제거하세요.
+- action, chart data, remove 결정은 current_fills 의 의도를 유지하세요.
+- layout_actions, 좌표, geometry, XML, 임의 필드를 만들지 마세요.
+"""
+
 _REGENERATE_SYSTEM_PROMPT = """PPTX 단일 슬라이드 수정 요청을 fill 변경 지시로 해석하는 편집자입니다.
 응답은 반드시 JSON 객체 하나로만 작성하세요.
 스키마: {"fills": {"shape_id": {"action": "text", "text": string|null, "font_size_override": number|null, "is_title": boolean|null}}}
@@ -158,6 +171,17 @@ class ContentFillGenerator(Protocol):
         slots: Sequence[Mapping[str, Any]],
     ) -> dict[str, dict[str, Any]]:
         """SlideEditor.apply_fills 입력 형식의 fill 맵을 반환한다."""
+        ...
+
+    def revise_fills_for_fit(
+        self,
+        *,
+        content_brief: str,
+        slots: Sequence[Mapping[str, Any]],
+        current_fills: Mapping[str, Mapping[str, Any]],
+        fit_issues: Sequence[Mapping[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Text-fit 실패 정보를 반영해 더 짧은 fill 맵을 반환한다."""
         ...
 
 
@@ -309,6 +333,41 @@ class LLMContentFillGenerator:
             HumanMessage(
                 content=(
                     "다음 슬라이드 요지와 Slot 정보를 보고 fills 를 작성하세요.\n"
+                    f"{json.dumps(prompt_payload, ensure_ascii=False, default=str)}"
+                )
+            ),
+        ]
+        response = llm.invoke(messages)
+        response_text = _normalize_response_text(getattr(response, "content", response))
+        payload = _loads_json_object(response_text)
+        return _parse_fills_payload(payload, slots)
+
+    def revise_fills_for_fit(
+        self,
+        *,
+        content_brief: str,
+        slots: Sequence[Mapping[str, Any]],
+        current_fills: Mapping[str, Mapping[str, Any]],
+        fit_issues: Sequence[Mapping[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Text-fit 실패 slot 을 더 짧게 수정한 fill 맵을 생성한다."""
+        if not slots:
+            return {}
+        if not fit_issues:
+            return {str(shape_id): dict(fill) for shape_id, fill in current_fills.items()}
+
+        llm = self._llm or get_llm_uncached(temperature=0.1, timeout=120)
+        prompt_payload = _build_fit_retry_prompt_payload(
+            content_brief=content_brief,
+            slots=slots,
+            current_fills=current_fills,
+            fit_issues=fit_issues,
+        )
+        messages = [
+            SystemMessage(content=_FIT_RETRY_SYSTEM_PROMPT),
+            HumanMessage(
+                content=(
+                    "다음 text-fit preflight 실패 정보를 보고 current_fills 를 더 짧게 수정하세요.\n"
                     f"{json.dumps(prompt_payload, ensure_ascii=False, default=str)}"
                 )
             ),
@@ -559,6 +618,27 @@ def _build_fill_prompt_payload(
             "length_hint": "텍스트 생성 시 우선 준수해야 하는 길이 제약입니다.",
         },
         "slots": [_build_fill_slot_prompt_payload(slot) for slot in slots],
+    }
+
+
+def _build_fit_retry_prompt_payload(
+    *,
+    content_brief: str,
+    slots: Sequence[Mapping[str, Any]],
+    current_fills: Mapping[str, Mapping[str, Any]],
+    fit_issues: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Text-fit 복구 호출에 전달할 실패 요약 payload를 구성한다."""
+    return {
+        "content_brief": content_brief,
+        "slot_guidance": {
+            "placeholder_text": "slot 의 의미를 알려주는 입력 힌트입니다.",
+            "example_text": "복사 대상이 아니라 형식, 길이, 줄 수 참고용입니다.",
+            "length_hint": "텍스트 수정 시 우선 준수해야 하는 길이 제약입니다.",
+        },
+        "slots": [_build_fill_slot_prompt_payload(slot) for slot in slots],
+        "current_fills": {str(shape_id): dict(fill) for shape_id, fill in current_fills.items()},
+        "fit_issues": [dict(issue) for issue in fit_issues],
     }
 
 
