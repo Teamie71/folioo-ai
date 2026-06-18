@@ -43,6 +43,11 @@ _INLINE_LABEL_GROUP_MAX_GAP_HEIGHT_RATIO = 2.0
 _INLINE_LABEL_GROUP_MAX_GAP_WIDTH_RATIO = 0.75
 _INLINE_LABEL_GROUP_MAX_GAP_VARIANCE_RATIO = 3.0
 _INLINE_LABEL_GROUP_MIN_BACKGROUND_ITEMS = 2
+_TEXT_BOX_EXPANSION_SLIDE_MARGIN_RATIO = 0.04
+_TEXT_BOX_EXPANSION_OBSTACLE_GAP_RATIO = 0.01
+_TEXT_BOX_EXPANSION_MIN_EXTRA_RATIO = 0.03
+_TEXT_BOX_EXPANSION_MIN_GROW_RATIO = 1.2
+_TEXT_BOX_EXPANSION_AXIS_OVERLAP_RATIO = 0.2
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,7 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
     slide_names = _ordered_slide_part_names(source)
     slide_size = _slide_size_emu(source)
     slide_width_emu = slide_size[0] if slide_size is not None else None
+    slide_height_emu = slide_size[1] if slide_size is not None else None
     runtime_slides: list[dict] = []
     slide_pairs: list[dict] = []
     shape_matches: list[dict] = []
@@ -179,6 +185,7 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
                 raise ValueError(f"PPTX 슬라이드 XML을 찾을 수 없습니다: {slide_name}") from exc
 
             root = _parse_xml(slide_xml, f"{source}:{slide_name}")
+            shape_geometries = _extract_shape_geometries_from_slide(root)
             marker_result = _extract_marker_slots_from_slide(
                 root,
                 slide_index=slide_position,
@@ -189,7 +196,11 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
             errors.extend(marker_result.errors)
             inferred_shapes, shape_warnings = _infer_runtime_shape_relationships(
                 marker_result.slots,
-                _extract_non_text_shapes_from_slide(root),
+                tuple(
+                    shape
+                    for shape in shape_geometries
+                    if not _shape_geometry_has_visible_text(root, shape.shape_id)
+                ),
                 runtime_slide_number=slide_number,
             )
             shape_inferences.extend(inferred_shapes)
@@ -202,6 +213,17 @@ def extract_template_v2_from_pptx(pptx_path: Path | str) -> TemplateV2Extraction
             )
             layout_groups.extend(inferred_groups)
             warnings.extend(group_warnings)
+            shape_inferences.extend(
+                _infer_text_box_expansions(
+                    marker_result.slots,
+                    shape_geometries,
+                    inferred_shapes,
+                    inferred_groups,
+                    runtime_slide_number=slide_number,
+                    slide_width_emu=slide_width_emu,
+                    slide_height_emu=slide_height_emu,
+                )
+            )
             if not marker_result.slots and not marker_result.has_marker_candidate:
                 errors.append(
                     f"runtime slide {slide_number}에 정확한 #FF0000 editable marker가 없습니다."
@@ -546,6 +568,26 @@ def _extract_non_text_shapes_from_slide(
         if geometry is not None:
             shapes.append(geometry)
     return tuple(shapes)
+
+
+def _extract_shape_geometries_from_slide(
+    slide_root: Element,
+) -> tuple[_RuntimeShapeGeometry, ...]:
+    shapes: list[_RuntimeShapeGeometry] = []
+    for shape in slide_root.findall(f".//{{{_PRESENTATION_NS}}}sp"):
+        geometry = _runtime_shape_geometry_from_shape(shape)
+        if geometry is not None:
+            shapes.append(geometry)
+    return tuple(shapes)
+
+
+def _shape_geometry_has_visible_text(slide_root: Element, shape_id: str) -> bool:
+    if not shape_id:
+        return False
+    for shape in slide_root.findall(f".//{{{_PRESENTATION_NS}}}sp"):
+        if _shape_id(shape) == shape_id:
+            return _shape_has_visible_text(shape)
+    return False
 
 
 def _shape_has_visible_text(shape: Element) -> bool:
@@ -1108,6 +1150,351 @@ def _inline_label_backgrounds_are_confident(
     if linked_count < _INLINE_LABEL_GROUP_MIN_BACKGROUND_ITEMS:
         return False
     return linked_count == item_count
+
+
+def _infer_text_box_expansions(
+    slots: tuple[dict, ...],
+    shape_geometries: tuple[_RuntimeShapeGeometry, ...],
+    shape_inferences: list[dict],
+    layout_groups: list[dict],
+    *,
+    runtime_slide_number: int,
+    slide_width_emu: int | None,
+    slide_height_emu: int | None,
+) -> list[dict]:
+    """일반 text slot 이 사용할 수 있는 확장 가능 영역을 보수적으로 추론한다."""
+    if slide_width_emu is None or slide_height_emu is None:
+        return []
+
+    excluded_slot_ids = _text_box_expansion_excluded_slot_ids(
+        slots,
+        shape_inferences,
+        layout_groups,
+    )
+    containers_by_slot_id = _text_box_expansion_containers_by_slot_id(shape_inferences)
+    inferences: list[dict] = []
+    for slot in slots:
+        slot_id = str(slot.get("slot_id") or "").strip()
+        if not slot_id or slot_id in excluded_slot_ids:
+            continue
+        inference = _text_box_expansion_for_slot(
+            slot,
+            shape_geometries,
+            runtime_slide_number=runtime_slide_number,
+            slide_width_emu=slide_width_emu,
+            slide_height_emu=slide_height_emu,
+            container_shape=containers_by_slot_id.get(slot_id),
+        )
+        if inference is not None:
+            inferences.append(inference)
+    return inferences
+
+
+def _text_box_expansion_excluded_slot_ids(
+    slots: tuple[dict, ...],
+    shape_inferences: list[dict],
+    layout_groups: list[dict],
+) -> set[str]:
+    excluded: set[str] = set()
+    for row in _cluster_inline_label_rows(
+        tuple(slot for slot in slots if _inline_label_slot_candidate(slot))
+    ):
+        excluded.update(str(slot.get("slot_id")) for slot in row if slot.get("slot_id"))
+
+    for group in layout_groups:
+        if group.get("layout_type") != "inline_label_group":
+            continue
+        excluded.update(str(slot_id) for slot_id in group.get("item_slot_ids") or ())
+
+    for inference in shape_inferences:
+        inference_type = inference.get("inference_type")
+        if inference_type == "item_background" and inference.get("resize_linked") is True:
+            slot_id = str(inference.get("slot_id") or "").strip()
+            if slot_id:
+                excluded.add(slot_id)
+        elif inference_type == "ambiguous_item_background":
+            excluded.update(str(slot_id) for slot_id in inference.get("candidate_slot_ids") or ())
+    return excluded
+
+
+def _text_box_expansion_containers_by_slot_id(
+    shape_inferences: list[dict],
+) -> dict[str, dict]:
+    containers_by_slot_id: dict[str, dict] = {}
+    for inference in shape_inferences:
+        if inference.get("inference_type") != "container_shape":
+            continue
+        container_slot_ids = inference.get("contained_slot_ids")
+        if not isinstance(container_slot_ids, list):
+            continue
+        for slot_id in container_slot_ids:
+            normalized_slot_id = str(slot_id or "").strip()
+            if normalized_slot_id and normalized_slot_id not in containers_by_slot_id:
+                containers_by_slot_id[normalized_slot_id] = inference
+    return containers_by_slot_id
+
+
+def _text_box_expansion_for_slot(
+    slot: dict,
+    shape_geometries: tuple[_RuntimeShapeGeometry, ...],
+    *,
+    runtime_slide_number: int,
+    slide_width_emu: int,
+    slide_height_emu: int,
+    container_shape: dict | None,
+) -> dict | None:
+    slot_box = _bbox_tuple(slot)
+    if slot_box is None:
+        return None
+
+    slot_x, slot_y, slot_w, slot_h = slot_box
+    if min(slot_w, slot_h) <= 0:
+        return None
+
+    directions: list[str] = []
+    right_bound = _expansion_bound_right(
+        slot,
+        shape_geometries,
+        slide_width_emu=slide_width_emu,
+        container_shape=container_shape,
+    )
+    max_w_emu = slot_w
+    right_bound_emu: int | None = None
+    right_bound_source: str | None = None
+    right_blocked_by_shape_id: str | None = None
+    if right_bound is not None and _expansion_is_meaningful(
+        original_size=slot_w,
+        candidate_size=right_bound["bound_emu"] - slot_x,
+        slide_size_emu=slide_width_emu,
+    ):
+        directions.append("right")
+        right_bound_emu = right_bound["bound_emu"]
+        right_bound_source = right_bound["source"]
+        right_blocked_by_shape_id = right_bound.get("blocked_by_shape_id")
+        max_w_emu = right_bound_emu - slot_x
+
+    max_h_emu = slot_h
+    bottom_bound_emu: int | None = None
+    bottom_bound_source: str | None = None
+    bottom_blocked_by_shape_id: str | None = None
+    if _slot_can_expand_down(slot):
+        bottom_bound = _expansion_bound_down(
+            slot,
+            shape_geometries,
+            slide_height_emu=slide_height_emu,
+            container_shape=container_shape,
+        )
+        if bottom_bound is not None and _expansion_is_meaningful(
+            original_size=slot_h,
+            candidate_size=bottom_bound["bound_emu"] - slot_y,
+            slide_size_emu=slide_height_emu,
+        ):
+            directions.append("down")
+            bottom_bound_emu = bottom_bound["bound_emu"]
+            bottom_bound_source = bottom_bound["source"]
+            bottom_blocked_by_shape_id = bottom_bound.get("blocked_by_shape_id")
+            max_h_emu = bottom_bound_emu - slot_y
+
+    if not directions:
+        return None
+
+    inference = {
+        "inference_type": "text_box_expansion",
+        "runtime_slide_index": slot.get("slide_index"),
+        "runtime_slide_number": runtime_slide_number,
+        "slot_id": slot.get("slot_id"),
+        "slot_shape_id": slot.get("shape_id"),
+        "anchor": "left_top",
+        "directions": directions,
+        "x_emu": slot_x,
+        "y_emu": slot_y,
+        "w_emu": slot_w,
+        "h_emu": slot_h,
+        "max_w_emu": max_w_emu,
+        "max_h_emu": max_h_emu,
+        "confidence": _text_box_expansion_confidence(
+            width_growth_ratio=max_w_emu / slot_w,
+            height_growth_ratio=max_h_emu / slot_h,
+            blocked=right_blocked_by_shape_id is not None or bottom_blocked_by_shape_id is not None,
+        ),
+    }
+    if container_shape is not None:
+        inference["container_shape_id"] = container_shape.get("shape_id")
+    if right_bound_emu is not None:
+        inference["right_bound_emu"] = right_bound_emu
+        inference["right_bound_source"] = right_bound_source
+        if right_blocked_by_shape_id is not None:
+            inference["right_blocked_by_shape_id"] = right_blocked_by_shape_id
+    if bottom_bound_emu is not None:
+        inference["bottom_bound_emu"] = bottom_bound_emu
+        inference["bottom_bound_source"] = bottom_bound_source
+        if bottom_blocked_by_shape_id is not None:
+            inference["bottom_blocked_by_shape_id"] = bottom_blocked_by_shape_id
+    return inference
+
+
+def _expansion_bound_right(
+    slot: dict,
+    shape_geometries: tuple[_RuntimeShapeGeometry, ...],
+    *,
+    slide_width_emu: int,
+    container_shape: dict | None,
+) -> dict[str, int | str] | None:
+    slot_box = _bbox_tuple(slot)
+    if slot_box is None:
+        return None
+
+    slot_x, slot_y, slot_w, slot_h = slot_box
+    margin = _slide_margin_emu(slide_width_emu)
+    gap = _obstacle_gap_emu(slide_width_emu)
+    bound = slide_width_emu - margin
+    source = "slide_margin"
+    blocked_by_shape_id: str | None = None
+    if container_shape is not None:
+        container_x = _positive_int(container_shape.get("x_emu"))
+        container_w = _positive_int(container_shape.get("w_emu"))
+        if container_x is not None and container_w is not None:
+            bound = container_x + container_w - gap
+            source = "container_shape"
+            blocked_by_shape_id = str(container_shape.get("shape_id") or "").strip() or None
+    for shape in shape_geometries:
+        if shape.shape_id == str(slot.get("shape_id") or ""):
+            continue
+        if container_shape is not None and shape.shape_id == str(
+            container_shape.get("shape_id") or ""
+        ):
+            continue
+        obstacle_box = _shape_bbox(shape)
+        if _shape_is_container_for_slot(slot_box, obstacle_box):
+            continue
+        obstacle_x, obstacle_y, _obstacle_w, obstacle_h = obstacle_box
+        if obstacle_x < slot_x + slot_w:
+            continue
+        if _axis_overlap(slot_y, slot_h, obstacle_y, obstacle_h) < (
+            min(slot_h, obstacle_h) * _TEXT_BOX_EXPANSION_AXIS_OVERLAP_RATIO
+        ):
+            continue
+        candidate_bound = obstacle_x - gap
+        if candidate_bound < bound:
+            bound = candidate_bound
+            source = "shape"
+            blocked_by_shape_id = shape.shape_id
+
+    if bound <= slot_x + slot_w:
+        return None
+    result: dict[str, int | str] = {"bound_emu": bound, "source": source}
+    if blocked_by_shape_id is not None:
+        result["blocked_by_shape_id"] = blocked_by_shape_id
+    return result
+
+
+def _expansion_bound_down(
+    slot: dict,
+    shape_geometries: tuple[_RuntimeShapeGeometry, ...],
+    *,
+    slide_height_emu: int,
+    container_shape: dict | None,
+) -> dict[str, int | str] | None:
+    slot_box = _bbox_tuple(slot)
+    if slot_box is None:
+        return None
+
+    slot_x, slot_y, slot_w, slot_h = slot_box
+    margin = _slide_margin_emu(slide_height_emu)
+    gap = _obstacle_gap_emu(slide_height_emu)
+    bound = slide_height_emu - margin
+    source = "slide_margin"
+    blocked_by_shape_id: str | None = None
+    if container_shape is not None:
+        container_y = _positive_int(container_shape.get("y_emu"))
+        container_h = _positive_int(container_shape.get("h_emu"))
+        if container_y is not None and container_h is not None:
+            bound = container_y + container_h - gap
+            source = "container_shape"
+            blocked_by_shape_id = str(container_shape.get("shape_id") or "").strip() or None
+    for shape in shape_geometries:
+        if shape.shape_id == str(slot.get("shape_id") or ""):
+            continue
+        if container_shape is not None and shape.shape_id == str(
+            container_shape.get("shape_id") or ""
+        ):
+            continue
+        obstacle_box = _shape_bbox(shape)
+        if _shape_is_container_for_slot(slot_box, obstacle_box):
+            continue
+        obstacle_x, obstacle_y, obstacle_w, _obstacle_h = obstacle_box
+        if obstacle_y < slot_y + slot_h:
+            continue
+        if _axis_overlap(slot_x, slot_w, obstacle_x, obstacle_w) < (
+            min(slot_w, obstacle_w) * _TEXT_BOX_EXPANSION_AXIS_OVERLAP_RATIO
+        ):
+            continue
+        candidate_bound = obstacle_y - gap
+        if candidate_bound < bound:
+            bound = candidate_bound
+            source = "shape"
+            blocked_by_shape_id = shape.shape_id
+
+    if bound <= slot_y + slot_h:
+        return None
+    result: dict[str, int | str] = {"bound_emu": bound, "source": source}
+    if blocked_by_shape_id is not None:
+        result["blocked_by_shape_id"] = blocked_by_shape_id
+    return result
+
+
+def _shape_is_container_for_slot(
+    slot_box: tuple[int, int, int, int],
+    obstacle_box: tuple[int, int, int, int],
+) -> bool:
+    return _box_coverage(slot_box, obstacle_box) >= _CONTAINER_MIN_SLOT_COVERAGE
+
+
+def _slot_can_expand_down(slot: dict) -> bool:
+    placeholder_text = str(slot.get("placeholder_text") or "")
+    return len(placeholder_text.splitlines()) > 1
+
+
+def _expansion_is_meaningful(
+    *,
+    original_size: int,
+    candidate_size: int,
+    slide_size_emu: int,
+) -> bool:
+    if original_size <= 0 or candidate_size <= original_size:
+        return False
+    min_extra = max(1, int(slide_size_emu * _TEXT_BOX_EXPANSION_MIN_EXTRA_RATIO))
+    return (
+        candidate_size - original_size >= min_extra
+        and candidate_size / original_size >= _TEXT_BOX_EXPANSION_MIN_GROW_RATIO
+    )
+
+
+def _slide_margin_emu(slide_size_emu: int) -> int:
+    return max(1, int(slide_size_emu * _TEXT_BOX_EXPANSION_SLIDE_MARGIN_RATIO))
+
+
+def _obstacle_gap_emu(slide_size_emu: int) -> int:
+    return max(1, int(slide_size_emu * _TEXT_BOX_EXPANSION_OBSTACLE_GAP_RATIO))
+
+
+def _axis_overlap(left_start: int, left_size: int, right_start: int, right_size: int) -> int:
+    return max(
+        0, min(left_start + left_size, right_start + right_size) - max(left_start, right_start)
+    )
+
+
+def _text_box_expansion_confidence(
+    *,
+    width_growth_ratio: float,
+    height_growth_ratio: float,
+    blocked: bool,
+) -> float:
+    growth_ratio = max(width_growth_ratio, height_growth_ratio)
+    confidence = 0.68 + min(growth_ratio - 1.0, 1.0) * 0.2
+    if not blocked:
+        confidence += 0.05
+    return round(min(confidence, 0.93), 4)
 
 
 def _median_int(values: list[int]) -> int:

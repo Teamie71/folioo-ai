@@ -200,6 +200,59 @@ def test_v2_payload_writer_enriches_item_background_and_keeps_container_referenc
     assert payloads.reference["shape_inferences"][1]["allowed_actions"] == []
 
 
+def test_v2_payload_writer_enriches_text_box_policy_from_expansion_inference() -> None:
+    """text_box_expansion 추론은 slot의 확장 가능 영역 계약으로 승격된다."""
+    payloads = build_template_v2_payloads(
+        "ppt-v3",
+        extraction=TemplateV2Extraction(
+            slots=(
+                {
+                    "slot_id": "slide2_shape3",
+                    "shape_id": "3",
+                    "kind": "text",
+                    "editable": True,
+                    "required": True,
+                    "placeholder_text": "경험명 - 본인 역할",
+                    "marker_color": "#FF0000",
+                    "x_emu": 100,
+                    "y_emu": 200,
+                    "w_emu": 300,
+                    "h_emu": 100,
+                },
+            ),
+            shape_inferences=(
+                {
+                    "inference_type": "text_box_expansion",
+                    "slot_id": "slide2_shape3",
+                    "slot_shape_id": "3",
+                    "runtime_slide_index": 1,
+                    "runtime_slide_number": 2,
+                    "anchor": "left_top",
+                    "directions": ["right"],
+                    "x_emu": 100,
+                    "y_emu": 200,
+                    "w_emu": 300,
+                    "h_emu": 100,
+                    "max_w_emu": 1180,
+                    "max_h_emu": 100,
+                    "confidence": 0.88,
+                },
+            ),
+        ),
+    )
+
+    slot = payloads.metadata["slots"][0]
+    assert slot["text_box_policy"] == {
+        "mode": "expandable",
+        "anchor": "left_top",
+        "directions": ["right"],
+        "max_w_emu": 1180,
+        "max_h_emu": 100,
+        "confidence": 0.88,
+    }
+    assert payloads.reference["shape_inferences"][0]["inference_type"] == "text_box_expansion"
+
+
 def test_v2_payload_writer_maps_layout_group_by_item_shape_ids() -> None:
     """layout group이 item_shape_ids만 제공해도 slot에 group metadata를 연결한다."""
     payloads = build_template_v2_payloads(
@@ -486,6 +539,14 @@ def test_compile_template_v2_extracts_only_exact_red_marker_slots(tmp_path: Path
         "slide_number": 2,
         "slide_part": "ppt/slides/slide2.xml",
         "slot_id": "slide2_shape10",
+        "text_box_policy": {
+            "anchor": "left_top",
+            "confidence": 0.93,
+            "directions": ["right"],
+            "max_h_emu": 400,
+            "max_w_emu": 1820,
+            "mode": "expandable",
+        },
         "w_emu": 300,
         "x_emu": 100,
         "y_emu": 200,
@@ -922,6 +983,97 @@ def test_compile_template_v2_links_origin_style_chip_item_backgrounds(
     assert {inference["shape_id"] for inference in item_inferences} == {"19", "21"}
 
 
+def test_compile_template_v2_infers_text_box_expansion_until_right_obstacle(
+    tmp_path: Path,
+) -> None:
+    """일반 text slot은 같은 행의 오른쪽 obstacle 전까지 확장 가능 영역을 기록한다."""
+    template_dir = _make_template_dir(
+        tmp_path,
+        "ppt-v3",
+        slide_xmls=(
+            _slide_xml(1, ""),
+            _slide_xml(
+                2,
+                "".join(
+                    (
+                        _shape_xml(
+                            3,
+                            "Title marker",
+                            (_run_xml("경험명 - 본인 역할", color="FF0000"),),
+                            x=100,
+                            y=200,
+                            width=300,
+                            height=100,
+                        ),
+                        _shape_without_text_xml(
+                            40,
+                            "Right visual",
+                            x=1300,
+                            y=160,
+                            width=200,
+                            height=200,
+                        ),
+                    )
+                ),
+            ),
+            _slide_xml(
+                3,
+                _shape_xml(
+                    30,
+                    "Title example",
+                    (_run_xml("AI 상담 서비스 - 백엔드 리드", color="123456"),),
+                    x=100,
+                    y=200,
+                    width=300,
+                    height=100,
+                ),
+            ),
+        ),
+    )
+
+    result = compile_template_v2(template_dir)
+
+    assert result.ok is True
+    metadata = read_json_payload(result.meta_path)
+    slot = metadata["slots"][0]
+    assert slot["text_box_policy"] == {
+        "anchor": "left_top",
+        "confidence": 0.88,
+        "directions": ["right"],
+        "max_h_emu": 100,
+        "max_w_emu": 1180,
+        "mode": "expandable",
+    }
+
+    reference = read_json_payload(result.reference_path)
+    expansion_inferences = [
+        inference
+        for inference in reference["shape_inferences"]
+        if inference["inference_type"] == "text_box_expansion"
+    ]
+    assert expansion_inferences == [
+        {
+            "anchor": "left_top",
+            "confidence": 0.88,
+            "directions": ["right"],
+            "h_emu": 100,
+            "inference_type": "text_box_expansion",
+            "max_h_emu": 100,
+            "max_w_emu": 1180,
+            "right_blocked_by_shape_id": "40",
+            "right_bound_emu": 1280,
+            "right_bound_source": "shape",
+            "runtime_slide_index": 1,
+            "runtime_slide_number": 2,
+            "slot_id": "slide2_shape3",
+            "slot_shape_id": "3",
+            "w_emu": 300,
+            "x_emu": 100,
+            "y_emu": 200,
+        }
+    ]
+
+
 def test_compile_template_v2_groups_origin_style_inline_label_chips(
     tmp_path: Path,
 ) -> None:
@@ -1054,7 +1206,14 @@ def test_compile_template_v2_groups_origin_style_inline_label_chips(
         assert slot["min_gap_emu"] == 50
         assert slot["row_left_emu"] == 100
         assert slot["row_right_bound_emu"] == 2000
+        assert "text_box_policy" not in slot
         assert "layout_type" not in slot
+
+    reference = read_json_payload(result.reference_path)
+    assert all(
+        inference["inference_type"] != "text_box_expansion"
+        for inference in reference["shape_inferences"]
+    )
 
 
 def test_compile_template_v2_records_inline_label_group_linked_backgrounds(
@@ -1426,7 +1585,12 @@ def test_compile_template_v2_records_large_card_as_container_shape(
     assert all("item_background" not in slot for slot in metadata["slots"])
 
     reference = read_json_payload(result.reference_path)
-    assert reference["shape_inferences"] == [
+    container_inferences = [
+        inference
+        for inference in reference["shape_inferences"]
+        if inference["inference_type"] == "container_shape"
+    ]
+    assert container_inferences == [
         {
             "allowed_actions": [],
             "contained_slot_ids": ["slide2_shape20", "slide2_shape21"],
@@ -1443,6 +1607,22 @@ def test_compile_template_v2_records_large_card_as_container_shape(
             "y_emu": 50,
         }
     ]
+    expansion_inferences = [
+        inference
+        for inference in reference["shape_inferences"]
+        if inference["inference_type"] == "text_box_expansion"
+    ]
+    assert {
+        inference["slot_id"]: (
+            inference["container_shape_id"],
+            inference["right_bound_source"],
+            inference["max_w_emu"],
+        )
+        for inference in expansion_inferences
+    } == {
+        "slide2_shape20": ("19", "container_shape", 430),
+        "slide2_shape21": ("19", "container_shape", 430),
+    }
 
 
 def test_compile_template_v2_ignores_slide_sized_background_as_container_shape(
@@ -1519,7 +1699,10 @@ def test_compile_template_v2_ignores_slide_sized_background_as_container_shape(
 
     assert result.ok is True
     reference = read_json_payload(result.reference_path)
-    assert reference["shape_inferences"] == []
+    assert all(
+        inference["inference_type"] != "container_shape"
+        for inference in reference["shape_inferences"]
+    )
 
 
 def test_compile_template_v2_warns_and_skips_ambiguous_item_background(
