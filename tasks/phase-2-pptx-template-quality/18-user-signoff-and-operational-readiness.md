@@ -6,7 +6,7 @@ spec: "specs/phase-2/06-pptx-template-quality-doc-alignment.md"
 depends_on: ["2.17"]
 blocks: []
 estimate: "S"
-status: "done"
+status: "todo"
 owner: ""
 sprint: ""
 ---
@@ -41,57 +41,57 @@ sprint: ""
 
 ## 구현 체크리스트
 
-- [x] `docs/ppt-v3.pptx` 기반 `templates/ppt-v3/` 신규 등록 템플릿을 acceptance fixture 로 유지할지, 별도 운영 자산으로 둘지 최종 결정했다.
-- [x] 정상 acceptance deck 이 runtime/example pair, 정확한 `#FF0000` marker, non-red fixed text, chip group, metric slot 을 포함하는지 최종 기준을 기록했다.
-- [x] `docs/ppt-v3.pptx` 또는 운영 acceptance deck 에서 fixed label 과 editable marker 가 한 텍스트 shape 안에 섞인 mixed-color run 을 분리할지 최종 결정했다. (2.02 compiler 는 mixed-color run 을 계약 위반으로 실패 처리한다.)
-- [x] 2.15 기준 `docs/ppt-v3.pptx` 는 mixed-color marker 오류로 정상 acceptance deck 이 아니므로, synthetic fixture 정책을 유지할지 실제 PPTX 를 보정해 acceptance 자산으로 승격할지 최종 결정했다.
+- [ ] `docs/ppt-v3.pptx` 기반 `templates/ppt-v3/` 신규 등록 템플릿을 acceptance fixture 로 유지할지, 별도 운영 자산으로 둘지 사용자 확인을 받는다.
+- [ ] 정상 acceptance deck 이 runtime/example pair, 정확한 `#FF0000` marker, non-red fixed text, chip group, metric slot 을 포함하는지 사용자 확인을 받는다.
+- [ ] `docs/ppt-v3.pptx` 또는 운영 acceptance deck 에서 fixed label 과 editable marker 가 한 텍스트 shape 안에 섞인 mixed-color run 을 분리할지 사용자 확인을 받는다. (2.02 compiler 는 mixed-color run 을 계약 위반으로 실패 처리한다.)
+- [ ] 2.15 기준 `docs/ppt-v3.pptx` 는 mixed-color marker 오류로 정상 acceptance deck 이 아니므로, synthetic fixture 정책을 유지할지 실제 PPTX 를 보정해 acceptance 자산으로 승격할지 사용자 확인을 받는다.
 - [x] mixed-color run, `#FE0000`/theme red, 예시 pair 누락 같은 negative case 는 정상 deck 과 분리한 invalid fixture 로 둔다.
-- [x] `compile_template.py --strict` 를 CI 필수 게이트로 승격할 rollout 시점을 최종 결정했다.
-- [x] Main backend 계약 변경이 불가피한 상황이 발견되면 변경 사유와 대안을 별도 issue 로 분리하기로 최종 결정했다.
-- [x] 업데이트된 `template-system.md`, `ooxml-editing.md`, `qa-and-guardrails.md`, `pptx-gen-plan-v6.md` 검토 결과를 기록했다.
+- [ ] `compile_template.py --strict` 를 CI 필수 게이트로 승격할 rollout 시점을 사용자 확인을 받는다.
+- [ ] Main backend 계약 변경이 불가피한 상황이 발견되면 변경 사유와 대안을 사용자에게 최종 확인받는다.
+- [ ] 업데이트된 `template-system.md`, `ooxml-editing.md`, `qa-and-guardrails.md`, `pptx-gen-plan-v6.md` 를 사용자와 함께 검토한다.
 
 ## Definition of Done
 
-- [x] 사용자 확인이 필요한 항목이 별도 follow-up 없이 모두 결정되었다
-- [x] 운영/CI 반영 방식과 fixture 보관 정책이 문서 또는 task 코멘트에 남았다
-- [x] Phase 2 완료 후 바로 이슈/PR 종료 판단을 할 수 있다
+- [ ] 사용자 확인이 필요한 항목이 별도 follow-up 없이 모두 결정되었다
+- [ ] 운영/CI 반영 방식과 fixture 보관 정책이 문서 또는 task 코멘트에 남았다
+- [ ] Phase 2 완료 후 바로 이슈/PR 종료 판단을 할 수 있다
 
-## Phase 2 최종 운영 결정
+## 승인 대기 권장안
 
 ### 템플릿 자산 / fixture 정책
 
-- `docs/ppt-v3.pptx` 는 Phase 2 기준 **디자인 source asset** 으로 유지한다. 현재 파일은
+- 권장: `docs/ppt-v3.pptx` 는 Phase 2 기준 **디자인 source asset** 으로 유지한다. 현재 파일은
   mixed-color marker 오류가 남아 있어 정상 acceptance deck 으로 승격하지 않는다.
-- 자동 테스트의 정상 acceptance 기준은
+- 권장: 자동 테스트의 정상 acceptance 기준은
   `tests/test_features/test_visualization/test_template_registration.py` 의 synthetic
   `ppt-v3-acceptance` fixture 로 유지한다. 이 fixture 는 runtime/example pair, 정확한
   `#FF0000` marker, non-red fixed text, inline chip group, metric slot, `output_text_color`
   계약을 strict validator 로 고정한다.
-- `docs/ppt-v3.pptx` 를 실제 운영 템플릿으로 승격하려면 fixed label 과 editable marker 가
+- 권장: `docs/ppt-v3.pptx` 를 실제 운영 템플릿으로 승격하려면 fixed label 과 editable marker 가
   한 텍스트 shape 안에 섞인 mixed-color run 을 먼저 분리한 뒤 `templates/ppt-v3/` 로 등록한다.
-- mixed-color run, `#FE0000`/theme red marker, 예시 pair 누락은 정상 deck 에 넣지 않고
+- 권장: mixed-color run, `#FE0000`/theme red marker, 예시 pair 누락은 정상 deck 에 넣지 않고
   invalid fixture / negative test 로 유지한다.
-- PDF/preview 샘플은 이번 PR 에 binary artifact 로 커밋하지 않는다. 현재 source PPTX 가
+- 권장: PDF/preview 샘플은 signoff 전 binary artifact 로 커밋하지 않는다. 현재 source PPTX 가
   strict compile 을 통과하지 않으므로, 운영 샘플 PDF/preview 는 mixed-color 보정 후
   `templates/ppt-v3/` 승격 PR 에서 생성한다.
 
 ### CI / 운영 게이트
 
-- `compile_template.py --strict` 와 `validate_template.py --strict` 는 Phase 2 종료 시점에는
+- 권장: `compile_template.py --strict` 와 `validate_template.py --strict` 는 사용자 승인 전에는
   수동/배포 전 게이트로 유지한다.
-- strict mode 를 CI 필수 게이트로 승격하는 시점은 실제 `templates/ppt-v3/` 운영 자산이
+- 권장: strict mode 를 CI 필수 게이트로 승격하는 시점은 실제 `templates/ppt-v3/` 운영 자산이
   mixed-color 오류 없이 등록되고, synthetic fixture 외 실제 deck 기준 warning 이 정리된 뒤다.
-- `output_text_color` fallback 은 strict 에서도 warning 으로 유지한다. 좁은 editable slot,
+- 권장: `output_text_color` fallback 은 strict 에서도 warning 으로 유지한다. 좁은 editable slot,
   invalid geometry, placeholder 잔존 위험, 낮은 linked background 신뢰도는 strict failure 로 본다.
 
 ### Main backend / runtime 계약
 
-- Main backend 계약은 변경하지 않는다. `currentFills` 는 text/remove/chart 상태만 담고,
+- 권장: Main backend 계약은 변경하지 않는다. `currentFills` 는 text/remove/chart 상태만 담고,
   `layout_actions`, geometry 좌표, `layout_groups`/`fit_policy` metadata 는 callback payload 나
   DB 에 저장하지 않는다.
-- `runtime_template.pptx` 물리 파일은 Phase 2 범위에서 만들지 않는다. 기존 파이프라인처럼
+- 권장: `runtime_template.pptx` 물리 파일은 Phase 2 범위에서 만들지 않는다. 기존 파이프라인처럼
   원본 `template.pptx` 를 unpack 한 뒤 선택 slide 만 작업 파일에 남긴다.
-- 향후 Main backend DTO/SSE 변경이 불가피하면 Phase 2 후속 issue 로 분리한다.
+- 권장: 향후 Main backend DTO/SSE 변경이 불가피하면 Phase 2 후속 issue 로 분리한다.
 
 ### 문서 검토 결과
 
@@ -133,15 +133,14 @@ ERROR: runtime slide 30 shape 19에 #FF0000 marker와 non-red run이 섞여 있�
 - `uv run ruff check .` — All checks passed
 - `uv run pytest -q` — 954 passed
 
-## 리뷰
+## 되돌림 메모
 
-- 1차 subagent review: 발견 사항 없음. `docs/ppt-v3.pptx` 를 production-ready 로 과장하지 않고
-  source asset 으로 남긴 점, synthetic fixture 유지, PDF/preview binary defer, Main backend 계약
-  유지 기록을 확인했다.
-- 2차 review: 1차에서 발견 사항이 없어 생략.
+- PR #291 에서 이 문서를 완료 처리했지만, 2.18 은 사용자 승인 자체가 완료 조건인 HITL task 다.
+- 따라서 #291 에서 수집한 검토 패킷과 권장안은 유지하되, task 상태와 DoD 는 다시 승인 대기로 되돌린다.
+- 사용자가 권장안을 승인하거나 수정 결정을 내린 뒤, 같은 2.18 task 를 다시 완료 처리한다.
 
 ## 리스크 / 메모
 
 - 이 task 는 구현 blocker 를 만들기 위한 선행 작업이 아니라 최종 승인/운영 반영 확인이다. 구현 중 새 사용자 결정이 필요해지면 이 task 체크리스트에 추가한다.
-- 2.18 완료 후 남는 후속 작업은 새 기능 구현이 아니라 운영 자산 보정이다. `docs/ppt-v3.pptx` 의
+- 2.18 승인 후 남는 후속 작업은 새 기능 구현이 아니라 운영 자산 보정이다. `docs/ppt-v3.pptx` 의
   mixed-color run 을 분리하고 실제 `templates/ppt-v3/` 승격 PR 에서 PDF/preview 샘플을 생성한다.
