@@ -917,6 +917,48 @@ async def test_generate_applies_layout_actions_and_sanitizes_current_fills() -> 
 
 
 @pytest.mark.asyncio
+async def test_generate_expands_text_box_policy_before_fills() -> None:
+    """초기 생성은 text_box_policy 를 resize_shape action 으로 변환해 fill 전에 적용한다."""
+    editor = FakeEditor(
+        slots=[
+            {
+                "shape_id": "2",
+                "font_size_pt": 12,
+                "kind": "text",
+                "current_text": "기존 제목",
+            }
+        ]
+    )
+    filler = FakeFillGenerator(
+        responses={3: [{"2": {"action": "text", "text": "OpenAI API"}}]},
+    )
+    context = PipelineContext(editor=editor, filler=filler, max_content_concurrency=1)
+    context.storage.template_metadata = _template_metadata_with_text_box_policy()
+
+    await context.service.generate(_task())
+
+    slide3_ops = [name for name, path in editor.operations if path.endswith("slide3.xml")]
+    assert slide3_ops[:2] == ["layout_actions", "fills"]
+    assert editor.layout_actions
+    layout_action_path, layout_actions = editor.layout_actions[0]
+    assert layout_action_path.endswith("slide3.xml")
+    assert layout_actions == (
+        {
+            "action": "resize_shape",
+            "shape_id": "2",
+            "w_emu": int(100 * EMU_PER_PT),
+        },
+    )
+
+    ready_event = next(
+        event
+        for event in _events(context.main_client, "slide_content_ready")
+        if event["slide_order"] == 3
+    )
+    assert ready_event["current_fills"] == {"2": {"action": "text", "text": "OpenAI API"}}
+
+
+@pytest.mark.asyncio
 async def test_generate_layout_action_failure_blanks_slide_and_continues() -> None:
     """layout action 실패는 slide_content_error 와 clear_content 로 격리된다."""
     editor = FakeEditor(
@@ -1627,6 +1669,41 @@ def _template_metadata_with_inline_label_layout() -> dict[str, Any]:
                 "row_right_bound_emu": 12_000_000,
                 "gap_emu": 400_000,
                 "min_gap_emu": 100_000,
+            },
+        ],
+    }
+
+
+def _template_metadata_with_text_box_policy() -> dict[str, Any]:
+    """slide3 basic text slot 이 text_box_policy 로 확장되도록 하는 v2 metadata."""
+    return {
+        "schema_version": 2,
+        "template_id": "blue",
+        "runtime_slides": [],
+        "layout_groups": [],
+        "slots": [
+            {
+                "slot_id": "slide3_shape2",
+                "slide_filename": "slide3.xml",
+                "shape_id": "2",
+                "kind": "text",
+                "fit_policy": "basic_text_area",
+                "x_emu": int(10 * EMU_PER_PT),
+                "y_emu": int(10 * EMU_PER_PT),
+                "w_emu": int(75 * EMU_PER_PT),
+                "h_emu": int(30 * EMU_PER_PT),
+                "font_size_pt": 12,
+                "min_font_pt": 10,
+                "max_lines": 1,
+                "nowrap": True,
+                "text_box_policy": {
+                    "mode": "expandable",
+                    "anchor": "left_top",
+                    "directions": ["right"],
+                    "max_w_emu": int(100 * EMU_PER_PT),
+                    "max_h_emu": int(30 * EMU_PER_PT),
+                    "confidence": 0.9,
+                },
             },
         ],
     }

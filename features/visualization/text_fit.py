@@ -175,6 +175,7 @@ class BasicTextFitResult:
     initial_layout: TextLayoutEstimate
     final_layout: TextLayoutEstimate
     constraints: TextBoxConstraints
+    layout_actions: tuple[dict[str, Any], ...] = ()
 
     @property
     def is_blocking(self) -> bool:
@@ -197,6 +198,8 @@ class BasicTextFitResult:
             "initial_layout": self.initial_layout.to_log_dict(),
             "final_layout": self.final_layout.to_log_dict(),
             "constraints": self.constraints.to_log_dict(),
+            "layout_action_count": len(self.layout_actions),
+            "layout_actions": list(self.layout_actions),
         }
 
 
@@ -425,23 +428,6 @@ def evaluate_basic_text_area_fit(
     effective_font = max(original_font, min_font)
     measurement = measure_text_width(text, font_size_pt=effective_font)
 
-    if constraints.content_width_pt <= 0 or constraints.content_height_pt <= 0:
-        layout = estimate_text_layout(text, font_size_pt=effective_font, constraints=constraints)
-        return BasicTextFitResult(
-            shape_id=shape_id,
-            status="failed",
-            reason=_first_reason(layout, "invalid_text_box"),
-            original_font_pt=_round_pt(original_font),
-            applied_font_pt=_round_pt(effective_font),
-            min_font_pt=min_font,
-            max_lines=constraints.max_lines,
-            nowrap=constraints.nowrap,
-            measurement=measurement,
-            initial_layout=layout,
-            final_layout=layout,
-            constraints=constraints,
-        )
-
     initial_layout = estimate_text_layout(
         text,
         font_size_pt=effective_font,
@@ -463,36 +449,67 @@ def evaluate_basic_text_area_fit(
             constraints=constraints,
         )
 
+    applied_slot = slot
+    applied_constraints = constraints
+    layout_actions: tuple[dict[str, Any], ...] = ()
+    expansion = _text_box_expansion_plan(slot)
+    if expansion is not None:
+        applied_slot, action = expansion
+        applied_constraints = _constraints_from_slot(applied_slot)
+        expanded_layout = estimate_text_layout(
+            text,
+            font_size_pt=effective_font,
+            constraints=applied_constraints,
+        )
+        layout_actions = (action,)
+        if expanded_layout.fits:
+            return BasicTextFitResult(
+                shape_id=shape_id,
+                status="fit",
+                reason="text_box_expanded",
+                original_font_pt=_round_pt(original_font),
+                applied_font_pt=_round_pt(effective_font),
+                min_font_pt=min_font,
+                max_lines=applied_constraints.max_lines,
+                nowrap=applied_constraints.nowrap,
+                measurement=measurement,
+                initial_layout=initial_layout,
+                final_layout=expanded_layout,
+                constraints=applied_constraints,
+                layout_actions=layout_actions,
+            )
+
     for candidate_font in _shrink_candidates(effective_font, min_font):
         candidate_layout = estimate_text_layout(
             text,
             font_size_pt=candidate_font,
-            constraints=constraints,
+            constraints=applied_constraints,
         )
         if candidate_layout.fits:
             return BasicTextFitResult(
                 shape_id=shape_id,
                 status="shrunk",
-                reason=None,
+                reason="text_box_expanded" if layout_actions else None,
                 original_font_pt=_round_pt(original_font),
                 applied_font_pt=_round_pt(candidate_font),
                 min_font_pt=min_font,
-                max_lines=constraints.max_lines,
-                nowrap=constraints.nowrap,
+                max_lines=applied_constraints.max_lines,
+                nowrap=applied_constraints.nowrap,
                 measurement=measurement,
                 initial_layout=initial_layout,
                 final_layout=candidate_layout,
-                constraints=constraints,
+                constraints=applied_constraints,
+                layout_actions=layout_actions,
             )
 
-    min_layout = estimate_text_layout(text, font_size_pt=min_font, constraints=constraints)
+    min_layout = estimate_text_layout(text, font_size_pt=min_font, constraints=applied_constraints)
     status: TextFitStatus = "summarize_needed"
     reason = _first_reason(min_layout, "text_overflow")
     if "content_width_too_small" in min_layout.overflow_reasons:
         status = "failed"
     elif "content_height_too_small" in min_layout.overflow_reasons:
         status = "failed"
-    elif min_font * LINE_HEIGHT_MULTIPLIER > constraints.available_height_pt:
+    elif min_font * LINE_HEIGHT_MULTIPLIER > applied_constraints.available_height_pt:
         status = "failed"
         reason = "min_font_height_overflow"
 
@@ -503,12 +520,13 @@ def evaluate_basic_text_area_fit(
         original_font_pt=_round_pt(original_font),
         applied_font_pt=min_font,
         min_font_pt=min_font,
-        max_lines=constraints.max_lines,
-        nowrap=constraints.nowrap,
+        max_lines=applied_constraints.max_lines,
+        nowrap=applied_constraints.nowrap,
         measurement=measurement,
         initial_layout=initial_layout,
         final_layout=min_layout,
-        constraints=constraints,
+        constraints=applied_constraints,
+        layout_actions=layout_actions,
     )
 
 
@@ -659,6 +677,7 @@ def apply_text_fit_preflight(
         if result.is_blocking:
             blocking.append(result)
             continue
+        layout_actions.extend(result.layout_actions)
         if _should_apply_font_override(fill, result):
             fill["font_size_override"] = result.applied_font_pt
 
@@ -1186,6 +1205,49 @@ def _fallback_max_lines(slot: Mapping[str, Any]) -> int:
         if isinstance(value, str) and value:
             return max(1, len(value.splitlines()))
     return 1
+
+
+def _text_box_expansion_plan(
+    slot: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    policy = slot.get("text_box_policy")
+    if not isinstance(policy, Mapping):
+        return None
+    if str(policy.get("mode") or "").strip().casefold() != "expandable":
+        return None
+    if str(policy.get("anchor") or "").strip().casefold() != "left_top":
+        return None
+
+    shape_id = str(slot.get("shape_id") or "").strip()
+    directions = _text_box_policy_directions(policy.get("directions"))
+    current_w = _positive_int(slot.get("w_emu"))
+    current_h = _positive_int(slot.get("h_emu"))
+    max_w = _positive_int(policy.get("max_w_emu"))
+    max_h = _positive_int(policy.get("max_h_emu"))
+    updates: dict[str, int] = {}
+    if shape_id and "right" in directions and current_w is not None and max_w is not None:
+        if max_w > current_w:
+            updates["w_emu"] = max_w
+    if shape_id and "down" in directions and current_h is not None and max_h is not None:
+        if max_h > current_h:
+            updates["h_emu"] = max_h
+    if not updates:
+        return None
+
+    expanded_slot = dict(slot)
+    expanded_slot.update(updates)
+    return expanded_slot, {"action": "resize_shape", "shape_id": shape_id, **updates}
+
+
+def _text_box_policy_directions(value: Any) -> set[str]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return set()
+    directions: set[str] = set()
+    for item in value:
+        direction = str(item or "").strip().casefold()
+        if direction in {"right", "down"}:
+            directions.add(direction)
+    return directions
 
 
 def _shrink_candidates(original_font: float, min_font: float) -> tuple[float, ...]:

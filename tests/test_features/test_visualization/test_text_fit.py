@@ -136,6 +136,45 @@ def test_basic_text_area_allows_explicit_zero_padding() -> None:
     assert result.constraints.content_width_pt == 80
 
 
+def test_preflight_expands_text_box_before_font_shrink() -> None:
+    """확장 가능한 text box 는 폰트 축소 전에 resize_shape action 으로 먼저 넓힌다."""
+    result = apply_text_fit_preflight(
+        slots=[_expandable_slot(width_pt=75, max_width_pt=100, min_font_pt=10, font_size_pt=12)],
+        fills={"2": {"action": "text", "text": "OpenAI API"}},
+    )
+
+    assert result.results[0].status == "fit"
+    assert result.results[0].reason == "text_box_expanded"
+    assert result.results[0].applied_font_pt == 12
+    assert "font_size_override" not in result.fills["2"]
+    assert result.layout_actions == (
+        {
+            "action": "resize_shape",
+            "shape_id": "2",
+            "w_emu": int(100 * EMU_PER_PT),
+        },
+    )
+
+
+def test_preflight_shrinks_after_text_box_expansion_if_still_needed() -> None:
+    """확장 후에도 넘치는 경우에만 마지막 단계로 font_size_override 를 적용한다."""
+    result = apply_text_fit_preflight(
+        slots=[_expandable_slot(width_pt=50, max_width_pt=75, min_font_pt=10, font_size_pt=12)],
+        fills={"2": {"action": "text", "text": "OpenAI API"}},
+    )
+
+    assert result.results[0].status == "shrunk"
+    assert result.results[0].reason == "text_box_expanded"
+    assert result.fills["2"]["font_size_override"] == 10
+    assert result.layout_actions == (
+        {
+            "action": "resize_shape",
+            "shape_id": "2",
+            "w_emu": int(75 * EMU_PER_PT),
+        },
+    )
+
+
 def test_basic_text_area_does_not_hide_overflow_by_shrinking_to_8pt_or_below() -> None:
     """8pt 이하로 숨길 수 있는 overflow 도 구조적 요약 필요 결과로 남긴다."""
     with pytest.raises(TextFitPreflightError) as exc_info:
@@ -296,6 +335,27 @@ def _slot(
         "max_lines": 1,
         "nowrap": True,
         "allowed_actions": ["text", "remove"],
+    }
+
+
+def _expandable_slot(
+    *,
+    width_pt: float,
+    max_width_pt: float,
+    min_font_pt: float,
+    font_size_pt: float,
+) -> dict[str, object]:
+    """테스트용 expandable basic_text_area slot 을 생성한다."""
+    return {
+        **_slot(width_pt=width_pt, min_font_pt=min_font_pt, font_size_pt=font_size_pt),
+        "text_box_policy": {
+            "mode": "expandable",
+            "anchor": "left_top",
+            "directions": ["right"],
+            "max_w_emu": int(max_width_pt * EMU_PER_PT),
+            "max_h_emu": int(30 * EMU_PER_PT),
+            "confidence": 0.9,
+        },
     }
 
 
