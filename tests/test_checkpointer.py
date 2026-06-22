@@ -7,6 +7,11 @@ import pytest
 from common.checkpointer import factory
 
 
+class DummyPool:
+    """테스트용 연결 풀 더블"""
+    pass
+
+
 class DummyCheckpointer:
     """테스트용 Checkpointer 더블"""
 
@@ -26,15 +31,23 @@ def clear_checkpointer() -> None:
     factory.reset_checkpointer()
 
 
-def _mock_from_conn_string(captured: dict):
+def _mock_pool(captured: dict):
     @asynccontextmanager
-    async def _factory(db_url: str):
-        dummy = DummyCheckpointer()
-        captured["db_url"] = db_url
-        captured["checkpointer"] = dummy
-        yield dummy
+    async def _pool_factory(conninfo: str, **kwargs):
+        pool = DummyPool()
+        captured["conninfo"] = conninfo
+        yield pool
 
-    return _factory
+    return _pool_factory
+
+
+def _mock_saver(captured: dict):
+    def _saver_factory(pool):
+        dummy = DummyCheckpointer()
+        captured["checkpointer"] = dummy
+        return dummy
+
+    return _saver_factory
 
 
 @pytest.mark.asyncio
@@ -42,18 +55,15 @@ async def test_get_checkpointer_singleton(monkeypatch):
     """동일한 인스턴스가 반환되는지 테스트"""
     captured: dict[str, object] = {}
     monkeypatch.setenv("CHECKPOINT_DATABASE_URL", "postgresql://checkpoint-db")
-    monkeypatch.setattr(
-        factory.AsyncPostgresSaver,
-        "from_conn_string",
-        _mock_from_conn_string(captured),
-    )
+    monkeypatch.setattr(factory, "AsyncConnectionPool", _mock_pool(captured))
+    monkeypatch.setattr(factory, "AsyncPostgresSaver", _mock_saver(captured))
 
     async with factory.setup_checkpointer():
         first = factory.get_checkpointer()
         second = factory.get_checkpointer()
 
         assert first is second
-        assert captured["db_url"] == "postgresql://checkpoint-db"
+        assert captured["conninfo"] == "postgresql://checkpoint-db"
         assert captured["checkpointer"].setup_called is True
 
 
@@ -63,16 +73,13 @@ async def test_get_checkpointer_uses_database_url_fallback(monkeypatch):
     captured: dict[str, object] = {}
     monkeypatch.delenv("CHECKPOINT_DATABASE_URL", raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql://shared-db")
-    monkeypatch.setattr(
-        factory.AsyncPostgresSaver,
-        "from_conn_string",
-        _mock_from_conn_string(captured),
-    )
+    monkeypatch.setattr(factory, "AsyncConnectionPool", _mock_pool(captured))
+    monkeypatch.setattr(factory, "AsyncPostgresSaver", _mock_saver(captured))
 
     async with factory.setup_checkpointer():
         assert factory.get_checkpointer() is captured["checkpointer"]
 
-    assert captured["db_url"] == "postgresql://shared-db"
+    assert captured["conninfo"] == "postgresql://shared-db"
 
 
 @pytest.mark.asyncio
@@ -81,13 +88,17 @@ async def test_reset_checkpointer_returns_new_instance(monkeypatch):
     created: list[DummyCheckpointer] = []
 
     @asynccontextmanager
-    async def _from_conn_string(_: str):
+    async def _mock_pool_factory(conninfo: str, **kwargs):
+        yield DummyPool()
+
+    def _mock_saver_factory(pool):
         dummy = DummyCheckpointer()
         created.append(dummy)
-        yield dummy
+        return dummy
 
     monkeypatch.setenv("CHECKPOINT_DATABASE_URL", "postgresql://checkpoint-db")
-    monkeypatch.setattr(factory.AsyncPostgresSaver, "from_conn_string", _from_conn_string)
+    monkeypatch.setattr(factory, "AsyncConnectionPool", _mock_pool_factory)
+    monkeypatch.setattr(factory, "AsyncPostgresSaver", _mock_saver_factory)
 
     async with factory.setup_checkpointer():
         first = factory.get_checkpointer()
