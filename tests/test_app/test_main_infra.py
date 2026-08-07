@@ -104,6 +104,7 @@ async def test_lifespan_initializes_and_closes_http_client(monkeypatch):
     """lifespan 시작/종료 시 HTTP 클라이언트 초기화와 정리를 수행한다."""
     import common.clients.correction_client as correction_client_module
     import common.clients.portfolio_client as portfolio_client_module
+    import common.db.connection as db_connection
     import common.http_client as http_client
     import features.interview.agents.insight_store as insight_store_module
     import features.interview.agents.nodes.retriever as retriever_module
@@ -114,12 +115,16 @@ async def test_lifespan_initializes_and_closes_http_client(monkeypatch):
 
     get_http_client_mock = MagicMock(return_value=object())
     close_http_client_mock = AsyncMock()
+    create_pool_mock = AsyncMock()
+    close_pool_mock = AsyncMock()
 
     @asynccontextmanager
     async def _dummy_setup_checkpointer():
         yield object()
 
     monkeypatch.setattr(main, "setup_checkpointer", _dummy_setup_checkpointer)
+    monkeypatch.setattr(db_connection, "create_pool", create_pool_mock)
+    monkeypatch.setattr(db_connection, "close_pool", close_pool_mock)
     monkeypatch.setattr(http_client, "get_http_client", get_http_client_mock)
     monkeypatch.setattr(http_client, "close_http_client", close_http_client_mock)
     monkeypatch.setattr(correction_client_module, "init_correction_client", lambda: _DummyClient())
@@ -136,6 +141,68 @@ async def test_lifespan_initializes_and_closes_http_client(monkeypatch):
     get_http_client_mock.assert_called_once()
     init_insight_store_mock.assert_called_once()
     close_http_client_mock.assert_awaited_once()
+    create_pool_mock.assert_awaited_once()
+    close_pool_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_continues_when_experience_map_db_missing(monkeypatch):
+    """DATABASE_URL이 없어도 기동을 막지 않는다."""
+    import common.clients.correction_client as correction_client_module
+    import common.clients.portfolio_client as portfolio_client_module
+    import common.db.connection as db_connection
+    import common.http_client as http_client
+    import features.interview.agents.insight_store as insight_store_module
+    import features.interview.agents.nodes.retriever as retriever_module
+
+    async def _raise_value_error():
+        raise ValueError("DATABASE_URL 환경변수가 설정되지 않았습니다.")
+
+    close_pool_mock = AsyncMock()
+
+    @asynccontextmanager
+    async def _dummy_setup_checkpointer():
+        yield object()
+
+    monkeypatch.setattr(main, "setup_checkpointer", _dummy_setup_checkpointer)
+    monkeypatch.setattr(db_connection, "create_pool", _raise_value_error)
+    monkeypatch.setattr(db_connection, "close_pool", close_pool_mock)
+    monkeypatch.setattr(http_client, "get_http_client", MagicMock(return_value=object()))
+    monkeypatch.setattr(http_client, "close_http_client", AsyncMock())
+    monkeypatch.delenv("MAIN_BACKEND_URL", raising=False)
+    monkeypatch.setattr(correction_client_module, "reset_correction_client", lambda: None)
+    monkeypatch.setattr(portfolio_client_module, "reset_portfolio_client", lambda: None)
+    monkeypatch.setattr(insight_store_module, "MainServerInsightStore", lambda: object())
+    monkeypatch.setattr(retriever_module, "init_insight_store", MagicMock())
+
+    async with main.lifespan(FastAPI()):
+        pass
+
+    close_pool_mock.assert_awaited_once()
+
+
+def test_get_health_reports_experience_map_db_status(monkeypatch):
+    """헬스체크가 경험 맵 DB 연결 상태를 포함한다."""
+    monkeypatch.setenv("AI_SERVICE_API_KEY", "shared-secret-key")
+    monkeypatch.setattr(main, "get_checkpointer", lambda: object())
+    monkeypatch.setattr(main, "_get_main_server_status", lambda: "connected")
+    monkeypatch.setattr(main, "get_pool_status", lambda: "connected")
+
+    assert main.get_health()["experience_map_db"] == "connected"
+
+
+def test_get_health_reports_experience_map_db_disconnected(monkeypatch):
+    """경험 맵 DB 풀이 없으면 disconnected를 반환한다."""
+    monkeypatch.setenv("AI_SERVICE_API_KEY", "shared-secret-key")
+    monkeypatch.setattr(main, "get_checkpointer", lambda: object())
+    monkeypatch.setattr(main, "_get_main_server_status", lambda: "connected")
+    monkeypatch.setattr(main, "get_pool_status", lambda: "disconnected")
+
+    health = main.get_health()
+
+    assert health["experience_map_db"] == "disconnected"
+    # 경험 맵 DB는 아직 선택 리소스이므로 전체 상태를 unhealthy로 만들지 않는다.
+    assert health["status"] == "ok"
 
 
 def test_openapi_includes_x_api_key_security_scheme():
