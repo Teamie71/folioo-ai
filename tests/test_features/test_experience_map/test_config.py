@@ -82,6 +82,19 @@ def test_ticket_secret_must_be_distinct_from_api_key(monkeypatch):
     assert config.load_settings().ticket_secret_is_distinct is True
 
 
+def test_ticket_secret_strength(monkeypatch):
+    """HS256 키는 32바이트 이상이어야 한다 (RFC 7518 3.2)."""
+    monkeypatch.setenv("EXPMAP_TICKET_SECRET", "short-secret")
+    assert config.load_settings().ticket_secret_is_strong is False
+
+    monkeypatch.setenv("EXPMAP_TICKET_SECRET", "a" * config.MIN_TICKET_SECRET_BYTES)
+    assert config.load_settings().ticket_secret_is_strong is True
+
+
+def test_missing_ticket_secret_is_not_strong():
+    assert config.load_settings().ticket_secret_is_strong is False
+
+
 def test_llm_retry_is_zero():
     """자동 재시도는 LangGraph RetryPolicy 한 곳에서만 관리한다."""
     assert config.LLM_MAX_RETRIES == 0
