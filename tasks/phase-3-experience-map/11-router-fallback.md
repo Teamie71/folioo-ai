@@ -15,6 +15,7 @@ sprint: ""
 
 > Spec: [`docs/architecture/experience-map-agent.md`](../../docs/architecture/experience-map-agent.md) 5-1, 5-11, 9절 9·18번
 > PR: EM-11 · 브랜치 `feat/{issue}-experience-map-router-fallback`
+> GitHub Issue: [#307](https://github.com/Teamie71/folioo-ai/issues/307)
 
 ## 의존성
 

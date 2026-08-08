@@ -15,6 +15,7 @@ sprint: ""
 
 > Spec: [`docs/architecture/experience-map-agent.md`](../../docs/architecture/experience-map-agent.md) 7-2, 9절 19번
 > PR: EM-21 · 브랜치 `feat/{issue}-experience-map-user-retry`
+> GitHub Issue: [#310](https://github.com/Teamie71/folioo-ai/issues/310)
 
 ## 의존성
 

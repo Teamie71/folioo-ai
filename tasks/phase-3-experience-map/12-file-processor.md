@@ -15,6 +15,7 @@ sprint: ""
 
 > Spec: [`docs/architecture/experience-map-agent.md`](../../docs/architecture/experience-map-agent.md) 5-2, 9절 10번
 > PR: EM-12 · 브랜치 `feat/{issue}-experience-map-file-processor`
+> GitHub Issue: [#307](https://github.com/Teamie71/folioo-ai/issues/307)
 
 ## 의존성
 

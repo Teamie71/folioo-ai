@@ -15,6 +15,7 @@ sprint: ""
 
 > Spec: [`docs/architecture/experience-map-agent.md`](../../docs/architecture/experience-map-agent.md) 7-1, 9절 6번
 > PR: EM-08 · 브랜치 `feat/{issue}-experience-map-state`
+> GitHub Issue: [#301](https://github.com/Teamie71/folioo-ai/issues/301)
 
 ## 의존성
 
