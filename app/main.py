@@ -11,6 +11,7 @@ from fastapi.openapi.utils import get_openapi
 from app.api import router as api_router
 from app.middleware.auth import DOCS_EXEMPT_PATHS, PUBLIC_EXEMPT_PATHS, ApiKeyAuthMiddleware
 from common.checkpointer.factory import get_checkpointer, setup_checkpointer
+from common.db.connection import get_pool_status
 from common.logging import setup_logging
 
 # ===== 로깅 초기화 (uvicorn보다 먼저 설정) =====
@@ -69,6 +70,11 @@ def _get_checkpointer_status() -> str:
         return "disconnected"
 
 
+def _get_experience_map_db_status() -> str:
+    """경험 맵 DB 커넥션 풀 상태 문자열 반환"""
+    return get_pool_status()
+
+
 def _get_api_key_status() -> str:
     """서비스 간 API Key 설정 상태 문자열 반환"""
     return "configured" if os.getenv("AI_SERVICE_API_KEY", "") else "missing"
@@ -94,6 +100,7 @@ def get_health() -> dict[str, str]:
         "status": status,
         "version": APP_VERSION,
         "checkpointer": _get_checkpointer_status(),
+        "experience_map_db": _get_experience_map_db_status(),
         "main_server": _get_main_server_status(),
         "api_key": api_key_status,
     }
@@ -104,7 +111,7 @@ async def lifespan(app: FastAPI):
     """
     애플리케이션 생명주기 관리
 
-    - 시작 시: 리소스 초기화 (Checkpointer, InsightStore, httpx 클라이언트)
+    - 시작 시: 리소스 초기화 (경험 맵 DB 풀, Checkpointer, InsightStore, httpx 클라이언트)
     - 종료 시: 리소스 정리
     """
 
@@ -118,11 +125,22 @@ async def lifespan(app: FastAPI):
         init_portfolio_client,
         reset_portfolio_client,
     )
+    from common.db.connection import close_pool, create_pool
     from common.http_client import close_http_client, get_http_client
     from features.interview.agents.insight_store import MainServerInsightStore
     from features.interview.agents.nodes.retriever import init_insight_store
 
     logger = logging.getLogger(__name__)
+
+    # ===== 경험 맵 DB 커넥션 풀 초기화 =====
+    # checkpoint DB와 분리된 풀이다. 미설정이어도 기동은 막지 않고 /health로 드러낸다.
+    try:
+        await create_pool()
+        logger.info("경험 맵 DB 커넥션 풀 초기화 완료")
+    except ValueError:
+        logger.warning("DATABASE_URL이 설정되지 않음 - 경험 맵 DB 비활성화")
+    except Exception:
+        logger.exception("경험 맵 DB 커넥션 풀 초기화 실패")
 
     # ===== InsightStore 초기화 (메인 서버 API) =====
     init_insight_store(MainServerInsightStore())
@@ -179,6 +197,11 @@ async def lifespan(app: FastAPI):
                 await portfolio_client.close()
             except Exception:
                 logger.exception("포트폴리오 클라이언트 정리 실패")
+
+        try:
+            await close_pool()
+        except Exception:
+            logger.exception("경험 맵 DB 커넥션 풀 정리 실패")
 
 
 def create_app() -> FastAPI:

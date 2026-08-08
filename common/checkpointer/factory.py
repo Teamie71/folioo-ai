@@ -26,11 +26,11 @@ async def setup_checkpointer():
     """
     global _checkpointer
 
-    db_url = os.getenv("CHECKPOINT_DATABASE_URL") or os.getenv("DATABASE_URL")
+    # DATABASE_URL fallback을 두지 않는다. fallback이 있으면 CHECKPOINT_DATABASE_URL 누락 시
+    # 경험 맵 DB에 LangGraph checkpoint 테이블이 생성된다.
+    db_url = os.getenv("CHECKPOINT_DATABASE_URL")
     if not db_url:
-        raise ValueError(
-            "CHECKPOINT_DATABASE_URL 또는 DATABASE_URL 환경변수가 설정되지 않았습니다."
-        )
+        raise ValueError("CHECKPOINT_DATABASE_URL 환경변수가 설정되지 않았습니다.")
 
     async with AsyncConnectionPool(
         conninfo=db_url,
