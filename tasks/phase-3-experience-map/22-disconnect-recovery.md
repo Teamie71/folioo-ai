@@ -15,6 +15,7 @@ sprint: ""
 
 > Spec: [`docs/architecture/experience-map-agent.md`](../../docs/architecture/experience-map-agent.md) 9절 20번
 > PR: EM-22 · 브랜치 `feat/{issue}-experience-map-disconnect-recovery`
+> GitHub Issue: [#310](https://github.com/Teamie71/folioo-ai/issues/310)
 
 ## 의존성
 

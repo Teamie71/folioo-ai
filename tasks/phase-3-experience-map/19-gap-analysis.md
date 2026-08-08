@@ -15,6 +15,7 @@ sprint: ""
 
 > Spec: [`docs/architecture/experience-map-agent.md`](../../docs/architecture/experience-map-agent.md) 2-1, 5-10
 > PR: EM-19 · 브랜치 `feat/{issue}-experience-map-gap-analysis`
+> GitHub Issue: [#309](https://github.com/Teamie71/folioo-ai/issues/309)
 
 ## 의존성
 
