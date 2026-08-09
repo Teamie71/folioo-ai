@@ -165,6 +165,9 @@ LLM에는 실제 block ID를 전달하지 않고 요청 안에서만 유효한 `
 | `413` | `file_too_large` |
 | `415` | `unsupported_file_type` |
 | `422` | `invalid_request` |
+| `429` | `rate_limited` (티켓 `sub` 단위 제한 초과) |
+
+`429`는 `Retry-After` 헤더에 재시도까지 남은 초를 함께 보냅니다.
 
 `ApiKeyAuthMiddleware`와 티켓 검증 미들웨어 모두 위 JSON 형식을 사용합니다.
 
@@ -485,7 +488,7 @@ placeholder 블록)를 만듭니다. AI 서버는 빈 맵을 만들지 않고 `m
     "parent_id": "3021",
     "parent_item_id": null,
     "section_kind": null,
-    "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.SUMMARY",
+    "slot_id": "PROBLEM_SOLVING.SUMMARY",
     "content": "결제 모듈 타임아웃으로 주문 실패율이 12%까지 올랐다.",
     "after_id": null
   },
@@ -529,8 +532,8 @@ placeholder 블록)를 만듭니다. AI 서버는 빈 맵을 만들지 않고 `m
 | `PROBLEM_SOLVING` | 문제해결 |
 | `LEARNING` | 배운 점 |
 
-DB enum 이름이 바뀌어도 API 계약이 깨지지 않습니다. `slot_id`가
-`{SECTION}.{TEMPLATE}.{SLOT}` 형태라 카테고리와 슬롯이 같은 어휘 체계에 들어갑니다.
+DB enum 이름이 바뀌어도 API 계약이 깨지지 않습니다. `slot_id`의 첫 마디가
+`section_kind`와 같은 어휘라 카테고리와 슬롯이 한 체계에 들어갑니다 (형식은 3-7).
 
 3단계 카테고리를 새로 만드는 item은 컨테이너이므로 `content`가 없습니다.
 실제 내용은 그 아래 4단계 item이 `parent_item_id`로 참조해 담습니다.
@@ -1020,24 +1023,43 @@ COMMIT
 
 템플릿 카탈로그 (3-7).
 
+**level 4 슬롯은 template에 속하지 않습니다.** 카테고리 슬롯 10개는 `section.slots`에,
+하위 템플릿 슬롯 28개는 `section.templates[].slots`에 옵니다.
+
 ```json
 {
-  "version": "2026-08-05",
+  "version": "2026-08-09",
   "sections": [
+    {
+      "section_id": "DETAIL",
+      "label": "상세정보",
+      "slots": [
+        {
+          "slot_id": "DETAIL.MOTIVATION",
+          "level": 4,
+          "placeholder": "어떤 계기로 이 경험을 시작했으며, 최종적으로 달성하고자 한 목표는 무엇인가요?",
+          "example": "교내 커뮤니티의 비효율적인 게시판형 거래 방식을 개선하고 ..."
+        }
+      ],
+      "templates": []
+    },
     {
       "section_id": "PROBLEM_SOLVING",
       "label": "문제해결",
+      "slots": [
+        {
+          "slot_id": "PROBLEM_SOLVING.SUMMARY",
+          "level": 4,
+          "is_anchor": true,
+          "placeholder": "문제해결 에피소드를 한 줄로 요약해 주세요.",
+          "example": "신규 프로모션 페이지 가입 이탈 문제 해결"
+        }
+      ],
       "templates": [
         {
           "template_id": "TROUBLESHOOTING",
           "label": "기술 트러블슈팅",
           "slots": [
-            {
-              "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.SUMMARY",
-              "level": 4,
-              "placeholder": "문제해결 에피소드를 한 줄로 요약해 주세요.",
-              "example": "신규 프로모션 페이지 가입 이탈 문제 해결"
-            },
             {
               "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
               "level": 5,
@@ -1051,6 +1073,10 @@ COMMIT
   ]
 }
 ```
+
+`is_anchor`가 `true`인 level 4 슬롯 아래에만 해당 섹션의 템플릿 슬롯을 붙일 수
+있습니다. 현재 앵커는 `TASK.SUMMARY`와 `PROBLEM_SOLVING.SUMMARY` 둘이며, 나머지
+세 섹션은 `templates`가 빈 배열입니다.
 
 `example`은 노션 "예시 있는 버전 (AI용)"의 작성 예시입니다. AI가 프롬프트 few-shot과
 정제 노드의 문체 기준으로 사용합니다.
@@ -1123,6 +1149,8 @@ COMMIT
 | `EXPMAP_LLM_TIMEOUT_SECONDS` | 기본값 `60` |
 | `EXPMAP_FILE_TIMEOUT_SECONDS` | 파일처리(파서·OCR) 기본값 `120` |
 | `EXPMAP_GAP_TIMEOUT_SECONDS` | 기본값 `30` |
+| `EXPMAP_RATE_LIMIT_PER_MINUTE` | 티켓 `sub` 단위 분당 요청 수. 기본값 `20` |
+| `EXPERIENCE_MAP_ENABLED` | 기능 노출 여부. 기본값 `false`, 시나리오 검증 후 `true` |
 
 **`CHECKPOINT_DATABASE_URL`이 없으면 서버 시작을 실패시킵니다.** `DATABASE_URL`로
 fallback하지 않습니다. 현재 `common/checkpointer/factory.py`가 폴백하도록 되어 있어
