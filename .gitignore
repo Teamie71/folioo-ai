@@ -10,6 +10,9 @@ wheels/
 .venv
 
 .env
+
+# 로컬 개발용 PostgreSQL 클러스터 (scripts/experience_map/local_db.py)
+.local/
 .langgraph_api/
 .pytest_cache/
 .ruff_cache/

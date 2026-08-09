@@ -54,6 +54,9 @@ pptx-worker = [
     "python-dotenv>=1.2.1",
     "uvicorn[standard]>=0.40.0",
 ]
+local-db = [
+    "pgserver>=0.1.4",
+]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
