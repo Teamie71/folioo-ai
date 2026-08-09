@@ -160,7 +160,7 @@ def test_commit_items_match_spec_example():
         parent_id="3021",
         parent_item_id=None,
         section_kind=None,
-        slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.SUMMARY",
+        slot_id="PROBLEM_SOLVING.SUMMARY",
         content="결제 모듈 타임아웃으로 주문 실패율이 12%까지 올랐다.",
         after_id=None,
     )
@@ -176,7 +176,7 @@ def test_commit_items_match_spec_example():
         "parent_id": "3021",
         "parent_item_id": None,
         "section_kind": None,
-        "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.SUMMARY",
+        "slot_id": "PROBLEM_SOLVING.SUMMARY",
         "content": "결제 모듈 타임아웃으로 주문 실패율이 12%까지 올랐다.",
         "after_id": None,
     }
