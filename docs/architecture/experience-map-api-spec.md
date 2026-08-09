@@ -392,6 +392,20 @@ AI가 보내는 것     : slot_id = "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE"
 메인이 저장하는 것 : placeholder = "문제의 원인은 무엇이었으며, ..."
 ```
 
+#### `slot_id` 형식은 level에 따라 둘입니다
+
+```text
+level 4 : {SECTION}.{SLOT}              DETAIL.MOTIVATION
+level 5 : {SECTION}.{TEMPLATE}.{SLOT}   PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE
+```
+
+**점 개수가 곧 level입니다.** 2-part면 4단계, 3-part면 5단계입니다.
+전체 38개(level 4 슬롯 10개 + level 5 슬롯 28개)이며 목록은 에이전트 문서 3-0입니다.
+
+level 5는 반드시 앵커 슬롯(`TASK.SUMMARY` / `PROBLEM_SOLVING.SUMMARY`)으로 만든
+level 4 블록 아래에 붙습니다. 하위 템플릿을 가지는 카테고리는 담당업무·문제해결
+둘뿐이며, 나머지 셋은 level 4에서 끝납니다.
+
 - LLM이 템플릿 문구를 토씨까지 재생산할 필요가 없습니다
 - 카탈로그 대조로 **검증이 가능**합니다. 없는 `slot_id`는 `422 unknown_slot_id`
 - 문구가 바뀌어도 AI 서버 배포가 필요 없습니다
