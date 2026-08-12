@@ -240,6 +240,25 @@ class NodeTimeoutError(ExperienceMapError):
     message = "처리 시간이 초과되었습니다."
 
 
+class LeaseLostError(ExperienceMapError):
+    """실행 중 요청의 실행권을 잃었다.
+
+    다른 worker 가 같은 요청을 가져갔거나 만료 정리에 걸렸다는 뜻이다.
+    **이 오류를 만난 worker 는 DB 상태를 건드리지 않는다** — 이제 주인이 아니다.
+    상태는 이미 다른 경로가 정리했으므로 사용자는 재시도할 수 있다.
+
+    > API 명세 6절 SSE 오류표에 없는 코드다. 명세 갱신이 필요하다.
+    """
+
+    status_code = 409
+    code = "lease_lost"
+    message = "요청 처리가 중단되었습니다. 다시 시도해 주세요."
+
+    @property
+    def retryable(self) -> bool:
+        return True
+
+
 class DbConstraintViolationError(ExperienceMapError):
     """DB 제약 위반. 재시도해도 같은 결과라 재시도 버튼을 노출하지 않는다."""
 

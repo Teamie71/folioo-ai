@@ -6,6 +6,10 @@
 -- 소유하며(외부-A), 이 파일은 그것을 대신하지 않는다. 메인 migration 이 나오면
 -- 대조해서 차이를 없애야 한다.
 --
+-- 운영 migration 과의 차이:
+--   ai_experience_request.owner_token — 명세 3-3 에 없다. AGENT_HANDOFF.md 참고.
+--   메인 서버 migration 에 이 컬럼이 없으면 운영에서 UndefinedColumnError 가 난다.
+--
 -- 포함하지 않는 것: block, block_kind
 --   명세에 DDL 이 없고 조회 쿼리(4-1)와 제약(3-5)만 있다. 추측해서 만들면
 --   실제 스키마와 어긋나므로 넣지 않는다. 3.05(경험 맵 Repository) 착수 전에
@@ -44,6 +48,10 @@ CREATE TABLE IF NOT EXISTS ai_experience_request (
   retryable           boolean NOT NULL DEFAULT false,
   retry_expires_at    timestamptz,
   lease_expires_at    timestamptz,
+  -- ⚠️ 명세 3-3 에 없는 컬럼이다. 운영 migration 에 반드시 함께 넣어야 한다.
+  -- 실행권을 가진 worker 를 식별한다. 이 값이 맞아야 lease 갱신·완료·실패가
+  -- 반영된다. 없으면 lease 를 잃은 worker 가 다른 worker 의 결과를 덮는다.
+  owner_token         uuid,
   base_map_version    bigint,
   committed_version   bigint,
   input_meta          jsonb NOT NULL DEFAULT '{}'::jsonb,

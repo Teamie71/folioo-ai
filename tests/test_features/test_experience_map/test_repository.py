@@ -394,3 +394,179 @@ async def test_purge_keeps_recent_requests(repo, user_id):
     await repo.purge_old_completed_requests()
 
     assert await repo.get_request(user_id, request_id) is not None
+
+
+# ===== 재시도 원자성 (Codex 리뷰 1·3) =====
+
+
+@pytest.mark.asyncio
+async def test_retry_transitions_to_running(repo, user_id):
+    """재시도는 요청을 실제로 `running` 으로 되돌린다.
+
+    이게 안 되면 `failed` 인 채로 그래프가 돌고 lease 갱신도 실패한다.
+    """
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+
+    result = await repo.retry_request(user_id, request_id)
+
+    assert result.outcome is ClaimOutcome.CLAIMED
+    row = await repo.get_request(user_id, request_id)
+    assert row.status == "running"
+    assert row.lease_expires_at is not None
+    assert row.owner_token is not None
+    assert row.error is None
+    assert await repo.renew_request_lease(user_id, request_id, row.owner_token) is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_retries_only_one_wins(repo, user_id):
+    """같은 실패 요청에 재시도를 동시에 보내도 하나만 잡는다."""
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+
+    results = await asyncio.gather(*[repo.retry_request(user_id, request_id) for _ in range(8)])
+
+    claimed = [r for r in results if r.outcome is ClaimOutcome.CLAIMED]
+    assert len(claimed) == 1
+    assert len({r.request.owner_token for r in claimed}) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_issues_new_owner_token(repo, user_id):
+    """재시도할 때마다 새 실행권을 발급한다."""
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    claimed = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    first_token = claimed.request.owner_token
+    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+
+    retried = await repo.retry_request(user_id, request_id)
+
+    assert retried.request.owner_token != first_token
+
+
+@pytest.mark.asyncio
+async def test_retry_rejects_expired_ttl(clean_db, user_id):
+    repo = ExperienceMapRepository(clean_db, lease_seconds=300)
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+    await clean_db.execute(
+        "UPDATE ai_experience_request SET retry_expires_at = now() - interval '1 minute' "
+        "WHERE user_id = $1 AND request_id = $2",
+        int(user_id),
+        uuid.UUID(request_id),
+    )
+
+    assert (await repo.retry_request(user_id, request_id)).outcome is ClaimOutcome.RETRY_EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_retry_on_completed_request_replays(repo, user_id):
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    await repo.mark_request_completed(user_id, request_id, result={"map_version": 43})
+
+    assert (await repo.retry_request(user_id, request_id)).outcome is ClaimOutcome.REPLAY
+
+
+@pytest.mark.asyncio
+async def test_retry_blocked_by_other_running_request(repo, user_id):
+    """세션에 다른 running 이 있으면 재시도는 세션당 1건 제약에 걸린다."""
+    session = await repo.get_or_create_session(user_id)
+    failed_request = new_request_id()
+    await repo.claim_request(user_id, session.session_id, failed_request, HASH_A)
+    await repo.mark_request_failed(user_id, failed_request, error={"code": "llm_error"})
+    await repo.claim_request(user_id, session.session_id, new_request_id(), HASH_B)
+
+    # 새 요청이 시작되면 이전 실패는 retryable 이 내려간다 (9절 4번).
+    assert (await repo.retry_request(user_id, failed_request)).outcome in {
+        ClaimOutcome.SESSION_BUSY,
+        ClaimOutcome.RETRY_NOT_ALLOWED,
+    }
+
+
+@pytest.mark.asyncio
+async def test_retry_unknown_request(repo, user_id):
+    await repo.get_or_create_session(user_id)
+
+    result = await repo.retry_request(user_id, new_request_id())
+
+    assert result.outcome is ClaimOutcome.RETRY_NOT_FOUND
+
+
+# ===== 실행권 (Codex 리뷰 2·3) =====
+
+
+@pytest.mark.asyncio
+async def test_completed_request_cannot_be_overwritten(repo, user_id):
+    """lease 를 잃은 옛 worker 가 완료된 요청을 실패로 되돌리지 못한다."""
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    claimed = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    token = claimed.request.owner_token
+    await repo.mark_request_completed(user_id, request_id, result={"map_version": 43})
+
+    overwritten = await repo.mark_request_failed(
+        user_id, request_id, error={"code": "llm_error"}, owner_token=token
+    )
+
+    assert overwritten is None
+    assert (await repo.get_request(user_id, request_id)).status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_stale_token_cannot_renew_or_finish(repo, user_id):
+    """재시도로 주인이 바뀌면 이전 worker 의 쓰기가 전부 무시된다."""
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    first = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    stale_token = first.request.owner_token
+    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+    retried = await repo.retry_request(user_id, request_id)
+    fresh_token = retried.request.owner_token
+
+    assert await repo.renew_request_lease(user_id, request_id, stale_token) is False
+    assert (
+        await repo.mark_request_completed(
+            user_id, request_id, result={"map_version": 1}, owner_token=stale_token
+        )
+        is None
+    )
+    assert (
+        await repo.mark_request_failed(
+            user_id, request_id, error={"code": "llm_error"}, owner_token=stale_token
+        )
+        is None
+    )
+
+    # 현재 주인은 정상적으로 쓸 수 있다.
+    assert await repo.renew_request_lease(user_id, request_id, fresh_token) is True
+    assert (
+        await repo.mark_request_completed(
+            user_id, request_id, result={"map_version": 43}, owner_token=fresh_token
+        )
+        is not None
+    )
+
+
+@pytest.mark.asyncio
+async def test_expiry_clears_owner_token(clean_db, user_id):
+    """만료 정리는 실행권을 회수한다. 옛 worker 의 뒤늦은 쓰기를 막는다."""
+    repo = ExperienceMapRepository(clean_db, lease_seconds=-1)
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    claimed = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    stale_token = claimed.request.owner_token
+
+    await repo.expire_stale_running_requests()
+
+    assert (await repo.get_request(user_id, request_id)).owner_token is None
+    assert await repo.renew_request_lease(user_id, request_id, stale_token) is False
