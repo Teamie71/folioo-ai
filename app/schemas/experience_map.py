@@ -9,7 +9,6 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from features.experience_map.schemas import (
-    ActiveGap,
     CommitResult,
     GapType,
     NodeName,
@@ -126,10 +125,28 @@ class RequestErrorInfo(BaseModel):
     message: str
 
 
-class SuggestionInfo(BaseModel):
-    """저장된 gap 제안. gap이 없으면 gap 필드만 null이다."""
+class SuggestionGap(BaseModel):
+    """제안 gap. **`path`가 붙는 점이 `ActiveGap`과 다르다.**
 
-    gap: ActiveGap | None = None
+    `ActiveGap`은 다음 턴을 위해 세션에 저장하는 형태고, 이쪽은 사용자에게 보내는
+    형태다. 화면에 "어디에 대한 제안인지"를 보여주려면 경로가 필요하다.
+    """
+
+    gap_id: str
+    gap_type: GapType
+    anchor_block_id: str
+    path: str
+    message: str
+
+
+class SuggestionInfo(BaseModel):
+    """저장된 gap 제안. gap이 없으면 gap 필드만 null이다.
+
+    SSE `suggestion_ready`로 보냈던 것과 같은 형태여야 한다. 단절 뒤 복구가
+    스트림으로 받았을 내용과 달라지면 안 된다.
+    """
+
+    gap: SuggestionGap | None = None
     message: str
 
 
@@ -179,16 +196,6 @@ class MessageCompleteEvent(BaseModel):
 
     type: Literal["message_complete"] = "message_complete"
     message: CompletedMessage
-
-
-class SuggestionGap(BaseModel):
-    """`suggestion_ready`의 gap 필드. `path`가 붙는 점이 ActiveGap과 다르다."""
-
-    gap_id: str
-    gap_type: GapType
-    anchor_block_id: str
-    path: str
-    message: str
 
 
 class SuggestionReadyEvent(BaseModel):
