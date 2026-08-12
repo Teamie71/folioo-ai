@@ -50,6 +50,9 @@ COMPLETED_REQUEST_RETENTION_DAYS = 30
 
 CHECKPOINT_NAMESPACE = "experience_map"
 
+# HS256 서명 키 최소 길이. RFC 7518 3.2는 해시 출력 길이(32바이트) 이상을 요구한다.
+MIN_TICKET_SECRET_BYTES = 32
+
 
 def _env_int(name: str, default: int) -> int:
     """정수 환경변수 조회 (빈 값·비정수는 기본값으로 대체)"""
@@ -91,6 +94,17 @@ class ExperienceMapSettings(BaseModel):
         if not self.ticket_secret or not self.api_key:
             return True
         return self.ticket_secret != self.api_key
+
+    @property
+    def ticket_secret_is_strong(self) -> bool:
+        """티켓 서명 키가 HS256 최소 길이를 만족하는지 여부
+
+        짧은 키는 HMAC 강도를 떨어뜨린다. 티켓이 위조되면 임의 사용자의 세션에
+        접근할 수 있으므로 운영 배포 전에 확인해야 한다.
+        """
+        if not self.ticket_secret:
+            return False
+        return len(self.ticket_secret.encode("utf-8")) >= MIN_TICKET_SECRET_BYTES
 
 
 def load_settings() -> ExperienceMapSettings:

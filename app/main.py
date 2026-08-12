@@ -10,6 +10,7 @@ from fastapi.openapi.utils import get_openapi
 
 from app.api import router as api_router
 from app.middleware.auth import DOCS_EXEMPT_PATHS, PUBLIC_EXEMPT_PATHS, ApiKeyAuthMiddleware
+from app.middleware.experience_map_ticket import ExperienceMapTicketMiddleware
 from common.checkpointer.factory import get_checkpointer, setup_checkpointer
 from common.db.connection import get_pool_status
 from common.logging import setup_logging
@@ -73,6 +74,15 @@ def _get_checkpointer_status() -> str:
 def _get_experience_map_db_status() -> str:
     """경험 맵 DB 커넥션 풀 상태 문자열 반환"""
     return get_pool_status()
+
+
+def _get_ticket_secret() -> str:
+    """경험정리 티켓 HS256 서명 키 반환
+
+    `AI_SERVICE_API_KEY`와 별도 키다. 두 키의 회전 주기가 다르고, API 키가 유출되면
+    티켓 위조까지 가능해진다.
+    """
+    return os.getenv("EXPMAP_TICKET_SECRET", "")
 
 
 def _get_api_key_status() -> str:
@@ -215,6 +225,9 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(ApiKeyAuthMiddleware)
+    # 경험정리 프론트 직결 경로는 티켓으로 인증한다. ApiKeyAuthMiddleware보다 바깥에 두어
+    # 티켓 검증 실패가 X-API-Key 검사보다 먼저 응답되게 한다.
+    app.add_middleware(ExperienceMapTicketMiddleware, secret_provider=_get_ticket_secret)
     # CORS 미들웨어를 나중에 등록해 preflight(OPTIONS)를 우선 처리한다.
     app.add_middleware(
         CORSMiddleware,
