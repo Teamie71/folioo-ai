@@ -1,7 +1,7 @@
 # 경험정리 로컬 개발 환경
 
 > 설계: [에이전트 통합 문서](experience-map-agent.md) · [API 명세](experience-map-api-spec.md)
-> 진행 상황: [진행 상황](experience-map-progress.md)
+> 메인 서버 요청: [백엔드에 요청할 것](experience-map-backend-requests.md)
 
 메인 서버 없이 AI 서버만 로컬에서 띄우고 테스트하기 위한 세팅입니다.
 **sudo 도 Docker 도 필요 없습니다.**
