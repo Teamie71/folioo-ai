@@ -151,6 +151,8 @@ class ObjectStore(Protocol):
 
     async def upload(self, object_name: str, data: bytes, content_type: str) -> None: ...
 
+    async def download(self, object_name: str) -> bytes: ...
+
     async def delete(self, object_name: str) -> None: ...
 
     async def list_names(self, prefix: str) -> list[str]: ...
@@ -180,6 +182,12 @@ class GcsObjectStore:
             self._bucket().blob(object_name).upload_from_string(data, content_type=content_type)
 
         await asyncio.to_thread(_upload)
+
+    async def download(self, object_name: str) -> bytes:
+        def _download() -> bytes:
+            return self._bucket().blob(object_name).download_as_bytes()
+
+        return await asyncio.to_thread(_download)
 
     async def delete(self, object_name: str) -> None:
         def _delete() -> None:
@@ -325,9 +333,21 @@ class UploadStore:
             gcs_object=object_name,
         )
 
+    async def read(self, object_name: str) -> bytes:
+        """저장한 원본을 읽는다. 추출 노드가 쓴다.
+
+        추출에 성공하면 원본은 바로 지우므로, 이 호출이 실패하면 이미 처리가
+        끝났거나 TTL 이 지났다는 뜻이다.
+        """
+        return await self._store.download(object_name)
+
     async def delete_after_extraction(self, stored: StoredFile) -> None:
         """추출에 성공한 파일의 원본을 즉시 지운다."""
         await self._delete_quietly(stored.gcs_object)
+
+    async def delete_object(self, object_name: str) -> None:
+        """object 이름만 아는 경우의 삭제 (state 의 file_reference)"""
+        await self._delete_quietly(object_name)
 
     async def discard_request(self, user_id: str, request_id: str) -> None:
         """요청 전용 object를 모두 지운다.

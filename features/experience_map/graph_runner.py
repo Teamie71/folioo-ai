@@ -127,7 +127,7 @@ class MockGraphRunner:
 class PartialGraphRunner:
     """구현된 노드까지만 실제로 도는 실행기.
 
-    지금은 Router → 반영 내용 필터링까지다. 그 뒤는 노드가 없으므로
+    지금은 Router → 파일처리 → 반영 내용 필터링까지다. 그 뒤는 노드가 없으므로
     `MockGraphRunner` 로 넘긴다.
 
     **3.17 에서 실제 그래프로 교체한다.** 그때까지 구현된 노드를 로컬에서 실제
@@ -135,7 +135,7 @@ class PartialGraphRunner:
     이어 붙인다.
     """
 
-    REAL_NODES = ("router", "content_filter")
+    REAL_NODES = ("router", "file_processor", "content_filter")
 
     def __init__(self, fallthrough: GraphRunner | None = None) -> None:
         self._fallthrough = fallthrough or MockGraphRunner()
@@ -143,6 +143,8 @@ class PartialGraphRunner:
     async def run(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
         from features.experience_map.nodes.content_filter import filter_content
         from features.experience_map.nodes.content_filter import next_node as filter_next
+        from features.experience_map.nodes.file_processor import next_node as file_next
+        from features.experience_map.nodes.file_processor import process_files
         from features.experience_map.nodes.router import next_node as router_next
         from features.experience_map.nodes.router import route
 
@@ -155,7 +157,16 @@ class PartialGraphRunner:
                 yield event
             return
 
-        # 파일처리(3.12)는 아직 없다. 파일이 있어도 필터링으로 바로 보낸다.
+        if router_next(current) == "file_processor":
+            yield NodeStatusEvent(node="file_processor", status="running")
+            current = await process_files(current)
+            yield NodeStatusEvent(node="file_processor", status="completed")
+
+            if file_next(current) == "fallback":
+                async for event in self._emit_fallback(current):
+                    yield event
+                return
+
         yield NodeStatusEvent(node="content_filter", status="running")
         current = await filter_content(current)
         yield NodeStatusEvent(node="content_filter", status="completed")
