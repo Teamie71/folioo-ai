@@ -137,15 +137,20 @@ async def lifespan(app: FastAPI):
     )
     from common.db.connection import close_pool, create_pool
     from common.http_client import close_http_client, get_http_client
+    from features.experience_map.repository import (
+        init_repository as init_experience_map_repository,
+    )
+    from features.experience_map.repository import set_repository as set_experience_map_repository
     from features.interview.agents.insight_store import MainServerInsightStore
     from features.interview.agents.nodes.retriever import init_insight_store
 
     logger = logging.getLogger(__name__)
 
-    # ===== 경험 맵 DB 커넥션 풀 초기화 =====
+    # ===== 경험 맵 DB 커넥션 풀과 Repository 초기화 =====
     # checkpoint DB와 분리된 풀이다. 미설정이어도 기동은 막지 않고 /health로 드러낸다.
     try:
-        await create_pool()
+        pool = await create_pool()
+        init_experience_map_repository(pool)
         logger.info("경험 맵 DB 커넥션 풀 초기화 완료")
     except ValueError:
         logger.warning("DATABASE_URL이 설정되지 않음 - 경험 맵 DB 비활성화")
@@ -209,6 +214,8 @@ async def lifespan(app: FastAPI):
                 logger.exception("포트폴리오 클라이언트 정리 실패")
 
         try:
+            # 풀이 닫힌 뒤 Repository 가 남아 있으면 죽은 커넥션을 쓰게 된다.
+            set_experience_map_repository(None)
             await close_pool()
         except Exception:
             logger.exception("경험 맵 DB 커넥션 풀 정리 실패")

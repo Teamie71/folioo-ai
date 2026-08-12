@@ -1,4 +1,7 @@
-"""경험정리 DB 테스트 fixture
+"""테스트 공용 fixture
+
+경험정리 DB fixture 는 `tests/test_features` 와 `tests/test_app` 양쪽에서 쓰므로
+루트 conftest 에 둔다.
 
 **실제 PostgreSQL에 붙어서 돌립니다.** 동시성(세션당 running 1건)과 lease 만료는
 asyncpg를 mock으로 감싸면 아무것도 검증하지 못합니다.
@@ -33,7 +36,7 @@ try:
 except ImportError:
     pass
 
-SCHEMA_SQL = pathlib.Path(__file__).resolve().parents[3] / "scripts/experience_map/schema.sql"
+SCHEMA_SQL = pathlib.Path(__file__).resolve().parents[1] / "scripts/experience_map/schema.sql"
 
 # 개발 데이터와 겹치지 않는 대역
 TEST_USER_ID_BASE = 9_000_000
