@@ -23,32 +23,54 @@
 
 ## 2. 머지 전략
 
-**dev 직접 머지 + feature flag**를 권장합니다. 장수 feature 브랜치를 두면 23개 PR이
-쌓이는 동안 dev와 벌어져 마지막에 충돌이 몰립니다.
+**통합 브랜치 `feat/experience-map`에 모았다가 마지막에 한 번에 dev로 머지합니다.**
 
-- 신규 코드는 대부분 `features/experience_map/` 아래라 기존 기능과 충돌하지 않습니다.
-- 예외는 EM-01(공용 DB·checkpointer)과 EM-10(`app/api/v1/__init__.py` router 등록).
-- `EXPERIENCE_MAP_ENABLED` 환경변수를 두고 **EM-10에서 도입, 기본값 `false`**로
-  머지합니다. `true`로 뒤집는 시점은 EM-23 통과 후입니다.
+```text
+dev  ──┬─ EM-01 (배포 환경변수를 건드려 dev에 직접)
+       │
+       └─ feat/experience-map
+              ├─ EM-02 ~ EM-23
+              └─ (전부 끝나면 dev로 한 번에)
+```
+
+dev가 7주 넘게 멈춰 있어 드리프트 위험이 없고, 신규 코드가 대부분
+`features/experience_map/` 아래라 충돌 여지도 작습니다. EM-01만 예외로 dev에
+직접 넣었는데, `CHECKPOINT_DATABASE_URL` fallback 제거가 배포를 깨뜨릴 수 있어
+미리 검증받는 편이 안전해서입니다.
+
+`EXPERIENCE_MAP_ENABLED` 환경변수를 두고 **EM-10에서 도입, 기본값 `false`**로
+머지합니다. `true`로 뒤집는 시점은 EM-23 통과 후입니다.
 
 브랜치 이름은 레포 관례를 따릅니다 — `feat/{issue}-{slug}`, `chore/…`, `fix/…`.
+PR 제목은 이슈와 같은 대괄호 접두사를 씁니다 — `[Feat]`, `[Fix]`, `[Docs]`.
+
+### 두 가지 주의
+
+**이슈는 자동으로 닫히지 않습니다.** GitHub은 PR이 **기본 브랜치(dev)로 머지될
+때만** 이슈를 닫습니다. 통합 브랜치를 향한 PR의 `Closes`는 발동하지 않으므로,
+**최종 dev 머지 PR 본문에 `Closes` 7줄을 넣어 한 번에 닫습니다** (태스크 3.23).
+
+**스택 PR은 위에서부터 머지합니다.** 아래 PR이 위 내용까지 실어 나릅니다. 순서를
+뒤집으면 위 PR이 통합 브랜치에 닿지 못합니다 (2026-08-12에 실제로 발생 — 10절).
 
 ## 3. PR 목록
 
 크기 기준: **S** 하루 이내 · **M** 2~3일 · **L** 3일 이상(더 쪼갤 여지 검토).
 
+✅ 는 통합 브랜치 머지 완료 (2026-08-12 기준 7개). 진행 상황은 [진행 상황 문서](experience-map-progress.md)를 보세요.
+
 | # | PR | 단계 | 의존 | 크기 |
 | --- | --- | --- | --- | --- |
-| EM-01 | DB 연결 분리와 checkpointer 정리 | 2 | — | S |
-| EM-02 | feature 스캐폴드·스키마·오류 | 3 | — | M |
+| ✅ EM-01 | DB 연결 분리와 checkpointer 정리 | 2 | — | S |
+| ✅ EM-02 | feature 스캐폴드·스키마·오류 | 3 | — | M |
 | EM-03 | 템플릿 카탈로그 클라이언트와 캐시 | 3 | 02 | S |
-| EM-04 | 세션·요청 Repository | 4 | 01, 02, **외부-A** | M |
+| ✅ EM-04 | 세션·요청 Repository | 4 | 01, 02, **외부-A** | M |
 | EM-05 | 경험 맵 Repository와 alias 변환 | 5 | 01, 02, **외부-A** | M |
 | EM-06 | 커밋 클라이언트 | 5 | 02, 03, **외부-B** | M |
-| EM-07 | 임시 첨부 파일 저장 | 7 | 02 | M |
-| EM-08 | LangGraph 상태와 checkpoint | 6 | 02 | S |
-| EM-09 | 티켓 검증·CORS·rate limit | 8 | 02 | M |
-| EM-10 | API·SSE 뼈대 (mock graph) | 8 | 04, 07, 08, 09 | L |
+| ✅ EM-07 | 임시 첨부 파일 저장 | 7 | 02 | M |
+| ✅ EM-08 | LangGraph 상태와 checkpoint | 6 | 02 | S |
+| ✅ EM-09 | 티켓 검증·CORS·rate limit | 8 | 02 | M |
+| ✅ EM-10 | API·SSE 뼈대 (mock graph) | 8 | 04, 07, 08, 09 | L |
 | EM-11 | Router와 Fallback | 9, 18 | 08, 10 | M |
 | EM-12 | 파일처리 | 10 | 07, 11 | M |
 | EM-13 | 반영 내용 필터링 | 11 | 11 | M |
