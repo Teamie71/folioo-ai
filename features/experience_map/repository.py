@@ -18,7 +18,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -37,6 +37,17 @@ REQUEST_COLUMNS = """
     retryable, retry_expires_at, lease_expires_at, owner_token, base_map_version,
     committed_version, input_meta, result, suggestion, error, created_at, updated_at
 """
+
+
+def _require_token(owner_token: str | None) -> uuid.UUID:
+    """실행권 표식을 UUID 로 바꾼다. 없으면 거부한다.
+
+    **선택 인자로 두면 보호가 조용히 꺼진다.** 호출부가 실수로 빠뜨려도 테스트가
+    통과하고, 운영에서만 남의 결과를 덮는다.
+    """
+    if not owner_token:
+        raise ValueError("owner_token 이 필요합니다. 실행권 없이 상태를 바꿀 수 없습니다.")
+    return uuid.UUID(owner_token)
 
 
 def _as_dict(value: Any) -> dict[str, Any] | None:
@@ -264,53 +275,61 @@ class ExperienceMapRepository:
         를 돌려줄 뿐 행을 바꾸지 않아서, 재시도가 `failed` 인 채로 실행되고 lease
         갱신도 동시 재시도 차단도 동작하지 않는다.
 
-        조건 검사와 상태 전이를 **하나의 UPDATE** 로 처리한다. 따로 SELECT 해서
-        확인하면 그 사이에 다른 worker 가 끼어들 수 있다.
+        **한 트랜잭션 안에서** 행을 잠그고, 사유를 판정하고, 전이시킨다.
+        판정과 전이가 나뉘면 그 사이에 다른 worker 가 끼어들어 **실제와 다른
+        사유**를 사용자에게 보여줄 수 있다 — 이미 성공했는데 "만료됐다"고
+        하는 식이다.
 
         Returns:
             ClaimResult: `CLAIMED` 면 새 `owner_token` 이 담겨 있다
         """
-        try:
-            record = await self._pool.fetchrow(
-                f"""
-                UPDATE ai_experience_request
-                   SET status = 'running',
-                       lease_expires_at = now() + make_interval(secs => $3),
-                       owner_token = $4,
-                       error = NULL,
-                       failed_node = NULL,
-                       retryable = false,
-                       retry_expires_at = NULL,
-                       updated_at = now()
-                 WHERE user_id = $1 AND request_id = $2
-                   AND status = 'failed'
-                   AND retryable
-                   AND (retry_expires_at IS NULL OR retry_expires_at > now())
-             RETURNING {REQUEST_COLUMNS}
-                """,
+        async with self._pool.acquire() as conn, conn.transaction():
+            # 행을 잠근 뒤 판정한다. 이 트랜잭션이 끝날 때까지 아무도 못 바꾼다.
+            existing = await conn.fetchrow(
+                f"SELECT {REQUEST_COLUMNS} FROM ai_experience_request "
+                "WHERE user_id = $1 AND request_id = $2 FOR UPDATE",
                 int(user_id),
                 uuid.UUID(request_id),
-                self._lease_seconds,
-                uuid.uuid4(),
             )
-        except asyncpg.UniqueViolationError:
-            # 같은 세션에 이미 running 이 있다. 세션당 1건 제약을 그대로 쓴다.
-            return ClaimResult(ClaimOutcome.SESSION_BUSY)
 
-        if record is not None:
+            if existing is None:
+                return ClaimResult(ClaimOutcome.RETRY_NOT_FOUND)
+
+            row = RequestRow.from_record(existing)
+            if row.status == "completed":
+                return ClaimResult(ClaimOutcome.REPLAY, row)
+            if row.status == "running":
+                return ClaimResult(ClaimOutcome.SESSION_BUSY, row)
+            if not row.retryable:
+                return ClaimResult(ClaimOutcome.RETRY_NOT_ALLOWED, row)
+            if row.retry_expires_at is not None and row.retry_expires_at <= datetime.now(UTC):
+                return ClaimResult(ClaimOutcome.RETRY_EXPIRED, row)
+
+            try:
+                record = await conn.fetchrow(
+                    f"""
+                    UPDATE ai_experience_request
+                       SET status = 'running',
+                           lease_expires_at = now() + make_interval(secs => $3),
+                           owner_token = $4,
+                           error = NULL,
+                           failed_node = NULL,
+                           retryable = false,
+                           retry_expires_at = NULL,
+                           updated_at = now()
+                     WHERE user_id = $1 AND request_id = $2
+                 RETURNING {REQUEST_COLUMNS}
+                    """,
+                    int(user_id),
+                    uuid.UUID(request_id),
+                    self._lease_seconds,
+                    uuid.uuid4(),
+                )
+            except asyncpg.UniqueViolationError:
+                # 같은 세션의 다른 요청이 running 이다. 세션당 1건 제약을 그대로 쓴다.
+                return ClaimResult(ClaimOutcome.SESSION_BUSY, row)
+
             return ClaimResult(ClaimOutcome.CLAIMED, RequestRow.from_record(record))
-
-        # 0행이다. 사유를 나누기 위해서만 조회한다 (경쟁에 민감한 경로가 아니다).
-        existing = await self.get_request(user_id, request_id)
-        if existing is None:
-            return ClaimResult(ClaimOutcome.RETRY_NOT_FOUND)
-        if existing.status == "completed":
-            return ClaimResult(ClaimOutcome.REPLAY, existing)
-        if existing.status == "running":
-            return ClaimResult(ClaimOutcome.SESSION_BUSY, existing)
-        if existing.retryable and existing.retry_expires_at is not None:
-            return ClaimResult(ClaimOutcome.RETRY_EXPIRED, existing)
-        return ClaimResult(ClaimOutcome.RETRY_NOT_ALLOWED, existing)
 
     async def get_request(self, user_id: str, request_id: str) -> RequestRow | None:
         """요청을 조회한다. **소유자가 아니면 `None`이다.**"""
@@ -332,30 +351,32 @@ class ExperienceMapRepository:
         )
         return RequestRow.from_record(record) if record else None
 
-    async def renew_request_lease(
-        self, user_id: str, request_id: str, owner_token: str | None = None
-    ) -> bool:
+    async def renew_request_lease(self, user_id: str, request_id: str, owner_token: str) -> bool:
         """lease를 연장한다.
 
-        `owner_token` 을 주면 **내가 실행권의 주인일 때만** 연장한다. 행이
-        `running` 인 것과 내가 그 running 의 주인인 것은 다르다 — 만료 정리 뒤
-        다른 worker 가 재시도로 가져갔다면 행은 `running` 이지만 내 것이 아니다.
+        **`owner_token` 은 필수다.** 행이 `running` 인 것과 내가 그 running 의
+        주인인 것은 다르다 — 만료 정리 뒤 다른 worker 가 재시도로 가져갔다면
+        행은 `running` 이지만 내 것이 아니다.
 
         Returns:
             bool: 연장했으면 `True`. 아니면 `False` — 호출자는 실행을 중단해야 한다
+
+        Raises:
+            ValueError: `owner_token` 이 비어 있음
         """
+        token = _require_token(owner_token)
         result = await self._pool.execute(
             """
             UPDATE ai_experience_request
                SET lease_expires_at = now() + make_interval(secs => $3),
                    updated_at = now()
              WHERE user_id = $1 AND request_id = $2 AND status = 'running'
-               AND ($4::uuid IS NULL OR owner_token = $4::uuid)
+               AND owner_token = $4::uuid
             """,
             int(user_id),
             uuid.UUID(request_id),
             self._lease_seconds,
-            uuid.UUID(owner_token) if owner_token else None,
+            token,
         )
         return result.endswith(" 1")
 
@@ -367,13 +388,16 @@ class ExperienceMapRepository:
         result: dict[str, Any] | None = None,
         suggestion: dict[str, Any] | None = None,
         committed_version: int | None = None,
-        owner_token: str | None = None,
+        owner_token: str,
     ) -> RequestRow | None:
         """요청을 완료로 저장한다. lease를 비워 정리 대상에서 제외한다.
 
         **실행권을 가진 worker 만 쓸 수 있다.** `owner_token` 이 맞지 않으면
         `None` 을 돌려주고 아무것도 바꾸지 않는다. lease 를 잃은 worker 가 뒤늦게
         끝나서 다른 worker 의 결과를 덮는 것을 막는다.
+
+        Raises:
+            ValueError: `owner_token` 이 비어 있음
         """
         record = await self._pool.fetchrow(
             f"""
@@ -388,7 +412,7 @@ class ExperienceMapRepository:
                    updated_at = now()
              WHERE user_id = $1 AND request_id = $2
                AND status = 'running'
-               AND ($6::uuid IS NULL OR owner_token = $6::uuid)
+               AND owner_token = $6::uuid
          RETURNING {REQUEST_COLUMNS}
             """,
             int(user_id),
@@ -396,7 +420,7 @@ class ExperienceMapRepository:
             json.dumps(result, ensure_ascii=False) if result is not None else None,
             json.dumps(suggestion, ensure_ascii=False) if suggestion is not None else None,
             committed_version,
-            uuid.UUID(owner_token) if owner_token else None,
+            _require_token(owner_token),
         )
         if record is None:
             logger.warning("완료 처리를 건너뜁니다 — 실행권이 없습니다 (request_id=%s)", request_id)
@@ -411,7 +435,7 @@ class ExperienceMapRepository:
         error: dict[str, Any],
         failed_node: str | None = None,
         retryable: bool = True,
-        owner_token: str | None = None,
+        owner_token: str,
     ) -> RequestRow | None:
         """요청을 실패로 저장한다.
 
@@ -420,6 +444,9 @@ class ExperienceMapRepository:
 
         완료 처리와 같은 소유권 규칙을 따른다. `owner_token` 이 맞지 않으면
         `None` 을 돌려주고 아무것도 바꾸지 않는다.
+
+        Raises:
+            ValueError: `owner_token` 이 비어 있음
         """
         record = await self._pool.fetchrow(
             f"""
@@ -435,7 +462,7 @@ class ExperienceMapRepository:
                    updated_at = now()
              WHERE user_id = $1 AND request_id = $2
                AND status = 'running'
-               AND ($7::uuid IS NULL OR owner_token = $7::uuid)
+               AND owner_token = $7::uuid
          RETURNING {REQUEST_COLUMNS}
             """,
             int(user_id),
@@ -444,7 +471,7 @@ class ExperienceMapRepository:
             failed_node,
             retryable,
             get_settings().retry_ttl_seconds,
-            uuid.UUID(owner_token) if owner_token else None,
+            _require_token(owner_token),
         )
         if record is None:
             logger.warning("실패 처리를 건너뜁니다 — 실행권이 없습니다 (request_id=%s)", request_id)
@@ -539,7 +566,7 @@ class LeaseRenewer:
         user_id: str,
         request_id: str,
         *,
-        owner_token: str | None = None,
+        owner_token: str,
         interval_seconds: int = LEASE_RENEW_INTERVAL_SECONDS,
     ) -> None:
         self._repository = repository
