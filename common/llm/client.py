@@ -76,6 +76,30 @@ def get_analyst_llm(
     )
 
 
+@lru_cache(maxsize=8)
+def get_experience_map_llm(
+    model: str | None = None,
+    temperature: float = 0.0,
+    timeout: float = 60,
+) -> ChatOpenAI:
+    """경험정리 노드 전용 LLM 클라이언트 반환
+
+    `max_retries=0` 으로 고정한다. 자동 재시도는 LangGraph `RetryPolicy` 한 곳에서만
+    관리해야 하며, 클라이언트가 따로 재시도하면 노드 실패 1회가 실제로는 여러 번의
+    LLM 호출이 된다 (에이전트 문서 7-2).
+
+    분류·구조화가 주 용도라 `temperature` 기본값은 0이다. 같은 입력에 같은 판정이
+    나오는 편이 디버깅에 유리하다.
+    """
+    return _build_llm(
+        model=model,
+        temperature=temperature,
+        timeout=timeout,
+        disable_streaming=True,
+        max_retries=0,
+    )
+
+
 @lru_cache(maxsize=4)
 def get_file_processor_llm(
     model: str | None = None,

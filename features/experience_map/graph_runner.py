@@ -124,6 +124,51 @@ class MockGraphRunner:
             yield event
 
 
+class RouterOnlyRunner:
+    """Router 와 Fallback 만 실제로 도는 실행기 (3.11).
+
+    Router 가 `out_of_scope` 로 판정하면 fallback 문구를 보내고 끝낸다. 그 외에는
+    아직 노드가 없으므로 `MockGraphRunner` 로 넘긴다.
+
+    **3.17 에서 실제 그래프로 교체한다.** 그때까지 Router 판정을 로컬에서 실제
+    LLM 으로 확인하기 위한 임시 실행기다.
+    """
+
+    def __init__(self, fallthrough: GraphRunner | None = None) -> None:
+        self._fallthrough = fallthrough or MockGraphRunner()
+
+    async def run(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
+        from features.experience_map.nodes.fallback import fallback, fallback_message
+        from features.experience_map.nodes.router import route
+
+        yield NodeStatusEvent(node="router", status="running")
+        routed = await route(state)
+        yield NodeStatusEvent(node="router", status="completed")
+
+        if routed.get("intent") == "out_of_scope":
+            done = await fallback(routed)
+            yield MessageCompleteEvent(
+                message=CompletedMessage(
+                    request_id=state["request_id"],
+                    session_id=state["session_id"],
+                    response_kind="fallback",
+                    ai_response=fallback_message(done.get("fallback_reason")),
+                    committed=False,
+                )
+            )
+            return
+
+        async for event in self._fallthrough.run(routed):
+            # router 는 이미 냈다.
+            if isinstance(event, NodeStatusEvent) and event.node == "router":
+                continue
+            yield event
+
+    async def resume(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
+        async for event in self.run(state):
+            yield event
+
+
 _runner: GraphRunner | None = None
 
 
