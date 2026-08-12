@@ -11,7 +11,8 @@ wheels/
 
 .env
 
-# 로컬 개발용 PostgreSQL 클러스터 (scripts/experience_map/local_db.py)
+# 로컬 개발용 PostgreSQL 클러스터와 진행 상황 스냅샷
+# (진행 상황은 레포가 아니라 GitHub 이슈로 추적한다)
 .local/
 .langgraph_api/
 .pytest_cache/
