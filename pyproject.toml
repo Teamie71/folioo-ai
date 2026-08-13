@@ -61,7 +61,9 @@ local-db = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "--import-mode=importlib"
+# --strict-markers: 오타난 마커를 조용히 무시하지 않고 오류로 만든다.
+# --strict-config:  ini 설정 오타도 마찬가지.
+addopts = "--import-mode=importlib --strict-markers --strict-config"
 pythonpath = [".", "apps/pptx-worker"]
 testpaths = ["tests"] # 테스트 탐색 디렉토리
 

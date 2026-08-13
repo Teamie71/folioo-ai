@@ -11,8 +11,12 @@ DB 접속 순서:
 1. `EXPMAP_TEST_DATABASE_URL`
 2. `DATABASE_URL` (로컬 개발 클러스터)
 
-둘 다 붙지 않으면 **skip** 합니다. CI에 DB가 없어도 나머지 테스트는 통과합니다.
-로컬 세팅은 `docs/architecture/experience-map-local-dev.md` 를 보세요.
+둘 다 붙지 않으면 **skip** 합니다. 로컬에서 DB 없이 나머지 테스트만 돌릴 수
+있게 하기 위한 것입니다. 로컬 세팅은
+`docs/architecture/experience-map-local-dev.md` 를 보세요.
+
+단, `EXPMAP_REQUIRE_DB` 가 켜져 있으면 skip 하지 않고 **실패**합니다. CI 는 이
+값을 켜고 돌립니다 — 자세한 이유는 `_db_unavailable` 주석을 보세요.
 
 각 테스트는 **테스트 전용 user_id 대역(9_000_000+)** 을 써서 개발 중인 데이터와
 섞이지 않게 합니다.
@@ -23,6 +27,7 @@ session 스코프 풀을 공유하면 커넥션이 다른 루프에 묶입니다
 
 import os
 import pathlib
+from typing import NoReturn
 
 import asyncpg
 import pytest
@@ -42,6 +47,28 @@ SCHEMA_SQL = pathlib.Path(__file__).resolve().parents[1] / "scripts/experience_m
 TEST_USER_ID_BASE = 9_000_000
 
 REQUIRED_TABLES = ("ai_experience_session", "ai_experience_request")
+
+# 켜져 있으면 DB 를 못 쓸 때 skip 대신 실패한다.
+REQUIRE_DB_ENV = "EXPMAP_REQUIRE_DB"
+
+
+def _db_unavailable(reason: str) -> NoReturn:
+    """DB 를 못 쓸 때의 처리. 기본은 skip, `EXPMAP_REQUIRE_DB` 면 실패.
+
+    **skip 은 초록불로 보입니다.** 세션당 running 1건·lease 만료·재시도 원자성
+    테스트가 전부 이 fixture 에 걸려 있어서, DB 없이 돌리면 60여 개를 건너뛴 채
+    "통과" 로 끝납니다. 정작 검증이 필요한 동시성 부분만 빠지는 셈입니다.
+
+    그래서 CI 는 이 값을 켜고 돌립니다. DB 가 안 붙거나 스키마가 안 맞으면
+    조용히 넘어가지 않고 빨간불이 됩니다.
+    """
+    if os.getenv(REQUIRE_DB_ENV, "").strip():
+        pytest.fail(
+            f"{REQUIRE_DB_ENV} 가 켜져 있는데 DB 테스트를 돌릴 수 없습니다: {reason}",
+            pytrace=False,
+        )
+    pytest.skip(reason)
+
 
 # 스키마 준비는 한 번만 확인한다.
 _schema_state: str | None = None
@@ -92,17 +119,17 @@ async def db_pool():
     """경험 맵 DB 커넥션 풀. 붙지 않으면 skip."""
     url = _database_url()
     if not url:
-        pytest.skip("DATABASE_URL 이 없습니다. 로컬 DB 세팅 후 다시 실행하세요.")
+        _db_unavailable("DATABASE_URL 이 없습니다. 로컬 DB 세팅 후 다시 실행하세요.")
 
     try:
         pool = await asyncpg.create_pool(url, min_size=1, max_size=5, timeout=3)
-    except Exception as exc:  # noqa: BLE001 - 접속 실패 사유는 skip 메시지로 충분하다
-        pytest.skip(f"경험 맵 DB에 접속할 수 없습니다: {exc}")
+    except Exception as exc:  # noqa: BLE001 - 접속 실패 사유는 메시지로 충분하다
+        _db_unavailable(f"경험 맵 DB에 접속할 수 없습니다: {exc}")
 
     try:
         reason = await _ensure_schema(pool)
         if reason:
-            pytest.skip(reason)
+            _db_unavailable(reason)
         yield pool
     finally:
         await pool.close()
