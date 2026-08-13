@@ -96,6 +96,44 @@ uv run --group local-db python scripts/experience_map/local_db.py psql checkpoin
 uv run --group local-db python scripts/experience_map/local_db.py reset -y
 ```
 
+### 테스트 돌리기
+
+```bash
+uv run pytest              # 전체
+uv run pytest -rs          # 건너뛴 테스트를 이유와 함께 보여준다
+```
+
+**DB 가 떠 있어야 전부 돕니다.** 경험정리 테스트 60여 개(세션당 running 1건·lease
+만료·재시도 원자성)는 실제 PostgreSQL 에 붙습니다. asyncpg 를 mock 으로 감싸면
+동시성은 아무것도 검증하지 못하기 때문입니다.
+
+DB 가 없으면 그것들이 **skip** 되고 나머지는 통과합니다. 로컬에서 DB 없이 빠르게
+돌릴 수 있게 한 것인데, **skip 은 초록불로 보인다는 함정**이 있습니다. 동시성만
+빠진 채 "통과" 로 끝납니다.
+
+그래서 DB 가 반드시 돌아야 하는 자리에서는 이렇게 켭니다.
+
+```bash
+EXPMAP_REQUIRE_DB=1 uv run pytest    # DB 를 못 쓰면 skip 이 아니라 실패
+```
+
+CI 는 항상 이 값을 켜고 돌립니다 (아래 참고).
+
+### CI
+
+`.github/workflows/ci.yml` 이 모든 PR 에서 두 job 을 돌립니다.
+
+| job | 하는 일 |
+| --- | --- |
+| `lint` | `ruff check` + `ruff format --check` |
+| `test` | PostgreSQL 16 컨테이너를 띄우고 `EXPMAP_REQUIRE_DB=1` 로 전체 테스트 |
+
+스키마는 로컬과 같은 `scripts/experience_map/schema.sql` 을 씁니다. 컨테이너에는
+`.env` 가 없으므로 접속 주소는 `EXPMAP_TEST_DATABASE_URL` 로 넘깁니다.
+
+CI 는 외부 API 를 치지 않습니다. `OPENROUTER_API_KEY` 에는 더미 값이 들어가고,
+LLM 을 쓰는 테스트는 전부 mock 입니다.
+
 ---
 
 ## 3. API 수동 호출
