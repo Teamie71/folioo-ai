@@ -24,6 +24,14 @@ from .state import (
     reset_turn_fields,
     start_turn,
 )
+from .templates import (
+    TemplateCatalog,
+    TemplateCatalogClient,
+    TemplateDefinition,
+    TemplateSection,
+    TemplateSlot,
+    get_template_catalog_client,
+)
 
 __all__ = [
     "ActiveGap",
@@ -41,9 +49,15 @@ __all__ = [
     "RefinedItem",
     "RouterOutput",
     "StructuredItem",
+    "TemplateCatalog",
+    "TemplateCatalogClient",
+    "TemplateDefinition",
+    "TemplateSection",
+    "TemplateSlot",
     "build_thread_config",
     "cleanup_after_success",
     "get_settings",
+    "get_template_catalog_client",
     "load_settings",
     "record_node_failure",
     "reset_settings",
