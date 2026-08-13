@@ -25,6 +25,13 @@ OCR_MIME_TYPES: dict[str, tuple[str, ...]] = {
 }
 ALLOWED_MIME_TYPES: dict[str, tuple[str, ...]] = {**PARSER_MIME_TYPES, **OCR_MIME_TYPES}
 
+# ===== 파일 추출 =====
+MAX_FILE_TEXT_CHARS = 40_000
+"""파일 하나에서 가져올 최대 글자 수. 넘으면 앞부분만 쓰고 잘렸다고 알린다."""
+
+MAX_TOTAL_TEXT_CHARS = 80_000
+"""요청 전체 추출 텍스트 상한. 프롬프트 토큰과 비용을 묶어 둔다."""
+
 # ===== 블록 제약 (API 명세 4-2) =====
 MAX_CONTENT_LENGTH = 500
 MIN_CONTENT_LENGTH = 1

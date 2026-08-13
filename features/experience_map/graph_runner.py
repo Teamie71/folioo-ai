@@ -124,45 +124,77 @@ class MockGraphRunner:
             yield event
 
 
-class RouterOnlyRunner:
-    """Router 와 Fallback 만 실제로 도는 실행기 (3.11).
+class PartialGraphRunner:
+    """구현된 노드까지만 실제로 도는 실행기.
 
-    Router 가 `out_of_scope` 로 판정하면 fallback 문구를 보내고 끝낸다. 그 외에는
-    아직 노드가 없으므로 `MockGraphRunner` 로 넘긴다.
+    지금은 Router → 파일처리 → 반영 내용 필터링까지다. 그 뒤는 노드가 없으므로
+    `MockGraphRunner` 로 넘긴다.
 
-    **3.17 에서 실제 그래프로 교체한다.** 그때까지 Router 판정을 로컬에서 실제
-    LLM 으로 확인하기 위한 임시 실행기다.
+    **3.17 에서 실제 그래프로 교체한다.** 그때까지 구현된 노드를 로컬에서 실제
+    LLM 으로 확인하기 위한 임시 실행기다. 노드가 하나씩 붙을 때마다 여기에
+    이어 붙인다.
     """
+
+    REAL_NODES = ("router", "file_processor", "content_filter")
 
     def __init__(self, fallthrough: GraphRunner | None = None) -> None:
         self._fallthrough = fallthrough or MockGraphRunner()
 
     async def run(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
-        from features.experience_map.nodes.fallback import fallback, fallback_message
+        from features.experience_map.nodes.content_filter import filter_content
+        from features.experience_map.nodes.content_filter import next_node as filter_next
+        from features.experience_map.nodes.file_processor import next_node as file_next
+        from features.experience_map.nodes.file_processor import process_files
+        from features.experience_map.nodes.router import next_node as router_next
         from features.experience_map.nodes.router import route
 
         yield NodeStatusEvent(node="router", status="running")
-        routed = await route(state)
+        current = await route(state)
         yield NodeStatusEvent(node="router", status="completed")
 
-        if routed.get("intent") == "out_of_scope":
-            done = await fallback(routed)
-            yield MessageCompleteEvent(
-                message=CompletedMessage(
-                    request_id=state["request_id"],
-                    session_id=state["session_id"],
-                    response_kind="fallback",
-                    ai_response=fallback_message(done.get("fallback_reason")),
-                    committed=False,
-                )
-            )
+        if router_next(current) == "fallback":
+            async for event in self._emit_fallback(current):
+                yield event
             return
 
-        async for event in self._fallthrough.run(routed):
-            # router 는 이미 냈다.
-            if isinstance(event, NodeStatusEvent) and event.node == "router":
+        if router_next(current) == "file_processor":
+            yield NodeStatusEvent(node="file_processor", status="running")
+            current = await process_files(current)
+            yield NodeStatusEvent(node="file_processor", status="completed")
+
+            if file_next(current) == "fallback":
+                async for event in self._emit_fallback(current):
+                    yield event
+                return
+
+        yield NodeStatusEvent(node="content_filter", status="running")
+        current = await filter_content(current)
+        yield NodeStatusEvent(node="content_filter", status="completed")
+
+        if filter_next(current) == "fallback":
+            async for event in self._emit_fallback(current):
+                yield event
+            return
+
+        async for event in self._fallthrough.run(current):
+            # 이미 낸 노드의 이벤트는 걸러낸다.
+            if isinstance(event, NodeStatusEvent) and event.node in self.REAL_NODES:
                 continue
             yield event
+
+    async def _emit_fallback(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
+        from features.experience_map.nodes.fallback import fallback, fallback_message
+
+        done = await fallback(state)
+        yield MessageCompleteEvent(
+            message=CompletedMessage(
+                request_id=state["request_id"],
+                session_id=state["session_id"],
+                response_kind="fallback",
+                ai_response=fallback_message(done.get("fallback_reason")),
+                committed=False,
+            )
+        )
 
     async def resume(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
         async for event in self.run(state):

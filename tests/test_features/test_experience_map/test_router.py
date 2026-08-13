@@ -251,16 +251,16 @@ def test_all_fallback_reasons_are_covered():
     assert declared == set(FALLBACK_MESSAGES)
 
 
-# ===== RouterOnlyRunner (3.17 전까지의 임시 실행기) =====
+# ===== PartialGraphRunner (3.17 전까지의 임시 실행기) =====
 
 
 @pytest.mark.asyncio
 async def test_router_only_runner_emits_fallback_message(fake_llm):
     """out_of_scope 면 fallback 문구를 보내고 커밋하지 않는다."""
-    from features.experience_map.graph_runner import RouterOnlyRunner
+    from features.experience_map.graph_runner import PartialGraphRunner
 
     fake_llm(RouterOutput(intent="out_of_scope", reason="자기소개서 생성 요청"))
-    events = [e async for e in RouterOnlyRunner().run(make_state(user_message="자소서 써줘"))]
+    events = [e async for e in PartialGraphRunner().run(make_state(user_message="자소서 써줘"))]
 
     types = [e.model_dump()["type"] for e in events]
     assert types == ["node_status", "node_status", "message_complete"]
@@ -273,14 +273,42 @@ async def test_router_only_runner_emits_fallback_message(fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_router_only_runner_falls_through_for_chat_input(fake_llm):
-    """chat_input 이면 뒤 노드로 넘긴다. router 이벤트는 한 번만 나간다."""
-    from features.experience_map.graph_runner import RouterOnlyRunner
+async def test_partial_runner_falls_through_for_chat_input(fake_llm, monkeypatch):
+    """chat_input 이면 뒤 노드로 넘긴다. 각 노드 이벤트는 한 번만 나간다."""
+    from features.experience_map.graph_runner import PartialGraphRunner
+    from features.experience_map.nodes import content_filter as filter_node
+    from features.experience_map.schemas import ContentFilterOutput
 
     fake_llm(RouterOutput(intent="chat_input", reason="경험이 담겨 있음"))
-    events = [e async for e in RouterOnlyRunner().run(make_state())]
 
+    # content_filter 도 실제로 돈다. 그쪽 LLM 도 대역으로 바꾼다.
+    def _filter_llm(**kwargs):
+        class _Structured(RunnableLambda):
+            pass
+
+        class _FakeLlm:
+            def with_structured_output(self, schema):
+                return RunnableLambda(
+                    lambda _: ContentFilterOutput(
+                        new_items=[
+                            {
+                                "item_id": "it_1",
+                                "text": "결제 실패 문제를 해결한 내용을 정리해줘",
+                                "source": "message",
+                            }
+                        ]
+                    )
+                )
+
+        return _FakeLlm()
+
+    monkeypatch.setattr(filter_node, "get_experience_map_llm", _filter_llm)
+
+    events = [e async for e in PartialGraphRunner().run(make_state())]
     dumped = [e.model_dump() for e in events]
-    router_events = [d for d in dumped if d["type"] == "node_status" and d["node"] == "router"]
-    assert len(router_events) == 2  # running + completed, 중복 없음
+
+    for node in ("router", "content_filter"):
+        emitted = [d for d in dumped if d["type"] == "node_status" and d["node"] == node]
+        assert len(emitted) == 2, f"{node} 이벤트가 중복되거나 빠졌습니다"
+
     assert any(d["type"] == "commit_result" for d in dumped)
