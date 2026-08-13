@@ -15,6 +15,7 @@ ENV_VARS = (
     "EXPMAP_LLM_TIMEOUT_SECONDS",
     "EXPMAP_FILE_TIMEOUT_SECONDS",
     "EXPMAP_GAP_TIMEOUT_SECONDS",
+    "EXPMAP_RATE_LIMIT_PER_MINUTE",
     "EXPERIENCE_MAP_ENABLED",
 )
 
@@ -110,3 +111,36 @@ def test_upload_limits_match_spec():
 
 def test_get_settings_is_cached():
     assert config.get_settings() is config.get_settings()
+
+
+def test_rate_limit_defaults_to_spec_value():
+    """API 명세 8절 기본값은 분당 20건이다."""
+    assert config.load_settings().rate_limit_per_minute == 20
+
+
+def test_rate_limit_reads_from_env(monkeypatch):
+    monkeypatch.setenv("EXPMAP_RATE_LIMIT_PER_MINUTE", "5")
+
+    assert config.load_settings().rate_limit_per_minute == 5
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "-100", "스물", "3.5", " "])
+def test_rate_limit_rejects_unusable_values(monkeypatch, raw):
+    """0·음수·비정수는 기본값으로 되돌린다.
+
+    **0과 음수가 특히 위험하다.** 정수라 파싱은 되지만 한도로 쓰이면 모든 요청이
+    막혀 기능이 통째로 죽는다. 오타 하나로 기능이 내려가면 안 된다.
+    """
+    monkeypatch.setenv("EXPMAP_RATE_LIMIT_PER_MINUTE", raw)
+
+    assert config.load_settings().rate_limit_per_minute == 20
+
+
+def test_rate_limit_warns_on_unusable_value(monkeypatch, caplog):
+    """조용히 넘어가면 운영에서 설정이 안 먹는 걸 눈치채지 못한다."""
+    monkeypatch.setenv("EXPMAP_RATE_LIMIT_PER_MINUTE", "0")
+
+    with caplog.at_level("WARNING", logger=config.logger.name):
+        config.load_settings()
+
+    assert "EXPMAP_RATE_LIMIT_PER_MINUTE" in caplog.text

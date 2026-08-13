@@ -14,6 +14,8 @@ from app.middleware.experience_map_ticket import ExperienceMapTicketMiddleware
 from common.checkpointer.factory import get_checkpointer, setup_checkpointer
 from common.db.connection import get_pool_status
 from common.logging import setup_logging
+from features.experience_map.config import get_settings as get_experience_map_settings
+from features.experience_map.rate_limit import SlidingWindowRateLimiter
 
 # ===== 로깅 초기화 (uvicorn보다 먼저 설정) =====
 setup_logging()
@@ -234,7 +236,15 @@ def create_app() -> FastAPI:
     app.add_middleware(ApiKeyAuthMiddleware)
     # 경험정리 프론트 직결 경로는 티켓으로 인증한다. ApiKeyAuthMiddleware보다 바깥에 두어
     # 티켓 검증 실패가 X-API-Key 검사보다 먼저 응답되게 한다.
-    app.add_middleware(ExperienceMapTicketMiddleware, secret_provider=_get_ticket_secret)
+    app.add_middleware(
+        ExperienceMapTicketMiddleware,
+        secret_provider=_get_ticket_secret,
+        # limiter 는 호출 이력을 들고 있어 앱당 하나여야 한다. 서명 키와 달리
+        # 요청마다 새로 만들면 카운트가 초기화돼 제한이 걸리지 않는다.
+        rate_limiter=SlidingWindowRateLimiter(
+            max_requests=get_experience_map_settings().rate_limit_per_minute
+        ),
+    )
     # CORS 미들웨어를 나중에 등록해 preflight(OPTIONS)를 우선 처리한다.
     app.add_middleware(
         CORSMiddleware,
