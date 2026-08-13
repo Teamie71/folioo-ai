@@ -2,6 +2,7 @@
 
 from .config import ExperienceMapSettings, get_settings, load_settings, reset_settings
 from .errors import ExperienceMapError
+from .main_client import CommitRecoveryResult, ExperienceMapMainClient
 from .schemas import (
     ActiveGap,
     CommitAddItem,
@@ -39,8 +40,10 @@ __all__ = [
     "CommitItem",
     "CommitResult",
     "CommitUpdateItem",
+    "CommitRecoveryResult",
     "ContentFilterOutput",
     "ExperienceMapError",
+    "ExperienceMapMainClient",
     "ExperienceMapSettings",
     "ExperienceMapState",
     "FilteredItem",

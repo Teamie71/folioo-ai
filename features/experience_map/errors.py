@@ -222,6 +222,34 @@ class CommitConflictError(ExperienceMapError):
     message = "경험 맵이 변경되어 반영하지 못했습니다. 다시 시도해 주세요."
 
 
+class MapVersionConflictError(CommitConflictError):
+    """메인 서버의 현재 맵 버전과 커밋 기준 버전이 다르다.
+
+    재구성 범위 판단은 3.18 coordinator가 한다. 이 클라이언트는 현재 버전을
+    보존한 채 타입 있는 예외로만 올린다.
+    """
+
+    code = "map_version_conflict"
+
+    def __init__(self, current_map_version: int | None = None) -> None:
+        self.current_map_version = current_map_version
+        super().__init__()
+
+
+class CommitRequestIdReusedError(CommitConflictError):
+    """동일 request_id에 다른 커밋 items를 보냈다."""
+
+    code = "request_id_reused"
+
+
+class UnknownSlotIdError(ExperienceMapError):
+    """메인 서버 카탈로그에 없는 slot_id가 포함됐다."""
+
+    status_code = 422
+    code = "unknown_slot_id"
+    message = "템플릿 카탈로그가 최신 상태가 아닙니다."
+
+
 class LlmError(ExperienceMapError):
     """LLM 호출 실패"""
 

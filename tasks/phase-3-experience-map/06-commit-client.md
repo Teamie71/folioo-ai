@@ -6,7 +6,7 @@ spec: "docs/architecture/experience-map-agent.md"
 depends_on: ["3.02", "3.03"]
 blocks: ["3.18"]
 estimate: "M"
-status: "todo"
+status: "done"
 owner: ""
 sprint: ""
 ---
@@ -25,24 +25,24 @@ sprint: ""
 
 ## 사전 준비
 
-- [ ] API 명세 4-3 커밋 위임·충돌 복구 흐름 확인
-- [ ] `X-API-Key` 인증 방식과 공통 오류 포맷 확인
+- [x] API 명세 4-3 커밋 위임·충돌 복구 흐름 확인
+- [x] `X-API-Key` 인증 방식과 공통 오류 포맷 확인
 
 ## 구현 체크리스트
 
-- [ ] `main_client.py` — `POST /commit` 에 `user_id`·`request_id`·`base_map_version`·items 전달
-- [ ] `409 map_version_conflict` 를 타입 있는 예외로 승격 (재실행 판단은 3.18)
-- [ ] `422 unknown_slot_id` → 카탈로그 재조회 후 **1회 재시도** (클라이언트 내부 완결)
-- [ ] `GET /commit/{request_id}` 복구 조회
-- [ ] **커밋에는 `RetryPolicy` 를 적용하지 않는다**
+- [x] `main_client.py` — `POST /commit` 에 `user_id`·`request_id`·`base_map_version`·items 전달
+- [x] `409 map_version_conflict` 를 타입 있는 예외로 승격 (재실행 판단은 3.18)
+- [x] `422 unknown_slot_id` → 카탈로그 재조회 후 **1회 재시도** (클라이언트 내부 완결)
+- [x] `GET /commit/{request_id}` 복구 조회
+- [x] **커밋에는 `RetryPolicy` 를 적용하지 않는다**
 
 ## Definition of Done
 
-- [ ] version 충돌을 일반 오류와 구분한다
-- [ ] 같은 `request_id` 재호출 시 기존 commit 결과를 반환한다 (메인 멱등성 확인)
-- [ ] 커밋 응답 유실 시 `GET /commit/{request_id}` 로 복구된다
-- [ ] `422` 재시도가 2회 이상 반복되지 않는다
-- [ ] `ruff check .` · `ruff format --check .` · `pytest` 통과
+- [x] version 충돌을 일반 오류와 구분한다
+- [x] 같은 `request_id` 재호출 시 기존 commit 결과를 반환한다 (메인 멱등성 확인)
+- [x] 커밋 응답 유실 시 `GET /commit/{request_id}` 로 복구된다
+- [x] `422` 재시도가 2회 이상 반복되지 않는다
+- [x] `ruff check .` · `ruff format --check .` · `pytest` 통과
 
 ## 리스크 / 메모
 
