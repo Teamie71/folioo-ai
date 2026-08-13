@@ -7,6 +7,8 @@ import pytest
 from fastapi import FastAPI
 
 from app import main
+from app.middleware.experience_map_ticket import ExperienceMapTicketMiddleware
+from features.experience_map import config as experience_map_config
 
 
 def test_load_allowed_origins_from_env(monkeypatch):
@@ -247,3 +249,49 @@ def test_openapi_keeps_health_route_public():
     schema = app.openapi()
 
     assert "security" not in schema["paths"]["/health"]["get"]
+
+
+@pytest.fixture
+def clean_experience_map_settings():
+    """설정 캐시를 앞뒤로 비운다. 안 비우면 뒤 테스트가 이 값을 물려받는다."""
+    experience_map_config.reset_settings()
+    yield
+    experience_map_config.reset_settings()
+
+
+def _ticket_rate_limiter(app: FastAPI):
+    """앱에 등록된 경험정리 티켓 미들웨어의 rate limiter 를 꺼낸다.
+
+    못 찾으면 여기서 끊는다. 그냥 `None` 을 돌려주면 호출부가 `AttributeError` 로
+    죽어서 "설정이 안 맞다" 인지 "배선이 없다" 인지 구분되지 않는다.
+    """
+    for middleware in app.user_middleware:
+        if middleware.cls is ExperienceMapTicketMiddleware:
+            limiter = middleware.kwargs.get("rate_limiter")
+            if limiter is None:
+                raise AssertionError(
+                    "티켓 미들웨어에 rate limiter 가 주입되지 않았습니다. "
+                    "create_app() 이 EXPMAP_RATE_LIMIT_PER_MINUTE 을 전달하는지 확인하세요."
+                )
+            return limiter
+    raise AssertionError("경험정리 티켓 미들웨어가 등록되지 않았습니다.")
+
+
+def test_rate_limit_env_reaches_the_middleware(monkeypatch, clean_experience_map_settings):
+    """`EXPMAP_RATE_LIMIT_PER_MINUTE` 가 실제 limiter 까지 전달된다.
+
+    미들웨어 단위 테스트는 limiter 를 직접 넘겨서 검증하므로, `create_app()` 이
+    설정을 주입하지 않아도 통과한다. 실제로 그 배선이 빠져 있었다.
+    """
+    monkeypatch.setenv("EXPMAP_RATE_LIMIT_PER_MINUTE", "7")
+    experience_map_config.reset_settings()
+
+    assert _ticket_rate_limiter(main.create_app())._max_requests == 7
+
+
+def test_rate_limit_falls_back_to_default_in_app(monkeypatch, clean_experience_map_settings):
+    """설정이 없으면 명세 기본값(20)으로 앱이 뜬다."""
+    monkeypatch.delenv("EXPMAP_RATE_LIMIT_PER_MINUTE", raising=False)
+    experience_map_config.reset_settings()
+
+    assert _ticket_rate_limiter(main.create_app())._max_requests == 20

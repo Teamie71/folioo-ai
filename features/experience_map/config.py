@@ -4,10 +4,17 @@
 `common/db`·`common/checkpointer`가 소유하므로 여기서 다루지 않는다.
 """
 
+import logging
 import os
 from functools import lru_cache
 
 from pydantic import BaseModel, Field
+
+# 한도 기본값의 출처는 limiter 쪽 하나로 둔다. rate_limit 은 이 모듈을 import 하지
+# 않으므로 순환하지 않는다.
+from features.experience_map.rate_limit import DEFAULT_MAX_REQUESTS
+
+logger = logging.getLogger(__name__)
 
 # ===== 첨부 파일 제한 (API 명세 5절) =====
 MAX_UPLOAD_FILES = 3
@@ -72,6 +79,32 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_positive_int(name: str, default: int) -> int:
+    """1 이상인 정수 환경변수 조회. 그 밖의 값은 기본값으로 되돌린다.
+
+    `_env_int`와 달리 **0과 음수도 거른다.** 둘 다 정수라 파싱은 되지만 한도로
+    쓰이면 "모든 요청 차단"이 되어 기능이 통째로 죽는다. 오타 하나로 기능이
+    내려가면 안 되므로 기본값으로 되돌리고 경고를 남긴다.
+
+    끄고 싶을 때 쓰는 스위치는 따로 있다 (`EXPERIENCE_MAP_ENABLED=false`).
+    """
+    raw = os.getenv(name, "")
+    if not raw.strip():
+        return default
+
+    try:
+        value = int(raw)
+    except ValueError:
+        value = None
+
+    if value is None or value < 1:
+        logger.warning(
+            "%s 값이 올바르지 않아 기본값 %d 를 사용합니다 (입력=%r)", name, default, raw
+        )
+        return default
+    return value
+
+
 class NodeTimeouts(BaseModel):
     """노드별 제한 시간 (초)"""
 
@@ -91,6 +124,9 @@ class ExperienceMapSettings(BaseModel):
     retry_ttl_seconds: int = Field(1800, description="사용자 재시도 허용 시간")
     file_ttl_seconds: int = Field(3600, description="추출 실패 파일 보관 시간")
     request_lease_seconds: int = Field(300, description="요청 실행 lease")
+    rate_limit_per_minute: int = Field(
+        DEFAULT_MAX_REQUESTS, description="티켓 sub 단위 분당 요청 수"
+    )
     timeouts: NodeTimeouts = Field(default_factory=NodeTimeouts)
 
     enabled: bool = Field(False, description="기능 노출 여부 (EXPERIENCE_MAP_ENABLED)")
@@ -124,6 +160,9 @@ def load_settings() -> ExperienceMapSettings:
         retry_ttl_seconds=_env_int("EXPMAP_RETRY_TTL_SECONDS", 1800),
         file_ttl_seconds=_env_int("EXPMAP_FILE_TTL_SECONDS", 3600),
         request_lease_seconds=_env_int("EXPMAP_REQUEST_LEASE_SECONDS", 300),
+        rate_limit_per_minute=_env_positive_int(
+            "EXPMAP_RATE_LIMIT_PER_MINUTE", DEFAULT_MAX_REQUESTS
+        ),
         timeouts=NodeTimeouts(
             llm=_env_int("EXPMAP_LLM_TIMEOUT_SECONDS", 60),
             file=_env_int("EXPMAP_FILE_TIMEOUT_SECONDS", 120),
