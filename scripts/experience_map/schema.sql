@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS ai_experience_request (
   -- ⚠️ 명세 3-3 에 없는 컬럼이다. 운영 migration 에 반드시 함께 넣어야 한다.
   -- 실행권을 가진 worker 를 식별한다. 이 값이 맞아야 lease 갱신·완료·실패가
   -- 반영된다. 없으면 lease 를 잃은 worker 가 다른 worker 의 결과를 덮는다.
+  --
+  -- **nullable 이어야 한다.** NOT NULL 로 두면 안 된다 — 완료·실패·만료 정리가
+  -- 실행권을 회수할 때 NULL 로 되돌린다. NULL 인 행은 어떤 token 과도 맞지 않아
+  -- 상태를 바꿀 수 없고(= 검사를 우회하지 않고), 만료 정리가 풀어 준다.
   owner_token         uuid,
   base_map_version    bigint,
   committed_version   bigint,

@@ -43,12 +43,22 @@ async def run_stream(service: ExperienceMapService, prepared) -> list[str]:
     return [event.model_dump()["type"] async for event in service.stream(prepared)]
 
 
+async def fail_current(repo, user_id: str, request_id: str, **kwargs) -> None:
+    """현재 실행권으로 실패 처리한다 (테스트 준비용).
+
+    `owner_token` 은 필수 인자다. 준비 코드도 실제 호출부처럼 현재 주인을 확인한다.
+    """
+    row = await repo.get_request(user_id, request_id)
+    kwargs.setdefault("error", {"code": "llm_error"})
+    await repo.mark_request_failed(user_id, request_id, owner_token=row.owner_token, **kwargs)
+
+
 async def make_failed_request(service, repo, user_id) -> tuple[str, str]:
     """실패 상태의 요청을 만든다. `(session_id, request_id)`"""
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
-    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+    await fail_current(repo, user_id, request_id)
     return session.session_id, request_id
 
 
@@ -110,8 +120,8 @@ async def test_retry_only_latest_request(service, repo, user_id):
     """마지막 요청만 재시도할 수 있다 (9절 19번)."""
     session_id, old_request = await make_failed_request(service, repo, user_id)
     newer = new_request_id()
-    await repo.claim_request(user_id, session_id, newer, "b" * 64)
-    await repo.mark_request_completed(user_id, newer)
+    claimed = await repo.claim_request(user_id, session_id, newer, "b" * 64)
+    await repo.mark_request_completed(user_id, newer, owner_token=claimed.request.owner_token)
 
     with pytest.raises(RetryNotAllowedError):
         await service.prepare_retry(user_id, session_id, old_request)
@@ -165,7 +175,7 @@ async def test_lost_lease_does_not_overwrite_other_worker(repo, user_id):
     )
 
     # 다른 경로가 이 요청을 가져간다 (만료 정리 → 재시도).
-    await repo.mark_request_failed(user_id, request_id, error={"code": "lease_expired"})
+    await fail_current(repo, user_id, request_id, error={"code": "lease_expired"})
     await repo.retry_request(user_id, request_id)
 
     types = await run_stream(service, prepared)
@@ -207,7 +217,7 @@ async def test_lease_loss_interrupts_during_silence(repo, user_id):
             collected.append(event.model_dump()["type"])
             if collected[-1] == "node_status":
                 # 첫 이벤트 뒤 5초 침묵이 시작된다. 그 사이에 실행권을 뺏는다.
-                await repo.mark_request_failed(user_id, request_id, error={"code": "lease_expired"})
+                await fail_current(repo, user_id, request_id, error={"code": "lease_expired"})
                 await repo.retry_request(user_id, request_id)
         return collected
 

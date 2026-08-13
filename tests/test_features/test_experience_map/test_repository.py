@@ -24,6 +24,34 @@ def new_request_id() -> str:
     return str(uuid.uuid4())
 
 
+async def claim(repo, user_id: str, session_id: str, request_id: str, request_hash=None) -> str:
+    """요청을 잡고 **실행권 표식**을 돌려준다.
+
+    `owner_token` 은 필수 인자다. 테스트도 실제 호출부처럼 token 을 들고 다닌다 —
+    선택 인자로 두면 보호가 꺼진 상태를 테스트가 눈감아 준다.
+    """
+    result = await repo.claim_request(user_id, session_id, request_id, request_hash or HASH_A)
+    assert result.request is not None, f"claim 실패: {result.outcome}"
+    return result.request.owner_token
+
+
+async def complete(repo, user_id: str, request_id: str, **kwargs):
+    """현재 실행권으로 완료 처리한다 (테스트 준비용)."""
+    row = await repo.get_request(user_id, request_id)
+    return await repo.mark_request_completed(
+        user_id, request_id, owner_token=row.owner_token, **kwargs
+    )
+
+
+async def fail(repo, user_id: str, request_id: str, **kwargs):
+    """현재 실행권으로 실패 처리한다 (테스트 준비용)."""
+    row = await repo.get_request(user_id, request_id)
+    kwargs.setdefault("error", {"code": "llm_error"})
+    return await repo.mark_request_failed(
+        user_id, request_id, owner_token=row.owner_token, **kwargs
+    )
+
+
 # ===== 세션 =====
 
 
@@ -138,7 +166,7 @@ async def test_same_request_same_hash_completed_replays(repo, user_id):
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
-    await repo.mark_request_completed(user_id, request_id, result={"map_version": 43})
+    await complete(repo, user_id, request_id, result={"map_version": 43})
 
     result = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
 
@@ -152,7 +180,7 @@ async def test_same_request_different_hash_conflicts(repo, user_id):
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
-    await repo.mark_request_completed(user_id, request_id)
+    await complete(repo, user_id, request_id)
 
     result = await repo.claim_request(user_id, session.session_id, request_id, HASH_B)
 
@@ -165,7 +193,7 @@ async def test_failed_request_requires_retry_api(repo, user_id):
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
-    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+    await fail(repo, user_id, request_id, error={"code": "llm_error"})
 
     result = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
 
@@ -178,7 +206,7 @@ async def test_new_request_disables_previous_retry(repo, user_id):
     session = await repo.get_or_create_session(user_id)
     old_request = new_request_id()
     await repo.claim_request(user_id, session.session_id, old_request, HASH_A)
-    await repo.mark_request_failed(user_id, old_request, error={"code": "llm_error"})
+    await fail(repo, user_id, old_request, error={"code": "llm_error"})
     assert (await repo.get_request(user_id, old_request)).retryable is True
 
     await repo.claim_request(user_id, session.session_id, new_request_id(), HASH_B)
@@ -196,8 +224,8 @@ async def test_mark_completed_clears_lease(repo, user_id):
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
 
-    row = await repo.mark_request_completed(
-        user_id, request_id, result={"map_version": 43}, committed_version=43
+    row = await complete(
+        repo, user_id, request_id, result={"map_version": 43}, committed_version=43
     )
 
     assert row.status == "completed"
@@ -212,9 +240,7 @@ async def test_mark_failed_sets_retry_ttl(repo, user_id):
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
 
-    row = await repo.mark_request_failed(
-        user_id, request_id, error={"code": "llm_error"}, failed_node="refine"
-    )
+    row = await fail(repo, user_id, request_id, failed_node="refine")
 
     assert row.status == "failed"
     assert row.retryable is True
@@ -230,8 +256,8 @@ async def test_non_retryable_failure_has_no_ttl(repo, user_id):
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
 
-    row = await repo.mark_request_failed(
-        user_id, request_id, error={"code": "db_constraint_violation"}, retryable=False
+    row = await fail(
+        repo, user_id, request_id, error={"code": "db_constraint_violation"}, retryable=False
     )
 
     assert row.retryable is False
@@ -253,7 +279,7 @@ async def test_get_latest_request(repo, user_id):
     session = await repo.get_or_create_session(user_id)
     first = new_request_id()
     await repo.claim_request(user_id, session.session_id, first, HASH_A)
-    await repo.mark_request_completed(user_id, first)
+    await complete(repo, user_id, first)
     second = new_request_id()
     await repo.claim_request(user_id, session.session_id, second, HASH_B)
 
@@ -269,8 +295,9 @@ async def test_renew_lease_extends(repo, user_id):
     request_id = new_request_id()
     claimed = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     before = claimed.request.lease_expires_at
+    token = claimed.request.owner_token
 
-    assert await repo.renew_request_lease(user_id, request_id) is True
+    assert await repo.renew_request_lease(user_id, request_id, token) is True
     assert (await repo.get_request(user_id, request_id)).lease_expires_at >= before
 
 
@@ -279,19 +306,19 @@ async def test_renew_lease_fails_when_not_running(repo, user_id):
     """완료된 요청의 lease 는 갱신되지 않는다. 호출자는 실행을 멈춰야 한다."""
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
-    await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
-    await repo.mark_request_completed(user_id, request_id)
+    token = await claim(repo, user_id, session.session_id, request_id)
+    await complete(repo, user_id, request_id)
 
-    assert await repo.renew_request_lease(user_id, request_id) is False
+    assert await repo.renew_request_lease(user_id, request_id, token) is False
 
 
 @pytest.mark.asyncio
 async def test_renew_lease_fails_for_other_user(repo, user_id):
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
-    await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    token = await claim(repo, user_id, session.session_id, request_id)
 
-    assert await repo.renew_request_lease(str(int(user_id) + 1), request_id) is False
+    assert await repo.renew_request_lease(str(int(user_id) + 1), request_id, token) is False
 
 
 @pytest.mark.asyncio
@@ -354,14 +381,16 @@ async def test_lease_renewer_signals_loss(clean_db, user_id):
     repo = ExperienceMapRepository(clean_db, lease_seconds=300)
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
-    await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    token = await claim(repo, user_id, session.session_id, request_id)
 
-    async with LeaseRenewer(repo, user_id, request_id, interval_seconds=0.05) as renewer:
+    async with LeaseRenewer(
+        repo, user_id, request_id, owner_token=token, interval_seconds=0.05
+    ) as renewer:
         await asyncio.sleep(0.15)
         assert not renewer.lost.is_set()
 
         # 다른 경로가 요청을 끝내면 우리 lease 는 사라진다.
-        await repo.mark_request_completed(user_id, request_id)
+        await complete(repo, user_id, request_id)
         await asyncio.wait_for(renewer.lost.wait(), timeout=2)
 
 
@@ -373,7 +402,7 @@ async def test_purge_old_requests(repo, clean_db, user_id):
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
-    await repo.mark_request_completed(user_id, request_id)
+    await complete(repo, user_id, request_id)
     await clean_db.execute(
         "UPDATE ai_experience_request SET updated_at = now() - interval '31 days' "
         "WHERE user_id = $1",
@@ -389,7 +418,7 @@ async def test_purge_keeps_recent_requests(repo, user_id):
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
-    await repo.mark_request_completed(user_id, request_id)
+    await complete(repo, user_id, request_id)
 
     await repo.purge_old_completed_requests()
 
@@ -408,7 +437,7 @@ async def test_retry_transitions_to_running(repo, user_id):
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
-    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+    await fail(repo, user_id, request_id, error={"code": "llm_error"})
 
     result = await repo.retry_request(user_id, request_id)
 
@@ -427,7 +456,7 @@ async def test_concurrent_retries_only_one_wins(repo, user_id):
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
-    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+    await fail(repo, user_id, request_id, error={"code": "llm_error"})
 
     results = await asyncio.gather(*[repo.retry_request(user_id, request_id) for _ in range(8)])
 
@@ -443,7 +472,7 @@ async def test_retry_issues_new_owner_token(repo, user_id):
     request_id = new_request_id()
     claimed = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     first_token = claimed.request.owner_token
-    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+    await fail(repo, user_id, request_id, error={"code": "llm_error"})
 
     retried = await repo.retry_request(user_id, request_id)
 
@@ -456,7 +485,7 @@ async def test_retry_rejects_expired_ttl(clean_db, user_id):
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
-    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+    await fail(repo, user_id, request_id, error={"code": "llm_error"})
     await clean_db.execute(
         "UPDATE ai_experience_request SET retry_expires_at = now() - interval '1 minute' "
         "WHERE user_id = $1 AND request_id = $2",
@@ -472,25 +501,34 @@ async def test_retry_on_completed_request_replays(repo, user_id):
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
-    await repo.mark_request_completed(user_id, request_id, result={"map_version": 43})
+    await complete(repo, user_id, request_id, result={"map_version": 43})
 
     assert (await repo.retry_request(user_id, request_id)).outcome is ClaimOutcome.REPLAY
 
 
 @pytest.mark.asyncio
-async def test_retry_blocked_by_other_running_request(repo, user_id):
-    """세션에 다른 running 이 있으면 재시도는 세션당 1건 제약에 걸린다."""
+async def test_retry_blocked_by_other_running_request(repo, clean_db, user_id):
+    """다른 running 요청이 있으면 savepoint 뒤에도 SESSION_BUSY를 반환한다."""
     session = await repo.get_or_create_session(user_id)
     failed_request = new_request_id()
     await repo.claim_request(user_id, session.session_id, failed_request, HASH_A)
-    await repo.mark_request_failed(user_id, failed_request, error={"code": "llm_error"})
+    await fail(repo, user_id, failed_request, error={"code": "llm_error"})
     await repo.claim_request(user_id, session.session_id, new_request_id(), HASH_B)
 
-    # 새 요청이 시작되면 이전 실패는 retryable 이 내려간다 (9절 4번).
-    assert (await repo.retry_request(user_id, failed_request)).outcome in {
-        ClaimOutcome.SESSION_BUSY,
-        ClaimOutcome.RETRY_NOT_ALLOWED,
-    }
+    # 정상 경로에서는 새 요청이 이전 retry 권한을 끈다. 여기서는 partial unique
+    # index 예외 경로를 직접 검증하기 위해 retry 권한만 되살린다.
+    await clean_db.execute(
+        "UPDATE ai_experience_request SET retryable = true, "
+        "retry_expires_at = now() + interval '30 minutes' "
+        "WHERE user_id = $1 AND request_id = $2",
+        int(user_id),
+        uuid.UUID(failed_request),
+    )
+
+    result = await repo.retry_request(user_id, failed_request)
+
+    assert result.outcome is ClaimOutcome.SESSION_BUSY
+    assert (await repo.get_request(user_id, failed_request)).status == "failed"
 
 
 @pytest.mark.asyncio
@@ -512,7 +550,7 @@ async def test_completed_request_cannot_be_overwritten(repo, user_id):
     request_id = new_request_id()
     claimed = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     token = claimed.request.owner_token
-    await repo.mark_request_completed(user_id, request_id, result={"map_version": 43})
+    await complete(repo, user_id, request_id, result={"map_version": 43})
 
     overwritten = await repo.mark_request_failed(
         user_id, request_id, error={"code": "llm_error"}, owner_token=token
@@ -529,7 +567,7 @@ async def test_stale_token_cannot_renew_or_finish(repo, user_id):
     request_id = new_request_id()
     first = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     stale_token = first.request.owner_token
-    await repo.mark_request_failed(user_id, request_id, error={"code": "llm_error"})
+    await fail(repo, user_id, request_id, error={"code": "llm_error"})
     retried = await repo.retry_request(user_id, request_id)
     fresh_token = retried.request.owner_token
 
@@ -570,3 +608,92 @@ async def test_expiry_clears_owner_token(clean_db, user_id):
 
     assert (await repo.get_request(user_id, request_id)).owner_token is None
     assert await repo.renew_request_lease(user_id, request_id, stale_token) is False
+
+
+# ===== 실행권은 선택이 아니다 (Codex 2차 리뷰 1) =====
+
+
+@pytest.mark.asyncio
+async def test_state_change_requires_owner_token(repo, user_id):
+    """token 없이 상태를 바꾸려 하면 거부한다.
+
+    선택 인자로 두면 호출부가 실수로 빠뜨려도 테스트가 통과하고, 운영에서만
+    남의 결과를 덮는다.
+    """
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    await claim(repo, user_id, session.session_id, request_id)
+
+    for empty in (None, ""):
+        with pytest.raises(ValueError, match="owner_token"):
+            await repo.renew_request_lease(user_id, request_id, empty)
+        with pytest.raises(ValueError, match="owner_token"):
+            await repo.mark_request_completed(user_id, request_id, owner_token=empty)
+        with pytest.raises(ValueError, match="owner_token"):
+            await repo.mark_request_failed(
+                user_id, request_id, error={"code": "x"}, owner_token=empty
+            )
+
+    # 요청은 그대로 running 이다.
+    assert (await repo.get_request(user_id, request_id)).status == "running"
+
+
+@pytest.mark.asyncio
+async def test_null_owner_token_row_cannot_be_finished(repo, clean_db, user_id):
+    """`owner_token` 이 NULL 인 행은 아무도 완료·실패시킬 수 없다.
+
+    migration 이 컬럼을 nullable 로 추가하면 기존 `running` 행의 token 이
+    NULL 이다. 그 행이 **검사를 우회하면 안 된다** — 어떤 token 으로도 맞지
+    않아 잠기고, 만료 정리가 회수한다.
+    """
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    token = await claim(repo, user_id, session.session_id, request_id)
+    await clean_db.execute(
+        "UPDATE ai_experience_request SET owner_token = NULL WHERE user_id = $1", int(user_id)
+    )
+
+    assert await repo.renew_request_lease(user_id, request_id, token) is False
+    assert await repo.mark_request_completed(user_id, request_id, owner_token=token) is None
+    assert (
+        await repo.mark_request_failed(user_id, request_id, error={"code": "x"}, owner_token=token)
+        is None
+    )
+    assert (await repo.get_request(user_id, request_id)).status == "running"
+
+
+@pytest.mark.asyncio
+async def test_expiry_recovers_null_token_row(clean_db, user_id):
+    """NULL token 으로 잠긴 행도 만료 정리가 풀어 준다."""
+    repo = ExperienceMapRepository(clean_db, lease_seconds=-1)
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    await claim(repo, user_id, session.session_id, request_id)
+    await clean_db.execute(
+        "UPDATE ai_experience_request SET owner_token = NULL WHERE user_id = $1", int(user_id)
+    )
+
+    await repo.expire_stale_running_requests()
+
+    row = await repo.get_request(user_id, request_id)
+    assert row.status == "failed"
+    assert row.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_retry_reason_is_consistent_under_lock(repo, user_id):
+    """사유 판정과 전이가 한 트랜잭션 안에 있다 (Codex 2차 리뷰 3).
+
+    동시에 여러 재시도가 와도 각자 받는 사유가 실제 상태와 어긋나지 않는다.
+    """
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    await claim(repo, user_id, session.session_id, request_id)
+    await fail(repo, user_id, request_id)
+
+    results = await asyncio.gather(*[repo.retry_request(user_id, request_id) for _ in range(6)])
+    outcomes = [r.outcome for r in results]
+
+    assert outcomes.count(ClaimOutcome.CLAIMED) == 1
+    # 나머지는 "이미 실행 중" 이다. "만료" 나 "대상 아님" 이 섞이면 안 된다.
+    assert set(outcomes) - {ClaimOutcome.CLAIMED} == {ClaimOutcome.SESSION_BUSY}
