@@ -306,25 +306,29 @@ class ExperienceMapRepository:
                 return ClaimResult(ClaimOutcome.RETRY_EXPIRED, row)
 
             try:
-                record = await conn.fetchrow(
-                    f"""
-                    UPDATE ai_experience_request
-                       SET status = 'running',
-                           lease_expires_at = now() + make_interval(secs => $3),
-                           owner_token = $4,
-                           error = NULL,
-                           failed_node = NULL,
-                           retryable = false,
-                           retry_expires_at = NULL,
-                           updated_at = now()
-                     WHERE user_id = $1 AND request_id = $2
-                 RETURNING {REQUEST_COLUMNS}
-                    """,
-                    int(user_id),
-                    uuid.UUID(request_id),
-                    self._lease_seconds,
-                    uuid.uuid4(),
-                )
+                # partial unique index 위반은 PostgreSQL 트랜잭션 전체를 abort 시킨다.
+                # savepoint 안에서만 UPDATE를 실행해야 예외를 SESSION_BUSY로 바꾼 뒤
+                # 바깥 트랜잭션이 정상 종료할 수 있다.
+                async with conn.transaction():
+                    record = await conn.fetchrow(
+                        f"""
+                        UPDATE ai_experience_request
+                           SET status = 'running',
+                               lease_expires_at = now() + make_interval(secs => $3),
+                               owner_token = $4,
+                               error = NULL,
+                               failed_node = NULL,
+                               retryable = false,
+                               retry_expires_at = NULL,
+                               updated_at = now()
+                         WHERE user_id = $1 AND request_id = $2
+                     RETURNING {REQUEST_COLUMNS}
+                        """,
+                        int(user_id),
+                        uuid.UUID(request_id),
+                        self._lease_seconds,
+                        uuid.uuid4(),
+                    )
             except asyncpg.UniqueViolationError:
                 # 같은 세션의 다른 요청이 running 이다. 세션당 1건 제약을 그대로 쓴다.
                 return ClaimResult(ClaimOutcome.SESSION_BUSY, row)

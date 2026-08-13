@@ -507,19 +507,28 @@ async def test_retry_on_completed_request_replays(repo, user_id):
 
 
 @pytest.mark.asyncio
-async def test_retry_blocked_by_other_running_request(repo, user_id):
-    """세션에 다른 running 이 있으면 재시도는 세션당 1건 제약에 걸린다."""
+async def test_retry_blocked_by_other_running_request(repo, clean_db, user_id):
+    """다른 running 요청이 있으면 savepoint 뒤에도 SESSION_BUSY를 반환한다."""
     session = await repo.get_or_create_session(user_id)
     failed_request = new_request_id()
     await repo.claim_request(user_id, session.session_id, failed_request, HASH_A)
     await fail(repo, user_id, failed_request, error={"code": "llm_error"})
     await repo.claim_request(user_id, session.session_id, new_request_id(), HASH_B)
 
-    # 새 요청이 시작되면 이전 실패는 retryable 이 내려간다 (9절 4번).
-    assert (await repo.retry_request(user_id, failed_request)).outcome in {
-        ClaimOutcome.SESSION_BUSY,
-        ClaimOutcome.RETRY_NOT_ALLOWED,
-    }
+    # 정상 경로에서는 새 요청이 이전 retry 권한을 끈다. 여기서는 partial unique
+    # index 예외 경로를 직접 검증하기 위해 retry 권한만 되살린다.
+    await clean_db.execute(
+        "UPDATE ai_experience_request SET retryable = true, "
+        "retry_expires_at = now() + interval '30 minutes' "
+        "WHERE user_id = $1 AND request_id = $2",
+        int(user_id),
+        uuid.UUID(failed_request),
+    )
+
+    result = await repo.retry_request(user_id, failed_request)
+
+    assert result.outcome is ClaimOutcome.SESSION_BUSY
+    assert (await repo.get_request(user_id, failed_request)).status == "failed"
 
 
 @pytest.mark.asyncio
