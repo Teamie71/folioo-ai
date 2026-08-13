@@ -2,6 +2,17 @@
 
 환경변수는 API 명세 8절을 따른다. DB 연결(`DATABASE_URL`·`CHECKPOINT_DATABASE_URL`)은
 `common/db`·`common/checkpointer`가 소유하므로 여기서 다루지 않는다.
+
+**서버 간 인증 키는 방향마다 다르다** (명세 2-1).
+
+| 방향 | 변수 | 누가 쓰나 |
+| --- | --- | --- |
+| 메인 → AI | `AI_SERVICE_API_KEY` | `app/middleware/auth.py` 가 검증 |
+| AI → 메인 | `MAIN_BACKEND_API_KEY` | `common/http_client` 가 헤더에 실음 |
+
+여기 있는 두 키 값은 **HTTP 호출에 쓰이지 않는다.** 티켓 서명 키가 둘 중 어느
+쪽과도 겹치지 않는지 확인하는 용도뿐이다 (`ticket_secret_is_distinct`).
+아웃바운드 헤더는 `common/http_client` 가 직접 환경변수를 읽어 붙인다.
 """
 
 import logging
@@ -117,8 +128,13 @@ class ExperienceMapSettings(BaseModel):
     """경험정리 기능 설정"""
 
     main_backend_url: str | None = Field(None, description="커밋·템플릿 API 호출 대상")
-    api_key: str | None = Field(None, description="메인 ↔ AI 서버 간 인증 키")
-    ticket_secret: str | None = Field(None, description="티켓 HS256 서명 키. api_key와 반드시 별도")
+    service_api_key: str | None = Field(
+        None, description="인바운드 전용 (메인 → AI). AI_SERVICE_API_KEY"
+    )
+    main_backend_api_key: str | None = Field(
+        None, description="아웃바운드 전용 (AI → 메인). MAIN_BACKEND_API_KEY"
+    )
+    ticket_secret: str | None = Field(None, description="티켓 HS256 서명 키. 위 두 키와 모두 별도")
     upload_bucket: str | None = Field(None, description="임시 첨부 파일 GCS bucket")
 
     retry_ttl_seconds: int = Field(1800, description="사용자 재시도 허용 시간")
@@ -133,10 +149,16 @@ class ExperienceMapSettings(BaseModel):
 
     @property
     def ticket_secret_is_distinct(self) -> bool:
-        """티켓 서명 키가 API 키와 분리돼 있는지 여부"""
-        if not self.ticket_secret or not self.api_key:
+        """티켓 서명 키가 **양방향 API 키 어느 쪽과도** 겹치지 않는지 여부
+
+        티켓은 프론트가 직접 들고 다닌다. 서명 키가 서버 간 API 키와 같으면
+        둘 중 하나만 새어도 임의 사용자의 세션 티켓을 위조할 수 있다.
+        """
+        if not self.ticket_secret:
             return True
-        return self.ticket_secret != self.api_key
+        return self.ticket_secret not in {
+            key for key in (self.service_api_key, self.main_backend_api_key) if key
+        }
 
     @property
     def ticket_secret_is_strong(self) -> bool:
@@ -154,7 +176,8 @@ def load_settings() -> ExperienceMapSettings:
     """환경변수에서 설정을 읽는다."""
     return ExperienceMapSettings(
         main_backend_url=os.getenv("MAIN_BACKEND_URL") or None,
-        api_key=os.getenv("AI_SERVICE_API_KEY") or None,
+        service_api_key=os.getenv("AI_SERVICE_API_KEY") or None,
+        main_backend_api_key=os.getenv("MAIN_BACKEND_API_KEY") or None,
         ticket_secret=os.getenv("EXPMAP_TICKET_SECRET") or None,
         upload_bucket=os.getenv("EXPMAP_UPLOAD_BUCKET") or None,
         retry_ttl_seconds=_env_int("EXPMAP_RETRY_TTL_SECONDS", 1800),
