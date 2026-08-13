@@ -70,7 +70,16 @@ gap 답변 여부는 Router가 아니라 반영 내용 필터링 노드가 판�
 | --- | --- | --- |
 | 메인 → AI | `X-API-Key: ${AI_SERVICE_API_KEY}` | `POST /sessions` |
 | **프론트 → AI** | `Authorization: Bearer {ticket}` | `state`, `chat/stream`, `retry/stream`, `requests/{rid}` |
-| AI → 메인 | `X-API-Key: ${AI_SERVICE_API_KEY}` | 커밋·템플릿 API (7절) |
+| AI → 메인 | `X-API-Key: ${MAIN_BACKEND_API_KEY}` | 커밋·템플릿 API (7절) |
+
+**방향마다 키가 다릅니다.** 인바운드(메인 → AI)는 `AI_SERVICE_API_KEY`, 아웃바운드
+(AI → 메인)는 `MAIN_BACKEND_API_KEY`입니다. 한 키로 묶지 않는 이유는 티켓 서명 키를
+분리한 것과 같습니다 — 회전 주기가 다르고, 한쪽이 유출돼도 반대 방향 호출 권한까지
+넘어가지 않습니다.
+
+`MAIN_BACKEND_API_KEY`는 경험정리 전용이 아니라 AI 서버가 메인 서버를 부를 때 쓰는
+공용 변수입니다(`common/http_client`). 첨삭·포트폴리오 등 기존 기능과 pptx worker가
+이미 같은 변수를 씁니다.
 
 #### 티켓 발급 흐름
 
@@ -918,6 +927,10 @@ Fallback은 `committed: false`이며 **진입 경로별 고정 문구**를 보�
 | `GET` | `/api/v1/experience-map/templates` | AI 서버 | `X-API-Key` |
 | `POST` | `/api/v1/experience-map/revert` | 프론트 | 로그인 세션 |
 
+**"AI 서버" 호출이 보내는 `X-API-Key` 값은 AI 쪽 `MAIN_BACKEND_API_KEY`입니다**
+(2-1 참고). 메인 → AI 호출에 쓰는 `AI_SERVICE_API_KEY`와 다른 키이므로, 메인 서버는
+두 값을 따로 보관해야 합니다.
+
 ### `POST /ticket`
 
 프론트가 AI 서버에 직결하기 전에 신원을 발급받습니다 (2-1).
@@ -1139,8 +1152,9 @@ COMMIT
 | `DATABASE_URL` | 경험 맵·AI 세션·요청 DB |
 | `CHECKPOINT_DATABASE_URL` | LangGraph checkpoint 전용 DB |
 | `MAIN_BACKEND_URL` | 커밋·템플릿 API 호출 대상 |
-| `AI_SERVICE_API_KEY` | 메인 ↔ AI 서버 간 인증 키 (양방향) |
-| `EXPMAP_TICKET_SECRET` | 티켓 HS256 서명 키. `AI_SERVICE_API_KEY`와 별도 |
+| `AI_SERVICE_API_KEY` | **인바운드** 전용. 메인 → AI 호출 검증 (`POST /sessions`) |
+| `MAIN_BACKEND_API_KEY` | **아웃바운드** 전용. AI → 메인 호출 시 보내는 키. 기존 공용 변수 |
+| `EXPMAP_TICKET_SECRET` | 티켓 HS256 서명 키. 위 두 키와 모두 별도 |
 | `ALLOWED_ORIGINS` | 프론트 직결용 CORS 오리진 (기존 변수에 웹 오리진 추가) |
 | `EXPMAP_UPLOAD_BUCKET` | 임시 첨부 파일 bucket |
 | `EXPMAP_RETRY_TTL_SECONDS` | 기본값 `1800` |
@@ -1161,7 +1175,8 @@ fallback하지 않습니다. 현재 `common/checkpointer/factory.py`가 폴백�
 | 변수 | 설명 |
 | --- | --- |
 | `AI_SERVICE_URL` | AI 서버 Base URL |
-| `AI_SERVICE_API_KEY` | AI 서버 호출 인증 키 |
+| `AI_SERVICE_API_KEY` | **아웃바운드** — 메인 → AI 호출 시 보내는 키 |
+| (이름은 메인 서버가 정함) | **인바운드** — AI → 메인 호출 검증용. AI 쪽 `MAIN_BACKEND_API_KEY`와 같은 값 |
 | `EXPMAP_TICKET_SECRET` | 티켓 서명 키 (AI 서버와 공유) |
 | `EXPMAP_TICKET_TTL_SECONDS` | 기본값 `300` |
 

@@ -7,6 +7,7 @@ from features.experience_map import config
 ENV_VARS = (
     "MAIN_BACKEND_URL",
     "AI_SERVICE_API_KEY",
+    "MAIN_BACKEND_API_KEY",
     "EXPMAP_TICKET_SECRET",
     "EXPMAP_UPLOAD_BUCKET",
     "EXPMAP_RETRY_TTL_SECONDS",
@@ -73,7 +74,7 @@ def test_feature_flag_parsing(monkeypatch, raw, expected):
 
 
 def test_ticket_secret_must_be_distinct_from_api_key(monkeypatch):
-    """티켓 서명 키를 API 키와 재사용하면 안 된다 (API 명세 2-1)."""
+    """티켓 서명 키를 인바운드 API 키와 재사용하면 안 된다 (API 명세 2-1)."""
     monkeypatch.setenv("AI_SERVICE_API_KEY", "shared-secret")
     monkeypatch.setenv("EXPMAP_TICKET_SECRET", "shared-secret")
 
@@ -81,6 +82,32 @@ def test_ticket_secret_must_be_distinct_from_api_key(monkeypatch):
 
     monkeypatch.setenv("EXPMAP_TICKET_SECRET", "ticket-only-secret")
     assert config.load_settings().ticket_secret_is_distinct is True
+
+
+def test_ticket_secret_must_be_distinct_from_outbound_key(monkeypatch):
+    """아웃바운드 키와 겹쳐도 안 된다.
+
+    티켓은 프론트가 직접 들고 다닌다. 서명 키가 서버 간 키와 같으면 둘 중 하나만
+    새어도 임의 사용자의 세션 티켓을 위조할 수 있다. 방향은 관계없다.
+    """
+    monkeypatch.setenv("MAIN_BACKEND_API_KEY", "outbound-secret")
+    monkeypatch.setenv("EXPMAP_TICKET_SECRET", "outbound-secret")
+
+    assert config.load_settings().ticket_secret_is_distinct is False
+
+    monkeypatch.setenv("EXPMAP_TICKET_SECRET", "ticket-only-secret")
+    assert config.load_settings().ticket_secret_is_distinct is True
+
+
+def test_api_keys_are_read_per_direction(monkeypatch):
+    """방향마다 다른 변수를 읽는다 (명세 2-1)."""
+    monkeypatch.setenv("AI_SERVICE_API_KEY", "inbound-key")
+    monkeypatch.setenv("MAIN_BACKEND_API_KEY", "outbound-key")
+
+    settings = config.load_settings()
+
+    assert settings.service_api_key == "inbound-key"
+    assert settings.main_backend_api_key == "outbound-key"
 
 
 def test_ticket_secret_strength(monkeypatch):
