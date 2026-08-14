@@ -33,6 +33,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from features.experience_map.map_context import ExperienceMapSnapshot, build_map_snapshot
+
 try:
     from dotenv import load_dotenv
 
@@ -156,3 +158,13 @@ async def clean_db(db_pool):
 def user_id(request) -> str:
     """테스트마다 다른 user_id. 서로 침범하지 않는다."""
     return str(TEST_USER_ID_BASE + (abs(hash(request.node.nodeid)) % 500_000))
+
+
+@pytest.fixture
+def repository_snapshot():
+    """메인 서버 소유 block DDL 없이 쓸 수 있는 읽기 전용 맵 snapshot fixture."""
+
+    async def _get_map_snapshot(_repository, _user_id: str) -> ExperienceMapSnapshot:
+        return build_map_snapshot([], map_version=1)
+
+    return _get_map_snapshot
