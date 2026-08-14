@@ -85,6 +85,12 @@ def test_block_owner_mapping_covers_only_activity_subtrees(snapshot):
     }
 
 
+def test_block_contents_keeps_only_actual_user_content(snapshot):
+    """placeholder는 extend gap 원문 결합용 content map에 섞지 않는다."""
+    assert snapshot.block_contents()["31"] == "결제 오류를 해결했다"
+    assert "41" not in snapshot.block_contents()
+
+
 def test_activity_tree_renders_content_and_placeholder_separately(snapshot):
     """빈 블록 가이드가 사용자 작성 내용처럼 렌더링되지 않는다."""
     context = snapshot.get_activity_context("exp_1")

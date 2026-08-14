@@ -246,11 +246,15 @@ _runner: GraphRunner | None = None
 
 
 def get_graph_runner() -> GraphRunner:
-    """그래프 실행기 반환. 주입된 것이 없으면 mock 을 쓴다."""
+    """그래프 실행기 반환. 주입된 것이 없으면 실제 checkpoint graph를 쓴다."""
     global _runner
     if _runner is None:
-        logger.warning("경험정리 그래프가 아직 없어 MockGraphRunner 를 사용합니다 (3.17 에서 교체)")
-        _runner = MockGraphRunner()
+        from common.checkpointer import get_checkpointer
+        from features.experience_map.graph import build_graph
+
+        _runner = CheckpointGraphRunner(
+            build_graph(checkpointer=get_checkpointer()), state_events=_state_events
+        )
     return _runner
 
 
@@ -258,3 +262,29 @@ def set_graph_runner(runner: GraphRunner | None) -> None:
     """그래프 실행기 주입 (3.17·테스트)"""
     global _runner
     _runner = runner
+
+
+async def _state_events(state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
+    """graph 최종 state를 fallback 또는 coordinator SSE 이벤트로 바꾼다."""
+    if state.get("fallback_reason"):
+        from features.experience_map.nodes.fallback import fallback_message
+
+        yield MessageCompleteEvent(
+            message=CompletedMessage(
+                request_id=str(state["request_id"]),
+                session_id=str(state["session_id"]),
+                response_kind="fallback",
+                ai_response=fallback_message(state.get("fallback_reason")),
+                committed=False,
+            )
+        )
+        return
+    if state.get("commit_items"):
+        from features.experience_map.coordinator import coordinate
+        from features.experience_map.repository import get_repository
+
+        async def save_active_gap(user_id: str, gap: dict | None) -> None:
+            await get_repository().save_active_gap(user_id, gap)
+
+        async for event in coordinate(state, save_active_gap=save_active_gap):
+            yield event

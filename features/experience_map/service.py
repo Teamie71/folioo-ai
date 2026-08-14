@@ -492,15 +492,30 @@ async def _build_state(
     state["map_version"] = snapshot.map_version
     state["outline"] = snapshot.outline()
     state["block_id_to_experience_alias"] = snapshot.block_id_to_activity_alias()
+    state["block_id_to_content"] = snapshot.block_contents()
+    state["activity_contexts"] = {
+        alias: {
+            "tree_text": context.tree_text,
+            "alias_to_block_id": context.alias_to_block_id,
+        }
+        for alias in state["block_id_to_experience_alias"].values()
+        if (context := snapshot.get_activity_context(alias)) is not None
+    }
     if prepared.context_experience_id:
         activity_alias = state["block_id_to_experience_alias"].get(prepared.context_experience_id)
         if activity_alias:
-            context = snapshot.get_activity_context(activity_alias)
-            if context:
-                state["target_experience_alias"] = activity_alias
-                state["activity_tree_text"] = context.tree_text
-                state["alias_to_block_id"] = context.alias_to_block_id
+            _apply_activity_context(state, activity_alias)
     return state
+
+
+def _apply_activity_context(state: ExperienceMapState, activity_alias: str) -> None:
+    """선택 활동의 LLM 허용 tree와 alias map만 state에 노출한다."""
+    context = state.get("activity_contexts", {}).get(activity_alias)
+    if not context:
+        return
+    state["target_experience_alias"] = activity_alias
+    state["activity_tree_text"] = context["tree_text"]
+    state["alias_to_block_id"] = context["alias_to_block_id"]
 
 
 def _to_request_state(row: RequestRow) -> RequestStateResponse:
