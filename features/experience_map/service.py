@@ -351,7 +351,7 @@ class ExperienceMapService:
 
     async def _execute(self, prepared: PreparedRequest) -> AsyncIterator[ExperienceMapEvent]:
         """그래프를 돌리고 결과를 저장한다."""
-        state = _build_state(prepared)
+        state = await _build_state(prepared, self.repository)
         result_payload: dict[str, Any] | None = None
         suggestion_payload: dict[str, Any] | None = None
 
@@ -475,7 +475,9 @@ async def _interrupt_when_lease_lost(
                 await aclose()
 
 
-def _build_state(prepared: PreparedRequest) -> ExperienceMapState:
+async def _build_state(
+    prepared: PreparedRequest, repository: ExperienceMapRepository
+) -> ExperienceMapState:
     """그래프에 넘길 초기 state"""
     state = start_turn(
         {"user_id": prepared.user_id, "session_id": prepared.session_id},
@@ -486,6 +488,18 @@ def _build_state(prepared: PreparedRequest) -> ExperienceMapState:
         view=prepared.view,
     )
     state["file_references"] = [f.as_reference() for f in prepared.stored_files]
+    snapshot = await repository.get_map_snapshot(prepared.user_id)
+    state["map_version"] = snapshot.map_version
+    state["outline"] = snapshot.outline()
+    state["block_id_to_experience_alias"] = snapshot.block_id_to_activity_alias()
+    if prepared.context_experience_id:
+        activity_alias = state["block_id_to_experience_alias"].get(prepared.context_experience_id)
+        if activity_alias:
+            context = snapshot.get_activity_context(activity_alias)
+            if context:
+                state["target_experience_alias"] = activity_alias
+                state["activity_tree_text"] = context.tree_text
+                state["alias_to_block_id"] = context.alias_to_block_id
     return state
 
 
