@@ -23,6 +23,7 @@ from .schemas import (
     RefinedItem,
     RouterOutput,
     StructuredItem,
+    TargetActivityOutput,
 )
 from .state import (
     ExperienceMapState,
@@ -63,6 +64,7 @@ __all__ = [
     "RefinedItem",
     "RouterOutput",
     "StructuredItem",
+    "TargetActivityOutput",
     "TemplateCatalog",
     "TemplateCatalogClient",
     "TemplateDefinition",
