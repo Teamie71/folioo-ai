@@ -163,6 +163,12 @@ class RefinedItem(BaseModel):
     refined_text: str | None = Field(None, description="정제된 텍스트")
 
 
+class RefinementOutput(BaseModel):
+    """문장 정제 노드의 전체 활동 단위 출력."""
+
+    items: list[RefinedItem] = Field(default_factory=list)
+
+
 class GapCandidate(BaseModel):
     """gap 분석 노드가 고른 gap. 별칭 기준이며 실제 ID 변환 전이다."""
 

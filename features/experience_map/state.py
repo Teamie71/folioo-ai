@@ -100,6 +100,7 @@ class ExperienceMapState(TypedDict, total=False):
     alias_to_block_id: dict[str, str]
     activity_tree_text: str | None
     block_id_to_experience_alias: dict[str, str]
+    block_id_to_content: dict[str, str]
 
     # ===== 필터링 분류 결과 =====
     gap_answer_items: list[dict[str, Any]]
@@ -109,6 +110,7 @@ class ExperienceMapState(TypedDict, total=False):
     # ===== 중간 산출 =====
     structured_items: list[dict[str, Any]]
     refined_items: list[dict[str, Any]]
+    gap_update_item: dict[str, Any] | None
     commit_items: list[dict[str, Any]]
     dropped_items: list[dict[str, Any]]
 
@@ -141,11 +143,13 @@ TURN_FIELD_DEFAULTS: dict[str, Any] = {
     "alias_to_block_id": {},
     "activity_tree_text": None,
     "block_id_to_experience_alias": {},
+    "block_id_to_content": {},
     "gap_answer_items": [],
     "new_items": [],
     "excluded_reasons": [],
     "structured_items": [],
     "refined_items": [],
+    "gap_update_item": None,
     "commit_items": [],
     "dropped_items": [],
     "validation_errors": [],
