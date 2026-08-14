@@ -113,11 +113,13 @@ class ExperienceMapService:
         self,
         repository: ExperienceMapRepository | None = None,
         runner: GraphRunner | None = None,
+        main_client: ExperienceMapMainClient | None = None,
         *,
         lease_renew_interval: int = LEASE_RENEW_INTERVAL_SECONDS,
     ) -> None:
         self._repository = repository
         self._runner = runner
+        self._main_client = main_client
         self._lease_renew_interval = lease_renew_interval
         """실행권 확인 주기. 실행권 상실을 알아채는 데 걸리는 시간의 상한이다."""
 
@@ -128,6 +130,11 @@ class ExperienceMapService:
     @property
     def runner(self) -> GraphRunner:
         return self._runner or get_graph_runner()
+
+    @property
+    def main_client(self) -> ExperienceMapMainClient:
+        """메인 서버 커밋 복구 클라이언트."""
+        return self._main_client or ExperienceMapMainClient()
 
     # ===== 세션 =====
 
@@ -198,6 +205,8 @@ class ExperienceMapService:
         """
         if await self.repository.get_session(user_id, session_id) is None:
             raise SessionNotFoundError()
+
+        await self._reconcile_stale_requests(session_id=session_id)
 
         request_hash = compute_request_hash(
             user_message, context_experience_id, view, [f.sha256 for f in stored_files]
@@ -431,18 +440,34 @@ class ExperienceMapService:
         return ErrorEvent(error=payload.model_dump())
 
     async def _reconcile_stale_requests(self, session_id: str | None = None) -> None:
-        """만료 lease를 failed로 바꾸기 전 메인 서버 커밋 결과를 복구한다."""
-        client = ExperienceMapMainClient()
-        for row in await self.repository.get_expired_running_requests(session_id):
+        """만료 lease를 커밋 결과 조회 뒤 안전하게 마감한다."""
+        while row := await self.repository.claim_expired_request_for_recovery(session_id):
             try:
-                recovery = await client.get_commit(row.request_id)
-                if recovery.committed and recovery.result is not None:
-                    await self.repository.recover_expired_commit(
-                        row.user_id, row.request_id, recovery.result.model_dump(mode="json")
+                recovery = await self.main_client.get_commit(row.request_id)
+                if recovery.committed:
+                    if recovery.result is None:
+                        raise ValueError("커밋 복구 결과가 비어 있습니다.")
+                    await self.repository.mark_request_completed(
+                        row.user_id,
+                        row.request_id,
+                        result=recovery.result.model_dump(mode="json"),
+                        committed_version=recovery.result.map_version,
+                        owner_token=row.owner_token,
                     )
+                    continue
             except Exception:
-                logger.warning("만료 커밋 복구 조회 실패 (request_id=%s)", row.request_id)
-        await self.repository.expire_stale_running_requests(session_id=session_id)
+                logger.exception("만료 요청의 커밋 결과 조회 실패 (request_id=%s)", row.request_id)
+
+            await self.repository.mark_request_failed(
+                row.user_id,
+                row.request_id,
+                error={
+                    "code": "lease_expired",
+                    "message": "요청 연결이 끊어졌습니다. 다시 시도해 주세요.",
+                },
+                retryable=True,
+                owner_token=row.owner_token,
+            )
 
 
 async def _interrupt_when_lease_lost(

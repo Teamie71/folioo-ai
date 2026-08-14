@@ -269,9 +269,6 @@ class ExperienceMapRepository:
         Returns:
             ClaimResult: `outcome`이 `CLAIMED`일 때만 그래프를 실행한다
         """
-        # 만료된 running 요청이 남아 있으면 새 요청을 영원히 막는다 (명세 3-3).
-        await self.expire_stale_running_requests(session_id=session_id)
-
         existing = await self.get_request(user_id, request_id)
         if existing is not None:
             if existing.request_hash != request_hash:
@@ -525,33 +522,39 @@ class ExperienceMapRepository:
 
     # ===== 정리 =====
 
-    async def get_expired_running_requests(self, session_id: str | None = None) -> list[RequestRow]:
-        """lease가 지난 running 요청을 상태 변경 없이 조회한다."""
-        records = await self._pool.fetch(
-            f"SELECT {REQUEST_COLUMNS} FROM ai_experience_request "
-            "WHERE status = 'running' AND lease_expires_at IS NOT NULL "
-            "AND lease_expires_at < now() AND ($1::uuid IS NULL OR session_id = $1::uuid)",
-            uuid.UUID(session_id) if session_id else None,
-        )
-        return [RequestRow.from_record(record) for record in records]
-
-    async def recover_expired_commit(
-        self, user_id: str, request_id: str, result: dict[str, Any]
+    async def claim_expired_request_for_recovery(
+        self, session_id: str | None = None
     ) -> RequestRow | None:
-        """응답 유실 뒤 확인된 메인 커밋 결과를 completed로 저장한다."""
+        """만료된 요청 하나의 복구 실행권을 원자적으로 가져온다.
+
+        메인 서버의 ``GET /commit/{request_id}`` 조회는 DB 트랜잭션 밖에서 해야
+        한다. 먼저 이 메서드로 새 lease와 owner token을 발급하면, 여러 worker가
+        동시에 정리해도 한 worker만 해당 요청의 조회·마감을 수행한다.
+        """
+        token = uuid.uuid4()
         record = await self._pool.fetchrow(
             f"""
-            UPDATE ai_experience_request SET status = 'completed', result = $3::jsonb,
-                   committed_version = ($3::jsonb ->> 'map_version')::bigint,
-                   retryable = false, retry_expires_at = NULL, lease_expires_at = NULL,
-                   owner_token = NULL, updated_at = now()
-             WHERE user_id = $1 AND request_id = $2 AND status = 'running'
-               AND lease_expires_at IS NOT NULL AND lease_expires_at < now()
+            WITH candidate AS (
+                SELECT ctid
+                  FROM ai_experience_request
+                 WHERE status = 'running'
+                   AND lease_expires_at IS NOT NULL
+                   AND lease_expires_at < now()
+                   AND ($1::uuid IS NULL OR session_id = $1::uuid)
+                 ORDER BY lease_expires_at
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT 1
+            )
+            UPDATE ai_experience_request AS request
+               SET owner_token = $2::uuid,
+                   lease_expires_at = now() + make_interval(secs => $3),
+                   updated_at = now()
+             WHERE request.ctid = (SELECT ctid FROM candidate)
          RETURNING {REQUEST_COLUMNS}
             """,
-            int(user_id),
-            uuid.UUID(request_id),
-            json.dumps(result, ensure_ascii=False),
+            uuid.UUID(session_id) if session_id else None,
+            token,
+            self._lease_seconds,
         )
         return RequestRow.from_record(record) if record else None
 

@@ -6,7 +6,7 @@ spec: "docs/architecture/experience-map-agent.md"
 depends_on: ["3.20"]
 blocks: ["3.23"]
 estimate: "M"
-status: "todo"
+status: "in_progress"
 owner: ""
 sprint: ""
 ---
@@ -31,10 +31,10 @@ sprint: ""
 - [ ] 연결 종료가 **커밋 전**이면 실행 취소 후 failed 저장
 - [ ] commit task 는 shield 처리 (취소되지 않음)
 - [ ] 연결 종료가 **커밋 후**면 suggestion 을 생략하고 completed 저장
-- [ ] request GET API 로 저장 결과 복구
-- [ ] **만료 lease 정리 시 `GET /commit/{request_id}` 를 먼저 확인**
-  - [ ] `committed: true` → 결과를 채우고 completed
-  - [ ] `committed: false` → retryable failed
+- [x] request GET API 로 저장 결과 복구
+- [x] **만료 lease 정리 시 `GET /commit/{request_id}` 를 먼저 확인**
+  - [x] `committed: true` → 결과를 채우고 completed
+  - [x] `committed: false` → retryable failed
 - [ ] lease 가 살아 있으면 `running` 유지
 
 ## Definition of Done
@@ -48,3 +48,8 @@ sprint: ""
 ## 리스크 / 메모
 
 - 가장 위험한 상태는 "메인에는 커밋됐는데 AI 는 실패로 아는" 경우다. lease 정리에서 `GET /commit/{request_id}` 를 먼저 확인하는 순서가 이를 막는다.
+- AI 서버는 만료 행을 먼저 새 lease·`owner_token`으로 원자 claim한 뒤 메인 서버를
+  조회한다. 따라서 복구 worker 경쟁이나 옛 worker의 지연 완료가 결과를 덮지 못한다.
+- 로컬 단위 테스트는 committed·not committed·조회 실패 분기를 검증했다. 실제 메인
+  서버의 `GET /commit/{request_id}` 응답 및 운영 PostgreSQL migration 검증은 3.23에서
+  별도로 남아 있다.
