@@ -42,6 +42,7 @@ from features.experience_map.errors import (
     SessionNotFoundError,
 )
 from features.experience_map.graph_runner import GraphRunner, get_graph_runner
+from features.experience_map.main_client import ExperienceMapMainClient
 from features.experience_map.repository import (
     ClaimOutcome,
     ExperienceMapRepository,
@@ -151,7 +152,7 @@ class ExperienceMapService:
         if session is None:
             raise SessionNotFoundError()
 
-        await self.repository.expire_stale_running_requests(session_id=session_id)
+        await self._reconcile_stale_requests(session_id=session_id)
 
         latest = await self.repository.get_latest_request(user_id, session_id)
         if latest is None:
@@ -167,7 +168,7 @@ class ExperienceMapService:
 
     async def get_request_state(self, user_id: str, request_id: str) -> RequestStateResponse:
         """SSE 단절 뒤 저장 결과를 복구한다."""
-        await self.repository.expire_stale_running_requests()
+        await self._reconcile_stale_requests()
 
         row = await self.repository.get_request(user_id, request_id)
         if row is None:
@@ -257,7 +258,7 @@ class ExperienceMapService:
         if await self.repository.get_session(user_id, session_id) is None:
             raise SessionNotFoundError()
 
-        await self.repository.expire_stale_running_requests(session_id=session_id)
+        await self._reconcile_stale_requests(session_id=session_id)
 
         # 마지막 요청만 재시도할 수 있다 (9절 19번). 정책 판정이라 전이와 분리한다 —
         # 그 사이에 새 요청이 시작되면 `_disable_previous_retries` 가 retryable 을
@@ -428,6 +429,20 @@ class ExperienceMapService:
             owner_token=prepared.owner_token,
         )
         return ErrorEvent(error=payload.model_dump())
+
+    async def _reconcile_stale_requests(self, session_id: str | None = None) -> None:
+        """만료 lease를 failed로 바꾸기 전 메인 서버 커밋 결과를 복구한다."""
+        client = ExperienceMapMainClient()
+        for row in await self.repository.get_expired_running_requests(session_id):
+            try:
+                recovery = await client.get_commit(row.request_id)
+                if recovery.committed and recovery.result is not None:
+                    await self.repository.recover_expired_commit(
+                        row.user_id, row.request_id, recovery.result.model_dump(mode="json")
+                    )
+            except Exception:
+                logger.warning("만료 커밋 복구 조회 실패 (request_id=%s)", row.request_id)
+        await self.repository.expire_stale_running_requests(session_id=session_id)
 
 
 async def _interrupt_when_lease_lost(
