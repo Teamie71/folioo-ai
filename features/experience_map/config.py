@@ -146,6 +146,9 @@ class ExperienceMapSettings(BaseModel):
     timeouts: NodeTimeouts = Field(default_factory=NodeTimeouts)
 
     enabled: bool = Field(False, description="기능 노출 여부 (EXPERIENCE_MAP_ENABLED)")
+    demo_mode: bool = Field(
+        False, description="로컬 Swagger 데모 노출 여부 (EXPERIENCE_MAP_DEMO_MODE)"
+    )
 
     @property
     def ticket_secret_is_distinct(self) -> bool:
@@ -192,6 +195,7 @@ def load_settings() -> ExperienceMapSettings:
             gap=_env_int("EXPMAP_GAP_TIMEOUT_SECONDS", 30),
         ),
         enabled=os.getenv("EXPERIENCE_MAP_ENABLED", "").strip().lower() in {"1", "true", "yes"},
+        demo_mode=os.getenv("EXPERIENCE_MAP_DEMO_MODE", "").strip().lower() in {"1", "true", "yes"},
     )
 
 
