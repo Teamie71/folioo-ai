@@ -101,6 +101,7 @@ class ExperienceMapState(TypedDict, total=False):
     activity_tree_text: str | None
     block_id_to_experience_alias: dict[str, str]
     block_id_to_content: dict[str, str]
+    activity_contexts: dict[str, dict[str, Any]]
 
     # ===== 필터링 분류 결과 =====
     gap_answer_items: list[dict[str, Any]]
@@ -150,6 +151,7 @@ TURN_FIELD_DEFAULTS: dict[str, Any] = {
     "activity_tree_text": None,
     "block_id_to_experience_alias": {},
     "block_id_to_content": {},
+    "activity_contexts": {},
     "gap_answer_items": [],
     "new_items": [],
     "excluded_reasons": [],

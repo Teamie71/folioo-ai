@@ -116,6 +116,15 @@ class ExperienceMapSnapshot:
         """
         return dict(self._block_id_to_activity_alias)
 
+    def block_contents(self) -> dict[str, str]:
+        """내용이 있는 block의 실제 ID→원문 매핑을 복사해 반환한다."""
+        return {
+            node.row.block_id: node.row.content
+            for root in self._roots
+            for node in _walk(root)
+            if node.row.content is not None
+        }
+
 
 def build_map_snapshot(rows: list[MapBlockRow], map_version: int) -> ExperienceMapSnapshot:
     """flat block 목록을 position 순서 트리로 만들고 활동 alias를 배정한다.
