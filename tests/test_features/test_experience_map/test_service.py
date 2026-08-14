@@ -39,6 +39,17 @@ async def service(repo) -> ExperienceMapService:
     return ExperienceMapService(repository=repo, runner=MockGraphRunner())
 
 
+@pytest.fixture(autouse=True)
+def map_snapshot(repository_snapshot, monkeypatch):
+    """실제 block DDL 없이도 서비스의 상태 조립 경로를 검증한다.
+
+    이 모듈은 요청 claim·재시도의 DB 원자성을 검증하고 그래프는 mock으로 둔다.
+    block 테이블은 메인 서버가 소유하므로, 여기서 임의 DDL을 만들지 않고
+    결정적인 빈 snapshot을 주입한다.
+    """
+    monkeypatch.setattr(ExperienceMapRepository, "get_map_snapshot", repository_snapshot)
+
+
 async def run_stream(service: ExperienceMapService, prepared) -> list[str]:
     return [event.model_dump()["type"] async for event in service.stream(prepared)]
 

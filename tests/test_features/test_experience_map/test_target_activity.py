@@ -156,3 +156,22 @@ async def test_llm_failure_raises_retryable_error(fake_llm):
 
     assert exc_info.value.failed_node == "target_activity"
     assert exc_info.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_selection_applies_only_selected_activity_context(fake_llm):
+    """선택 뒤에는 해당 활동의 tree와 alias map만 후속 노드에 남긴다."""
+    fake_llm(TargetActivityOutput(activity_alias="exp_2", reason="추천 시스템 언급"))
+    result = await select_target_activity(
+        make_state(
+            activity_contexts={
+                "exp_2": {
+                    "tree_text": "[exp_2] 추천 시스템 개선\n  [b_9] 주요성과",
+                    "alias_to_block_id": {"exp_2": "202", "b_9": "909"},
+                }
+            }
+        )
+    )
+
+    assert result["activity_tree_text"] == "[exp_2] 추천 시스템 개선\n  [b_9] 주요성과"
+    assert result["alias_to_block_id"] == {"exp_2": "202", "b_9": "909"}

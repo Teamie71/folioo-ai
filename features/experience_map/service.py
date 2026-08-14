@@ -42,6 +42,7 @@ from features.experience_map.errors import (
     SessionNotFoundError,
 )
 from features.experience_map.graph_runner import GraphRunner, get_graph_runner
+from features.experience_map.main_client import ExperienceMapMainClient
 from features.experience_map.repository import (
     ClaimOutcome,
     ExperienceMapRepository,
@@ -151,7 +152,7 @@ class ExperienceMapService:
         if session is None:
             raise SessionNotFoundError()
 
-        await self.repository.expire_stale_running_requests(session_id=session_id)
+        await self._reconcile_stale_requests(session_id=session_id)
 
         latest = await self.repository.get_latest_request(user_id, session_id)
         if latest is None:
@@ -167,7 +168,7 @@ class ExperienceMapService:
 
     async def get_request_state(self, user_id: str, request_id: str) -> RequestStateResponse:
         """SSE 단절 뒤 저장 결과를 복구한다."""
-        await self.repository.expire_stale_running_requests()
+        await self._reconcile_stale_requests()
 
         row = await self.repository.get_request(user_id, request_id)
         if row is None:
@@ -257,7 +258,7 @@ class ExperienceMapService:
         if await self.repository.get_session(user_id, session_id) is None:
             raise SessionNotFoundError()
 
-        await self.repository.expire_stale_running_requests(session_id=session_id)
+        await self._reconcile_stale_requests(session_id=session_id)
 
         # 마지막 요청만 재시도할 수 있다 (9절 19번). 정책 판정이라 전이와 분리한다 —
         # 그 사이에 새 요청이 시작되면 `_disable_previous_retries` 가 retryable 을
@@ -351,7 +352,7 @@ class ExperienceMapService:
 
     async def _execute(self, prepared: PreparedRequest) -> AsyncIterator[ExperienceMapEvent]:
         """그래프를 돌리고 결과를 저장한다."""
-        state = _build_state(prepared)
+        state = await _build_state(prepared, self.repository)
         result_payload: dict[str, Any] | None = None
         suggestion_payload: dict[str, Any] | None = None
 
@@ -429,6 +430,20 @@ class ExperienceMapService:
         )
         return ErrorEvent(error=payload.model_dump())
 
+    async def _reconcile_stale_requests(self, session_id: str | None = None) -> None:
+        """만료 lease를 failed로 바꾸기 전 메인 서버 커밋 결과를 복구한다."""
+        client = ExperienceMapMainClient()
+        for row in await self.repository.get_expired_running_requests(session_id):
+            try:
+                recovery = await client.get_commit(row.request_id)
+                if recovery.committed and recovery.result is not None:
+                    await self.repository.recover_expired_commit(
+                        row.user_id, row.request_id, recovery.result.model_dump(mode="json")
+                    )
+            except Exception:
+                logger.warning("만료 커밋 복구 조회 실패 (request_id=%s)", row.request_id)
+        await self.repository.expire_stale_running_requests(session_id=session_id)
+
 
 async def _interrupt_when_lease_lost(
     events: AsyncIterator[ExperienceMapEvent], renewer: LeaseRenewer
@@ -475,7 +490,9 @@ async def _interrupt_when_lease_lost(
                 await aclose()
 
 
-def _build_state(prepared: PreparedRequest) -> ExperienceMapState:
+async def _build_state(
+    prepared: PreparedRequest, repository: ExperienceMapRepository
+) -> ExperienceMapState:
     """그래프에 넘길 초기 state"""
     state = start_turn(
         {"user_id": prepared.user_id, "session_id": prepared.session_id},
@@ -486,7 +503,34 @@ def _build_state(prepared: PreparedRequest) -> ExperienceMapState:
         view=prepared.view,
     )
     state["file_references"] = [f.as_reference() for f in prepared.stored_files]
+    snapshot = await repository.get_map_snapshot(prepared.user_id)
+    state["map_version"] = snapshot.map_version
+    state["outline"] = snapshot.outline()
+    state["block_id_to_experience_alias"] = snapshot.block_id_to_activity_alias()
+    state["block_id_to_content"] = snapshot.block_contents()
+    state["activity_contexts"] = {
+        alias: {
+            "tree_text": context.tree_text,
+            "alias_to_block_id": context.alias_to_block_id,
+        }
+        for alias in state["block_id_to_experience_alias"].values()
+        if (context := snapshot.get_activity_context(alias)) is not None
+    }
+    if prepared.context_experience_id:
+        activity_alias = state["block_id_to_experience_alias"].get(prepared.context_experience_id)
+        if activity_alias:
+            _apply_activity_context(state, activity_alias)
     return state
+
+
+def _apply_activity_context(state: ExperienceMapState, activity_alias: str) -> None:
+    """선택 활동의 LLM 허용 tree와 alias map만 state에 노출한다."""
+    context = state.get("activity_contexts", {}).get(activity_alias)
+    if not context:
+        return
+    state["target_experience_alias"] = activity_alias
+    state["activity_tree_text"] = context["tree_text"]
+    state["alias_to_block_id"] = context["alias_to_block_id"]
 
 
 def _to_request_state(row: RequestRow) -> RequestStateResponse:

@@ -57,12 +57,11 @@ def api_user_id(request) -> str:
 
 
 @pytest_asyncio.fixture
-async def service(clean_db) -> ExperienceMapService:
+async def service(clean_db, repository_snapshot, monkeypatch) -> ExperienceMapService:
     """실제 DB + mock graph 로 구성한 서비스"""
-    return ExperienceMapService(
-        repository=ExperienceMapRepository(clean_db, lease_seconds=300),
-        runner=MockGraphRunner(),
-    )
+    repository = ExperienceMapRepository(clean_db, lease_seconds=300)
+    monkeypatch.setattr(ExperienceMapRepository, "get_map_snapshot", repository_snapshot)
+    return ExperienceMapService(repository=repository, runner=MockGraphRunner())
 
 
 @pytest_asyncio.fixture

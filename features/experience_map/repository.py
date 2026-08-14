@@ -29,6 +29,11 @@ from features.experience_map.config import (
     LEASE_RENEW_INTERVAL_SECONDS,
     get_settings,
 )
+from features.experience_map.map_context import (
+    ExperienceMapSnapshot,
+    MapBlockRow,
+    build_map_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +168,42 @@ class ExperienceMapRepository:
         self._lease_seconds = (
             lease_seconds if lease_seconds is not None else get_settings().request_lease_seconds
         )
+
+    async def get_map_snapshot(self, user_id: str) -> ExperienceMapSnapshot:
+        """사용자의 최신 경험 맵을 읽어 LLM 안전 snapshot으로 만든다."""
+        version = await self._pool.fetchval(
+            "SELECT map_version FROM experience_map WHERE user_id = $1", int(user_id)
+        )
+        if version is None:
+            from features.experience_map.errors import MapNotInitializedError
+
+            raise MapNotInitializedError()
+        records = await self._pool.fetch(
+            """
+            SELECT b.id, b.parent_id, b.level, b.kind, b.position, b.content,
+                   COALESCE(b.placeholder, k.placeholder) AS placeholder,
+                   k.is_text_editable, k.is_deletable
+              FROM block b JOIN block_kind k ON k.kind = b.kind
+             WHERE b.user_id = $1
+             ORDER BY b.level, b.parent_id, b.position, b.id
+            """,
+            int(user_id),
+        )
+        rows = [
+            MapBlockRow(
+                block_id=str(record["id"]),
+                parent_id=str(record["parent_id"]) if record["parent_id"] else None,
+                level=record["level"],
+                kind=record["kind"],
+                position=record["position"],
+                content=record["content"],
+                placeholder=record["placeholder"],
+                is_text_editable=record["is_text_editable"],
+                is_deletable=record["is_deletable"],
+            )
+            for record in records
+        ]
+        return build_map_snapshot(rows, map_version=int(version))
 
     # ===== 세션 =====
 
@@ -483,6 +524,36 @@ class ExperienceMapRepository:
         return RequestRow.from_record(record)
 
     # ===== 정리 =====
+
+    async def get_expired_running_requests(self, session_id: str | None = None) -> list[RequestRow]:
+        """lease가 지난 running 요청을 상태 변경 없이 조회한다."""
+        records = await self._pool.fetch(
+            f"SELECT {REQUEST_COLUMNS} FROM ai_experience_request "
+            "WHERE status = 'running' AND lease_expires_at IS NOT NULL "
+            "AND lease_expires_at < now() AND ($1::uuid IS NULL OR session_id = $1::uuid)",
+            uuid.UUID(session_id) if session_id else None,
+        )
+        return [RequestRow.from_record(record) for record in records]
+
+    async def recover_expired_commit(
+        self, user_id: str, request_id: str, result: dict[str, Any]
+    ) -> RequestRow | None:
+        """응답 유실 뒤 확인된 메인 커밋 결과를 completed로 저장한다."""
+        record = await self._pool.fetchrow(
+            f"""
+            UPDATE ai_experience_request SET status = 'completed', result = $3::jsonb,
+                   committed_version = ($3::jsonb ->> 'map_version')::bigint,
+                   retryable = false, retry_expires_at = NULL, lease_expires_at = NULL,
+                   owner_token = NULL, updated_at = now()
+             WHERE user_id = $1 AND request_id = $2 AND status = 'running'
+               AND lease_expires_at IS NOT NULL AND lease_expires_at < now()
+         RETURNING {REQUEST_COLUMNS}
+            """,
+            int(user_id),
+            uuid.UUID(request_id),
+            json.dumps(result, ensure_ascii=False),
+        )
+        return RequestRow.from_record(record) if record else None
 
     async def expire_stale_running_requests(
         self, session_id: str | None = None

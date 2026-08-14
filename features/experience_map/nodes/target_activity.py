@@ -101,14 +101,14 @@ async def select_target_activity(state: ExperienceMapState) -> ExperienceMapStat
         alias_to_block_id=state.get("alias_to_block_id", {}),
     )
     if context_alias:
-        updated["target_experience_alias"] = context_alias
+        _select_with_context(updated, context_alias)
         logger.info("target_activity: 화면 context로 선택")
         return updated  # type: ignore[return-value]
 
     if _has_gap_answer(state):
         anchor_alias = _gap_anchor_alias(state, candidates=candidates)
         if anchor_alias:
-            updated["target_experience_alias"] = anchor_alias
+            _select_with_context(updated, anchor_alias)
             logger.info("target_activity: gap anchor로 선택")
             return updated  # type: ignore[return-value]
         logger.warning("target_activity: gap anchor의 활동 소유권을 확인하지 못했습니다")
@@ -135,9 +135,18 @@ async def select_target_activity(state: ExperienceMapState) -> ExperienceMapStat
         logger.info("target_activity: 대상 불명확 또는 허용되지 않은 별칭 (%s)", result.reason)
         return _fallback(updated, "ambiguous_target")
 
-    updated["target_experience_alias"] = result.activity_alias
+    _select_with_context(updated, result.activity_alias)
     logger.info("target_activity: 메시지와 outline으로 선택 (%s)", result.reason)
     return updated  # type: ignore[return-value]
+
+
+def _select_with_context(updated: dict, activity_alias: str) -> None:
+    """활동 선택과 함께 service가 미리 읽은 activity 전용 컨텍스트를 적용한다."""
+    updated["target_experience_alias"] = activity_alias
+    context = updated.get("activity_contexts", {}).get(activity_alias)
+    if context:
+        updated["activity_tree_text"] = context["tree_text"]
+        updated["alias_to_block_id"] = context["alias_to_block_id"]
 
 
 def next_node(state: ExperienceMapState) -> str:
