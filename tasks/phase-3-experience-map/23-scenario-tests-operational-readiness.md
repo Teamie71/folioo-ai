@@ -6,7 +6,7 @@ spec: "docs/architecture/experience-map-agent.md"
 depends_on: ["3.12", "3.14", "3.20", "3.21", "3.22"]
 blocks: []
 estimate: "L"
-status: "todo"
+status: "in_progress"
 owner: ""
 sprint: ""
 ---
@@ -26,6 +26,32 @@ sprint: ""
 - [ ] 각 태스크에서 남긴 미해결 항목 취합
 - [ ] 통합 테스트용 DB·mock 메인 서버 환경 준비
 - [ ] `slot_id` 목록이 확정됐으면 fixture 카탈로그를 실제 값으로 교체 (3.15)
+
+## 진행 현황 (2026-08-14)
+
+내부 구현의 단위·계약 검증은 선행 태스크에서 갖췄고, 이 태스크에서는 실제
+graph 실행 경로를 시나리오 단위로 묶어 검증한다. 다음 항목은 이미 자동화되어
+있다.
+
+| 범위 | 근거 테스트 | 상태 |
+| --- | --- | --- |
+| 기능 밖 fallback | `test_checkpoint_runner.py::test_out_of_scope_input_runs_graph_and_emits_fallback_sse` | 통과 |
+| 추출 불가 파일 fallback | `test_checkpoint_runner.py::test_unreadable_file_runs_graph_and_emits_file_fallback_sse` | 통과 |
+| gap 답변 → 기존 블록 결합 | `test_checkpoint_runner.py::test_gap_answer_uses_expected_graph_path_before_commit[extend_block-*]` | 통과 |
+| gap 답변 → 하위 블록 생성 | `test_checkpoint_runner.py::test_gap_answer_uses_expected_graph_path_before_commit[new_child_block-*]` | 통과 |
+| gap 답변 + 새 내용 동시 입력 | `test_checkpoint_runner.py::test_gap_answer_uses_expected_graph_path_before_commit[extend_block-True-*]` | 통과 |
+| gap 분석 실패 시 결과만 응답 | `test_coordinator.py::test_gap_failure_does_not_fail_committed_result` | 통과 |
+| SSE 단절 뒤 결과 조회 | `test_experience_map_api.py::test_request_state_recovers_stored_result` | DB 환경에서 통과 |
+| 사용자 재시도·lease 상실 | `test_service.py`의 retry·lease 회귀 테스트 | DB 환경에서 통과 |
+
+아래 항목은 메인 서버 계약 구현·연동 환경이 준비되어야 최종 완료로 표시한다.
+
+- 메인 서버 `block`·`block_kind` 실스키마와 읽기 전용 권한으로 snapshot 조회
+- `POST/GET /commit`의 멱등·409 복구·422 카탈로그 재조회
+- 되돌리기 성공·충돌·만료
+
+따라서 `EXPERIENCE_MAP_ENABLED` 기본값은 이 문서의 모든 시나리오 및 연동 검증이
+끝나기 전까지 `false`로 유지한다.
 
 ## 구현 체크리스트 — 시나리오 테스트 14종
 
