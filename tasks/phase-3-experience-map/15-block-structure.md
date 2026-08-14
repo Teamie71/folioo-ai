@@ -6,7 +6,7 @@ spec: "docs/architecture/experience-map-agent.md"
 depends_on: ["3.03", "3.05", "3.13", "3.14"]
 blocks: ["3.16", "3.17"]
 estimate: "L"
-status: "todo"
+status: "done"
 owner: ""
 sprint: ""
 ---
