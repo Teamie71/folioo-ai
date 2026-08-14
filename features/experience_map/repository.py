@@ -525,6 +525,36 @@ class ExperienceMapRepository:
 
     # ===== 정리 =====
 
+    async def get_expired_running_requests(self, session_id: str | None = None) -> list[RequestRow]:
+        """lease가 지난 running 요청을 상태 변경 없이 조회한다."""
+        records = await self._pool.fetch(
+            f"SELECT {REQUEST_COLUMNS} FROM ai_experience_request "
+            "WHERE status = 'running' AND lease_expires_at IS NOT NULL "
+            "AND lease_expires_at < now() AND ($1::uuid IS NULL OR session_id = $1::uuid)",
+            uuid.UUID(session_id) if session_id else None,
+        )
+        return [RequestRow.from_record(record) for record in records]
+
+    async def recover_expired_commit(
+        self, user_id: str, request_id: str, result: dict[str, Any]
+    ) -> RequestRow | None:
+        """응답 유실 뒤 확인된 메인 커밋 결과를 completed로 저장한다."""
+        record = await self._pool.fetchrow(
+            f"""
+            UPDATE ai_experience_request SET status = 'completed', result = $3::jsonb,
+                   committed_version = ($3::jsonb ->> 'map_version')::bigint,
+                   retryable = false, retry_expires_at = NULL, lease_expires_at = NULL,
+                   owner_token = NULL, updated_at = now()
+             WHERE user_id = $1 AND request_id = $2 AND status = 'running'
+               AND lease_expires_at IS NOT NULL AND lease_expires_at < now()
+         RETURNING {REQUEST_COLUMNS}
+            """,
+            int(user_id),
+            uuid.UUID(request_id),
+            json.dumps(result, ensure_ascii=False),
+        )
+        return RequestRow.from_record(record) if record else None
+
     async def expire_stale_running_requests(
         self, session_id: str | None = None
     ) -> list[RequestRow]:
