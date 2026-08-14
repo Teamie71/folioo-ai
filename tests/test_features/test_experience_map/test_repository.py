@@ -332,6 +332,12 @@ async def test_expired_lease_stays_retryable(clean_db, user_id):
     session = await repo.get_or_create_session(user_id)
     stale_request = new_request_id()
     await repo.claim_request(user_id, session.session_id, stale_request, HASH_A)
+    await clean_db.execute(
+        "UPDATE ai_experience_request SET lease_expires_at = now() - interval '1 second' "
+        "WHERE user_id = $1 AND request_id = $2",
+        int(user_id),
+        stale_request,
+    )
 
     expired = await repo.expire_stale_running_requests()
 
@@ -345,7 +351,7 @@ async def test_expired_lease_stays_retryable(clean_db, user_id):
 @pytest.mark.asyncio
 async def test_expired_lease_is_not_directly_failed_by_claim(clean_db, user_id):
     """Repository claim은 메인 서버 확인 없이 만료 요청을 실패시키지 않는다."""
-    repo = ExperienceMapRepository(clean_db, lease_seconds=-1)
+    repo = ExperienceMapRepository(clean_db, lease_seconds=300)
     session = await repo.get_or_create_session(user_id)
     stale_request = new_request_id()
     await repo.claim_request(user_id, session.session_id, stale_request, HASH_A)
@@ -360,10 +366,16 @@ async def test_expired_lease_is_not_directly_failed_by_claim(clean_db, user_id):
 @pytest.mark.asyncio
 async def test_claim_expired_request_for_recovery_rotates_owner_token(clean_db, user_id):
     """복구 worker는 만료 행 하나만 새 실행권으로 가져간다."""
-    repo = ExperienceMapRepository(clean_db, lease_seconds=-1)
+    repo = ExperienceMapRepository(clean_db, lease_seconds=300)
     session = await repo.get_or_create_session(user_id)
     request_id = new_request_id()
     initial = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    await clean_db.execute(
+        "UPDATE ai_experience_request SET lease_expires_at = now() - interval '1 second' "
+        "WHERE user_id = $1 AND request_id = $2",
+        int(user_id),
+        request_id,
+    )
 
     recovered = await repo.claim_expired_request_for_recovery(session.session_id)
 

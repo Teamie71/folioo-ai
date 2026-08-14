@@ -535,7 +535,7 @@ class ExperienceMapRepository:
         record = await self._pool.fetchrow(
             f"""
             WITH candidate AS (
-                SELECT user_id, request_id
+                SELECT ctid
                   FROM ai_experience_request
                  WHERE status = 'running'
                    AND lease_expires_at IS NOT NULL
@@ -549,9 +549,7 @@ class ExperienceMapRepository:
                SET owner_token = $2::uuid,
                    lease_expires_at = now() + make_interval(secs => $3),
                    updated_at = now()
-              FROM candidate
-             WHERE request.user_id = candidate.user_id
-               AND request.request_id = candidate.request_id
+             WHERE request.ctid = (SELECT ctid FROM candidate)
          RETURNING {REQUEST_COLUMNS}
             """,
             uuid.UUID(session_id) if session_id else None,
