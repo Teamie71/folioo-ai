@@ -57,6 +57,11 @@ class ExperienceMapSnapshot:
             _activity_alias(index): activity
             for index, activity in enumerate(self._activities, start=1)
         }
+        self._block_id_to_activity_alias = {
+            node.row.block_id: alias
+            for alias, activity in self._activity_by_alias.items()
+            for node in _walk(activity)
+        }
 
     def outline(self) -> list[dict]:
         """그룹·활동만 담은 전체 outline을 반환한다."""
@@ -102,6 +107,14 @@ class ExperienceMapSnapshot:
             tree_text="\n".join(render(activity, 0, activity_alias)),
             alias_to_block_id=alias_to_block_id,
         )
+
+    def block_id_to_activity_alias(self) -> dict[str, str]:
+        """각 활동 하위 block의 소유 활동 별칭을 복사본으로 반환한다.
+
+        gap의 ``anchor_block_id``를 선택 활동으로 안전하게 되돌릴 때만 쓴다.
+        이 매핑은 LLM 프롬프트에 전달하지 않는다.
+        """
+        return dict(self._block_id_to_activity_alias)
 
 
 def build_map_snapshot(rows: list[MapBlockRow], map_version: int) -> ExperienceMapSnapshot:
@@ -165,6 +178,13 @@ def _label(node: MapBlock) -> str:
     if placeholder:
         return f"(빈 블록 — 가이드: {placeholder})"
     return "(빈 블록)"
+
+
+def _walk(root: MapBlock):
+    """루트와 모든 하위 block을 깊이 우선으로 순회한다."""
+    yield root
+    for child in root.children:
+        yield from _walk(child)
 
 
 __all__ = [

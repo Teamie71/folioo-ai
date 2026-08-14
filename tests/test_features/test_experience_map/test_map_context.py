@@ -73,6 +73,18 @@ def test_activity_context_only_exposes_selected_activity(snapshot):
     assert other_context.resolve_alias("exp_1") is None
 
 
+def test_block_owner_mapping_covers_only_activity_subtrees(snapshot):
+    """gap anchor는 실제 ID를 LLM에 주지 않고 소유 활동으로 되돌린다."""
+    assert snapshot.block_id_to_activity_alias() == {
+        "20": "exp_1",
+        "30": "exp_1",
+        "31": "exp_1",
+        "40": "exp_1",
+        "41": "exp_1",
+        "11": "exp_2",
+    }
+
+
 def test_activity_tree_renders_content_and_placeholder_separately(snapshot):
     """빈 블록 가이드가 사용자 작성 내용처럼 렌더링되지 않는다."""
     context = snapshot.get_activity_context("exp_1")
