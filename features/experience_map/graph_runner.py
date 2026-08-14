@@ -3,8 +3,8 @@
 API 계층과 LangGraph 사이의 경계다. 서비스는 이 Protocol 만 알고, 실제 그래프는
 3.17(validate·graph 배선)에서 붙인다.
 
-지금은 `MockGraphRunner` 가 기본이다. 노드가 하나도 없어도 API 계약과 SSE 이벤트
-순서를 로컬에서 확인할 수 있어야 하기 때문이다 (태스크 3.10 DoD).
+기본 실행기는 checkpoint가 붙은 실제 LangGraph다. `MockGraphRunner`는 API 계약과
+서비스 단위 테스트에서만 명시적으로 주입한다.
 """
 
 import asyncio
@@ -84,10 +84,7 @@ def _thread_config(state: ExperienceMapState) -> dict[str, dict[str, str]]:
 
 
 class MockGraphRunner:
-    """노드 없이 이벤트 순서만 재현하는 실행기.
-
-    **3.17 에서 실제 그래프로 교체한다.** 그때까지 이 실행기가 API 계약 테스트와
-    로컬 수동 확인을 담당한다.
+    """노드 없이 API 이벤트 순서만 재현하는 테스트용 실행기.
 
     정상 커밋 이벤트 순서 (API 명세 6절):
 
@@ -166,14 +163,10 @@ class MockGraphRunner:
 
 
 class PartialGraphRunner:
-    """구현된 노드까지만 실제로 도는 실행기.
+    """일부 노드만 직접 실행하는 호환·실험용 실행기.
 
-    지금은 Router → 파일처리 → 반영 내용 필터링까지다. 그 뒤는 노드가 없으므로
-    `MockGraphRunner` 로 넘긴다.
-
-    **3.17 에서 실제 그래프로 교체한다.** 그때까지 구현된 노드를 로컬에서 실제
-    LLM 으로 확인하기 위한 임시 실행기다. 노드가 하나씩 붙을 때마다 여기에
-    이어 붙인다.
+    운영 경로는 `CheckpointGraphRunner`이며, 이 클래스는 특정 초기 노드만
+    독립 확인하거나 부분 실행 호환성이 필요할 때 명시적으로 주입한다.
     """
 
     REAL_NODES = ("router", "file_processor", "content_filter")
