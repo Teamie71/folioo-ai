@@ -3,6 +3,13 @@
 from .config import ExperienceMapSettings, get_settings, load_settings, reset_settings
 from .errors import ExperienceMapError
 from .main_client import CommitRecoveryResult, ExperienceMapMainClient
+from .map_context import (
+    ActivityContext,
+    ExperienceMapSnapshot,
+    MapBlock,
+    MapBlockRow,
+    build_map_snapshot,
+)
 from .schemas import (
     ActiveGap,
     CommitAddItem,
@@ -36,6 +43,7 @@ from .templates import (
 
 __all__ = [
     "ActiveGap",
+    "ActivityContext",
     "CommitAddItem",
     "CommitItem",
     "CommitResult",
@@ -44,11 +52,14 @@ __all__ = [
     "ContentFilterOutput",
     "ExperienceMapError",
     "ExperienceMapMainClient",
+    "ExperienceMapSnapshot",
     "ExperienceMapSettings",
     "ExperienceMapState",
     "FilteredItem",
     "GapCandidate",
     "GapOutput",
+    "MapBlock",
+    "MapBlockRow",
     "RefinedItem",
     "RouterOutput",
     "StructuredItem",
@@ -58,6 +69,7 @@ __all__ = [
     "TemplateSection",
     "TemplateSlot",
     "build_thread_config",
+    "build_map_snapshot",
     "cleanup_after_success",
     "get_settings",
     "get_template_catalog_client",
