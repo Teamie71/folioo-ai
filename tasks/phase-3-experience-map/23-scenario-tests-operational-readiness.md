@@ -37,6 +37,12 @@ graph 실행 경로를 시나리오 단위로 묶어 검증한다. 다음 항목
 | --- | --- | --- |
 | 기능 밖 fallback | `test_checkpoint_runner.py::test_out_of_scope_input_runs_graph_and_emits_fallback_sse` | 통과 |
 | 추출 불가 파일 fallback | `test_checkpoint_runner.py::test_unreadable_file_runs_graph_and_emits_file_fallback_sse` | 통과 |
+| 파일(파서) → 새 block 추가 | `test_input_scenarios.py::test_input_kind_reaches_new_block_commit_candidate[parser_file-*]` | 통과 |
+| 파일(OCR) → 새 block 추가 | `test_input_scenarios.py::test_input_kind_reaches_new_block_commit_candidate[ocr_file-*]` | 통과 |
+| 채팅 → 새 block 추가 | `test_input_scenarios.py::test_input_kind_reaches_new_block_commit_candidate[chat-*]` | 통과 |
+| 없는 3단계 카테고리 생성 | `test_structure.py::test_new_category_expands_all_section_slots_and_preserves_source` | 통과 |
+| 담당업무 템플릿으로 4·5단계 생성 | `test_structure.py::test_template_expands_empty_slots` | 통과 |
+| 문제해결 템플릿 6종 중 선택 | `test_structure.py::test_problem_solving_templates_accept_all_required_slots` | 6종 통과 |
 | gap 답변 → 기존 블록 결합 | `test_checkpoint_runner.py::test_gap_answer_uses_expected_graph_path_before_commit[extend_block-*]` | 통과 |
 | gap 답변 → 하위 블록 생성 | `test_checkpoint_runner.py::test_gap_answer_uses_expected_graph_path_before_commit[new_child_block-*]` | 통과 |
 | gap 답변 + 새 내용 동시 입력 | `test_checkpoint_runner.py::test_gap_answer_uses_expected_graph_path_before_commit[extend_block-True-*]` | 통과 |
@@ -55,20 +61,20 @@ graph 실행 경로를 시나리오 단위로 묶어 검증한다. 다음 항목
 
 ## 구현 체크리스트 — 시나리오 테스트 14종
 
-- [ ] 파일(파서) → 새 block 추가
-- [ ] 파일(OCR) → 새 block 추가
-- [ ] 채팅 → 새 block 추가
-- [ ] gap 답변 → refine 분기 (기존 블록 결합)
-- [ ] gap 답변 → structure 분기 (하위 블록 생성)
-- [ ] gap 답변 + 새 내용 동시 입력
-- [ ] 없는 3단계 카테고리 생성
-- [ ] 담당업무 템플릿으로 4·5단계 생성
-- [ ] 문제해결 템플릿 6종 중 선택하여 5단계 생성
-- [ ] 기능 밖 fallback
-- [ ] 추출 불가 파일 → fallback
-- [ ] 노드 실패 → 사용자 재시도
-- [ ] gap 분석 실패 → 결과만 응답
-- [ ] SSE 단절 → request 결과 조회
+- [x] 파일(파서) → 새 block 추가
+- [x] 파일(OCR) → 새 block 추가
+- [x] 채팅 → 새 block 추가
+- [x] gap 답변 → refine 분기 (기존 블록 결합)
+- [x] gap 답변 → structure 분기 (하위 블록 생성)
+- [x] gap 답변 + 새 내용 동시 입력
+- [x] 없는 3단계 카테고리 생성
+- [x] 담당업무 템플릿으로 4·5단계 생성
+- [x] 문제해결 템플릿 6종 중 선택하여 5단계 생성
+- [x] 기능 밖 fallback
+- [x] 추출 불가 파일 → fallback
+- [x] 노드 실패 → 사용자 재시도
+- [x] gap 분석 실패 → 결과만 응답
+- [x] SSE 단절 → request 결과 조회
 
 ## 구현 체크리스트 — DB·연동 통합 테스트
 

@@ -5,7 +5,7 @@ from langchain_core.runnables import RunnableLambda
 
 from features.experience_map.errors import LlmError
 from features.experience_map.nodes import structure as structure_node
-from features.experience_map.nodes.structure import next_node, structure_blocks
+from features.experience_map.nodes.structure import _validate_output, next_node, structure_blocks
 from features.experience_map.schemas import StructuredItem, StructureOutput
 from features.experience_map.state import start_turn
 from features.experience_map.templates import TemplateCatalog, TemplateCatalogClient
@@ -278,3 +278,72 @@ def test_next_node_uses_refine_only_with_structure_result():
 def test_catalog_fixture_is_valid():
     """테스트 fixture도 실제 카탈로그 제약을 만족해야 한다."""
     assert TemplateCatalog.model_validate(catalog_payload()).version == "v1"
+
+
+@pytest.mark.parametrize(
+    "template_id",
+    ["BASIC", "INTERPERSONAL", "PERFORMANCE", "TROUBLESHOOTING", "FEEDBACK", "RECOVERY"],
+)
+def test_problem_solving_templates_accept_all_required_slots(template_id):
+    """문제해결 6종은 선택된 템플릿의 5단계 슬롯 4개를 모두 전개해야 한다."""
+    slot_ids = [f"PROBLEM_SOLVING.{template_id}.SLOT_{index}" for index in range(1, 5)]
+    catalog = TemplateCatalog.model_validate(
+        {
+            "version": "v1",
+            "sections": [
+                {
+                    "section_id": "PROBLEM_SOLVING",
+                    "label": "문제해결",
+                    "slots": [
+                        {
+                            "slot_id": "PROBLEM_SOLVING.SUMMARY",
+                            "level": 4,
+                            "placeholder": "에피소드 요약",
+                            "example": "결제 오류 해결",
+                            "is_anchor": True,
+                        }
+                    ],
+                    "templates": [
+                        {
+                            "template_id": template_id,
+                            "label": template_id,
+                            "slots": [
+                                {
+                                    "slot_id": slot_id,
+                                    "level": 5,
+                                    "placeholder": "작성 가이드",
+                                    "example": "작성 예시",
+                                }
+                                for slot_id in slot_ids
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    source = [{"item_id": "it_1", "text": "결제 오류를 분석하고 재시도 로직을 추가했다."}]
+    items = [
+        StructuredItem(
+            item_id="it_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id=slot_ids[0],
+            text=source[0]["text"],
+        ),
+        *[
+            StructuredItem(
+                item_id=f"empty_{index}", action="add", parent_ref="b_1", slot_id=slot_id
+            )
+            for index, slot_id in enumerate(slot_ids[1:], start=1)
+        ],
+    ]
+
+    validated = _validate_output(
+        items,
+        source_items=source,
+        catalog=catalog,
+        state={"target_experience_alias": "exp_1", "alias_to_block_id": {"b_1": "305"}},
+    )
+
+    assert [item.slot_id for item in validated] == slot_ids
