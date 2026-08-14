@@ -113,6 +113,9 @@ class ExperienceMapState(TypedDict, total=False):
     gap_update_item: dict[str, Any] | None
     commit_items: list[dict[str, Any]]
     dropped_items: list[dict[str, Any]]
+    commit_result: dict[str, Any] | None
+    commit_conflict_count: int
+    commit_recovery_node: Literal["validate", "structure"] | None
 
     # ===== 검증 =====
     validation_errors: list[ValidationError]
@@ -152,6 +155,9 @@ TURN_FIELD_DEFAULTS: dict[str, Any] = {
     "gap_update_item": None,
     "commit_items": [],
     "dropped_items": [],
+    "commit_result": None,
+    "commit_conflict_count": 0,
+    "commit_recovery_node": None,
     "validation_errors": [],
     "repair_count": 0,
     "failed_node": None,
