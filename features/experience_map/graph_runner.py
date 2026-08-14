@@ -9,8 +9,8 @@ API 계층과 LangGraph 사이의 경계다. 서비스는 이 Protocol 만 알�
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
-from typing import Protocol
+from collections.abc import AsyncIterator, Callable
+from typing import Any, Protocol
 
 from app.schemas.experience_map import (
     CommitResultEvent,
@@ -40,6 +40,47 @@ class GraphRunner(Protocol):
     def resume(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
         """실패 지점부터 이어서 실행한다 (사용자 재시도)."""
         ...
+
+
+StateEventFactory = Callable[[ExperienceMapState], AsyncIterator[ExperienceMapEvent]]
+
+
+class CheckpointGraphRunner:
+    """checkpointer가 붙은 LangGraph를 실행·재개하는 실행기.
+
+    재시도는 새 입력 state를 넣지 않는다. LangGraph가 저장한 실패 superstep부터
+    ``ainvoke(None, config)``로 재개하므로 이미 성공한 노드는 다시 호출되지 않는다.
+    실제 맵 조회·초기 state 구성은 service의 요청 준비 단계가 소유한다.
+    """
+
+    def __init__(
+        self,
+        graph: Any,
+        *,
+        state_events: StateEventFactory,
+    ) -> None:
+        self._graph = graph
+        self._state_events = state_events
+
+    async def run(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
+        """새 요청 state로 graph를 실행한다."""
+        result = await self._graph.ainvoke(state, _thread_config(state))
+        async for event in self._state_events(result):
+            yield event
+
+    async def resume(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
+        """checkpoint의 실패 지점부터 재개한다."""
+        result = await self._graph.ainvoke(None, _thread_config(state))
+        async for event in self._state_events(result):
+            yield event
+
+
+def _thread_config(state: ExperienceMapState) -> dict[str, dict[str, str]]:
+    """경험 맵 checkpoint namespace를 포함한 LangGraph 실행 config를 만든다."""
+    session_id = state.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("checkpoint 재개에 필요한 session_id가 없습니다.")
+    return {"configurable": {"thread_id": session_id, "checkpoint_ns": "experience_map"}}
 
 
 class MockGraphRunner:
