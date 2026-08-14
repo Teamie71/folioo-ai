@@ -29,6 +29,11 @@ from features.experience_map.config import (
     LEASE_RENEW_INTERVAL_SECONDS,
     get_settings,
 )
+from features.experience_map.map_context import (
+    ExperienceMapSnapshot,
+    MapBlockRow,
+    build_map_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +168,42 @@ class ExperienceMapRepository:
         self._lease_seconds = (
             lease_seconds if lease_seconds is not None else get_settings().request_lease_seconds
         )
+
+    async def get_map_snapshot(self, user_id: str) -> ExperienceMapSnapshot:
+        """사용자의 최신 경험 맵을 읽어 LLM 안전 snapshot으로 만든다."""
+        version = await self._pool.fetchval(
+            "SELECT map_version FROM experience_map WHERE user_id = $1", int(user_id)
+        )
+        if version is None:
+            from features.experience_map.errors import MapNotInitializedError
+
+            raise MapNotInitializedError()
+        records = await self._pool.fetch(
+            """
+            SELECT b.id, b.parent_id, b.level, b.kind, b.position, b.content,
+                   COALESCE(b.placeholder, k.placeholder) AS placeholder,
+                   k.is_text_editable, k.is_deletable
+              FROM block b JOIN block_kind k ON k.kind = b.kind
+             WHERE b.user_id = $1
+             ORDER BY b.level, b.parent_id, b.position, b.id
+            """,
+            int(user_id),
+        )
+        rows = [
+            MapBlockRow(
+                block_id=str(record["id"]),
+                parent_id=str(record["parent_id"]) if record["parent_id"] else None,
+                level=record["level"],
+                kind=record["kind"],
+                position=record["position"],
+                content=record["content"],
+                placeholder=record["placeholder"],
+                is_text_editable=record["is_text_editable"],
+                is_deletable=record["is_deletable"],
+            )
+            for record in records
+        ]
+        return build_map_snapshot(rows, map_version=int(version))
 
     # ===== 세션 =====
 
