@@ -37,6 +37,7 @@ NodeName = Literal[
     "router",
     "file_processor",
     "content_filter",
+    "target_activity",
     "gap_resolver",
     "structure",
     "refine",
@@ -68,6 +69,17 @@ class RouterOutput(BaseModel):
 
     intent: Literal["chat_input", "out_of_scope"] = Field(..., description="분류 결과")
     reason: str = Field(..., description="판정 근거")
+
+
+class TargetActivityOutput(BaseModel):
+    """대상 활동 선택 노드의 LLM 출력.
+
+    실제 block ID 대신 outline에 표시된 활동 별칭만 반환한다. 확신할 수 없으면
+    임의로 고르지 않고 ``None``을 반환해야 한다.
+    """
+
+    activity_alias: str | None = Field(None, description="선택한 level 2 활동 별칭")
+    reason: str = Field(..., description="선택 또는 보류 근거")
 
 
 class FilteredItem(BaseModel):
