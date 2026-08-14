@@ -43,6 +43,8 @@ NodeName = Literal[
     "refine",
     "validate",
     "commit",
+    "gap_analysis",
+    "suggestion_response",
 ]
 
 
