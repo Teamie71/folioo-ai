@@ -98,6 +98,7 @@ class ExperienceMapState(TypedDict, total=False):
     outline: list[OutlineNode]
     target_experience_alias: str | None
     alias_to_block_id: dict[str, str]
+    activity_tree_text: str | None
     block_id_to_experience_alias: dict[str, str]
 
     # ===== 필터링 분류 결과 =====
@@ -138,6 +139,7 @@ TURN_FIELD_DEFAULTS: dict[str, Any] = {
     "outline": [],
     "target_experience_alias": None,
     "alias_to_block_id": {},
+    "activity_tree_text": None,
     "block_id_to_experience_alias": {},
     "gap_answer_items": [],
     "new_items": [],

@@ -100,6 +100,16 @@ class ContentFilterOutput(BaseModel):
     excluded_reasons: list[str] = Field(default_factory=list, description="반영 제외 사유")
 
 
+class StructureOutput(BaseModel):
+    """구조화 노드 출력.
+
+    원문 item은 하나씩 정확히 보존하고, 템플릿을 전개할 때만 내용 없는 item을
+    추가할 수 있다. 이 계약은 노드가 코드로 다시 검증한다.
+    """
+
+    items: list["StructuredItem"] = Field(default_factory=list)
+
+
 class StructuredItem(BaseModel):
     """블록 단위 구조화 노드 출력.
 

@@ -23,6 +23,7 @@ from .schemas import (
     RefinedItem,
     RouterOutput,
     StructuredItem,
+    StructureOutput,
     TargetActivityOutput,
 )
 from .state import (
@@ -63,6 +64,7 @@ __all__ = [
     "MapBlockRow",
     "RefinedItem",
     "RouterOutput",
+    "StructureOutput",
     "StructuredItem",
     "TargetActivityOutput",
     "TemplateCatalog",
