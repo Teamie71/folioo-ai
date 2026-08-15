@@ -9,7 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
 from app.api import router as api_router
-from app.middleware.auth import DOCS_EXEMPT_PATHS, PUBLIC_EXEMPT_PATHS, ApiKeyAuthMiddleware
+from app.middleware.auth import (
+    DOCS_EXEMPT_PATHS,
+    PUBLIC_EXEMPT_PATHS,
+    ApiKeyAuthMiddleware,
+    is_ticket_auth_path,
+)
 from app.middleware.experience_map_ticket import ExperienceMapTicketMiddleware
 from common.checkpointer.factory import get_checkpointer, setup_checkpointer
 from common.db.connection import get_pool_status
@@ -22,6 +27,7 @@ setup_logging()
 
 APP_VERSION = "0.1.0"
 OPENAPI_API_KEY_SCHEME_NAME = "ApiKeyAuth"
+OPENAPI_TICKET_SCHEME_NAME = "TicketAuth"
 OPENAPI_HTTP_METHODS = {
     "get",
     "put",
@@ -35,7 +41,11 @@ OPENAPI_HTTP_METHODS = {
 
 
 def _attach_api_key_security(schema: dict[str, Any]) -> dict[str, Any]:
-    """OpenAPI 스키마에 `X-API-Key` 보안 스키마를 반영한다."""
+    """OpenAPI 스키마에 경로별 인증 방식을 반영한다.
+
+    경험정리의 프론트 직결 경로는 `X-API-Key`가 아니라 티켓(Bearer)으로 인증한다.
+    판정은 미들웨어와 같은 `is_ticket_auth_path()`를 사용해 문서와 실제 동작을 맞춘다.
+    """
     components = schema.setdefault("components", {})
     security_schemes = components.setdefault("securitySchemes", {})
     security_schemes[OPENAPI_API_KEY_SCHEME_NAME] = {
@@ -43,15 +53,24 @@ def _attach_api_key_security(schema: dict[str, Any]) -> dict[str, Any]:
         "in": "header",
         "name": "X-API-Key",
     }
+    security_schemes[OPENAPI_TICKET_SCHEME_NAME] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "경험정리 프론트 직결용 세션 티켓입니다.",
+    }
 
     for path, path_item in schema.get("paths", {}).items():
         if path in PUBLIC_EXEMPT_PATHS or path in DOCS_EXEMPT_PATHS:
             continue
 
+        scheme_name = (
+            OPENAPI_TICKET_SCHEME_NAME if is_ticket_auth_path(path) else OPENAPI_API_KEY_SCHEME_NAME
+        )
         for method, operation in path_item.items():
             if method not in OPENAPI_HTTP_METHODS:
                 continue
-            operation["security"] = [{OPENAPI_API_KEY_SCHEME_NAME: []}]
+            operation["security"] = [{scheme_name: []}]
 
     return schema
 

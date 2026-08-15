@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 
 from app import main
+from app.middleware.auth import is_ticket_auth_path
 from app.middleware.experience_map_ticket import ExperienceMapTicketMiddleware
 from features.experience_map import config as experience_map_config
 
@@ -220,25 +221,45 @@ def test_openapi_includes_x_api_key_security_scheme():
     }
 
 
-def test_openapi_marks_api_routes_with_api_key_security():
-    """`/api/*` 경로는 OpenAPI에서 API Key 보안 요구사항을 가진다."""
-    app = main.create_app()
-
-    schema = app.openapi()
-    api_operations = []
-
+def _api_operations(schema, *, ticket_paths: bool):
+    """`/api/*` 오퍼레이션을 인증 방식별로 모은다."""
+    operations = []
     for path, path_item in schema["paths"].items():
         if not path.startswith("/api/"):
+            continue
+        if is_ticket_auth_path(path) is not ticket_paths:
             continue
         for method in main.OPENAPI_HTTP_METHODS:
             operation = path_item.get(method)
             if operation:
-                api_operations.append(operation)
+                operations.append(operation)
+    return operations
 
-    assert api_operations
+
+def test_openapi_marks_api_routes_with_api_key_security():
+    """티켓 경로가 아닌 `/api/*`는 API Key 보안 요구사항을 가진다."""
+    schema = main.create_app().openapi()
+
+    operations = _api_operations(schema, ticket_paths=False)
+
+    assert operations
     assert all(
         operation["security"] == [{main.OPENAPI_API_KEY_SCHEME_NAME: []}]
-        for operation in api_operations
+        for operation in operations
+    )
+
+
+def test_openapi_marks_ticket_routes_with_bearer_security():
+    """경험정리 프론트 직결 경로는 Bearer 티켓 인증으로 표시한다."""
+    schema = main.create_app().openapi()
+
+    ticket_scheme = schema["components"]["securitySchemes"][main.OPENAPI_TICKET_SCHEME_NAME]
+    assert ticket_scheme["scheme"] == "bearer"
+
+    operations = _api_operations(schema, ticket_paths=True)
+    assert operations, "티켓 인증 경로가 하나도 잡히지 않았습니다."
+    assert all(
+        operation["security"] == [{main.OPENAPI_TICKET_SCHEME_NAME: []}] for operation in operations
     )
 
 
