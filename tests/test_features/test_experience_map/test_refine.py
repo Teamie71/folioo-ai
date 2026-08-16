@@ -166,6 +166,40 @@ async def test_rejects_new_proper_noun_not_grounded_in_source(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_allows_case_normalization_of_english_token(fake_llm):
+    """영문 약어의 대소문자 정규화는 새로운 고유명사가 아니다."""
+    fake_llm(
+        RefinementOutput(
+            items=[
+                RefinedItem(item_id="it_1", refined_text="신청 페이지 UI를 친숙하게 개선"),
+                RefinedItem(item_id="empty_1", refined_text=None),
+            ]
+        )
+    )
+    state = make_state(
+        structured_items=[
+            {
+                "item_id": "it_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "신청 페이지의 ui를 더 친숙하게 바꿨다.",
+            },
+            {
+                "item_id": "empty_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "slot_id": "TASK.BASIC.RESULT",
+                "text": None,
+            },
+        ]
+    )
+
+    result = await refine_text(state)
+
+    assert result["refined_items"][0]["refined_text"] == "신청 페이지 UI를 친숙하게 개선"
+
+
+@pytest.mark.asyncio
 async def test_extend_gap_without_existing_content_is_rejected_before_llm(fake_llm):
     """anchor 원문을 못 읽으면 답변만으로 update하지 않는다."""
     prompts = fake_llm(RefinementOutput(items=[]))

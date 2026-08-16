@@ -13,7 +13,7 @@ from features.experience_map.state import ExperienceMapState
 logger = logging.getLogger(__name__)
 
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?(?:%|년|개월|명|회|건|개)?")
-_PROPER_TOKEN = re.compile(r"[A-Z][A-Za-z0-9._+-]*")
+_ENGLISH_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9._+-]*")
 
 
 async def refine_text(state: ExperienceMapState) -> ExperienceMapState:
@@ -120,7 +120,9 @@ def _validate_output(output: list[RefinedItem], candidates: list[dict]) -> list[
             raise ValueError("정제 결과가 최대 글자 수를 넘었습니다.")
         if not set(_NUMBER.findall(refined)).issubset(_NUMBER.findall(source_text)):
             raise ValueError("원문에 없는 수치가 정제 결과에 포함됐습니다.")
-        if not set(_PROPER_TOKEN.findall(refined)).issubset(_PROPER_TOKEN.findall(source_text)):
+        source_english_tokens = {token.casefold() for token in _ENGLISH_TOKEN.findall(source_text)}
+        refined_english_tokens = {token.casefold() for token in _ENGLISH_TOKEN.findall(refined)}
+        if not refined_english_tokens.issubset(source_english_tokens):
             raise ValueError("원문에 없는 영문 고유명사가 정제 결과에 포함됐습니다.")
     return output
 
