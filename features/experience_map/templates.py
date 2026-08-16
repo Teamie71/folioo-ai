@@ -2,6 +2,19 @@
 
 카탈로그의 소유권은 메인 서버에 있다. AI 서버는 `GET /templates` 응답을 1시간
 캐시하고, 구조화·정제 노드에서 slot_id의 placeholder와 예시를 조회한다.
+
+**응답 형태를 좁게 검증하지 않는다.** 소유자가 메인 서버라 배치 규칙이 바뀔 수
+있고, 실제로 명세 7절 예시와 9절 카탈로그 정의가 서로 다르다.
+
+| 항목 | 7절 예시 | 9절 정의 |
+| --- | --- | --- |
+| 카테고리 슬롯 10개 | 담을 자리 없음 | `{SECTION}.{SLOT}` 형태로 존재 |
+| 템플릿 안 slot level | 4·5 혼재 | 점 개수가 곧 level |
+| `is_anchor` | 없음 | `TASK.SUMMARY`·`PROBLEM_SOLVING.SUMMARY` 가 앵커 |
+
+여기서는 **둘 다 받는다.** 우리가 검증할 것은 배치가 아니라 "AI 가 보낼 slot_id 를
+찾을 수 있는가" 뿐이다. 중복 slot_id 만 막는다 — 그건 잘못된 placeholder 를
+참조하게 만든다.
 """
 
 import asyncio
@@ -21,6 +34,14 @@ TEMPLATES_PATH = "/api/v1/experience-map/templates"
 CatalogFetcher = Callable[[], Awaitable[dict]]
 Clock = Callable[[], float]
 
+ANCHOR_SLOT_IDS = frozenset({"TASK.SUMMARY", "PROBLEM_SOLVING.SUMMARY"})
+"""level 5 를 매달 수 있는 level 4 앵커 (명세 9절).
+
+메인 서버가 `is_anchor` 를 보내면 그 값이 우선이다. 여기 목록은 필드가 아예 오지
+않을 때만 쓰는 폴백이다 — 명세 7절 응답 예시에 `is_anchor` 가 없어서, 이게 없으면
+모든 슬롯이 앵커가 아닌 것으로 읽혀 구조화 프롬프트가 앵커를 표시하지 못한다.
+"""
+
 
 class TemplateSlot(BaseModel):
     """카탈로그의 한 작성 슬롯"""
@@ -31,24 +52,33 @@ class TemplateSlot(BaseModel):
     example: str = Field(min_length=1)
     is_anchor: bool = False
 
+    @model_validator(mode="after")
+    def _fill_anchor(self) -> "TemplateSlot":
+        """`is_anchor` 가 응답에 없으면 slot_id 로 채운다."""
+        if "is_anchor" not in self.model_fields_set:
+            self.is_anchor = self.slot_id in ANCHOR_SLOT_IDS
+        return self
+
 
 class TemplateDefinition(BaseModel):
-    """level 5 슬롯 묶음"""
+    """하위 템플릿의 슬롯 묶음
+
+    **level 을 제한하지 않는다.** 명세 7절 응답 예시가 앵커 성격의 level 4 슬롯을
+    템플릿 안에 함께 넣는다. level 5 만 받도록 막아 두면 실제 응답이 파싱 단계에서
+    거부된다. level 별 배치 규칙은 카탈로그 소유자인 메인 서버가 정한다.
+    """
 
     template_id: str = Field(min_length=1)
     label: str = Field(min_length=1)
     slots: list[TemplateSlot] = Field(default_factory=list)
 
-    @model_validator(mode="after")
-    def _check_slot_levels(self) -> "TemplateDefinition":
-        """하위 템플릿에는 level 5 슬롯만 둔다."""
-        if any(slot.level != 5 for slot in self.slots):
-            raise ValueError("template.slots에는 level 5 슬롯만 올 수 있습니다.")
-        return self
-
 
 class TemplateSection(BaseModel):
-    """카테고리별 level 4 슬롯과 하위 템플릿"""
+    """카테고리별 level 4 슬롯과 하위 템플릿
+
+    `slots` 는 선택이다. 명세 7절 예시에는 없지만 9절이 정의한 카테고리 슬롯 10개
+    (`DETAIL.MOTIVATION` 등)는 어떤 템플릿에도 속하지 않으므로 이 자리로 온다.
+    """
 
     section_id: str = Field(min_length=1)
     label: str = Field(min_length=1)
