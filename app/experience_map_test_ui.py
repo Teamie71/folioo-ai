@@ -128,6 +128,7 @@ TEST_PAGE_HTML = r"""<!doctype html>
       <div class="composer">
         <label>수정할 블록<select id="block" disabled><option>세션을 시작하면 샘플 맵을 불러옵니다.</option></select></label>
         <label>메시지<textarea id="message" placeholder="예: 이 문장을 문제 상황과 분석 근거가 드러나도록 더 구체적으로 수정해줘.">선택한 블록의 문장을 수치와 행동이 드러나도록 더 구체적으로 수정해줘.</textarea></label>
+        <p class="note">Enter로 전송 · Shift+Enter로 줄바꿈</p>
         <label>첨부 파일 (선택, 최대 3개)<input id="files" type="file" multiple></label>
         <button id="send" disabled>보내기</button><button id="retry" class="secondary" disabled>재시도</button><button id="state" class="secondary" disabled>상태</button>
       </div>
@@ -238,6 +239,12 @@ document.querySelector('#send').onclick = async () => {
   } catch (error) { log(`오류: ${error.message}`, 'error'); addMessage('error', `요청 실패: ${error.message}`); setChatStatus('오류 발생'); setRuntime(`LLM 요청 실패: ${error.message}`, 'error'); }
   finally { setBusy(false); if (streamSucceeded) { await refreshMap(); setChatStatus('대화 준비됨'); setRuntime(`요청 스트림 종료 · request_id: ${state.requestId} · 샘플 맵을 갱신했습니다.`, 'ok'); } }
 };
+
+document.querySelector('#message').addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  if (!document.querySelector('#send').disabled) document.querySelector('#send').click();
+});
 
 document.querySelector('#retry').onclick = async () => {
   if (!state.requestId) return log('재시도할 요청이 없습니다.', 'error'); setBusy(true); log(`재시도: ${state.requestId}`, 'ok');
