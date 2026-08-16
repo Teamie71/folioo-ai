@@ -87,6 +87,7 @@ TEST_PAGE_HTML = r"""<!doctype html>
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     #session { color: #8fe6b0; overflow-wrap: anywhere; font-size: 13px; }
     #events { min-height: 360px; max-height: 640px; overflow: auto; white-space: pre-wrap; background: #0b0d12; border: 1px solid #30384a; border-radius: 10px; padding: 14px; line-height: 1.45; font-size: 12px; }
+    .runtime { border-left: 4px solid #6e8cff; background: #171c2a; border-radius: 8px; margin: 14px 0; padding: 11px 13px; font-size: 14px; }
     .note { font-size: 13px; } .error { color: #ff9a9a; } .ok { color: #8fe6b0; }
   </style>
 </head>
@@ -94,6 +95,7 @@ TEST_PAGE_HTML = r"""<!doctype html>
 <main>
   <h1>경험정리 테스트 콘솔</h1>
   <p>테스트 전용 화면입니다. 세션·티켓은 브라우저 메모리에만 보관되며 페이지를 새로고침하면 사라집니다.</p>
+  <div id="runtime" class="runtime">서버 연결 상태를 확인하는 중입니다.</div>
   <div class="grid">
     <section>
       <h2>1. 테스트 세션</h2>
@@ -117,6 +119,7 @@ TEST_PAGE_HTML = r"""<!doctype html>
 <script>
 const state = { sessionId: null, ticket: null, requestId: null };
 const output = document.querySelector('#events');
+const runtime = document.querySelector('#runtime');
 const buttons = ['send', 'retry', 'state'].map(id => document.querySelector('#' + id));
 const log = (value, className = '') => {
   const line = document.createElement('div'); line.textContent = value;
@@ -125,6 +128,16 @@ const log = (value, className = '') => {
 const setBusy = busy => buttons.forEach(button => { button.disabled = busy || !state.sessionId; });
 const authHeaders = () => ({ Authorization: `Bearer ${state.ticket}` });
 const newRequestId = () => crypto.randomUUID();
+const setRuntime = (message, className = '') => { runtime.textContent = message; runtime.className = `runtime ${className}`; };
+
+async function checkHealth() {
+  try {
+    const response = await fetch('/health');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const health = await response.json();
+    setRuntime(`서버 연결됨 · DB ${health.experience_map_db} · Checkpointer ${health.checkpointer} · 세션을 시작하세요.`, 'ok');
+  } catch (error) { setRuntime(`서버 연결 실패: ${error.message}`, 'error'); log(`서버 상태 조회 오류: ${error.message}`, 'error'); }
+}
 
 async function readSse(response) {
   if (!response.ok) throw new Error(await response.text());
@@ -145,6 +158,7 @@ async function readSse(response) {
 
 document.querySelector('#createSession').onclick = async () => {
   const button = document.querySelector('#createSession'); button.disabled = true;
+  setRuntime('테스트 세션을 생성하는 중입니다.'); log('세션 생성 요청 전송');
   try {
     const response = await fetch('/experience-map/test/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': document.querySelector('#apiKey').value },
@@ -154,18 +168,21 @@ document.querySelector('#createSession').onclick = async () => {
     const data = await response.json(); state.sessionId = data.session_id; state.ticket = data.ticket; state.requestId = null;
     document.querySelector('#session').textContent = `세션 준비됨: ${data.session_id} (티켓 ${data.expires_in_seconds}초)`;
     document.querySelector('#session').className = 'note ok'; output.textContent = ''; log('세션 생성 완료', 'ok'); setBusy(false);
-  } catch (error) { document.querySelector('#session').textContent = `세션 생성 실패: ${error.message}`; document.querySelector('#session').className = 'note error'; }
+    setRuntime('세션 준비 완료 · 실제 LLM으로 정리 버튼을 누르면 SSE 이벤트가 여기에 표시됩니다.', 'ok');
+  } catch (error) { document.querySelector('#session').textContent = `세션 생성 실패: ${error.message}`; document.querySelector('#session').className = 'note error'; setRuntime(`세션 생성 실패: ${error.message}`, 'error'); }
   finally { button.disabled = false; }
 };
 
 document.querySelector('#send').onclick = async () => {
-  state.requestId = newRequestId(); setBusy(true); log(`요청 시작: ${state.requestId}`, 'ok');
+  state.requestId = newRequestId(); setBusy(true); setRuntime(`실제 LLM 요청 진행 중 · request_id: ${state.requestId}`); log(`요청 시작: ${state.requestId}`, 'ok');
+  let streamSucceeded = false;
   try {
     const form = new FormData(); form.append('request', JSON.stringify({ request_id: state.requestId, user_message: document.querySelector('#message').value, view: document.querySelector('#view').value }));
     for (const file of document.querySelector('#files').files) form.append('files', file);
     await readSse(await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/chat/stream`, { method: 'POST', headers: authHeaders(), body: form }));
-  } catch (error) { log(`오류: ${error.message}`, 'error'); }
-  finally { setBusy(false); }
+    streamSucceeded = true;
+  } catch (error) { log(`오류: ${error.message}`, 'error'); setRuntime(`LLM 요청 실패: ${error.message}`, 'error'); }
+  finally { setBusy(false); if (streamSucceeded) setRuntime(`요청 스트림 종료 · request_id: ${state.requestId}`, 'ok'); }
 };
 
 document.querySelector('#retry').onclick = async () => {
@@ -175,9 +192,12 @@ document.querySelector('#retry').onclick = async () => {
 };
 
 document.querySelector('#state').onclick = async () => {
-  try { const response = await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/state`, { headers: authHeaders() }); if (!response.ok) throw new Error(await response.text()); log(`[session_state] ${JSON.stringify(await response.json(), null, 2)}`, 'ok'); }
+  try { const response = await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/state`, { headers: authHeaders() }); if (!response.ok) throw new Error(await response.text()); const data = await response.json(); log(`[session_state] ${JSON.stringify(data, null, 2)}`, 'ok'); setRuntime(`세션 상태: ${data.status}${data.active_request_id ? ` · 실행 중 요청: ${data.active_request_id}` : ''}`, 'ok'); }
   catch (error) { log(`상태 조회 오류: ${error.message}`, 'error'); }
 };
+
+log('테스트 콘솔 준비 완료 · 세션 시작 후 실제 LLM으로 정리를 실행하세요.');
+checkHealth();
 </script>
 </body>
 </html>"""
