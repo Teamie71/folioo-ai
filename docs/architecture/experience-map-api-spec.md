@@ -1,13 +1,10 @@
-# 경험정리 AI 서버 ↔ 메인 서버 API 연동 스펙
-
-> 대상: AI 서버 개발자, 메인 백엔드 서버 개발자
-> 결정 경위: [계약 변경 제안 결정 사항](experience-map-contract-decisions.md)
+# 경험정리 AI 서버 ↔︎ 메인 서버 API 연동 스펙
 
 ---
 
 ## 1. 아키텍처
 
-```text
+```
                     ┌─────────────── PostgreSQL (경험 맵) ───────────────┐
                     │ 쓰기                                        읽기   │
                     │                                                    │
@@ -27,7 +24,7 @@
 
 ### 두 가지 원칙
 
-**1. SSE는 프론트 ↔ AI 서버 직결.** 메인 서버는 스트림 경로에 없고, 시작 전
+**1. SSE는 프론트 ↔︎ AI 서버 직결.** 메인 서버는 스트림 경로에 없고, 시작 전
 티켓 발급에만 관여합니다 (2-1). 중계 코드에 버퍼링 해제·순서 보존·커넥션 점유
 비용을 지불하지 않습니다.
 
@@ -42,7 +39,7 @@
 
 ### 처리 흐름
 
-```text
+```
 파일 입력: Router → 파일처리 → 반영 내용 필터링 → 블록 구조화 → 문장 정제 → validate
 채팅 입력: Router → 반영 내용 필터링 → 블록 구조화 → 문장 정제 → validate
 gap 답변 : Router → 반영 내용 필터링 → 블록 구조화 또는 문장 정제 → validate
@@ -70,20 +67,11 @@ gap 답변 여부는 Router가 아니라 반영 내용 필터링 노드가 판�
 | --- | --- | --- |
 | 메인 → AI | `X-API-Key: ${AI_SERVICE_API_KEY}` | `POST /sessions` |
 | **프론트 → AI** | `Authorization: Bearer {ticket}` | `state`, `chat/stream`, `retry/stream`, `requests/{rid}` |
-| AI → 메인 | `X-API-Key: ${MAIN_BACKEND_API_KEY}` | 커밋·템플릿 API (7절) |
-
-**방향마다 키가 다릅니다.** 인바운드(메인 → AI)는 `AI_SERVICE_API_KEY`, 아웃바운드
-(AI → 메인)는 `MAIN_BACKEND_API_KEY`입니다. 한 키로 묶지 않는 이유는 티켓 서명 키를
-분리한 것과 같습니다 — 회전 주기가 다르고, 한쪽이 유출돼도 반대 방향 호출 권한까지
-넘어가지 않습니다.
-
-`MAIN_BACKEND_API_KEY`는 경험정리 전용이 아니라 AI 서버가 메인 서버를 부를 때 쓰는
-공용 변수입니다(`common/http_client`). 첨삭·포트폴리오 등 기존 기능과 pptx worker가
-이미 같은 변수를 씁니다.
+| AI → 메인 | `X-API-Key: ${AI_SERVICE_API_KEY}` | 커밋·템플릿 API (7절) |
 
 #### 티켓 발급 흐름
 
-```text
+```
 ① 프론트 → 메인   POST /api/v1/experience-map/ticket   (기존 로그인 인증)
 ② 메인            사용자 인증 → user_id 확보
                   세션 없으면 AI에 POST /sessions [X-API-Key]
@@ -148,7 +136,7 @@ body를 읽기 전에 검증하는 이유는 파일 업로드가 프론트 → A
 | `request_id` | UUID 문자열 | UUID |
 
 LLM에는 실제 block ID를 전달하지 않고 요청 안에서만 유효한 `exp_1`, `b_1` 별칭을
-전달합니다. 별칭 ↔ 실제 ID 변환은 AI 서버가 수행합니다. 없는 별칭이 출력되면
+전달합니다. 별칭 ↔︎ 실제 ID 변환은 AI 서버가 수행합니다. 없는 별칭이 출력되면
 그 항목을 탈락시켜 존재하지 않는 블록을 참조하는 사고를 구조적으로 막습니다.
 
 ### 2-3. 오류 응답
@@ -174,9 +162,6 @@ LLM에는 실제 block ID를 전달하지 않고 요청 안에서만 유효한 `
 | `413` | `file_too_large` |
 | `415` | `unsupported_file_type` |
 | `422` | `invalid_request` |
-| `429` | `rate_limited` (티켓 `sub` 단위 제한 초과) |
-
-`429`는 `Retry-After` 헤더에 재시도까지 남은 초를 함께 보냅니다.
 
 `ApiKeyAuthMiddleware`와 티켓 검증 미들웨어 모두 위 JSON 형식을 사용합니다.
 
@@ -201,9 +186,9 @@ gap 분석과 제안 생성은 각각 30초를 제한 시간으로 사용합니�
 ### 2-5. 멱등성
 
 - 메인 서버가 요청마다 UUID `request_id`를 생성해 티켓과 함께 내려줍니다.
-  프론트가 생성하면 멱등성 보장이 클라이언트로 넘어갑니다.
+프론트가 생성하면 멱등성 보장이 클라이언트로 넘어갑니다.
 - AI 서버는 사용자 메시지, 화면 context, view, 파일 SHA-256을 정규화해
-  `request_hash`를 계산합니다.
+`request_hash`를 계산합니다.
 - 같은 사용자의 동일 `request_id`와 동일 hash가 완료 상태면 저장 결과를 SSE로 재전송합니다.
 - 동일 요청이 실행 중이면 새 stream을 붙이지 않고 `409 session_busy`를 반환합니다.
 - 동일 요청이 실패 상태면 chat API가 아니라 retry API를 사용합니다.
@@ -347,7 +332,7 @@ CREATE TABLE ai_commit_log (
 
 AI 서버 DB 계정 권한:
 
-```text
+```
 block, block_kind, experience_map              : SELECT
 ai_experience_session, ai_experience_request   : SELECT, INSERT, UPDATE, DELETE
 ai_commit_log                                  : 권한 없음
@@ -381,7 +366,7 @@ DB 제약:
 3단계 카테고리를 AI가 생성할 수 있는 경우는 둘입니다.
 
 - 기본 제공 카테고리(상세정보·주요성과·담당업무·문제해결·배운 점) 중 해당 활동에
-  없는 것이 필요할 때 → 해당 `section_kind`로 생성
+없는 것이 필요할 때 → 해당 `section_kind`로 생성
 - 사용자 입력이 기본 카테고리 어디에도 맞지 않을 때 → level 3 `CONTENT`로 생성
 
 **AI가 만드는 블록의 kind는 `CONTENT`와 `SECTION_*` 두 가지**이며, 어떤 위계의
@@ -399,24 +384,10 @@ DB 제약:
 
 **AI는 문구가 아니라 `slot_id`를 보냅니다.**
 
-```text
+```
 AI가 보내는 것     : slot_id = "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE"
 메인이 저장하는 것 : placeholder = "문제의 원인은 무엇이었으며, ..."
 ```
-
-#### `slot_id` 형식은 level에 따라 둘입니다
-
-```text
-level 4 : {SECTION}.{SLOT}              DETAIL.MOTIVATION
-level 5 : {SECTION}.{TEMPLATE}.{SLOT}   PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE
-```
-
-**점 개수가 곧 level입니다.** 2-part면 4단계, 3-part면 5단계입니다.
-전체 38개(level 4 슬롯 10개 + level 5 슬롯 28개)이며 목록은 에이전트 문서 3-0입니다.
-
-level 5는 반드시 앵커 슬롯(`TASK.SUMMARY` / `PROBLEM_SOLVING.SUMMARY`)으로 만든
-level 4 블록 아래에 붙습니다. 하위 템플릿을 가지는 카테고리는 담당업무·문제해결
-둘뿐이며, 나머지 셋은 level 4에서 끝납니다.
 
 - LLM이 템플릿 문구를 토씨까지 재생산할 필요가 없습니다
 - 카탈로그 대조로 **검증이 가능**합니다. 없는 `slot_id`는 `422 unknown_slot_id`
@@ -426,7 +397,7 @@ level 4 블록 아래에 붙습니다. 하위 템플릿을 가지는 카테고�
 담당업무·문제해결 하위의 문구가 전부 다르므로 `block_kind.placeholder`로는
 표현할 수 없습니다. `slot_id`가 없는 블록(ad-hoc level 3 `CONTENT`, 자유 입력)은
 `block.placeholder`도 `null`이며 `block_kind.placeholder` 폴백
-("내용을 입력해 주세요.")이 적용됩니다.
+(“내용을 입력해 주세요.”)이 적용됩니다.
 
 카탈로그 조회는 `GET /templates`(7절)입니다. AI 서버는 **기동 시 1회 조회 후
 1시간 TTL로 갱신**하고, `422 unknown_slot_id`를 받으면 즉시 재조회 후 1회 재시도합니다.
@@ -438,7 +409,7 @@ level 4 블록 아래에 붙습니다. 하위 템플릿을 가지는 카테고�
 | 템플릿을 쓰지 않는 생성 | 값이 들어갈 블록만 생성. 빈 블록을 만들지 않는다 |
 | **템플릿을 쓰는 생성** | **템플릿의 모든 슬롯을 생성한다.** 채울 수 있는 블록에는 값을 넣고, 정보가 없는 블록은 `content` 없이 `slot_id`만 보낸다 |
 
-문제해결 '기술 트러블슈팅' 템플릿을 적용했는데 사용자가 5단계 4개 중 2개 분량만
+문제해결 ‘기술 트러블슈팅’ 템플릿을 적용했는데 사용자가 5단계 4개 중 2개 분량만
 이야기했다면 **4개를 모두 생성하고 2개만 채웁니다.** 나머지는 `content IS NULL`이라
 화면에 placeholder가 보이고, gap 분석이 그 블록을 근거로 후속 질문을 만들 수 있습니다.
 
@@ -480,8 +451,8 @@ SELECT b.id,
 작성 내용으로 오인하는 것이 이 기능의 대표 실패 모드입니다.
 
 **초기 데이터는 메인 서버가 생성합니다.** 신규 사용자가 처음 진입할 때
-`experience_map` 행과 [경험정리 템플릿](https://app.notion.com/p/38f157eb55e280558721f316935e904f)
-1절의 기본 제공 데이터('미분류' 그룹, '새로운 그룹 1 > 새로운 경험 1'과 5개 카테고리 및
+`experience_map` 행과 [경험정리 템플릿](https://app.notion.com/p/38f157eb55e280558721f316935e904f?pvs=21)
+1절의 기본 제공 데이터(‘미분류’ 그룹, ’새로운 그룹 1 > 새로운 경험 1’과 5개 카테고리 및
 placeholder 블록)를 만듭니다. AI 서버는 빈 맵을 만들지 않고 `map_not_initialized`로
 처리를 중단합니다.
 
@@ -497,7 +468,7 @@ placeholder 블록)를 만듭니다. AI 서버는 빈 맵을 만들지 않고 `m
     "parent_id": "3021",
     "parent_item_id": null,
     "section_kind": null,
-    "slot_id": "PROBLEM_SOLVING.SUMMARY",
+    "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.SUMMARY",
     "content": "결제 모듈 타임아웃으로 주문 실패율이 12%까지 올랐다.",
     "after_id": null
   },
@@ -541,15 +512,15 @@ placeholder 블록)를 만듭니다. AI 서버는 빈 맵을 만들지 않고 `m
 | `PROBLEM_SOLVING` | 문제해결 |
 | `LEARNING` | 배운 점 |
 
-DB enum 이름이 바뀌어도 API 계약이 깨지지 않습니다. `slot_id`의 첫 마디가
-`section_kind`와 같은 어휘라 카테고리와 슬롯이 한 체계에 들어갑니다 (형식은 3-7).
+DB enum 이름이 바뀌어도 API 계약이 깨지지 않습니다. `slot_id`가
+`{SECTION}.{TEMPLATE}.{SLOT}` 형태라 카테고리와 슬롯이 같은 어휘 체계에 들어갑니다.
 
 3단계 카테고리를 새로 만드는 item은 컨테이너이므로 `content`가 없습니다.
 실제 내용은 그 아래 4단계 item이 `parent_item_id`로 참조해 담습니다.
 
 ### 4-3. 커밋 위임과 충돌 복구
 
-```text
+```
 validate 통과
 → AI: POST /api/v1/experience-map/commit  [X-API-Key]
 → 메인: 한 트랜잭션으로 검증·반영·version 증가·ai_commit_log UPSERT
@@ -569,7 +540,7 @@ validate 통과
 block 쓰기와 `ai_experience_request.result` 저장이 서로 다른 서비스에 있으므로
 아래 상태가 생길 수 있습니다.
 
-```text
+```
 메인 커밋 성공 → 응답 유실 → AI가 result를 저장하지 못함
 결과: ai_experience_request는 running, 실제 맵은 커밋됨
 ```
@@ -592,7 +563,7 @@ block 쓰기와 `ai_experience_request.result` 저장이 서로 다른 서비스
 - 추출 노드가 **시스템 오류**로 실패하면 재시도를 위해 원본을 최대 1시간 유지합니다.
 - 1시간이 지났고 추출 결과가 없으면 `retry_expired`를 반환합니다.
 - 파일 품질 문제로 **추출 자체가 불가능한 경우는 노드 실패가 아니라 Fallback**입니다.
-  손상된 PDF에 재시도 버튼을 주면 몇 번을 눌러도 같은 결과가 나옵니다.
+손상된 PDF에 재시도 버튼을 주면 몇 번을 눌러도 같은 결과가 나옵니다.
 - 파일 본문과 추출 원문은 애플리케이션 로그에 남기지 않습니다.
 
 ---
@@ -649,7 +620,7 @@ block 쓰기와 `ai_experience_request.result` 저장이 서로 다른 서비스
 
 ### `POST /sessions/{session_id}/chat/stream`
 
-```http
+```
 Content-Type: multipart/form-data
 Accept: text/event-stream
 ```
@@ -693,7 +664,7 @@ UTF-8 디코딩 성공 여부로 판정합니다. 메시지와 파일 중 하나
 
 **Response `200 OK`**
 
-```http
+```
 Content-Type: text/event-stream
 Cache-Control: no-cache
 X-Accel-Buffering: no
@@ -756,7 +727,7 @@ SSE 연결 종료·단절 뒤 요청 상태와 저장 결과를 복구합니다.
 
 정상 커밋 이벤트 순서:
 
-```text
+```
 processing_started
 → node_status*
 → commit_result
@@ -771,7 +742,7 @@ processing_started
 
 gap 분석 또는 제안 생성이 **실패**했을 때만 `suggestion_ready`와 suggestion 메시지를
 생략합니다. 분석에 성공했다면 **gap이 없어도 제안 메시지는 전송**합니다
-(고정 문구 "더 정리하고 싶으신 내용이 있나요?").
+(고정 문구 “더 정리하고 싶으신 내용이 있나요?”).
 
 커밋 실패 시 실행 중인 gap 분석을 취소하고 `error`를 전송합니다.
 
@@ -829,7 +800,7 @@ gap 분석 또는 제안 생성이 **실패**했을 때만 `suggestion_ready`와
 items에서 제외되므로 메인 서버는 그 존재를 모릅니다. 커밋 API 응답에는 `dropped`가
 없습니다.
 
-`path`는 결과 문구에 "어디에 넣었는지"를 보여주기 위해 필요합니다. 사전 승인이 없는
+`path`는 결과 문구에 “어디에 넣었는지”를 보여주기 위해 필요합니다. 사전 승인이 없는
 경로이므로 이 문구가 사용자가 오배정을 발견하는 주 경로입니다.
 
 ### `message_complete`
@@ -850,9 +821,7 @@ items에서 제외되므로 메인 서버는 그 존재를 모릅니다. 커밋 
 ```
 
 `response_kind`는 `result`, `suggestion`, `fallback` 중 하나입니다.
-Fallback은 `committed: false`이며 **진입 경로별 고정 문구**를 보냅니다
-(`out_of_scope` / `file_unreadable` / `nothing_to_apply` / `ambiguous_target`,
-문구는 에이전트 문서 5-11).
+Fallback은 `committed: false`이며 고정 문구 “아직 지원하지 않는 기능이에요.”를 보냅니다.
 
 ### `suggestion_ready`
 
@@ -927,10 +896,6 @@ Fallback은 `committed: false`이며 **진입 경로별 고정 문구**를 보�
 | `GET` | `/api/v1/experience-map/templates` | AI 서버 | `X-API-Key` |
 | `POST` | `/api/v1/experience-map/revert` | 프론트 | 로그인 세션 |
 
-**"AI 서버" 호출이 보내는 `X-API-Key` 값은 AI 쪽 `MAIN_BACKEND_API_KEY`입니다**
-(2-1 참고). 메인 → AI 호출에 쓰는 `AI_SERVICE_API_KEY`와 다른 키이므로, 메인 서버는
-두 값을 따로 보관해야 합니다.
-
 ### `POST /ticket`
 
 프론트가 AI 서버에 직결하기 전에 신원을 발급받습니다 (2-1).
@@ -965,7 +930,7 @@ Fallback은 `committed: false`이며 **진입 경로별 고정 문구**를 보�
 
 **메인 서버가 수행하는 것**
 
-```text
+```
 BEGIN
   experience_map 행 SELECT FOR UPDATE
   이미 커밋된 request_id면 저장 결과 반환 (멱등)
@@ -1036,43 +1001,24 @@ COMMIT
 
 템플릿 카탈로그 (3-7).
 
-**level 4 슬롯은 template에 속하지 않습니다.** 카테고리 슬롯 10개는 `section.slots`에,
-하위 템플릿 슬롯 28개는 `section.templates[].slots`에 옵니다.
-
 ```json
 {
-  "version": "2026-08-09",
+  "version": "2026-08-05",
   "sections": [
-    {
-      "section_id": "DETAIL",
-      "label": "상세정보",
-      "slots": [
-        {
-          "slot_id": "DETAIL.MOTIVATION",
-          "level": 4,
-          "placeholder": "어떤 계기로 이 경험을 시작했으며, 최종적으로 달성하고자 한 목표는 무엇인가요?",
-          "example": "교내 커뮤니티의 비효율적인 게시판형 거래 방식을 개선하고 ..."
-        }
-      ],
-      "templates": []
-    },
     {
       "section_id": "PROBLEM_SOLVING",
       "label": "문제해결",
-      "slots": [
-        {
-          "slot_id": "PROBLEM_SOLVING.SUMMARY",
-          "level": 4,
-          "is_anchor": true,
-          "placeholder": "문제해결 에피소드를 한 줄로 요약해 주세요.",
-          "example": "신규 프로모션 페이지 가입 이탈 문제 해결"
-        }
-      ],
       "templates": [
         {
           "template_id": "TROUBLESHOOTING",
           "label": "기술 트러블슈팅",
           "slots": [
+            {
+              "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.SUMMARY",
+              "level": 4,
+              "placeholder": "문제해결 에피소드를 한 줄로 요약해 주세요.",
+              "example": "신규 프로모션 페이지 가입 이탈 문제 해결"
+            },
             {
               "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
               "level": 5,
@@ -1087,11 +1033,7 @@ COMMIT
 }
 ```
 
-`is_anchor`가 `true`인 level 4 슬롯 아래에만 해당 섹션의 템플릿 슬롯을 붙일 수
-있습니다. 현재 앵커는 `TASK.SUMMARY`와 `PROBLEM_SOLVING.SUMMARY` 둘이며, 나머지
-세 섹션은 `templates`가 빈 배열입니다.
-
-`example`은 노션 "예시 있는 버전 (AI용)"의 작성 예시입니다. AI가 프롬프트 few-shot과
+`example`은 노션 “예시 있는 버전 (AI용)”의 작성 예시입니다. AI가 프롬프트 few-shot과
 정제 노드의 문체 기준으로 사용합니다.
 
 카탈로그 본체를 코드 상수로 둘지 DB 테이블로 둘지는 메인 서버 내부 결정입니다.
@@ -1108,7 +1050,7 @@ COMMIT
 
 처리:
 
-```text
+```
 BEGIN
   experience_map 행 SELECT FOR UPDATE
   인증 사용자와 request_id가 일치하는 최신 ai_commit_log 조회
@@ -1152,9 +1094,8 @@ COMMIT
 | `DATABASE_URL` | 경험 맵·AI 세션·요청 DB |
 | `CHECKPOINT_DATABASE_URL` | LangGraph checkpoint 전용 DB |
 | `MAIN_BACKEND_URL` | 커밋·템플릿 API 호출 대상 |
-| `AI_SERVICE_API_KEY` | **인바운드** 전용. 메인 → AI 호출 검증 (`POST /sessions`) |
-| `MAIN_BACKEND_API_KEY` | **아웃바운드** 전용. AI → 메인 호출 시 보내는 키. 기존 공용 변수 |
-| `EXPMAP_TICKET_SECRET` | 티켓 HS256 서명 키. 위 두 키와 모두 별도 |
+| `AI_SERVICE_API_KEY` | 메인 ↔︎ AI 서버 간 인증 키 (양방향) |
+| `EXPMAP_TICKET_SECRET` | 티켓 HS256 서명 키. `AI_SERVICE_API_KEY`와 별도 |
 | `ALLOWED_ORIGINS` | 프론트 직결용 CORS 오리진 (기존 변수에 웹 오리진 추가) |
 | `EXPMAP_UPLOAD_BUCKET` | 임시 첨부 파일 bucket |
 | `EXPMAP_RETRY_TTL_SECONDS` | 기본값 `1800` |
@@ -1163,8 +1104,6 @@ COMMIT
 | `EXPMAP_LLM_TIMEOUT_SECONDS` | 기본값 `60` |
 | `EXPMAP_FILE_TIMEOUT_SECONDS` | 파일처리(파서·OCR) 기본값 `120` |
 | `EXPMAP_GAP_TIMEOUT_SECONDS` | 기본값 `30` |
-| `EXPMAP_RATE_LIMIT_PER_MINUTE` | 티켓 `sub` 단위 분당 요청 수. 기본값 `20` |
-| `EXPERIENCE_MAP_ENABLED` | 기능 노출 여부. 기본값 `false`, 시나리오 검증 후 `true` |
 
 **`CHECKPOINT_DATABASE_URL`이 없으면 서버 시작을 실패시킵니다.** `DATABASE_URL`로
 fallback하지 않습니다. 현재 `common/checkpointer/factory.py`가 폴백하도록 되어 있어
@@ -1175,8 +1114,7 @@ fallback하지 않습니다. 현재 `common/checkpointer/factory.py`가 폴백�
 | 변수 | 설명 |
 | --- | --- |
 | `AI_SERVICE_URL` | AI 서버 Base URL |
-| `AI_SERVICE_API_KEY` | **아웃바운드** — 메인 → AI 호출 시 보내는 키 |
-| (이름은 메인 서버가 정함) | **인바운드** — AI → 메인 호출 검증용. AI 쪽 `MAIN_BACKEND_API_KEY`와 같은 값 |
+| `AI_SERVICE_API_KEY` | AI 서버 호출 인증 키 |
 | `EXPMAP_TICKET_SECRET` | 티켓 서명 키 (AI 서버와 공유) |
 | `EXPMAP_TICKET_TTL_SECONDS` | 기본값 `300` |
 
@@ -1216,3 +1154,63 @@ fallback하지 않습니다. 현재 `common/checkpointer/factory.py`가 폴백�
 | 항목 | 주체 |
 | --- | --- |
 | 템플릿 카탈로그 본체를 코드 상수로 둘지 DB 테이블로 둘지 | 메인 서버 내부 |
+| **`slot_id` 전체 목록,** 3단계 템플릿 10개 + 담당업무 4개 + 문제해결 6종 × 4개 = **약 38개 슬롯**의 ID를 확정해야함 |  |
+- 템플릿 카탈로그
+    
+    ### 구조
+    
+    ```
+    카테고리 슬롯 (level 4)   10개   ← 카테고리 생성 시 함께 전개
+    하위 템플릿 (level 5)     28개   ← 담당업무 1종×4 + 문제해결 6종×4
+                              38개
+    ```
+    
+    담당업무·문제해결만 하위 템플릿을 가져. 나머지 셋은 level 4까지만.
+    
+    ### `slot_id` 형식
+    
+    ```
+    level 4 : {SECTION}.{SLOT}              DETAIL.MOTIVATION
+    level 5 : {SECTION}.{TEMPLATE}.{SLOT}   PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE
+    ```
+    
+    점 개수가 곧 level. 스펙 3-7이 3-part만 언급하는데 정정 필요해.
+    
+    ### 카테고리 슬롯 (level 4, 10개)
+    
+    | `section_kind` | `slot_id` | 하위 템플릿 |
+    | --- | --- | --- |
+    | `DETAIL` | `DETAIL.MOTIVATION` `DETAIL.PERIOD` `DETAIL.ROLE` `DETAIL.TARGET` `DETAIL.STACK` | 없음 |
+    | `ACHIEVEMENT` | `ACHIEVEMENT.QUANTITATIVE` `ACHIEVEMENT.QUALITATIVE` | 없음 |
+    | `TASK` | `TASK.SUMMARY` | **앵커** |
+    | `PROBLEM_SOLVING` | `PROBLEM_SOLVING.SUMMARY` | **앵커** |
+    | `LEARNING` | `LEARNING.GROWTH` | 없음 |
+    
+    ### 하위 템플릿 (level 5, 28개)
+    
+    | 섹션 | `template_id` | 라벨 | 슬롯 |
+    | --- | --- | --- | --- |
+    | TASK | `BASIC` | 기본 | `PURPOSE` `RESEARCH` `EXECUTION` `RESULT` |
+    | PROBLEM_SOLVING | `BASIC` | 기본 | `PROBLEM` `CAUSE` `SOLUTION` `RESULT` |
+    | PROBLEM_SOLVING | `INTERPERSONAL` | 대인관계 | `SITUATION` `ACTION` `OUTCOME` `LEARNING` |
+    | PROBLEM_SOLVING | `PERFORMANCE` | 성과 부진 개선 | `METRIC` `CAUSE` `ACTION` `RESULT` |
+    | PROBLEM_SOLVING | `TROUBLESHOOTING` | 기술 트러블슈팅 | `PROBLEM` `CAUSE` `SOLUTION` `VERIFICATION` |
+    | PROBLEM_SOLVING | `FEEDBACK` | 피드백 대응 | `RECEIVED` `NEED` `ACTION` `OUTCOME` |
+    | PROBLEM_SOLVING | `RECOVERY` | 실패 회복 | `FAILURE` `CAUSE` `EFFORT` `CHANGE` |
+    
+    전체 ID는 `{섹션}.{template_id}.{슬롯}` — 예: `PROBLEM_SOLVING.RECOVERY.EFFORT`
+    
+    ### AI가 지켜야 할 규칙
+    
+    **앵커 구조.** level 5는 반드시 앵커 슬롯(`TASK.SUMMARY` / `PROBLEM_SOLVING.SUMMARY`)으로 만든 level 4 블록 아래에 붙어. items에서 `parent_item_id`로 그 앵커를 참조하거나, 기존 블록이면 `parent_id`로.
+    
+    **두 가지 사용 경로.**
+    
+    | 경우 | items 구성 |
+    | --- | --- |
+    | 새 업무/에피소드 | 앵커 level 4 + 하위 템플릿 level 5 전체 |
+    | 기존 4단계 아래 보강 | 하위 템플릿 level 5만 |
+    
+    **빈 슬롯도 보낸다** (스펙 3-8). 템플릿을 쓰면 4개 중 2개만 채워도 4개 다 items에 넣고, 나머지는 `content` 없이 `slot_id`만.
+    
+    **반복 가능.** 담당업무는 업무 하나당, 문제해결은 에피소드 하나당 한 벌. 한 활동에 여러 벌 가능.
