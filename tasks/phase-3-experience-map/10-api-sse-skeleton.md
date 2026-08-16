@@ -39,7 +39,7 @@ sprint: ""
   - [x] `POST /api/v1/experience-map/sessions/{session_id}/retry/stream`
   - [x] `GET  /api/v1/experience-map/sessions/{session_id}/requests/{request_id}`
 - [x] `app/api/v1/__init__.py` 에 router 등록
-- [ ] `langgraph.json` 에 경험정리 graph 등록 — **3.17 로 미룸.** `features.experience_map.graph:graph` 가 아직 없어 지금 등록하면 `langgraph dev` 가 인터뷰 그래프까지 못 띄운다
+- [x] `langgraph.json` 에 경험정리 graph 등록 — 3.17 에서 `features.experience_map.graph:graph` 가 생긴 뒤 `experience-map-agent` 로 등록했다
 - [x] 10초 heartbeat
 - [x] stream 시작 전 JSON 오류 / 시작 후 SSE 오류
 - [x] 이벤트 `processing_started`·`node_status`·`commit_result`·`message_complete`·`suggestion_ready`·`processing_complete`·`error`·`ping`
