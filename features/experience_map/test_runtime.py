@@ -23,6 +23,7 @@ from features.experience_map.map_context import (
 from features.experience_map.nodes.fallback import fallback_message
 from features.experience_map.schemas import AppliedItem, CommitResult, StructuredItem
 from features.experience_map.state import ExperienceMapState
+from features.experience_map.templates import TemplateCatalogClient
 
 
 def _initial_rows() -> list[MapBlockRow]:
@@ -56,6 +57,47 @@ def _initial_rows() -> list[MapBlockRow]:
         row("400", "200", 3, 2, "성과"),
         row("401", "400", 4, 1, "신청 전환율과 완료율을 개선했다."),
     ]
+
+
+async def _test_template_catalog() -> dict[str, Any]:
+    """메인 서버 없이 구조화 노드를 실행할 최소 템플릿 카탈로그를 반환한다."""
+    return {
+        "version": "test-v1",
+        "sections": [
+            {
+                "section_id": "DETAIL",
+                "label": "상세정보",
+                "slots": [
+                    {
+                        "slot_id": "DETAIL.MOTIVATION",
+                        "level": 4,
+                        "placeholder": "시작 계기",
+                        "example": "문제를 해결하고 싶었습니다.",
+                    }
+                ],
+                "templates": [],
+            },
+            {
+                "section_id": "PROBLEM_SOLVING",
+                "label": "문제해결",
+                "slots": [
+                    {
+                        "slot_id": "PROBLEM_SOLVING.SUMMARY",
+                        "level": 4,
+                        "is_anchor": True,
+                        "placeholder": "문제 요약",
+                        "example": "가입 이탈 문제 해결",
+                    }
+                ],
+                "templates": [],
+            },
+        ],
+    }
+
+
+def create_test_template_catalog_client() -> TemplateCatalogClient:
+    """테스트 UI 전용 카탈로그 클라이언트를 생성한다."""
+    return TemplateCatalogClient(_test_template_catalog)
 
 
 @dataclass
@@ -230,4 +272,9 @@ def get_test_map_store() -> InMemoryTestMapStore:
     return _store
 
 
-__all__ = ["InMemoryTestMapStore", "TestUiGraphRunner", "get_test_map_store"]
+__all__ = [
+    "InMemoryTestMapStore",
+    "TestUiGraphRunner",
+    "create_test_template_catalog_client",
+    "get_test_map_store",
+]

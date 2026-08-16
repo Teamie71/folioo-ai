@@ -2,7 +2,19 @@
 
 import pytest
 
-from features.experience_map.test_runtime import InMemoryTestMapStore
+from features.experience_map.test_runtime import (
+    InMemoryTestMapStore,
+    create_test_template_catalog_client,
+)
+
+
+@pytest.mark.asyncio
+async def test_test_template_catalog_is_available_without_main_server():
+    """테스트 UI는 메인 서버 없이도 구조화 카탈로그를 읽을 수 있어야 한다."""
+    catalog = await create_test_template_catalog_client().get_catalog()
+
+    assert catalog.version == "test-v1"
+    assert catalog.get_slot("PROBLEM_SOLVING.SUMMARY") is not None
 
 
 @pytest.mark.asyncio

@@ -126,9 +126,9 @@ TEST_PAGE_HTML = r"""<!doctype html>
       <div class="chat-header"><h2>경험정리 에이전트</h2><span id="chatStatus" class="status-dot">● 세션 시작 전</span></div>
       <div id="chatHistory"><div class="bubble assistant">안녕하세요. 오른쪽 맵에서 수정할 블록을 고르고, 어떤 방향으로 고칠지 말해 주세요.</div></div>
       <div class="composer">
-        <label>수정할 블록<select id="block" disabled><option>세션을 시작하면 샘플 맵을 불러옵니다.</option></select></label>
-        <label>메시지<textarea id="message" placeholder="예: 이 문장을 문제 상황과 분석 근거가 드러나도록 더 구체적으로 수정해줘.">선택한 블록의 문장을 수치와 행동이 드러나도록 더 구체적으로 수정해줘.</textarea></label>
-        <p class="note">Enter로 전송 · Shift+Enter로 줄바꿈</p>
+        <label>연결할 블록<select id="block" disabled><option>세션을 시작하면 샘플 맵을 불러옵니다.</option></select></label>
+        <label>경험 사실<textarea id="message" placeholder="예: 행사 신청 페이지의 이탈률이 높았다. GA4 퍼널 분석 후 입력 단계를 5개에서 3개로 줄였다.">행사 신청 페이지의 이탈률이 높았다. GA4 퍼널 분석 후 입력 단계를 5개에서 3개로 줄였다.</textarea></label>
+        <p class="note">경험의 사실을 입력하세요 · Enter로 전송 · Shift+Enter로 줄바꿈</p>
         <label>첨부 파일 (선택, 최대 3개)<input id="files" type="file" multiple></label>
         <button id="send" disabled>보내기</button><button id="retry" class="secondary" disabled>재시도</button><button id="state" class="secondary" disabled>상태</button>
       </div>

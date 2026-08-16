@@ -175,9 +175,15 @@ async def lifespan(app: FastAPI):
         logger.info("경험 맵 DB 커넥션 풀 초기화 완료")
         if get_experience_map_settings().test_ui_enabled:
             from features.experience_map.graph_runner import set_graph_runner
-            from features.experience_map.test_runtime import TestUiGraphRunner, get_test_map_store
+            from features.experience_map.templates import set_template_catalog_client
+            from features.experience_map.test_runtime import (
+                TestUiGraphRunner,
+                create_test_template_catalog_client,
+                get_test_map_store,
+            )
 
             set_graph_runner(TestUiGraphRunner(get_test_map_store()))
+            set_template_catalog_client(create_test_template_catalog_client())
             logger.warning("경험 맵 테스트 UI용 in-memory 맵·커밋 실행기 활성화")
     except ValueError:
         logger.warning("DATABASE_URL이 설정되지 않음 - 경험 맵 DB 비활성화")
@@ -245,8 +251,10 @@ async def lifespan(app: FastAPI):
             set_experience_map_repository(None)
             if get_experience_map_settings().test_ui_enabled:
                 from features.experience_map.graph_runner import set_graph_runner
+                from features.experience_map.templates import set_template_catalog_client
 
                 set_graph_runner(None)
+                set_template_catalog_client(None)
             await close_pool()
         except Exception:
             logger.exception("경험 맵 DB 커넥션 풀 정리 실패")
