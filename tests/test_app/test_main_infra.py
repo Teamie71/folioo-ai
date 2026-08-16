@@ -250,13 +250,18 @@ def test_openapi_marks_api_routes_with_api_key_security():
 
 
 def test_openapi_marks_ticket_routes_with_bearer_security():
-    """경험정리 프론트 직결 경로는 Bearer 티켓 인증으로 표시한다."""
+    """경험정리 노출 시 프론트 직결 경로는 Bearer 티켓 인증으로 표시한다."""
     schema = main.create_app().openapi()
 
     ticket_scheme = schema["components"]["securitySchemes"][main.OPENAPI_TICKET_SCHEME_NAME]
     assert ticket_scheme["scheme"] == "bearer"
 
     operations = _api_operations(schema, ticket_paths=True)
+    if not experience_map_config.get_settings().enabled:
+        # 기본값은 기능 비노출이다. CI처럼 feature flag가 꺼진 환경에서는 라우트도 없다.
+        assert operations == []
+        return
+
     assert operations, "티켓 인증 경로가 하나도 잡히지 않았습니다."
     assert all(
         operation["security"] == [{main.OPENAPI_TICKET_SCHEME_NAME: []}] for operation in operations
