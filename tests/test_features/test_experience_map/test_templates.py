@@ -176,3 +176,81 @@ def test_catalog_rejects_duplicate_slot_ids():
 
     with pytest.raises(ValidationError, match="중복된 slot_id"):
         TemplateCatalog.model_validate(payload)
+
+
+def spec_section7_catalog() -> dict:
+    """API 명세 7절 응답 예시 그대로.
+
+    `section.slots` 가 없고, 템플릿 안에 level 4 슬롯이 섞여 있으며, `is_anchor`
+    필드가 아예 없다. 9절 카탈로그 정의와 형태가 다르지만 둘 다 받아야 한다.
+    """
+    return {
+        "version": "2026-08-05",
+        "sections": [
+            {
+                "section_id": "PROBLEM_SOLVING",
+                "label": "문제해결",
+                "templates": [
+                    {
+                        "template_id": "TROUBLESHOOTING",
+                        "label": "기술 트러블슈팅",
+                        "slots": [
+                            {
+                                "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.SUMMARY",
+                                "level": 4,
+                                "placeholder": "문제해결 에피소드를 한 줄로 요약해 주세요.",
+                                "example": "신규 프로모션 페이지 가입 이탈 문제 해결",
+                            },
+                            {
+                                "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+                                "level": 5,
+                                "placeholder": "문제의 원인은 무엇이었나요?",
+                                "example": "APM 툴로 병목 구간을 모니터링한 결과",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_accepts_spec_section7_shape():
+    """명세 7절 응답을 그대로 받는다.
+
+    템플릿 안 슬롯을 level 5 로 제한하면 실제 응답이 파싱 단계에서 거부된다.
+    배치 규칙은 카탈로그 소유자인 메인 서버가 정한다.
+    """
+    catalog = TemplateCatalog.model_validate(spec_section7_catalog())
+
+    slot = catalog.get_slot("PROBLEM_SOLVING.TROUBLESHOOTING.SUMMARY")
+    assert slot is not None
+    assert slot.level == 4
+    assert catalog.get_slot("PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE").level == 5
+
+
+def test_anchor_is_derived_when_response_omits_it():
+    """`is_anchor` 가 없으면 slot_id 로 채운다 (명세 9절).
+
+    안 채우면 모든 슬롯이 앵커가 아닌 것으로 읽혀, 구조화 프롬프트가 level 5 를
+    매달 자리를 표시하지 못한다.
+    """
+    payload = sample_catalog()
+    for section in payload["sections"]:
+        for slot in section["slots"]:
+            slot.pop("is_anchor", None)
+
+    catalog = TemplateCatalog.model_validate(payload)
+
+    assert catalog.get_slot("PROBLEM_SOLVING.SUMMARY").is_anchor is True
+    assert catalog.get_slot("DETAIL.MOTIVATION").is_anchor is False
+
+
+def test_explicit_anchor_wins_over_derivation():
+    """메인 서버가 보낸 값이 우선이다. 카탈로그 소유권은 메인 서버에 있다."""
+    payload = sample_catalog()
+    payload["sections"][1]["slots"][0]["is_anchor"] = False
+
+    catalog = TemplateCatalog.model_validate(payload)
+
+    assert catalog.get_slot("PROBLEM_SOLVING.SUMMARY").is_anchor is False
