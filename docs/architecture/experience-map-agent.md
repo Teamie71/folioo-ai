@@ -4,7 +4,7 @@
 >
 > 원본 기획: 노션 「에이전트」, 「경험정리 템플릿」
 > 흐름: [FigJam 에이전트 보드](https://www.figma.com/board/v0wh7Srv8Xd8DwNSnIHdUy/%EC%97%90%EC%9D%B4%EC%A0%84%ED%8A%B8?node-id=0-1)
-> 계약 결정 경위: [계약 변경 제안 결정 사항](experience-map-contract-decisions.md)
+> 메인 서버 요청: [백엔드에 요청할 것](experience-map-backend-requests.md)
 > 실행 계획: [PR 분할 계획](experience-map-pr-plan.md) — 9절 개발 순서를 PR 단위로 분해
 
 ---
