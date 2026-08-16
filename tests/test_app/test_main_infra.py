@@ -250,22 +250,51 @@ def test_openapi_marks_api_routes_with_api_key_security():
 
 
 def test_openapi_marks_ticket_routes_with_bearer_security():
-    """경험정리 노출 시 프론트 직결 경로는 Bearer 티켓 인증으로 표시한다."""
+    """등록된 프론트 직결 경로는 Bearer 티켓 인증으로 표시한다.
+
+    **살아 있는 설정을 다시 읽지 않는다.** 라우터 등록은 `app.api.v1` 을 import 하는
+    시점의 feature flag 로 굳는데, 그 뒤 다른 테스트가 설정 캐시를 비우면 지금 읽은
+    값이 실제 앱 상태와 어긋난다. 그래서 단독으로는 통과하고 전체 실행에서만 깨졌다.
+
+    여기서 고정할 것은 "flag 가 켜져 있는가" 가 아니라 **등록된 티켓 경로가 전부
+    TicketAuth 로 표시되는가** 다. flag 가 꺼져 있으면 검사 대상이 없을 뿐이고,
+    그 경우의 표시 규칙은 아래 `test_ticket_paths_get_bearer_scheme` 가 직접 본다.
+    """
     schema = main.create_app().openapi()
 
     ticket_scheme = schema["components"]["securitySchemes"][main.OPENAPI_TICKET_SCHEME_NAME]
     assert ticket_scheme["scheme"] == "bearer"
 
-    operations = _api_operations(schema, ticket_paths=True)
-    if not experience_map_config.get_settings().enabled:
-        # 기본값은 기능 비노출이다. CI처럼 feature flag가 꺼진 환경에서는 라우트도 없다.
-        assert operations == []
-        return
+    for operation in _api_operations(schema, ticket_paths=True):
+        assert operation["security"] == [{main.OPENAPI_TICKET_SCHEME_NAME: []}]
 
-    assert operations, "티켓 인증 경로가 하나도 잡히지 않았습니다."
-    assert all(
-        operation["security"] == [{main.OPENAPI_TICKET_SCHEME_NAME: []}] for operation in operations
+
+def test_ticket_paths_get_bearer_scheme():
+    """경로별 인증 표시 규칙을 라우터 등록과 무관하게 검증한다.
+
+    앞 테스트는 flag 가 꺼진 환경(CI 기본값)에서 티켓 분기를 한 번도 밟지 못한다.
+    합성 스키마를 직접 넣어 규칙 자체를 고정한다.
+    """
+    ticket_path = "/api/v1/experience-map/sessions/{session_id}/state"
+    schema = main._attach_api_key_security(
+        {
+            "paths": {
+                ticket_path: {"get": {}},
+                "/api/v1/experience-map/sessions": {"post": {}},
+                "/health": {"get": {}},
+            }
+        }
     )
+
+    assert is_ticket_auth_path(ticket_path), "티켓 경로 판정이 미들웨어와 어긋납니다."
+    assert schema["paths"][ticket_path]["get"]["security"] == [
+        {main.OPENAPI_TICKET_SCHEME_NAME: []}
+    ]
+    # 세션 생성은 메인 서버 호출이라 티켓이 아니라 X-API-Key 다.
+    assert schema["paths"]["/api/v1/experience-map/sessions"]["post"]["security"] == [
+        {main.OPENAPI_API_KEY_SCHEME_NAME: []}
+    ]
+    assert "security" not in schema["paths"]["/health"]["get"]
 
 
 def test_openapi_keeps_health_route_public():
