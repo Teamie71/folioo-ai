@@ -88,7 +88,7 @@ TEST_PAGE_HTML = r"""<!doctype html>
     body { margin: 0; background: #101218; color: #edf0f7; }
     main { max-width: 980px; margin: 0 auto; padding: 28px 18px 48px; }
     h1 { font-size: 24px; margin: 0 0 8px; } p { color: #abb4c5; line-height: 1.55; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 14px; }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(310px, .7fr); gap: 14px; align-items: start; }
     section { background: #191d27; border: 1px solid #30384a; border-radius: 12px; padding: 16px; }
     h2 { font-size: 16px; margin: 0 0 14px; }
     label { display: grid; gap: 6px; font-size: 13px; color: #c7cedb; margin: 10px 0; }
@@ -98,9 +98,22 @@ TEST_PAGE_HTML = r"""<!doctype html>
     button.secondary { background: #30394c; color: #e6ebf7; } button:disabled { opacity: .45; cursor: wait; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     #session { color: #8fe6b0; overflow-wrap: anywhere; font-size: 13px; }
-    #events { min-height: 360px; max-height: 640px; overflow: auto; white-space: pre-wrap; background: #0b0d12; border: 1px solid #30384a; border-radius: 10px; padding: 14px; line-height: 1.45; font-size: 12px; }
+    .chat-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .chat-header h2 { margin: 0; } .status-dot { color: #8fe6b0; font-size: 12px; }
+    #chatHistory { height: 480px; overflow: auto; padding: 14px 4px; display: flex; flex-direction: column; gap: 10px; }
+    .bubble { max-width: 82%; border-radius: 14px; padding: 11px 13px; white-space: pre-wrap; line-height: 1.5; font-size: 14px; }
+    .bubble.user { align-self: flex-end; background: #526ed4; color: #fff; border-bottom-right-radius: 3px; }
+    .bubble.assistant { align-self: flex-start; background: #293044; border-bottom-left-radius: 3px; }
+    .bubble.system { align-self: center; background: transparent; color: #9eabc2; font-size: 12px; padding: 4px; text-align: center; }
+    .bubble.error { align-self: flex-start; background: #482a35; color: #ffb6bd; }
+    .composer { border-top: 1px solid #30384a; padding-top: 12px; }
+    .composer textarea { min-height: 90px; }
+    #events { min-height: 180px; max-height: 340px; overflow: auto; white-space: pre-wrap; background: #0b0d12; border: 1px solid #30384a; border-radius: 10px; padding: 14px; line-height: 1.45; font-size: 12px; }
+    #mapTree { min-height: 260px; max-height: 510px; overflow: auto; white-space: pre-wrap; background: #0b0d12; border: 1px solid #30384a; border-radius: 10px; padding: 14px; line-height: 1.55; font-size: 12px; }
     .runtime { border-left: 4px solid #6e8cff; background: #171c2a; border-radius: 8px; margin: 14px 0; padding: 11px 13px; font-size: 14px; }
     .note { font-size: 13px; } .error { color: #ff9a9a; } .ok { color: #8fe6b0; }
+    summary { cursor: pointer; color: #c7cedb; margin-top: 12px; } details[open] summary { margin-bottom: 8px; }
+    @media (max-width: 760px) { .workspace { grid-template-columns: 1fr; } #chatHistory { height: 400px; } }
   </style>
 </head>
 <body>
@@ -108,27 +121,31 @@ TEST_PAGE_HTML = r"""<!doctype html>
   <h1>경험정리 테스트 콘솔</h1>
   <p>테스트 전용 화면입니다. 세션·티켓은 브라우저 메모리에만 보관되며 페이지를 새로고침하면 사라집니다.</p>
   <div id="runtime" class="runtime">서버 연결 상태를 확인하는 중입니다.</div>
-  <div class="grid">
+  <div class="workspace">
     <section>
-      <h2>1. 테스트 세션</h2>
-      <label>AI 서비스 API 키<input id="apiKey" type="password" value="demo-key" autocomplete="off"></label>
-      <label>사용자 ID<input id="userId" value="9000001" inputmode="numeric"></label>
-      <button id="createSession">세션 시작</button>
-      <p id="session" class="note">세션을 시작하세요.</p>
+      <div class="chat-header"><h2>경험정리 에이전트</h2><span id="chatStatus" class="status-dot">● 세션 시작 전</span></div>
+      <div id="chatHistory"><div class="bubble assistant">안녕하세요. 오른쪽 맵에서 수정할 블록을 고르고, 어떤 방향으로 고칠지 말해 주세요.</div></div>
+      <div class="composer">
+        <label>수정할 블록<select id="block" disabled><option>세션을 시작하면 샘플 맵을 불러옵니다.</option></select></label>
+        <label>메시지<textarea id="message" placeholder="예: 이 문장을 문제 상황과 분석 근거가 드러나도록 더 구체적으로 수정해줘.">선택한 블록의 문장을 수치와 행동이 드러나도록 더 구체적으로 수정해줘.</textarea></label>
+        <label>첨부 파일 (선택, 최대 3개)<input id="files" type="file" multiple></label>
+        <button id="send" disabled>보내기</button><button id="retry" class="secondary" disabled>재시도</button><button id="state" class="secondary" disabled>상태</button>
+      </div>
+      <details><summary>디버그 SSE 이벤트 보기</summary><pre id="events">대기 중</pre></details>
     </section>
     <section>
-      <h2>2. 경험 입력</h2>
-      <label>수정할 블록<select id="block" disabled><option>세션을 시작하면 샘플 맵을 불러옵니다.</option></select></label>
-      <label>수정 지시 프롬프트<textarea id="message">선택한 블록의 문장을 수치와 행동이 드러나도록 더 구체적으로 수정해줘.</textarea></label>
-      <label>첨부 파일 (선택, 최대 3개)<input id="files" type="file" multiple></label>
-      <label>화면<select id="view"><option value="map">map</option><option value="list">list</option></select></label>
-      <button id="send" disabled>실제 LLM으로 정리</button>
-      <button id="retry" class="secondary" disabled>마지막 요청 재시도</button>
-      <button id="state" class="secondary" disabled>세션 상태 조회</button>
+      <h2>테스트용 경험 맵</h2>
+      <p class="note">블록 선택은 LLM의 활동 컨텍스트를 좁힙니다. 변경은 이 페이지의 메모리 맵에만 반영됩니다.</p>
+      <pre id="mapTree">세션을 시작하면 샘플 맵을 불러옵니다.</pre>
+      <details><summary>테스트 세션 설정</summary>
+        <label>AI 서비스 API 키<input id="apiKey" type="password" value="demo-key" autocomplete="off"></label>
+        <label>사용자 ID<input id="userId" value="9000001" inputmode="numeric"></label>
+        <label>화면<select id="view"><option value="map">map</option><option value="list">list</option></select></label>
+        <button id="createSession">새 테스트 세션</button>
+        <p id="session" class="note">세션을 시작하세요.</p>
+      </details>
     </section>
   </div>
-  <section style="margin-top:14px"><h2>테스트용 기존 맵</h2><p class="note">수정할 블록을 선택하면 해당 활동만 LLM 컨텍스트로 전달됩니다. 실제 메인 서버 데이터는 바꾸지 않고 이 테스트 페이지의 메모리 맵만 갱신합니다.</p><pre id="mapTree">세션을 시작하면 샘플 맵을 불러옵니다.</pre></section>
-  <section style="margin-top:14px"><h2>3. SSE 이벤트·결과</h2><pre id="events">대기 중</pre></section>
 </main>
 <script>
 const state = { sessionId: null, ticket: null, requestId: null };
@@ -136,11 +153,15 @@ const output = document.querySelector('#events');
 const runtime = document.querySelector('#runtime');
 const blockSelect = document.querySelector('#block');
 const mapTree = document.querySelector('#mapTree');
+const chatHistory = document.querySelector('#chatHistory');
+const chatStatus = document.querySelector('#chatStatus');
 const buttons = ['send', 'retry', 'state'].map(id => document.querySelector('#' + id));
 const log = (value, className = '') => {
   const line = document.createElement('div'); line.textContent = value;
   if (className) line.className = className; output.append(line); output.scrollTop = output.scrollHeight;
 };
+const addMessage = (role, value) => { const bubble = document.createElement('div'); bubble.className = `bubble ${role}`; bubble.textContent = value; chatHistory.append(bubble); chatHistory.scrollTop = chatHistory.scrollHeight; };
+const setChatStatus = value => { chatStatus.textContent = `● ${value}`; };
 const setBusy = busy => buttons.forEach(button => { button.disabled = busy || !state.sessionId; });
 const authHeaders = () => ({ Authorization: `Bearer ${state.ticket}` });
 const newRequestId = () => crypto.randomUUID();
@@ -180,7 +201,7 @@ async function readSse(response) {
       const event = block.match(/^event:\s*(.+)$/m)?.[1] || 'message';
       const data = block.match(/^data:\s*(.+)$/m)?.[1];
       if (!data) continue;
-      try { log(`[${event}] ${JSON.stringify(JSON.parse(data), null, 2)}`); }
+      try { const payload = JSON.parse(data); log(`[${event}] ${JSON.stringify(payload, null, 2)}`); if (event === 'message_complete') addMessage('assistant', payload.message.ai_response); if (event === 'error') addMessage('error', `요청 실패: ${payload.error.message}`); if (event === 'node_status') setChatStatus(`${payload.node} ${payload.status}`); }
       catch { log(`[${event}] ${data}`); }
     }
   }
@@ -188,7 +209,7 @@ async function readSse(response) {
 
 document.querySelector('#createSession').onclick = async () => {
   const button = document.querySelector('#createSession'); button.disabled = true;
-  setRuntime('테스트 세션을 생성하는 중입니다.'); log('세션 생성 요청 전송');
+  setRuntime('테스트 세션을 생성하는 중입니다.'); setChatStatus('세션 생성 중'); log('세션 생성 요청 전송');
   try {
     const response = await fetch('/experience-map/test/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': document.querySelector('#apiKey').value },
@@ -198,24 +219,24 @@ document.querySelector('#createSession').onclick = async () => {
     const data = await response.json(); state.sessionId = data.session_id; state.ticket = data.ticket; state.requestId = null;
     await refreshMap();
     document.querySelector('#session').textContent = `세션 준비됨: ${data.session_id} (티켓 ${data.expires_in_seconds}초)`;
-    document.querySelector('#session').className = 'note ok'; output.textContent = ''; log('세션 생성 완료', 'ok'); setBusy(false);
+    document.querySelector('#session').className = 'note ok'; output.textContent = ''; log('세션 생성 완료', 'ok'); addMessage('system', '새 테스트 세션이 준비됐습니다. 수정할 블록과 메시지를 선택해 주세요.'); setBusy(false); setChatStatus('대화 준비됨');
     setRuntime('세션 준비 완료 · 실제 LLM으로 정리 버튼을 누르면 SSE 이벤트가 여기에 표시됩니다.', 'ok');
   } catch (error) { document.querySelector('#session').textContent = `세션 생성 실패: ${error.message}`; document.querySelector('#session').className = 'note error'; setRuntime(`세션 생성 실패: ${error.message}`, 'error'); }
   finally { button.disabled = false; }
 };
 
 document.querySelector('#send').onclick = async () => {
-  state.requestId = newRequestId(); setBusy(true); setRuntime(`실제 LLM 요청 진행 중 · request_id: ${state.requestId}`); log(`요청 시작: ${state.requestId}`, 'ok');
+  state.requestId = newRequestId(); setBusy(true); setChatStatus('에이전트가 생각 중'); setRuntime(`실제 LLM 요청 진행 중 · request_id: ${state.requestId}`); log(`요청 시작: ${state.requestId}`, 'ok');
   let streamSucceeded = false;
   try {
     const selected = blockSelect.selectedOptions[0];
     const prompt = selected ? `수정 대상 블록: ${selected.dataset.blockText}\n\n사용자 지시: ${document.querySelector('#message').value}` : document.querySelector('#message').value;
-    const form = new FormData(); form.append('request', JSON.stringify({ request_id: state.requestId, user_message: prompt, context_experience_id: selected?.dataset.activityId, view: document.querySelector('#view').value }));
+    addMessage('user', document.querySelector('#message').value); const form = new FormData(); form.append('request', JSON.stringify({ request_id: state.requestId, user_message: prompt, context_experience_id: selected?.dataset.activityId, view: document.querySelector('#view').value }));
     for (const file of document.querySelector('#files').files) form.append('files', file);
     await readSse(await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/chat/stream`, { method: 'POST', headers: authHeaders(), body: form }));
     streamSucceeded = true;
-  } catch (error) { log(`오류: ${error.message}`, 'error'); setRuntime(`LLM 요청 실패: ${error.message}`, 'error'); }
-  finally { setBusy(false); if (streamSucceeded) { await refreshMap(); setRuntime(`요청 스트림 종료 · request_id: ${state.requestId} · 샘플 맵을 갱신했습니다.`, 'ok'); } }
+  } catch (error) { log(`오류: ${error.message}`, 'error'); addMessage('error', `요청 실패: ${error.message}`); setChatStatus('오류 발생'); setRuntime(`LLM 요청 실패: ${error.message}`, 'error'); }
+  finally { setBusy(false); if (streamSucceeded) { await refreshMap(); setChatStatus('대화 준비됨'); setRuntime(`요청 스트림 종료 · request_id: ${state.requestId} · 샘플 맵을 갱신했습니다.`, 'ok'); } }
 };
 
 document.querySelector('#retry').onclick = async () => {
