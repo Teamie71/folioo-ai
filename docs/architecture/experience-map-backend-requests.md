@@ -3,6 +3,7 @@
 > **대상**: 메인 백엔드 개발자
 > **작성**: AI 서버 (folioo-ai)
 > 계약: [경험정리 API 명세](experience-map-api-spec.md)
+> 연결 절차: [메인 서버 연결 체크리스트](experience-map-main-server-checklist.md)
 
 **API 명세에 적혀 있지 않거나, 적힌 것과 달라져야 하는 항목만** 모았습니다.
 명세대로 구현하면 되는 것은 여기 없습니다.
