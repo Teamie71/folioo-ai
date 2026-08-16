@@ -1,0 +1,89 @@
+name: CI
+
+# PR 마다 lint 와 테스트를 강제한다.
+#
+# 테스트 job 은 **진짜 PostgreSQL 을 띄운다.** 경험정리의 동시성(세션당 running
+# 1건)·lease 만료·재시도 원자성은 asyncpg 를 mock 으로 감싸면 아무것도 검증하지
+# 못한다. DB 가 없으면 그 테스트들이 skip 되고 CI 는 초록불이 되므로,
+# `EXPMAP_REQUIRE_DB` 로 skip 을 실패로 바꾼다.
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main, "feat/experience-map"]
+
+# 같은 브랜치에 새 커밋이 오면 이전 실행은 취소한다.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # lint·테스트는 외부 API 를 치지 않는다. 실제 키를 넣지 않는다.
+  OPENROUTER_API_KEY: ci-dummy-key
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: uv 설치
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: 의존성 설치
+        run: uv sync --locked
+
+      - name: ruff check
+        run: uv run ruff check --output-format=github .
+
+      - name: ruff format
+        run: uv run ruff format --check .
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      # 로컬 개발 클러스터(pgserver)와 같은 16 계열을 쓴다.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: folioo_expmap
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      EXPMAP_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/folioo_expmap
+      # DB 를 못 쓰면 skip 이 아니라 실패시킨다. 아래 "DB 테스트 확인" 참고.
+      EXPMAP_REQUIRE_DB: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: uv 설치
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: 의존성 설치
+        run: uv sync --locked
+
+      - name: 전체 테스트
+        # `-rs` 로 건너뛴 테스트를 로그에 남긴다. DB 접속·스키마 실패는
+        # `EXPMAP_REQUIRE_DB` 때문에 skip 이 아니라 실패로 떨어진다
+        # (tests/conftest.py 의 `_db_unavailable`).
+        run: uv run pytest -rs

@@ -7,6 +7,9 @@ import pytest
 from fastapi import FastAPI
 
 from app import main
+from app.middleware.auth import is_ticket_auth_path
+from app.middleware.experience_map_ticket import ExperienceMapTicketMiddleware
+from features.experience_map import config as experience_map_config
 
 
 def test_load_allowed_origins_from_env(monkeypatch):
@@ -218,25 +221,50 @@ def test_openapi_includes_x_api_key_security_scheme():
     }
 
 
-def test_openapi_marks_api_routes_with_api_key_security():
-    """`/api/*` 경로는 OpenAPI에서 API Key 보안 요구사항을 가진다."""
-    app = main.create_app()
-
-    schema = app.openapi()
-    api_operations = []
-
+def _api_operations(schema, *, ticket_paths: bool):
+    """`/api/*` 오퍼레이션을 인증 방식별로 모은다."""
+    operations = []
     for path, path_item in schema["paths"].items():
         if not path.startswith("/api/"):
+            continue
+        if is_ticket_auth_path(path) is not ticket_paths:
             continue
         for method in main.OPENAPI_HTTP_METHODS:
             operation = path_item.get(method)
             if operation:
-                api_operations.append(operation)
+                operations.append(operation)
+    return operations
 
-    assert api_operations
+
+def test_openapi_marks_api_routes_with_api_key_security():
+    """티켓 경로가 아닌 `/api/*`는 API Key 보안 요구사항을 가진다."""
+    schema = main.create_app().openapi()
+
+    operations = _api_operations(schema, ticket_paths=False)
+
+    assert operations
     assert all(
         operation["security"] == [{main.OPENAPI_API_KEY_SCHEME_NAME: []}]
-        for operation in api_operations
+        for operation in operations
+    )
+
+
+def test_openapi_marks_ticket_routes_with_bearer_security():
+    """경험정리 노출 시 프론트 직결 경로는 Bearer 티켓 인증으로 표시한다."""
+    schema = main.create_app().openapi()
+
+    ticket_scheme = schema["components"]["securitySchemes"][main.OPENAPI_TICKET_SCHEME_NAME]
+    assert ticket_scheme["scheme"] == "bearer"
+
+    operations = _api_operations(schema, ticket_paths=True)
+    if not experience_map_config.get_settings().enabled:
+        # 기본값은 기능 비노출이다. CI처럼 feature flag가 꺼진 환경에서는 라우트도 없다.
+        assert operations == []
+        return
+
+    assert operations, "티켓 인증 경로가 하나도 잡히지 않았습니다."
+    assert all(
+        operation["security"] == [{main.OPENAPI_TICKET_SCHEME_NAME: []}] for operation in operations
     )
 
 
@@ -247,3 +275,66 @@ def test_openapi_keeps_health_route_public():
     schema = app.openapi()
 
     assert "security" not in schema["paths"]["/health"]["get"]
+
+
+def test_create_app_registers_test_ui_only_when_enabled(monkeypatch, clean_experience_map_settings):
+    """내부 테스트 UI는 명시적 feature flag가 있을 때만 등록한다."""
+    monkeypatch.delenv("EXPERIENCE_MAP_TEST_UI_ENABLED", raising=False)
+    experience_map_config.reset_settings()
+    disabled_app = main.create_app()
+
+    monkeypatch.setenv("EXPERIENCE_MAP_TEST_UI_ENABLED", "true")
+    experience_map_config.reset_settings()
+    enabled_app = main.create_app()
+
+    disabled_paths = {route.path for route in disabled_app.routes}
+    enabled_paths = {route.path for route in enabled_app.routes}
+
+    assert "/experience-map/test" not in disabled_paths
+    assert {"/experience-map/test", "/experience-map/test/session"} <= enabled_paths
+
+
+@pytest.fixture
+def clean_experience_map_settings():
+    """설정 캐시를 앞뒤로 비운다. 안 비우면 뒤 테스트가 이 값을 물려받는다."""
+    experience_map_config.reset_settings()
+    yield
+    experience_map_config.reset_settings()
+
+
+def _ticket_rate_limiter(app: FastAPI):
+    """앱에 등록된 경험정리 티켓 미들웨어의 rate limiter 를 꺼낸다.
+
+    못 찾으면 여기서 끊는다. 그냥 `None` 을 돌려주면 호출부가 `AttributeError` 로
+    죽어서 "설정이 안 맞다" 인지 "배선이 없다" 인지 구분되지 않는다.
+    """
+    for middleware in app.user_middleware:
+        if middleware.cls is ExperienceMapTicketMiddleware:
+            limiter = middleware.kwargs.get("rate_limiter")
+            if limiter is None:
+                raise AssertionError(
+                    "티켓 미들웨어에 rate limiter 가 주입되지 않았습니다. "
+                    "create_app() 이 EXPMAP_RATE_LIMIT_PER_MINUTE 을 전달하는지 확인하세요."
+                )
+            return limiter
+    raise AssertionError("경험정리 티켓 미들웨어가 등록되지 않았습니다.")
+
+
+def test_rate_limit_env_reaches_the_middleware(monkeypatch, clean_experience_map_settings):
+    """`EXPMAP_RATE_LIMIT_PER_MINUTE` 가 실제 limiter 까지 전달된다.
+
+    미들웨어 단위 테스트는 limiter 를 직접 넘겨서 검증하므로, `create_app()` 이
+    설정을 주입하지 않아도 통과한다. 실제로 그 배선이 빠져 있었다.
+    """
+    monkeypatch.setenv("EXPMAP_RATE_LIMIT_PER_MINUTE", "7")
+    experience_map_config.reset_settings()
+
+    assert _ticket_rate_limiter(main.create_app())._max_requests == 7
+
+
+def test_rate_limit_falls_back_to_default_in_app(monkeypatch, clean_experience_map_settings):
+    """설정이 없으면 명세 기본값(20)으로 앱이 뜬다."""
+    monkeypatch.delenv("EXPMAP_RATE_LIMIT_PER_MINUTE", raising=False)
+    experience_map_config.reset_settings()
+
+    assert _ticket_rate_limiter(main.create_app())._max_requests == 20

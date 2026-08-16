@@ -9,16 +9,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
 from app.api import router as api_router
-from app.middleware.auth import DOCS_EXEMPT_PATHS, PUBLIC_EXEMPT_PATHS, ApiKeyAuthMiddleware
+from app.middleware.auth import (
+    DOCS_EXEMPT_PATHS,
+    PUBLIC_EXEMPT_PATHS,
+    ApiKeyAuthMiddleware,
+    is_ticket_auth_path,
+)
+from app.middleware.experience_map_ticket import ExperienceMapTicketMiddleware
 from common.checkpointer.factory import get_checkpointer, setup_checkpointer
 from common.db.connection import get_pool_status
 from common.logging import setup_logging
+from features.experience_map.config import get_settings as get_experience_map_settings
+from features.experience_map.rate_limit import SlidingWindowRateLimiter
 
 # ===== 로깅 초기화 (uvicorn보다 먼저 설정) =====
 setup_logging()
 
 APP_VERSION = "0.1.0"
 OPENAPI_API_KEY_SCHEME_NAME = "ApiKeyAuth"
+OPENAPI_TICKET_SCHEME_NAME = "TicketAuth"
 OPENAPI_HTTP_METHODS = {
     "get",
     "put",
@@ -32,7 +41,11 @@ OPENAPI_HTTP_METHODS = {
 
 
 def _attach_api_key_security(schema: dict[str, Any]) -> dict[str, Any]:
-    """OpenAPI 스키마에 `X-API-Key` 보안 스키마를 반영한다."""
+    """OpenAPI 스키마에 경로별 인증 방식을 반영한다.
+
+    경험정리의 프론트 직결 경로는 `X-API-Key`가 아니라 티켓(Bearer)으로 인증한다.
+    판정은 미들웨어와 같은 `is_ticket_auth_path()`를 사용해 문서와 실제 동작을 맞춘다.
+    """
     components = schema.setdefault("components", {})
     security_schemes = components.setdefault("securitySchemes", {})
     security_schemes[OPENAPI_API_KEY_SCHEME_NAME] = {
@@ -40,15 +53,24 @@ def _attach_api_key_security(schema: dict[str, Any]) -> dict[str, Any]:
         "in": "header",
         "name": "X-API-Key",
     }
+    security_schemes[OPENAPI_TICKET_SCHEME_NAME] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "경험정리 프론트 직결용 세션 티켓입니다.",
+    }
 
     for path, path_item in schema.get("paths", {}).items():
         if path in PUBLIC_EXEMPT_PATHS or path in DOCS_EXEMPT_PATHS:
             continue
 
+        scheme_name = (
+            OPENAPI_TICKET_SCHEME_NAME if is_ticket_auth_path(path) else OPENAPI_API_KEY_SCHEME_NAME
+        )
         for method, operation in path_item.items():
             if method not in OPENAPI_HTTP_METHODS:
                 continue
-            operation["security"] = [{OPENAPI_API_KEY_SCHEME_NAME: []}]
+            operation["security"] = [{scheme_name: []}]
 
     return schema
 
@@ -73,6 +95,15 @@ def _get_checkpointer_status() -> str:
 def _get_experience_map_db_status() -> str:
     """경험 맵 DB 커넥션 풀 상태 문자열 반환"""
     return get_pool_status()
+
+
+def _get_ticket_secret() -> str:
+    """경험정리 티켓 HS256 서명 키 반환
+
+    `AI_SERVICE_API_KEY`와 별도 키다. 두 키의 회전 주기가 다르고, API 키가 유출되면
+    티켓 위조까지 가능해진다.
+    """
+    return os.getenv("EXPMAP_TICKET_SECRET", "")
 
 
 def _get_api_key_status() -> str:
@@ -127,16 +158,33 @@ async def lifespan(app: FastAPI):
     )
     from common.db.connection import close_pool, create_pool
     from common.http_client import close_http_client, get_http_client
+    from features.experience_map.repository import (
+        init_repository as init_experience_map_repository,
+    )
+    from features.experience_map.repository import set_repository as set_experience_map_repository
     from features.interview.agents.insight_store import MainServerInsightStore
     from features.interview.agents.nodes.retriever import init_insight_store
 
     logger = logging.getLogger(__name__)
 
-    # ===== 경험 맵 DB 커넥션 풀 초기화 =====
+    # ===== 경험 맵 DB 커넥션 풀과 Repository 초기화 =====
     # checkpoint DB와 분리된 풀이다. 미설정이어도 기동은 막지 않고 /health로 드러낸다.
     try:
-        await create_pool()
+        pool = await create_pool()
+        init_experience_map_repository(pool)
         logger.info("경험 맵 DB 커넥션 풀 초기화 완료")
+        if get_experience_map_settings().test_ui_enabled:
+            from features.experience_map.graph_runner import set_graph_runner
+            from features.experience_map.templates import set_template_catalog_client
+            from features.experience_map.test_runtime import (
+                TestUiGraphRunner,
+                create_test_template_catalog_client,
+                get_test_map_store,
+            )
+
+            set_graph_runner(TestUiGraphRunner(get_test_map_store()))
+            set_template_catalog_client(create_test_template_catalog_client())
+            logger.warning("경험 맵 테스트 UI용 in-memory 맵·커밋 실행기 활성화")
     except ValueError:
         logger.warning("DATABASE_URL이 설정되지 않음 - 경험 맵 DB 비활성화")
     except Exception:
@@ -199,6 +247,14 @@ async def lifespan(app: FastAPI):
                 logger.exception("포트폴리오 클라이언트 정리 실패")
 
         try:
+            # 풀이 닫힌 뒤 Repository 가 남아 있으면 죽은 커넥션을 쓰게 된다.
+            set_experience_map_repository(None)
+            if get_experience_map_settings().test_ui_enabled:
+                from features.experience_map.graph_runner import set_graph_runner
+                from features.experience_map.templates import set_template_catalog_client
+
+                set_graph_runner(None)
+                set_template_catalog_client(None)
             await close_pool()
         except Exception:
             logger.exception("경험 맵 DB 커넥션 풀 정리 실패")
@@ -215,6 +271,17 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(ApiKeyAuthMiddleware)
+    # 경험정리 프론트 직결 경로는 티켓으로 인증한다. ApiKeyAuthMiddleware보다 바깥에 두어
+    # 티켓 검증 실패가 X-API-Key 검사보다 먼저 응답되게 한다.
+    app.add_middleware(
+        ExperienceMapTicketMiddleware,
+        secret_provider=_get_ticket_secret,
+        # limiter 는 호출 이력을 들고 있어 앱당 하나여야 한다. 서명 키와 달리
+        # 요청마다 새로 만들면 카운트가 초기화돼 제한이 걸리지 않는다.
+        rate_limiter=SlidingWindowRateLimiter(
+            max_requests=get_experience_map_settings().rate_limit_per_minute
+        ),
+    )
     # CORS 미들웨어를 나중에 등록해 preflight(OPTIONS)를 우선 처리한다.
     app.add_middleware(
         CORSMiddleware,
@@ -236,6 +303,13 @@ def create_app() -> FastAPI:
 
     # 라우터 등록
     app.include_router(api_router)
+
+    # 메인 서버 티켓 발급 전 실제 LLM·SSE를 점검하는 내부 페이지다. 테스트 환경에서만
+    # 명시적으로 켜며, 기본값은 비노출이다.
+    if get_experience_map_settings().test_ui_enabled:
+        from app.experience_map_test_ui import router as experience_map_test_ui_router
+
+        app.include_router(experience_map_test_ui_router)
 
     def custom_openapi() -> dict[str, Any]:
         """Swagger UI에서 `X-API-Key` 입력을 위한 OpenAPI 스키마 생성."""

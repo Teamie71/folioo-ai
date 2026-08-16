@@ -70,7 +70,16 @@ gap 답변 여부는 Router가 아니라 반영 내용 필터링 노드가 판�
 | --- | --- | --- |
 | 메인 → AI | `X-API-Key: ${AI_SERVICE_API_KEY}` | `POST /sessions` |
 | **프론트 → AI** | `Authorization: Bearer {ticket}` | `state`, `chat/stream`, `retry/stream`, `requests/{rid}` |
-| AI → 메인 | `X-API-Key: ${AI_SERVICE_API_KEY}` | 커밋·템플릿 API (7절) |
+| AI → 메인 | `X-API-Key: ${MAIN_BACKEND_API_KEY}` | 커밋·템플릿 API (7절) |
+
+**방향마다 키가 다릅니다.** 인바운드(메인 → AI)는 `AI_SERVICE_API_KEY`, 아웃바운드
+(AI → 메인)는 `MAIN_BACKEND_API_KEY`입니다. 한 키로 묶지 않는 이유는 티켓 서명 키를
+분리한 것과 같습니다 — 회전 주기가 다르고, 한쪽이 유출돼도 반대 방향 호출 권한까지
+넘어가지 않습니다.
+
+`MAIN_BACKEND_API_KEY`는 경험정리 전용이 아니라 AI 서버가 메인 서버를 부를 때 쓰는
+공용 변수입니다(`common/http_client`). 첨삭·포트폴리오 등 기존 기능과 pptx worker가
+이미 같은 변수를 씁니다.
 
 #### 티켓 발급 흐름
 
@@ -165,6 +174,9 @@ LLM에는 실제 block ID를 전달하지 않고 요청 안에서만 유효한 `
 | `413` | `file_too_large` |
 | `415` | `unsupported_file_type` |
 | `422` | `invalid_request` |
+| `429` | `rate_limited` (티켓 `sub` 단위 제한 초과) |
+
+`429`는 `Retry-After` 헤더에 재시도까지 남은 초를 함께 보냅니다.
 
 `ApiKeyAuthMiddleware`와 티켓 검증 미들웨어 모두 위 JSON 형식을 사용합니다.
 
@@ -392,6 +404,20 @@ AI가 보내는 것     : slot_id = "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE"
 메인이 저장하는 것 : placeholder = "문제의 원인은 무엇이었으며, ..."
 ```
 
+#### `slot_id` 형식은 level에 따라 둘입니다
+
+```text
+level 4 : {SECTION}.{SLOT}              DETAIL.MOTIVATION
+level 5 : {SECTION}.{TEMPLATE}.{SLOT}   PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE
+```
+
+**점 개수가 곧 level입니다.** 2-part면 4단계, 3-part면 5단계입니다.
+전체 38개(level 4 슬롯 10개 + level 5 슬롯 28개)이며 목록은 에이전트 문서 3-0입니다.
+
+level 5는 반드시 앵커 슬롯(`TASK.SUMMARY` / `PROBLEM_SOLVING.SUMMARY`)으로 만든
+level 4 블록 아래에 붙습니다. 하위 템플릿을 가지는 카테고리는 담당업무·문제해결
+둘뿐이며, 나머지 셋은 level 4에서 끝납니다.
+
 - LLM이 템플릿 문구를 토씨까지 재생산할 필요가 없습니다
 - 카탈로그 대조로 **검증이 가능**합니다. 없는 `slot_id`는 `422 unknown_slot_id`
 - 문구가 바뀌어도 AI 서버 배포가 필요 없습니다
@@ -471,7 +497,7 @@ placeholder 블록)를 만듭니다. AI 서버는 빈 맵을 만들지 않고 `m
     "parent_id": "3021",
     "parent_item_id": null,
     "section_kind": null,
-    "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.SUMMARY",
+    "slot_id": "PROBLEM_SOLVING.SUMMARY",
     "content": "결제 모듈 타임아웃으로 주문 실패율이 12%까지 올랐다.",
     "after_id": null
   },
@@ -515,8 +541,8 @@ placeholder 블록)를 만듭니다. AI 서버는 빈 맵을 만들지 않고 `m
 | `PROBLEM_SOLVING` | 문제해결 |
 | `LEARNING` | 배운 점 |
 
-DB enum 이름이 바뀌어도 API 계약이 깨지지 않습니다. `slot_id`가
-`{SECTION}.{TEMPLATE}.{SLOT}` 형태라 카테고리와 슬롯이 같은 어휘 체계에 들어갑니다.
+DB enum 이름이 바뀌어도 API 계약이 깨지지 않습니다. `slot_id`의 첫 마디가
+`section_kind`와 같은 어휘라 카테고리와 슬롯이 한 체계에 들어갑니다 (형식은 3-7).
 
 3단계 카테고리를 새로 만드는 item은 컨테이너이므로 `content`가 없습니다.
 실제 내용은 그 아래 4단계 item이 `parent_item_id`로 참조해 담습니다.
@@ -901,6 +927,10 @@ Fallback은 `committed: false`이며 **진입 경로별 고정 문구**를 보�
 | `GET` | `/api/v1/experience-map/templates` | AI 서버 | `X-API-Key` |
 | `POST` | `/api/v1/experience-map/revert` | 프론트 | 로그인 세션 |
 
+**"AI 서버" 호출이 보내는 `X-API-Key` 값은 AI 쪽 `MAIN_BACKEND_API_KEY`입니다**
+(2-1 참고). 메인 → AI 호출에 쓰는 `AI_SERVICE_API_KEY`와 다른 키이므로, 메인 서버는
+두 값을 따로 보관해야 합니다.
+
 ### `POST /ticket`
 
 프론트가 AI 서버에 직결하기 전에 신원을 발급받습니다 (2-1).
@@ -1006,24 +1036,43 @@ COMMIT
 
 템플릿 카탈로그 (3-7).
 
+**level 4 슬롯은 template에 속하지 않습니다.** 카테고리 슬롯 10개는 `section.slots`에,
+하위 템플릿 슬롯 28개는 `section.templates[].slots`에 옵니다.
+
 ```json
 {
-  "version": "2026-08-05",
+  "version": "2026-08-09",
   "sections": [
+    {
+      "section_id": "DETAIL",
+      "label": "상세정보",
+      "slots": [
+        {
+          "slot_id": "DETAIL.MOTIVATION",
+          "level": 4,
+          "placeholder": "어떤 계기로 이 경험을 시작했으며, 최종적으로 달성하고자 한 목표는 무엇인가요?",
+          "example": "교내 커뮤니티의 비효율적인 게시판형 거래 방식을 개선하고 ..."
+        }
+      ],
+      "templates": []
+    },
     {
       "section_id": "PROBLEM_SOLVING",
       "label": "문제해결",
+      "slots": [
+        {
+          "slot_id": "PROBLEM_SOLVING.SUMMARY",
+          "level": 4,
+          "is_anchor": true,
+          "placeholder": "문제해결 에피소드를 한 줄로 요약해 주세요.",
+          "example": "신규 프로모션 페이지 가입 이탈 문제 해결"
+        }
+      ],
       "templates": [
         {
           "template_id": "TROUBLESHOOTING",
           "label": "기술 트러블슈팅",
           "slots": [
-            {
-              "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.SUMMARY",
-              "level": 4,
-              "placeholder": "문제해결 에피소드를 한 줄로 요약해 주세요.",
-              "example": "신규 프로모션 페이지 가입 이탈 문제 해결"
-            },
             {
               "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
               "level": 5,
@@ -1037,6 +1086,10 @@ COMMIT
   ]
 }
 ```
+
+`is_anchor`가 `true`인 level 4 슬롯 아래에만 해당 섹션의 템플릿 슬롯을 붙일 수
+있습니다. 현재 앵커는 `TASK.SUMMARY`와 `PROBLEM_SOLVING.SUMMARY` 둘이며, 나머지
+세 섹션은 `templates`가 빈 배열입니다.
 
 `example`은 노션 "예시 있는 버전 (AI용)"의 작성 예시입니다. AI가 프롬프트 few-shot과
 정제 노드의 문체 기준으로 사용합니다.
@@ -1099,8 +1152,9 @@ COMMIT
 | `DATABASE_URL` | 경험 맵·AI 세션·요청 DB |
 | `CHECKPOINT_DATABASE_URL` | LangGraph checkpoint 전용 DB |
 | `MAIN_BACKEND_URL` | 커밋·템플릿 API 호출 대상 |
-| `AI_SERVICE_API_KEY` | 메인 ↔ AI 서버 간 인증 키 (양방향) |
-| `EXPMAP_TICKET_SECRET` | 티켓 HS256 서명 키. `AI_SERVICE_API_KEY`와 별도 |
+| `AI_SERVICE_API_KEY` | **인바운드** 전용. 메인 → AI 호출 검증 (`POST /sessions`) |
+| `MAIN_BACKEND_API_KEY` | **아웃바운드** 전용. AI → 메인 호출 시 보내는 키. 기존 공용 변수 |
+| `EXPMAP_TICKET_SECRET` | 티켓 HS256 서명 키. 위 두 키와 모두 별도 |
 | `ALLOWED_ORIGINS` | 프론트 직결용 CORS 오리진 (기존 변수에 웹 오리진 추가) |
 | `EXPMAP_UPLOAD_BUCKET` | 임시 첨부 파일 bucket |
 | `EXPMAP_RETRY_TTL_SECONDS` | 기본값 `1800` |
@@ -1109,6 +1163,8 @@ COMMIT
 | `EXPMAP_LLM_TIMEOUT_SECONDS` | 기본값 `60` |
 | `EXPMAP_FILE_TIMEOUT_SECONDS` | 파일처리(파서·OCR) 기본값 `120` |
 | `EXPMAP_GAP_TIMEOUT_SECONDS` | 기본값 `30` |
+| `EXPMAP_RATE_LIMIT_PER_MINUTE` | 티켓 `sub` 단위 분당 요청 수. 기본값 `20` |
+| `EXPERIENCE_MAP_ENABLED` | 기능 노출 여부. 기본값 `false`, 시나리오 검증 후 `true` |
 
 **`CHECKPOINT_DATABASE_URL`이 없으면 서버 시작을 실패시킵니다.** `DATABASE_URL`로
 fallback하지 않습니다. 현재 `common/checkpointer/factory.py`가 폴백하도록 되어 있어
@@ -1119,7 +1175,8 @@ fallback하지 않습니다. 현재 `common/checkpointer/factory.py`가 폴백�
 | 변수 | 설명 |
 | --- | --- |
 | `AI_SERVICE_URL` | AI 서버 Base URL |
-| `AI_SERVICE_API_KEY` | AI 서버 호출 인증 키 |
+| `AI_SERVICE_API_KEY` | **아웃바운드** — 메인 → AI 호출 시 보내는 키 |
+| (이름은 메인 서버가 정함) | **인바운드** — AI → 메인 호출 검증용. AI 쪽 `MAIN_BACKEND_API_KEY`와 같은 값 |
 | `EXPMAP_TICKET_SECRET` | 티켓 서명 키 (AI 서버와 공유) |
 | `EXPMAP_TICKET_TTL_SECONDS` | 기본값 `300` |
 

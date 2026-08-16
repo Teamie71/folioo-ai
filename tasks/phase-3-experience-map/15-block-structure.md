@@ -6,7 +6,7 @@ spec: "docs/architecture/experience-map-agent.md"
 depends_on: ["3.03", "3.05", "3.13", "3.14"]
 blocks: ["3.16", "3.17"]
 estimate: "L"
-status: "todo"
+status: "done"
 owner: ""
 sprint: ""
 ---
@@ -21,7 +21,7 @@ sprint: ""
 
 - 3.03 (템플릿 카탈로그) — `slot_id` 목록과 작성 예시(few-shot)
 - 3.05 (경험 맵 Repository·alias), 3.13 (필터링), 3.14 (대상 활동 선택)
-- **외부-C**: `slot_id` 38개 목록 확정 (통합 문서 10절 1번)
+- ~~**외부-C**: `slot_id` 38개 목록 확정~~ — **해소됨 (2026-08-09)**, 통합 문서 3-0
 
 ## 사전 준비
 
@@ -56,6 +56,10 @@ sprint: ""
 
 ## 리스크 / 메모
 
-- 🚧 **`slot_id` 목록이 임계 경로다.** 직렬 노드 체인의 한가운데라 지연이 전체 일정으로 넘어간다. 착수와 동시에 기획에 요청한다.
+- ✅ **`slot_id` 목록이 확정됐다** (2026-08-09). 더 이상 이 태스크의 블로커가 아니다.
+- **level 판정은 점 개수로 한다.** 4단계는 2-part(`DETAIL.MOTIVATION`), 5단계는 3-part(`PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE`).
+- **앵커 규칙을 검증에 넣는다.** level 5 는 반드시 `TASK.SUMMARY` 또는 `PROBLEM_SOLVING.SUMMARY` 로 만든 level 4 아래에 붙는다. 같은 요청에서 만든 앵커면 `parent_item_id`, 기존 블록이면 `parent_ref` 로 참조한다.
+- **하위 템플릿은 담당업무·문제해결만 가진다.** 상세정보·주요성과·배운 점에 level 5 를 만들면 위반이다.
+- **반복 가능하다.** 담당업무는 업무 하나당, 문제해결은 에피소드 하나당 한 벌이며 한 활동에 여러 벌이 들어갈 수 있다.
 - 완화책: `slot_id` 를 코드 상수로 박지 말고 **3.03 카탈로그에서 받아온 목록으로만** 검증하도록 짜고 fixture 카탈로그로 테스트한다. 목록 확정 후 fixture 만 교체하면 된다.
 - **텍스트를 수정하지 않는다.** 정제는 3.16 의 책임이며, 여기서 손대면 구체성이 두 번 깎인다.
