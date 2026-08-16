@@ -286,6 +286,13 @@ def create_app() -> FastAPI:
     # 라우터 등록
     app.include_router(api_router)
 
+    # 메인 서버 티켓 발급 전 실제 LLM·SSE를 점검하는 내부 페이지다. 테스트 환경에서만
+    # 명시적으로 켜며, 기본값은 비노출이다.
+    if get_experience_map_settings().test_ui_enabled:
+        from app.experience_map_test_ui import router as experience_map_test_ui_router
+
+        app.include_router(experience_map_test_ui_router)
+
     def custom_openapi() -> dict[str, Any]:
         """Swagger UI에서 `X-API-Key` 입력을 위한 OpenAPI 스키마 생성."""
         if app.openapi_schema:

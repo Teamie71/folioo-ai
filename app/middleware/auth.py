@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 PUBLIC_EXEMPT_PATHS = {
     "/health",
     "/openapi.json",
+    # 내부 테스트 UI는 라우터 자체가 EXPERIENCE_MAP_TEST_UI_ENABLED일 때만 등록된다.
+    # 세션 생성 요청은 페이지 전용 엔드포인트에서 X-API-Key를 별도 검증한다.
+    "/experience-map/test",
+    "/experience-map/test/session",
 }
 
 DOCS_EXEMPT_PATHS = {

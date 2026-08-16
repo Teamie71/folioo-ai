@@ -149,6 +149,10 @@ class ExperienceMapSettings(BaseModel):
     demo_mode: bool = Field(
         False, description="로컬 Swagger 데모 노출 여부 (EXPERIENCE_MAP_DEMO_MODE)"
     )
+    test_ui_enabled: bool = Field(
+        False,
+        description="내부 수동 테스트 UI 노출 여부 (EXPERIENCE_MAP_TEST_UI_ENABLED)",
+    )
 
     @property
     def ticket_secret_is_distinct(self) -> bool:
@@ -196,6 +200,8 @@ def load_settings() -> ExperienceMapSettings:
         ),
         enabled=os.getenv("EXPERIENCE_MAP_ENABLED", "").strip().lower() in {"1", "true", "yes"},
         demo_mode=os.getenv("EXPERIENCE_MAP_DEMO_MODE", "").strip().lower() in {"1", "true", "yes"},
+        test_ui_enabled=os.getenv("EXPERIENCE_MAP_TEST_UI_ENABLED", "").strip().lower()
+        in {"1", "true", "yes"},
     )
 
 

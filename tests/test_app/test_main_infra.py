@@ -272,6 +272,23 @@ def test_openapi_keeps_health_route_public():
     assert "security" not in schema["paths"]["/health"]["get"]
 
 
+def test_create_app_registers_test_ui_only_when_enabled(monkeypatch, clean_experience_map_settings):
+    """내부 테스트 UI는 명시적 feature flag가 있을 때만 등록한다."""
+    monkeypatch.delenv("EXPERIENCE_MAP_TEST_UI_ENABLED", raising=False)
+    experience_map_config.reset_settings()
+    disabled_app = main.create_app()
+
+    monkeypatch.setenv("EXPERIENCE_MAP_TEST_UI_ENABLED", "true")
+    experience_map_config.reset_settings()
+    enabled_app = main.create_app()
+
+    disabled_paths = {route.path for route in disabled_app.routes}
+    enabled_paths = {route.path for route in enabled_app.routes}
+
+    assert "/experience-map/test" not in disabled_paths
+    assert {"/experience-map/test", "/experience-map/test/session"} <= enabled_paths
+
+
 @pytest.fixture
 def clean_experience_map_settings():
     """설정 캐시를 앞뒤로 비운다. 안 비우면 뒤 테스트가 이 값을 물려받는다."""
