@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 
 from app.schemas.experience_map import CreateSessionRequest
 from features.experience_map.service import get_service
+from features.experience_map.test_runtime import get_test_map_store
 
 router = APIRouter(prefix="/experience-map/test", tags=["experience-map-test"])
 
@@ -53,7 +54,7 @@ async def test_page() -> HTMLResponse:
 
 
 @router.post("/session")
-async def create_test_session(payload: CreateSessionRequest, request: Request) -> dict[str, str]:
+async def create_test_session(payload: CreateSessionRequest, request: Request) -> dict:
     """테스트 페이지 전용 세션과 티켓을 만든다."""
     _require_api_key(request)
     session_id, session_status = await get_service().create_session(payload.user_id)
@@ -63,6 +64,17 @@ async def create_test_session(payload: CreateSessionRequest, request: Request) -
         "ticket": _issue_test_ticket(payload.user_id, session_id),
         "expires_in_seconds": str(_TICKET_TTL_SECONDS),
     }
+
+
+@router.get("/map/{user_id}")
+async def get_test_map(user_id: str, request: Request) -> dict:
+    """테스트 UI가 수정 대상 블록을 고를 수 있게 샘플 맵을 반환한다."""
+    _require_api_key(request)
+    if not user_id.isdecimal():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid user_id"
+        )
+    return await get_test_map_store().display_map(user_id)
 
 
 TEST_PAGE_HTML = r"""<!doctype html>
@@ -106,7 +118,8 @@ TEST_PAGE_HTML = r"""<!doctype html>
     </section>
     <section>
       <h2>2. 경험 입력</h2>
-      <label>경험 내용<textarea id="message">대학생 동아리에서 행사 신청 페이지를 만들고, 이탈률을 분석해 입력 단계를 줄였습니다.</textarea></label>
+      <label>수정할 블록<select id="block" disabled><option>세션을 시작하면 샘플 맵을 불러옵니다.</option></select></label>
+      <label>수정 지시 프롬프트<textarea id="message">선택한 블록의 문장을 수치와 행동이 드러나도록 더 구체적으로 수정해줘.</textarea></label>
       <label>첨부 파일 (선택, 최대 3개)<input id="files" type="file" multiple></label>
       <label>화면<select id="view"><option value="map">map</option><option value="list">list</option></select></label>
       <button id="send" disabled>실제 LLM으로 정리</button>
@@ -114,12 +127,15 @@ TEST_PAGE_HTML = r"""<!doctype html>
       <button id="state" class="secondary" disabled>세션 상태 조회</button>
     </section>
   </div>
+  <section style="margin-top:14px"><h2>테스트용 기존 맵</h2><p class="note">수정할 블록을 선택하면 해당 활동만 LLM 컨텍스트로 전달됩니다. 실제 메인 서버 데이터는 바꾸지 않고 이 테스트 페이지의 메모리 맵만 갱신합니다.</p><pre id="mapTree">세션을 시작하면 샘플 맵을 불러옵니다.</pre></section>
   <section style="margin-top:14px"><h2>3. SSE 이벤트·결과</h2><pre id="events">대기 중</pre></section>
 </main>
 <script>
 const state = { sessionId: null, ticket: null, requestId: null };
 const output = document.querySelector('#events');
 const runtime = document.querySelector('#runtime');
+const blockSelect = document.querySelector('#block');
+const mapTree = document.querySelector('#mapTree');
 const buttons = ['send', 'retry', 'state'].map(id => document.querySelector('#' + id));
 const log = (value, className = '') => {
   const line = document.createElement('div'); line.textContent = value;
@@ -129,6 +145,20 @@ const setBusy = busy => buttons.forEach(button => { button.disabled = busy || !s
 const authHeaders = () => ({ Authorization: `Bearer ${state.ticket}` });
 const newRequestId = () => crypto.randomUUID();
 const setRuntime = (message, className = '') => { runtime.textContent = message; runtime.className = `runtime ${className}`; };
+
+async function refreshMap() {
+  const response = await fetch(`/experience-map/test/map/${document.querySelector('#userId').value}`, { headers: { 'X-API-Key': document.querySelector('#apiKey').value } });
+  if (!response.ok) throw new Error(await response.text());
+  const map = await response.json(); blockSelect.textContent = ''; let tree = `map_version: ${map.map_version}\n`;
+  for (const activity of map.activities) {
+    const lines = activity.tree.split('\n'); tree += `\n${activity.tree}\n`;
+    for (const line of lines) {
+      const option = document.createElement('option'); option.textContent = `${activity.title} · ${line.trim().replace(/^\[[^\]]+\]\s*/, '')}`;
+      option.dataset.activityId = activity.id; option.dataset.blockText = line.trim().replace(/^\[[^\]]+\]\s*/, ''); blockSelect.append(option);
+    }
+  }
+  blockSelect.disabled = false; mapTree.textContent = tree;
+}
 
 async function checkHealth() {
   try {
@@ -166,6 +196,7 @@ document.querySelector('#createSession').onclick = async () => {
     });
     if (!response.ok) throw new Error(await response.text());
     const data = await response.json(); state.sessionId = data.session_id; state.ticket = data.ticket; state.requestId = null;
+    await refreshMap();
     document.querySelector('#session').textContent = `세션 준비됨: ${data.session_id} (티켓 ${data.expires_in_seconds}초)`;
     document.querySelector('#session').className = 'note ok'; output.textContent = ''; log('세션 생성 완료', 'ok'); setBusy(false);
     setRuntime('세션 준비 완료 · 실제 LLM으로 정리 버튼을 누르면 SSE 이벤트가 여기에 표시됩니다.', 'ok');
@@ -177,12 +208,14 @@ document.querySelector('#send').onclick = async () => {
   state.requestId = newRequestId(); setBusy(true); setRuntime(`실제 LLM 요청 진행 중 · request_id: ${state.requestId}`); log(`요청 시작: ${state.requestId}`, 'ok');
   let streamSucceeded = false;
   try {
-    const form = new FormData(); form.append('request', JSON.stringify({ request_id: state.requestId, user_message: document.querySelector('#message').value, view: document.querySelector('#view').value }));
+    const selected = blockSelect.selectedOptions[0];
+    const prompt = selected ? `수정 대상 블록: ${selected.dataset.blockText}\n\n사용자 지시: ${document.querySelector('#message').value}` : document.querySelector('#message').value;
+    const form = new FormData(); form.append('request', JSON.stringify({ request_id: state.requestId, user_message: prompt, context_experience_id: selected?.dataset.activityId, view: document.querySelector('#view').value }));
     for (const file of document.querySelector('#files').files) form.append('files', file);
     await readSse(await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/chat/stream`, { method: 'POST', headers: authHeaders(), body: form }));
     streamSucceeded = true;
   } catch (error) { log(`오류: ${error.message}`, 'error'); setRuntime(`LLM 요청 실패: ${error.message}`, 'error'); }
-  finally { setBusy(false); if (streamSucceeded) setRuntime(`요청 스트림 종료 · request_id: ${state.requestId}`, 'ok'); }
+  finally { setBusy(false); if (streamSucceeded) { await refreshMap(); setRuntime(`요청 스트림 종료 · request_id: ${state.requestId} · 샘플 맵을 갱신했습니다.`, 'ok'); } }
 };
 
 document.querySelector('#retry').onclick = async () => {

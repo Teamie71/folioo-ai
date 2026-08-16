@@ -16,6 +16,7 @@ checkpoint status를 API 상태로 계산하지 않습니다. 둘이 어긋나�
 import asyncio
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -171,6 +172,17 @@ class ExperienceMapRepository:
 
     async def get_map_snapshot(self, user_id: str) -> ExperienceMapSnapshot:
         """사용자의 최신 경험 맵을 읽어 LLM 안전 snapshot으로 만든다."""
+        # 메인 서버 block DDL 없이 수동 UI에서 LLM 수정 흐름을 확인하는 개발 전용 경로다.
+        # 테스트 UI 라우트가 아예 등록되지 않는 기본·운영 환경에서는 절대 실행되지 않는다.
+        if os.getenv("EXPERIENCE_MAP_TEST_UI_ENABLED", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            from features.experience_map.test_runtime import get_test_map_store
+
+            return await get_test_map_store().snapshot(str(user_id))
+
         version = await self._pool.fetchval(
             "SELECT map_version FROM experience_map WHERE user_id = $1", int(user_id)
         )

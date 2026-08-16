@@ -18,6 +18,7 @@ ENV_VARS = (
     "EXPMAP_GAP_TIMEOUT_SECONDS",
     "EXPMAP_RATE_LIMIT_PER_MINUTE",
     "EXPERIENCE_MAP_ENABLED",
+    "EXPERIENCE_MAP_TEST_UI_ENABLED",
 )
 
 
@@ -71,6 +72,14 @@ def test_feature_flag_parsing(monkeypatch, raw, expected):
     monkeypatch.setenv("EXPERIENCE_MAP_ENABLED", raw)
 
     assert config.load_settings().enabled is expected
+
+
+def test_test_ui_flag_defaults_to_disabled_and_can_be_enabled(monkeypatch):
+    """수동 테스트 UI는 명시적으로 켠 환경에서만 노출한다."""
+    assert config.load_settings().test_ui_enabled is False
+
+    monkeypatch.setenv("EXPERIENCE_MAP_TEST_UI_ENABLED", "true")
+    assert config.load_settings().test_ui_enabled is True
 
 
 def test_ticket_secret_must_be_distinct_from_api_key(monkeypatch):
