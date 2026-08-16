@@ -18,8 +18,9 @@ from features.experience_map.errors import (
     SessionBusyError,
 )
 from features.experience_map.graph_runner import MockGraphRunner
+from features.experience_map.prompts.router import build_gap_context
 from features.experience_map.repository import ExperienceMapRepository
-from features.experience_map.service import ExperienceMapService
+from features.experience_map.service import ExperienceMapService, _build_state
 from features.experience_map.state import ExperienceMapState
 
 HASH_A = "a" * 64
@@ -236,3 +237,71 @@ async def test_lease_loss_interrupts_during_silence(repo, user_id):
 
     assert types[-1] == "error"
     assert "processing_complete" not in types
+
+
+# ===== 직전 턴 제안(active_gap) 전달 =====
+
+
+@pytest.mark.asyncio
+async def test_active_gap_reaches_the_graph_state(service, repo, user_id):
+    """세션에 저장된 제안이 다음 턴 state 까지 실린다.
+
+    저장은 되는데 **읽는 쪽이 빠져 있었다.** 그러면 router 와 content_filter 가
+    직전 질문을 못 봐서, 그 질문에 대한 짧은 답변을 무관한 입력으로 판정하고
+    fallback 으로 보낸다 (명세 5-1).
+    """
+    session = await repo.get_or_create_session(user_id)
+    gap = {
+        "message": "이탈률이 감소한 주요 원인은 무엇인가요?",
+        "path": "교내 커머스 리뉴얼 > 성과",
+    }
+    await repo.save_active_gap(user_id, gap)
+
+    prepared = await service.prepare_chat(
+        user_id=user_id,
+        session_id=session.session_id,
+        request_id=new_request_id(),
+        user_message="입력 단계를 줄였기 때문",
+        context_experience_id=None,
+        view=None,
+        stored_files=[],
+    )
+    state = await _build_state(prepared, repo)
+
+    assert state["active_gap"] == gap
+    assert "이탈률이 감소한 주요 원인은 무엇인가요?" in build_gap_context(state["active_gap"])
+
+
+@pytest.mark.asyncio
+async def test_retry_carries_active_gap_too(service, repo, user_id):
+    """재시도도 같은 state 조립을 거치므로 제안이 실려야 한다."""
+    session_id, request_id = await make_failed_request(service, repo, user_id)
+    gap = {"message": "그때 맡은 역할은 무엇이었나요?", "path": "교내 커머스 리뉴얼 > 담당업무"}
+    await repo.save_active_gap(user_id, gap)
+
+    prepared = await service.prepare_retry(
+        user_id=user_id, session_id=session_id, request_id=request_id
+    )
+    state = await _build_state(prepared, repo)
+
+    assert state["active_gap"] == gap
+
+
+@pytest.mark.asyncio
+async def test_no_active_gap_gives_empty_context(service, repo, user_id):
+    """제안이 없으면 빈 맥락이다. 라우터가 없는 질문을 지어내면 안 된다."""
+    session = await repo.get_or_create_session(user_id)
+
+    prepared = await service.prepare_chat(
+        user_id=user_id,
+        session_id=session.session_id,
+        request_id=new_request_id(),
+        user_message="교내 커머스 리뉴얼을 했다",
+        context_experience_id=None,
+        view=None,
+        stored_files=[],
+    )
+    state = await _build_state(prepared, repo)
+
+    assert state["active_gap"] is None
+    assert build_gap_context(state["active_gap"]) == ""

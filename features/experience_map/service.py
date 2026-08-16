@@ -101,6 +101,13 @@ class PreparedRequest:
     owner_token: str | None = None
     """이 요청의 실행권 표식. 상태를 바꿀 때마다 함께 보낸다."""
 
+    active_gap: dict[str, Any] | None = None
+    """직전 턴에 에이전트가 물은 제안. 세션에 저장돼 있던 값이다.
+
+    준비 단계에서 이미 세션을 읽으므로 여기 실어 나른다. `_build_state` 가 다시
+    조회하면 같은 행을 두 번 읽게 된다.
+    """
+
     @property
     def is_replay(self) -> bool:
         return self.replay_of is not None
@@ -203,7 +210,8 @@ class ExperienceMapService:
             IdempotencyKeyReusedError: 같은 `request_id` 에 다른 입력
             RetryNotAllowedError: 실패한 요청은 retry API 로 이어간다
         """
-        if await self.repository.get_session(user_id, session_id) is None:
+        session = await self.repository.get_session(user_id, session_id)
+        if session is None:
             raise SessionNotFoundError()
 
         await self._reconcile_stale_requests(session_id=session_id)
@@ -232,6 +240,7 @@ class ExperienceMapService:
             context_experience_id=context_experience_id,
             view=view,
             stored_files=stored_files,
+            active_gap=session.active_gap,
         )
 
         match claim.outcome:
@@ -264,7 +273,8 @@ class ExperienceMapService:
             RetryExpiredError: 재시도 TTL 초과
             SessionBusyError: 세션에 실행 중인 요청이 있음
         """
-        if await self.repository.get_session(user_id, session_id) is None:
+        session = await self.repository.get_session(user_id, session_id)
+        if session is None:
             raise SessionNotFoundError()
 
         await self._reconcile_stale_requests(session_id=session_id)
@@ -291,6 +301,7 @@ class ExperienceMapService:
                     request_hash=claim.request.request_hash,
                     is_retry=True,
                     owner_token=claim.request.owner_token,
+                    active_gap=session.active_gap,
                 )
             case ClaimOutcome.REPLAY:
                 # 이미 끝난 요청은 저장 결과를 그대로 돌려준다.
@@ -518,9 +529,18 @@ async def _interrupt_when_lease_lost(
 async def _build_state(
     prepared: PreparedRequest, repository: ExperienceMapRepository
 ) -> ExperienceMapState:
-    """그래프에 넘길 초기 state"""
+    """그래프에 넘길 초기 state
+
+    `active_gap` 을 반드시 실어 준다. 빠지면 router 와 content_filter 가 "직전 턴에
+    무엇을 물었는지" 를 못 봐서, 그 질문에 대한 짧은 답변("입력 단계를 줄였기 때문")
+    을 무관한 입력으로 판정하고 fallback 으로 보낸다 (명세 5-1).
+    """
     state = start_turn(
-        {"user_id": prepared.user_id, "session_id": prepared.session_id},
+        {
+            "user_id": prepared.user_id,
+            "session_id": prepared.session_id,
+            "active_gap": prepared.active_gap,
+        },
         request_id=prepared.request_id,
         request_hash=prepared.request_hash,
         user_message=prepared.user_message,
