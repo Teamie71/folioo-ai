@@ -5,6 +5,7 @@
 `EXPERIENCE_MAP_TEST_UI_ENABLED=true`일 때만 앱에 등록한다.
 """
 
+import html
 import os
 import secrets
 import time
@@ -49,8 +50,19 @@ def _issue_test_ticket(user_id: str, session_id: str) -> str:
 
 @router.get("", include_in_schema=False, response_class=HTMLResponse)
 async def test_page() -> HTMLResponse:
-    """브라우저에서 경험정리 흐름을 수동 검증하는 페이지를 반환한다."""
-    return HTMLResponse(TEST_PAGE_HTML)
+    """브라우저에서 경험정리 흐름을 수동 검증하는 페이지를 반환한다.
+
+    API 키 입력창은 서버가 실제로 검사할 값으로 채운다. `TEST_PAGE_HTML`은 고정
+    문자열이라 예전엔 `demo-key`라는 가짜 값이 박혀 있었다 — 실제 키와 다르면
+    `POST /session`이 401로 실패하는데, 화면에는 "세션 생성 실패"로만 보여 원인이
+    안 드러났다. 이 페이지는 내부 테스트 전용이라 값을 그대로 보여줘도 된다.
+    """
+    return HTMLResponse(
+        TEST_PAGE_HTML.replace(
+            'id="apiKey" type="password" value="demo-key"',
+            f'id="apiKey" type="password" value="{html.escape(os.getenv("AI_SERVICE_API_KEY", ""))}"',
+        )
+    )
 
 
 @router.post("/session")
