@@ -6,7 +6,8 @@ lifespan에서 주입하며, 운영 Repository·메인 서버 쓰기를 대체�
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -283,7 +284,42 @@ def get_test_map_store() -> InMemoryTestMapStore:
     return _store
 
 
+@dataclass
+class InMemoryObjectStore:
+    """`ObjectStore` 를 메모리로 흉내낸다.
+
+    테스트 UI는 그래프·경험 맵을 in-memory 로 바꾸지만 파일 업로드는 여전히
+    `get_upload_store()` 를 통해 **진짜 GCS** 를 부른다. 로컬·데모 환경에는
+    `EXPMAP_UPLOAD_BUCKET`이나 GCP 인증이 없는 경우가 많아, 파일을 하나라도
+    첨부하면 `chat_stream` 이 잡지 못하는 예외(`RuntimeError` 또는
+    `google.auth` 예외)로 500 이 난다. `ExperienceMapError` 만 잡기 때문이다.
+
+    GCS 인증·네트워크가 필요 없다는 점 외에는 실제 저장소와 동작이 같다.
+    """
+
+    objects: dict[str, bytes] = field(default_factory=dict)
+    created: dict[str, datetime] = field(default_factory=dict)
+
+    async def upload(self, object_name: str, data: bytes, content_type: str) -> None:
+        self.objects[object_name] = data
+        self.created[object_name] = datetime.now(UTC)
+
+    async def download(self, object_name: str) -> bytes:
+        return self.objects[object_name]
+
+    async def delete(self, object_name: str) -> None:
+        self.objects.pop(object_name, None)
+        self.created.pop(object_name, None)
+
+    async def list_names(self, prefix: str) -> list[str]:
+        return [name for name in self.objects if name.startswith(prefix)]
+
+    async def created_at(self, object_name: str) -> datetime | None:
+        return self.created.get(object_name)
+
+
 __all__ = [
+    "InMemoryObjectStore",
     "InMemoryTestMapStore",
     "TestUiGraphRunner",
     "create_test_template_catalog_client",
