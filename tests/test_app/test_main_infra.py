@@ -149,6 +149,75 @@ async def test_lifespan_initializes_and_closes_http_client(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_lifespan_swaps_upload_store_for_test_ui(monkeypatch, clean_experience_map_settings):
+    """테스트 UI 모드는 파일 업로드도 in-memory 로 바꾼다.
+
+    그래프·경험 맵만 바꾸고 업로드를 그대로 두면, GCS 버킷·인증이 없는
+    로컬·데모 환경에서 파일을 첨부하는 즉시 `chat_stream` 이 못 잡는 예외로
+    500 이 난다 (`ExperienceMapError` 만 잡기 때문). 실제로 그렇게 재현됐었다.
+    """
+    import common.clients.correction_client as correction_client_module
+    import common.clients.portfolio_client as portfolio_client_module
+    import common.db.connection as db_connection
+    import common.http_client as http_client
+    import features.interview.agents.insight_store as insight_store_module
+    import features.interview.agents.nodes.retriever as retriever_module
+    from features.experience_map.test_runtime import InMemoryObjectStore
+    from features.experience_map.upload_store import get_upload_store
+
+    class _DummyClient:
+        async def close(self):
+            return None
+
+    class _DummyPool:
+        async def acquire(self):
+            raise AssertionError("이 테스트는 실제 쿼리를 실행하지 않는다.")
+
+        async def close(self):
+            return None
+
+    monkeypatch.setenv("EXPERIENCE_MAP_TEST_UI_ENABLED", "true")
+
+    @asynccontextmanager
+    async def _dummy_setup_checkpointer():
+        yield object()
+
+    monkeypatch.setattr(main, "setup_checkpointer", _dummy_setup_checkpointer)
+    monkeypatch.setattr(db_connection, "create_pool", AsyncMock(return_value=_DummyPool()))
+    monkeypatch.setattr(db_connection, "close_pool", AsyncMock())
+    monkeypatch.setattr(http_client, "get_http_client", MagicMock(return_value=object()))
+    monkeypatch.setattr(http_client, "close_http_client", AsyncMock())
+    monkeypatch.delenv("MAIN_BACKEND_URL", raising=False)
+    monkeypatch.setattr(correction_client_module, "reset_correction_client", lambda: None)
+    monkeypatch.setattr(portfolio_client_module, "reset_portfolio_client", lambda: None)
+    monkeypatch.setattr(insight_store_module, "MainServerInsightStore", lambda: object())
+    monkeypatch.setattr(retriever_module, "init_insight_store", MagicMock())
+
+    async with main.lifespan(FastAPI()):
+        store = get_upload_store()
+        assert isinstance(store._store, InMemoryObjectStore)
+
+        # GCS 인증 없이도 실제로 저장까지 되는지 — 배선만 확인하고 끝내지 않는다.
+        class _Upload:
+            def __init__(self) -> None:
+                self._sent = False
+
+            async def read(self, size: int = -1) -> bytes:
+                if self._sent:
+                    return b""
+                self._sent = True
+                return b"hello"
+
+        stored = await store.store_files(
+            "9000001", "550e8400-e29b-41d4-a716-446655440000", [("t.txt", "text/plain", _Upload())]
+        )
+        assert stored[0].file_size == 5
+
+    with pytest.raises(RuntimeError, match="EXPMAP_UPLOAD_BUCKET"):
+        get_upload_store()
+
+
+@pytest.mark.asyncio
 async def test_lifespan_continues_when_experience_map_db_missing(monkeypatch):
     """DATABASE_URL이 없어도 기동을 막지 않는다."""
     import common.clients.correction_client as correction_client_module

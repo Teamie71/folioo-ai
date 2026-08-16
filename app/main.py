@@ -177,14 +177,19 @@ async def lifespan(app: FastAPI):
             from features.experience_map.graph_runner import set_graph_runner
             from features.experience_map.templates import set_template_catalog_client
             from features.experience_map.test_runtime import (
+                InMemoryObjectStore,
                 TestUiGraphRunner,
                 create_test_template_catalog_client,
                 get_test_map_store,
             )
+            from features.experience_map.upload_store import UploadStore, set_upload_store
 
             set_graph_runner(TestUiGraphRunner(get_test_map_store()))
             set_template_catalog_client(create_test_template_catalog_client())
-            logger.warning("경험 맵 테스트 UI용 in-memory 맵·커밋 실행기 활성화")
+            # 그래프·맵은 in-memory 로 바꿔도 업로드는 그대로 진짜 GCS 를 부르고
+            # 있었다. 로컬·데모 환경에는 버킷·인증이 없어 파일 첨부 시 500 이 났다.
+            set_upload_store(UploadStore(InMemoryObjectStore()))
+            logger.warning("경험 맵 테스트 UI용 in-memory 맵·커밋·업로드 실행기 활성화")
     except ValueError:
         logger.warning("DATABASE_URL이 설정되지 않음 - 경험 맵 DB 비활성화")
     except Exception:
@@ -252,9 +257,11 @@ async def lifespan(app: FastAPI):
             if get_experience_map_settings().test_ui_enabled:
                 from features.experience_map.graph_runner import set_graph_runner
                 from features.experience_map.templates import set_template_catalog_client
+                from features.experience_map.upload_store import set_upload_store
 
                 set_graph_runner(None)
                 set_template_catalog_client(None)
+                set_upload_store(None)
             await close_pool()
         except Exception:
             logger.exception("경험 맵 DB 커넥션 풀 정리 실패")
