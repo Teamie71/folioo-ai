@@ -216,18 +216,29 @@ class InMemoryTestMapStore:
         return {**state, "commit_result": result.model_dump(mode="json")}
 
 
+# 경로는 level 2 활동부터 시작한다. level 1 은 전체 맵의 루트라 자리 정보가 없다.
+_PATH_MIN_LEVEL = 2
+
+
 def _path(rows: dict[str, MapBlockRow], block_id: str) -> str:
-    """결과 응답용 블록 경로를 생성한다."""
+    """결과 응답용 블록 경로를 만든다. **블록 자신은 넣지 않는다.**
+
+    명세 4-2 의 `path` 는 `"교내 커머스 리뉴얼 > 문제해결"` 처럼 블록이 **놓인
+    자리**를 가리킨다. 자신을 넣으면 방금 만든 문장이 카테고리 자리에 들어가
+    `"교내 커머스 리뉴얼 > 이탈률이 90% 감소함.에 1개를 정리했어요."` 처럼 읽힌다.
+
+    level 1 최상위 루트도 뺀다. 남기면 `_path_parts` 가 그걸 활동명으로 읽어
+    `"프로젝트 경험 > 성과"` 가 된다. 경로의 시작은 언제나 level 2 활동이다.
+    """
     labels: list[str] = []
-    current = rows[block_id]
-    while True:
-        if current.content:
+    parent_id = rows[block_id].parent_id
+    while parent_id is not None:
+        current = rows[parent_id]
+        if current.level >= _PATH_MIN_LEVEL and current.content:
             labels.append(current.content)
-        if current.parent_id is None:
-            break
-        current = rows[current.parent_id]
+        parent_id = current.parent_id
     labels.reverse()
-    return " > ".join(labels[-3:])
+    return " > ".join(labels)
 
 
 class TestUiGraphRunner(GraphRunner):
