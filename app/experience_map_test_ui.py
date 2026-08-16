@@ -165,7 +165,16 @@ const addMessage = (role, value) => { const bubble = document.createElement('div
 const setChatStatus = value => { chatStatus.textContent = `● ${value}`; };
 const setBusy = busy => buttons.forEach(button => { button.disabled = busy || !state.sessionId; });
 const authHeaders = () => ({ Authorization: `Bearer ${state.ticket}` });
-const newRequestId = () => crypto.randomUUID();
+const newRequestId = () => {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  // Tailscale IP를 HTTP로 열면 일부 브라우저에서 Web Crypto가 비활성화된다.
+  // API가 요구하는 UUID 형식을 보장하는 대체값을 사용한다.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, char => {
+    const random = Math.floor(Math.random() * 16);
+    const value = char === 'x' ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
+};
 const setRuntime = (message, className = '') => { runtime.textContent = message; runtime.className = `runtime ${className}`; };
 
 async function refreshMap() {
