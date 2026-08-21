@@ -14,8 +14,40 @@ async def test_test_template_catalog_is_available_without_main_server():
     """테스트 UI는 메인 서버 없이도 구조화 카탈로그를 읽을 수 있어야 한다."""
     catalog = await create_test_template_catalog_client().get_catalog()
 
-    assert catalog.version == "test-v1"
+    assert catalog.version == "agent-doc-3-0"
     assert catalog.get_slot("PROBLEM_SOLVING.SUMMARY") is not None
+
+
+@pytest.mark.asyncio
+async def test_test_template_catalog_matches_agent_doc_3_0():
+    """전체 38개 슬롯(level 4 10개 + level 5 28개)이 실려 있어야 한다.
+
+    예전엔 슬롯 2개짜리 가짜 카탈로그를 썼다. 그러면 담당업무·문제해결의 실제
+    하위 템플릿이 하나도 없어서, 테스트 콘솔에서 어떤 입력을 넣어도 세부 템플릿
+    슬롯이 적용되는 걸 볼 수 없었다.
+    """
+    catalog = await create_test_template_catalog_client().get_catalog()
+    slots = list(catalog.iter_slots())
+
+    assert len(slots) == 38
+    assert len([s for s in slots if s.level == 4]) == 10
+    assert len([s for s in slots if s.level == 5]) == 28
+    assert {s.slot_id for s in slots if s.is_anchor} == {
+        "TASK.SUMMARY",
+        "PROBLEM_SOLVING.SUMMARY",
+    }
+
+    for slot_id in (
+        "DETAIL.MOTIVATION",
+        "ACHIEVEMENT.QUANTITATIVE",
+        "LEARNING.GROWTH",
+        "TASK.BASIC.RESULT",
+        "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+        "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+        "PROBLEM_SOLVING.RECOVERY.CHANGE",
+    ):
+        assert catalog.get_slot(slot_id) is not None, f"{slot_id} 이 카탈로그에 없습니다."
 
 
 @pytest.mark.asyncio
