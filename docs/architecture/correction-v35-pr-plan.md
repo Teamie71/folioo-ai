@@ -7,7 +7,9 @@
 > (node `1071-1645`) — 좌상단 "v.3.4 대비 수정된 사항" 노트 2번 항목과
 > [포트폴리오 첨삭] 섹션의 화면 주석.
 >
-> **2026-08-21 현황**: 통합 브랜치 `feat/correction-v35` 에 CR-01·CR-02·CR-03·CR-06 커밋 완료.
+> **2026-08-21 현황**: 통합 브랜치 `feat/correction-v35` 에 CR-01·CR-02·CR-03·CR-06·CR-07 커밋 완료.
+> 메인 백엔드(`Teamie71/folioo-server` dev)를 직접 대조해 5·6절을 채웠습니다 — **백엔드 쪽
+> v.3.5 반영은 아직 0건**이고, 상태 전이 불일치 2건을 새로 발견했습니다.
 > CR-04 계약 문서는 초안까지 작성했고 메인 백엔드 승인을 기다립니다.
 > CR-05(스트리밍 구현)는 그 승인이 나야 착수합니다. 아래 상태 표시는 이 시점의 스냅샷입니다.
 
@@ -62,6 +64,7 @@ PR 제목은 이슈와 같은 대괄호 접두사를 씁니다 — `[Feat]`, `[F
 | 🟡 CR-04 | 텍스트 추출 활동 단위 스트리밍 **계약 정의** | "활동 단위로 스트리밍 한다" (1-4 텍스트 추출 스트리밍) | — | S |
 | CR-05 | 활동 단위 스트리밍 **구현** | 동일 | CR-01, CR-04 | L |
 | ✅ CR-06 | 대기 상태 메시지·추출 재시도 경로 정리 | [첨삭 생성 대기] 화면 문구, 1-3 "다시 시도하기" | — | S |
+| ✅ CR-07 | 첨삭 상태에 `RAG_FAILED` 추가 | 백엔드 대조에서 발견한 500 결함 (6절) | — | S |
 
 ### 의존 그래프
 
@@ -262,18 +265,92 @@ CR-02, CR-03, CR-06 : 독립
 
 ---
 
-## 5. 외부 의존 (AI 레포 작업 아님)
+### CR-07 — 첨삭 상태에 `RAG_FAILED` 추가
 
-| 항목 | 근거 | 담당 |
-| --- | --- | --- |
-| 이용권 차감 제거 | v.3.4 대비 수정 2번 | 메인 백엔드 (AI 레포에 이용권 로직 자체가 없음) |
-| 저장된 첨삭 30개 제한 모달 (1-1) | [첨삭 메인] 주석 1 | 메인 백엔드 + 프론트 |
-| 비로그인 권한 게이트 ("파일 업로드까지 가능, 텍스트 추출부터 불가") | [포트폴리오 업로드] 주석 0 | 프론트 + 메인 |
-| 글자수 카운터·'다음으로' 비활성 UI | [포트폴리오 업로드] `[글자수 제한]` | 프론트 |
-| 활동 단위 스트리밍 수신·중계 | [포트폴리오 업로드] 주석 1 | 메인 백엔드 (CR-04에서 합의) |
-| 추출 실패 후 '다시 시도하기' 경로 확인 | [포트폴리오 업로드] 1-3 | 프론트 (`POST /corrections/{id}/pdf-extraction` 재호출로 커버되는지) |
+**브랜치**: `fix/{issue}-correction-rag-failed-status` (base: `feat/correction-v35`) · **크기** S
 
-## 6. 이미 명세와 일치하는 부분 (변경 없음)
+백엔드 대조 중 발견한 결함입니다. 피그마 변경 사항이 아니라 기존 동작 버그입니다.
+
+- [x] `features/correction/schemas.py` `CorrectionStatus` 에 `RAG_FAILED = "rag_failed"` 추가
+- [x] `GET /corrections/{id}/status` 가 `RAG_FAILED` 응답에서 200 을 반환하는지 테스트
+
+**Definition of Done**
+
+- [x] 메인이 `RAG_FAILED` 를 반환할 때 상태·결과 조회가 500 대신 정상 응답
+
+**남은 것**: 이 상태에서 재시도하는 경로는 백엔드 전이 규칙이 막고 있습니다 (6절 문제 2).
+
+---
+
+## 5. 외부 의존 — 메인 백엔드(`Teamie71/folioo-server`) 확인 결과
+
+2026-08-21 기준 `dev`(`f9b145d`)를 직접 확인했습니다. **첨삭 v.3.5 관련 백엔드 변경은
+아직 하나도 반영돼 있지 않습니다.** 열려 있는 PR도 전부 경험 정리 맵 작업입니다.
+
+| 항목 | 피그마 v.3.5 | 백엔드 현재 값 | 위치 |
+| --- | --- | --- | --- |
+| 활동 블록 최대 개수 | 4 | **5** | `portfolio.entity.ts` `MAX_EXTERNAL_PORTFOLIO_BLOCKS`, `external-portfolio.facade.ts:101`, `portfolio-correction.facade.ts:168`, `error-code.ts:225` |
+| 첨삭 저장 개수 상한 | 30 | **15** | `portfolio-correction.entity.ts` `MAX_CORRECTIONS_PER_USER`, `error-code.ts:220` |
+| JD 글자수 | 1000 | **700** | `portfolio-correction.entity.ts` `jobDescription` 컬럼, `portfolio-correction.dto.ts:73` |
+| 상세정보 / 배운 점 | 300 | **400** | `external-portfolio.dto.ts` `UpdatePortfolioBlockReqDTO` |
+| 담당업무 / 문제해결 | 700 | **400** | 동일 |
+| 이용권 차감 | 제거 | **차감 유지** | `portfolio-correction.facade.ts:37` `consumeTicket(userId, TicketType.PORTFOLIO_CORRECTION)` |
+| 활동 단위 스트리밍 | 필요 | **없음** (배치 콜백 1회) | `internal-correction-result.facade.ts` `savePdfExtractionResult` |
+
+**AI 레포와 이미 맞는 것**
+
+- 기업 분석 2000자: `COMPANY_INSIGHT_MAX_LENGTH = 2000` ↔ `correction.yaml` `company_insight_max_length`. **일치** (CR-06에서 열려 있던 질문 해소)
+- PDF 10MB 제한: `external-portfolio-extract-request-parser.service.ts` `MAX_PDF_SIZE_BYTES` ↔ AI 동일
+- 카테고리 글자수 세는 방식: 백엔드가 불릿을 `\n` 으로 이어 저장(`mapActivity` `joinLines`) → **AI의 "카테고리 전체 합계, 개행 1자" 계산과 동일**. CR-02의 열린 질문 1이 해소됐습니다.
+
+**AI가 맞춰야 했던 것 (CR-02 보정 완료)**
+
+- 문제해결만 백엔드가 `#{no}\n상황: …\n전략: …\n이유: …` 로 라벨을 붙여 `\n\n` 으로 잇습니다.
+  항목당 17자 + 항목 사이 2자가 더 붙으므로 필드 길이만 세면 화면 카운터가 초과로 표시됩니다.
+  → AI 예산 계산에 오버헤드를 포함했습니다. **백엔드가 이 렌더링을 바꾸면 AI도 함께 고쳐야 합니다.**
+
+**메인 백엔드에 요청할 것**
+
+1. 위 표의 상한값 6종을 v.3.5 기준으로 변경
+2. `consumeTicket` 호출 제거
+3. `UpdatePortfolioBlockReqDTO` 의 400자를 카테고리별 300/700 으로 분리
+4. 상태 전이 규칙 보완 (아래 6절)
+5. 활동 단위 스트리밍 수신 (CR-04 계약 합의)
+
+**프론트에 확인할 것**
+
+- 추출 실패(1-3) '다시 시도하기'가 `POST /corrections/{id}/pdf-extraction` 재호출(파일 재업로드 포함)로 커버되는지
+- 글자수 카운터가 저장된 문자열 기준인지 (문제해결은 라벨 포함 여부가 갈림)
+
+## 6. 상태 전이 불일치 (신규 발견)
+
+백엔드 `portfolio-correction.service.ts` `validateStatusTransition` 의 허용 표는 다음과 같습니다.
+
+```text
+NOT_STARTED     → DOING_RAG
+DOING_RAG       → COMPANY_INSIGHT
+COMPANY_INSIGHT → GENERATING
+GENERATING      → DONE
+FAILED          → GENERATING
+RAG_FAILED      → (없음)
+DONE            → (없음)
+```
+
+**문제 1 — RAG 단계 실패는 재시도가 불가능합니다.**
+AI의 `CorrectionService.retry` 는 저장된 RAG 데이터가 없거나 인사이트가 없으면
+`FAILED → DOING_RAG` 로 전이하려 합니다(`features/correction/service.py` 경로 2·3).
+백엔드는 `FAILED → [GENERATING]` 만 허용하므로 이 두 경로는 항상 422(AI 쪽 409)로 막힙니다.
+→ **백엔드에 `FAILED → DOING_RAG` 허용을 요청해야 합니다.**
+
+**문제 2 — `RAG_FAILED` 상태는 빠져나갈 길이 없습니다.**
+메인이 AI 서버 호출에 실패하면 `RAG_FAILED` 로 두는데, 이 상태에서 나가는 전이가 없어
+사용자가 첨삭을 되살릴 수 없습니다. → **`RAG_FAILED → DOING_RAG` 허용 요청.**
+
+**AI 쪽 대응 (완료)**: `CorrectionStatus` 에 `RAG_FAILED` 가 없어
+`GET /corrections/{id}` 와 `/status` 가 응답 검증에서 터져 **500** 을 반환하고 있었습니다.
+enum 에 값을 추가해 조회는 정상화했습니다. 재시도 자체는 위 백엔드 변경이 있어야 풀립니다.
+
+## 7. 이미 명세와 일치하는 부분 (변경 없음)
 
 착수 전 재확인용 체크리스트입니다. 아래는 v.3.5 명세와 현재 코드가 **이미 맞습니다**.
 
