@@ -310,6 +310,117 @@ def test_validate_result_truncates_after_deduplication():
     ]
 
 
+def _limits(**overrides):
+    """테스트용 추출 상한 설정을 만든다."""
+    from features.portfolio.pdf_extraction.config import PdfExtractionLimitsConfig
+
+    return PdfExtractionLimitsConfig(**overrides)
+
+
+def _single_activity_result(**activity_fields) -> PdfExtractionResult:
+    """활동 1개짜리 추출 결과를 만든다."""
+    defaults = {
+        "activity_name": "Alpha",
+        "detail": [],
+        "responsibility": [],
+        "problem_solving": [],
+        "learning": [],
+    }
+    defaults.update(activity_fields)
+    return PdfExtractionResult(activities=[PdfActivity(**defaults)])
+
+
+def test_validate_result_drops_bullets_over_category_limit(monkeypatch: pytest.MonkeyPatch):
+    """카테고리 합계가 상한을 넘으면 뒤쪽 불릿부터 버린다."""
+    monkeypatch.setattr(
+        pdf_extraction_service_module,
+        "get_pdf_extraction_limits",
+        lambda: _limits(detail_max_length=10),
+    )
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    # "12345" + 개행 + "6789" = 10자, 다음 불릿은 예산이 없어 버려진다.
+    result = _single_activity_result(detail=["12345", "6789", "버려질 불릿"])
+
+    activities = service._validate_result(result)
+
+    assert activities[0].detail == ["12345", "6789"]
+
+
+def test_validate_result_truncates_bullet_that_exceeds_limit(monkeypatch: pytest.MonkeyPatch):
+    """첫 불릿 하나가 상한을 넘으면 남은 예산만큼 잘라서 살린다."""
+    monkeypatch.setattr(
+        pdf_extraction_service_module,
+        "get_pdf_extraction_limits",
+        lambda: _limits(learning_max_length=5),
+    )
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    result = _single_activity_result(learning=["가나다라마바사"])
+
+    activities = service._validate_result(result)
+
+    assert activities[0].learning == ["가나다라마"]
+
+
+def test_validate_result_fits_problem_solving_within_limit(monkeypatch: pytest.MonkeyPatch):
+    """문제해결은 situation·strategy·reason 합계를 상한에 맞춘다."""
+    monkeypatch.setattr(
+        pdf_extraction_service_module,
+        "get_pdf_extraction_limits",
+        lambda: _limits(problem_solving_max_length=11),
+    )
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    # 첫 항목이 "상황1\n전략1\n이유1" = 11자로 예산을 모두 쓴다.
+    result = _single_activity_result(
+        problem_solving=[
+            PdfProblemSolvingItem(no=1, situation="상황1", strategy="전략1", reason="이유1"),
+            PdfProblemSolvingItem(no=2, situation="상황2", strategy="전략2", reason="이유2"),
+        ]
+    )
+
+    activities = service._validate_result(result)
+
+    assert [item.no for item in activities[0].problem_solving] == [1]
+    assert activities[0].problem_solving[0].reason == "이유1"
+
+
+def test_validate_result_respects_configured_activity_count(monkeypatch: pytest.MonkeyPatch):
+    """활동 개수 상한도 설정값을 따른다."""
+    monkeypatch.setattr(
+        pdf_extraction_service_module,
+        "get_pdf_extraction_limits",
+        lambda: _limits(max_activity_count=2),
+    )
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    result = PdfExtractionResult.model_construct(
+        activities=[
+            PdfActivity(
+                activity_name=name,
+                detail=["상세"],
+                responsibility=[],
+                problem_solving=[],
+                learning=[],
+            )
+            for name in ["Alpha", "Beta", "Gamma"]
+        ]
+    )
+
+    activities = service._validate_result(result)
+
+    assert [activity.activity_name for activity in activities] == ["Alpha", "Beta"]
+
+
 def test_validate_result_skips_blank_activity_names_and_trims_values():
     """공백-only 활동명은 제거하고 남는 활동명은 trim 값으로 정규화한다."""
     service = PdfExtractionService(

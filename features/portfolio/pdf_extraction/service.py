@@ -8,7 +8,8 @@ from fastapi import BackgroundTasks
 
 from common.clients.correction_client import CorrectionClient, get_correction_client
 
-from .schemas import PdfActivity, PdfExtractionResult
+from .config import get_pdf_extraction_limits
+from .schemas import PdfActivity, PdfExtractionResult, PdfProblemSolvingItem
 
 if TYPE_CHECKING:
     from .generator import PdfExtractionGenerator
@@ -17,8 +18,9 @@ logger = logging.getLogger(__name__)
 
 _service: "PdfExtractionService | None" = None
 _MAX_PDF_FILE_SIZE_BYTES = 10 * 1024 * 1024
-_MAX_ACTIVITY_COUNT = 4
 _PDF_MIME_TYPE = "application/pdf"
+# 카테고리 글자수는 불릿을 개행으로 이은 문자열 기준이라 불릿 사이마다 구분자 1자를 센다.
+_CATEGORY_LINE_SEPARATOR_LENGTH = 1
 
 
 class PdfExtractionGeneratorProtocol(Protocol):
@@ -137,6 +139,92 @@ class PdfExtractionService:
             )
         return formatted_activities
 
+    @staticmethod
+    def _fit_lines_to_limit(lines: list[str], limit: int) -> list[str]:
+        """불릿을 개행으로 이은 전체 길이가 limit 이하가 되도록 앞에서부터 담는다.
+
+        상한을 넘는 불릿에서 멈추되, 남은 예산만큼은 잘라서 살린다.
+
+        Args:
+            lines: 카테고리에 속한 불릿 텍스트 목록
+            limit: 카테고리 전체 글자수 상한
+
+        Returns:
+            list[str]: 상한 이하로 정리된 불릿 목록
+        """
+        kept: list[str] = []
+        used = 0
+
+        for line in lines:
+            separator = _CATEGORY_LINE_SEPARATOR_LENGTH if kept else 0
+            remaining = limit - used - separator
+            if remaining <= 0:
+                break
+
+            if len(line) <= remaining:
+                kept.append(line)
+                used += separator + len(line)
+                continue
+
+            truncated = line[:remaining]
+            if truncated:
+                kept.append(truncated)
+            break
+
+        return kept
+
+    @classmethod
+    def _fit_problem_solving_to_limit(
+        cls,
+        items: list[PdfProblemSolvingItem],
+        limit: int,
+    ) -> list[PdfProblemSolvingItem]:
+        """문제해결 항목을 카테고리 글자수 상한에 맞춰 앞에서부터 담는다.
+
+        항목 하나가 남은 예산을 넘으면 situation·strategy·reason 순으로 채우고,
+        예산이 바닥난 필드는 빈 문자열로 남긴다.
+
+        Args:
+            items: 문제해결 항목 목록
+            limit: 카테고리 전체 글자수 상한
+
+        Returns:
+            list[PdfProblemSolvingItem]: 상한 이하로 정리된 항목 목록
+        """
+        kept: list[PdfProblemSolvingItem] = []
+        used = 0
+
+        for item in items:
+            fields = [item.situation, item.strategy, item.reason]
+            item_length = sum(len(field) for field in fields) + _CATEGORY_LINE_SEPARATOR_LENGTH * (
+                len(fields) - 1
+            )
+            separator = _CATEGORY_LINE_SEPARATOR_LENGTH if kept else 0
+            remaining = limit - used - separator
+            if remaining <= 0:
+                break
+
+            if item_length <= remaining:
+                kept.append(item)
+                used += separator + item_length
+                continue
+
+            fitted = cls._fit_lines_to_limit(fields, remaining)
+            fitted += [""] * (len(fields) - len(fitted))
+            if any(fitted):
+                kept.append(
+                    item.model_copy(
+                        update={
+                            "situation": fitted[0],
+                            "strategy": fitted[1],
+                            "reason": fitted[2],
+                        }
+                    )
+                )
+            break
+
+        return kept
+
     @classmethod
     def _validate_result(cls, result: PdfExtractionResult) -> list[PdfActivity]:
         """추출 결과를 후처리하고 메인 서버 콜백 형식으로 정리한다."""
@@ -144,6 +232,7 @@ class PdfExtractionService:
         if not activities:
             raise ValueError("PDF에서 추출된 활동이 없습니다.")
 
+        limits = get_pdf_extraction_limits()
         seen_names: set[str] = set()
         normalized_activities: list[PdfActivity] = []
 
@@ -168,16 +257,25 @@ class PdfExtractionService:
                 activity.model_copy(
                     update={
                         "activity_name": dedupe_key,
-                        "detail": [
-                            cls._normalize_structured_text(item) for item in activity.detail
-                        ],
-                        "responsibility": [
-                            cls._normalize_structured_text(item) for item in activity.responsibility
-                        ],
-                        "problem_solving": problem_solving,
-                        "learning": [
-                            cls._normalize_structured_text(item) for item in activity.learning
-                        ],
+                        "detail": cls._fit_lines_to_limit(
+                            [cls._normalize_structured_text(item) for item in activity.detail],
+                            limits.detail_max_length,
+                        ),
+                        "responsibility": cls._fit_lines_to_limit(
+                            [
+                                cls._normalize_structured_text(item)
+                                for item in activity.responsibility
+                            ],
+                            limits.responsibility_max_length,
+                        ),
+                        "problem_solving": cls._fit_problem_solving_to_limit(
+                            problem_solving,
+                            limits.problem_solving_max_length,
+                        ),
+                        "learning": cls._fit_lines_to_limit(
+                            [cls._normalize_structured_text(item) for item in activity.learning],
+                            limits.learning_max_length,
+                        ),
                     }
                 )
             )
@@ -186,8 +284,8 @@ class PdfExtractionService:
             raise ValueError("PDF에서 추출된 활동이 없습니다.")
 
         # 중복 제거 후에 자른다. 먼저 자르면 중복 활동이 상한 슬롯을 차지해
-        # 실제 활동이 _MAX_ACTIVITY_COUNT개보다 적게 남는다.
-        return normalized_activities[:_MAX_ACTIVITY_COUNT]
+        # 실제 활동이 max_activity_count개보다 적게 남는다.
+        return normalized_activities[: limits.max_activity_count]
 
 
 def _create_default_generator() -> "PdfExtractionGenerator":
