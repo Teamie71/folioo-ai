@@ -516,6 +516,17 @@ async def test_start_pdf_extraction_stops_when_chunk_limit_exceeded(monkeypatch)
     assert service.calls == []
 
 
+def test_get_correction_status_accepts_rag_failed(monkeypatch):
+    """메인 서버가 RAG_FAILED 를 반환해도 상태 조회가 200 을 반환한다."""
+    cc = DummyCorrectionClient(correction={"id": 123, "status": "RAG_FAILED"})
+    client = _create_client(monkeypatch, cc)
+
+    response = client.get(f"/api/v1/corrections/{CORRECTION_ID}/status")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rag_failed"
+
+
 # ------------------------------------------------------------------
 # 강조 포인트
 # ------------------------------------------------------------------

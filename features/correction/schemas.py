@@ -114,4 +114,8 @@ class CorrectionStatus(str, Enum):
     COMPANY_INSIGHT = "company_insight"
     GENERATING = "generating"
     DONE = "done"
+    # 메인 서버가 AI 서버 호출 자체에 실패했을 때 넣는 상태다.
+    # (folioo-server: portfolio-correction.facade.ts `delegateCompanyInsightCreation`)
+    # 값이 없으면 상태 조회 응답 검증에서 터져 500 이 된다.
+    RAG_FAILED = "rag_failed"
     FAILED = "failed"
