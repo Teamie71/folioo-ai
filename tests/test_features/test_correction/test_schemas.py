@@ -224,6 +224,13 @@ def test_update_emphasis_points_request_schema():
     assert request.emphasis_points == "핵심 역량과 성과 지표를 강조"
 
 
+def test_update_emphasis_points_request_allows_empty_string():
+    """강조 포인트는 선택 항목이라 빈 문자열을 허용한다."""
+    request = UpdateEmphasisPointsRequest(emphasis_points="")
+
+    assert request.emphasis_points == ""
+
+
 def test_update_company_insight_request_accepts_exactly_2000_chars():
     """UpdateCompanyInsightRequest는 2000자까지 허용한다."""
     request = UpdateCompanyInsightRequest(company_insight="가" * 2000)

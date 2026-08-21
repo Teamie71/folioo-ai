@@ -23,6 +23,7 @@ from .schemas import (
 
 _generator: "CorrectionGenerator | None" = None
 _ALLOWED_TYPES = {"reduce", "keep", "emphasize"}
+_EMPTY_EMPHASIS_POINTS_PLACEHOLDER = "없음"
 _FULL_CODE_FENCE_PATTERN = re.compile(
     r"^\s*```(?:[a-zA-Z0-9_-]+)?\s*\n(?P<body>.*?)\n?\s*```\s*$",
     re.DOTALL,
@@ -112,7 +113,7 @@ class CorrectionGenerator:
                 "job_description": job_description,
                 "company_insight": company_insight,
                 "portfolio_data_text": portfolio_data_text,
-                "emphasis_points": emphasis_points,
+                "emphasis_points": _normalize_emphasis_points(emphasis_points),
                 "validation_feedback": validation_feedback,
             }
 
@@ -171,7 +172,7 @@ class CorrectionGenerator:
                 "job_title": job_title,
                 "job_description": job_description,
                 "company_insight": company_insight,
-                "emphasis_points": emphasis_points,
+                "emphasis_points": _normalize_emphasis_points(emphasis_points),
                 "portfolio_corrections_text": _format_portfolio_corrections_for_summary(
                     portfolio_corrections
                 ),
@@ -287,6 +288,21 @@ class CorrectionGenerator:
                         )
 
         return errors
+
+
+def _normalize_emphasis_points(emphasis_points: str) -> str:
+    """빈 강조 포인트를 프롬프트용 플레이스홀더로 정규화한다.
+
+    강조 포인트는 선택 항목이라 빈 문자열로 들어올 수 있다. 그대로 넘기면
+    프롬프트에 빈 섹션이 남아 LLM이 앞 섹션의 내용을 강조 포인트로 오인한다.
+
+    Args:
+        emphasis_points: 사용자가 입력한 강조 포인트 텍스트
+
+    Returns:
+        str: 비어 있으면 "없음", 아니면 원본 텍스트
+    """
+    return emphasis_points.strip() or _EMPTY_EMPHASIS_POINTS_PLACEHOLDER
 
 
 def _strip_json_code_fence(text: str) -> str:

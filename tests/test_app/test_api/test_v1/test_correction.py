@@ -535,6 +535,20 @@ def test_update_emphasis_points_returns_200(monkeypatch):
     assert cc.updated_emphasis_points == (123, "새 포인트")
 
 
+def test_update_emphasis_points_accepts_empty_string(monkeypatch):
+    """강조 포인트는 선택 항목이므로 빈 문자열도 200을 반환한다."""
+    cc = DummyCorrectionClient(correction={"id": 123, "status": "COMPANY_INSIGHT"})
+    client = _create_client(monkeypatch, cc)
+
+    response = client.patch(
+        f"/api/v1/corrections/{CORRECTION_ID}/emphasis-points",
+        json={"emphasis_points": ""},
+    )
+
+    assert response.status_code == 200
+    assert cc.updated_emphasis_points == (123, "")
+
+
 # ------------------------------------------------------------------
 # 첨삭 생성
 # ------------------------------------------------------------------
