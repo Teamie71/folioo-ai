@@ -21,6 +21,13 @@ _MAX_PDF_FILE_SIZE_BYTES = 10 * 1024 * 1024
 _PDF_MIME_TYPE = "application/pdf"
 # 카테고리 글자수는 불릿을 개행으로 이은 문자열 기준이라 불릿 사이마다 구분자 1자를 센다.
 _CATEGORY_LINE_SEPARATOR_LENGTH = 1
+# 문제해결만 메인 서버가 라벨을 붙여 저장한다. 화면 글자수 카운터는 저장된 문자열을 세므로
+# AI 쪽 예산도 같은 형식으로 계산해야 한다.
+#   "#{no}\n상황: {situation}\n전략: {strategy}\n이유: {reason}" 을 "\n\n" 으로 이음
+#   (folioo-server: internal-correction-result.facade.ts `mapActivity`)
+# 메인 서버가 이 렌더링 형식을 바꾸면 아래 두 상수도 함께 고쳐야 한다.
+_PROBLEM_SOLVING_ITEM_OVERHEAD = 17
+_PROBLEM_SOLVING_ITEM_SEPARATOR_LENGTH = 2
 
 
 class PdfExtractionGeneratorProtocol(Protocol):
@@ -181,8 +188,9 @@ class PdfExtractionService:
     ) -> list[PdfProblemSolvingItem]:
         """문제해결 항목을 카테고리 글자수 상한에 맞춰 앞에서부터 담는다.
 
-        항목 하나가 남은 예산을 넘으면 situation·strategy·reason 순으로 채우고,
-        예산이 바닥난 필드는 빈 문자열로 남긴다.
+        메인 서버가 라벨(`#N`·`상황: ` 등)을 붙여 저장하므로 항목마다 고정 오버헤드를
+        함께 센다. 항목 하나가 남은 예산을 넘으면 situation·strategy·reason 순으로
+        채우고, 예산이 바닥난 필드는 빈 문자열로 남긴다.
 
         Args:
             items: 문제해결 항목 목록
@@ -196,10 +204,8 @@ class PdfExtractionService:
 
         for item in items:
             fields = [item.situation, item.strategy, item.reason]
-            item_length = sum(len(field) for field in fields) + _CATEGORY_LINE_SEPARATOR_LENGTH * (
-                len(fields) - 1
-            )
-            separator = _CATEGORY_LINE_SEPARATOR_LENGTH if kept else 0
+            item_length = _PROBLEM_SOLVING_ITEM_OVERHEAD + sum(len(field) for field in fields)
+            separator = _PROBLEM_SOLVING_ITEM_SEPARATOR_LENGTH if kept else 0
             remaining = limit - used - separator
             if remaining <= 0:
                 break
@@ -209,7 +215,11 @@ class PdfExtractionService:
                 used += separator + item_length
                 continue
 
-            fitted = cls._fit_lines_to_limit(fields, remaining)
+            field_budget = remaining - _PROBLEM_SOLVING_ITEM_OVERHEAD
+            if field_budget <= 0:
+                break
+
+            fitted = cls._fit_lines_to_limit(fields, field_budget)
             fitted += [""] * (len(fields) - len(fitted))
             if any(fitted):
                 kept.append(

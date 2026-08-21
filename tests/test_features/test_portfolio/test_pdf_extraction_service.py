@@ -367,18 +367,30 @@ def test_validate_result_truncates_bullet_that_exceeds_limit(monkeypatch: pytest
     assert activities[0].learning == ["가나다라마"]
 
 
+def _rendered_problem_solving_length(items) -> int:
+    """메인 서버가 저장하는 문제해결 문자열의 길이를 재현한다.
+
+    folioo-server `internal-correction-result.facade.ts` 의 mapActivity 와 같은 형식이다.
+    """
+    rendered = [
+        f"#{item.no}\n상황: {item.situation}\n전략: {item.strategy}\n이유: {item.reason}"
+        for item in items
+    ]
+    return len("\n\n".join(rendered))
+
+
 def test_validate_result_fits_problem_solving_within_limit(monkeypatch: pytest.MonkeyPatch):
-    """문제해결은 situation·strategy·reason 합계를 상한에 맞춘다."""
+    """문제해결은 메인 서버 렌더링 기준으로 상한에 맞춘다."""
+    # 항목 하나 = 라벨 오버헤드 17자 + 필드 9자 = 26자. 두 개면 구분자 포함 54자.
     monkeypatch.setattr(
         pdf_extraction_service_module,
         "get_pdf_extraction_limits",
-        lambda: _limits(problem_solving_max_length=11),
+        lambda: _limits(problem_solving_max_length=30),
     )
     service = PdfExtractionService(
         correction_client=DummyCorrectionClient(),
         generator=DummyGenerator(),
     )
-    # 첫 항목이 "상황1\n전략1\n이유1" = 11자로 예산을 모두 쓴다.
     result = _single_activity_result(
         problem_solving=[
             PdfProblemSolvingItem(no=1, situation="상황1", strategy="전략1", reason="이유1"),
@@ -390,6 +402,37 @@ def test_validate_result_fits_problem_solving_within_limit(monkeypatch: pytest.M
 
     assert [item.no for item in activities[0].problem_solving] == [1]
     assert activities[0].problem_solving[0].reason == "이유1"
+
+
+def test_validate_result_problem_solving_matches_main_server_rendering(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """정리 결과를 메인 서버 형식으로 렌더링해도 상한을 넘지 않는다."""
+    limit = 120
+    monkeypatch.setattr(
+        pdf_extraction_service_module,
+        "get_pdf_extraction_limits",
+        lambda: _limits(problem_solving_max_length=limit),
+    )
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    result = _single_activity_result(
+        problem_solving=[
+            PdfProblemSolvingItem(
+                no=index,
+                situation="상" * 20,
+                strategy="전" * 20,
+                reason="이" * 20,
+            )
+            for index in range(1, 4)
+        ]
+    )
+
+    activities = service._validate_result(result)
+
+    assert _rendered_problem_solving_length(activities[0].problem_solving) <= limit
 
 
 def test_validate_result_respects_configured_activity_count(monkeypatch: pytest.MonkeyPatch):
