@@ -6,7 +6,7 @@ from langchain_core.runnables import RunnableLambda
 from features.experience_map.errors import LlmError
 from features.experience_map.nodes import structure as structure_node
 from features.experience_map.nodes.structure import _validate_output, next_node, structure_blocks
-from features.experience_map.schemas import StructuredItem, StructureOutput
+from features.experience_map.schemas import StructureLlmItem, StructureOutput
 from features.experience_map.state import start_turn
 from features.experience_map.templates import TemplateCatalog, TemplateCatalogClient
 
@@ -123,15 +123,16 @@ async def test_new_category_expands_all_section_slots_and_preserves_source(fake_
     prompts = fake_dependencies(
         StructureOutput(
             items=[
-                StructuredItem(
+                StructureLlmItem(
                     item_id="category_1", action="add", parent_ref="exp_1", section_kind="DETAIL"
                 ),
-                StructuredItem(
-                    item_id="it_1",
+                StructureLlmItem(
+                    item_id="blk_1",
                     action="add",
                     parent_item_id="category_1",
                     slot_id="DETAIL.MOTIVATION",
                     text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
                 ),
             ]
         )
@@ -139,8 +140,10 @@ async def test_new_category_expands_all_section_slots_and_preserves_source(fake_
 
     result = await structure_blocks(make_state())
 
-    assert [item["item_id"] for item in result["structured_items"]] == ["category_1", "it_1"]
+    assert [item["item_id"] for item in result["structured_items"]] == ["category_1", "blk_1"]
     assert result["structured_items"][1]["text"] == "결제 오류를 해결했다"
+    # source_item_ids 는 구조화 노드 내부 전용이라 공용 스키마로 나가지 않는다.
+    assert "source_item_ids" not in result["structured_items"][1]
     assert "[exp_1] 교내 커머스 리뉴얼" in prompts[0]
     assert "[DETAIL.MOTIVATION]" in prompts[0]
 
@@ -151,14 +154,15 @@ async def test_template_expands_empty_slots(fake_dependencies):
     fake_dependencies(
         StructureOutput(
             items=[
-                StructuredItem(
-                    item_id="it_1",
+                StructureLlmItem(
+                    item_id="blk_1",
                     action="add",
                     parent_ref="b_1",
                     slot_id="TASK.BASIC.PURPOSE",
                     text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
                 ),
-                StructuredItem(
+                StructureLlmItem(
                     item_id="empty_1",
                     action="add",
                     parent_ref="b_1",
@@ -174,11 +178,156 @@ async def test_template_expands_empty_slots(fake_dependencies):
 
 
 @pytest.mark.asyncio
+async def test_multiple_source_items_can_merge_into_one_slot(fake_dependencies):
+    """content_filter 는 불릿 단위, 템플릿은 주제 단위라 여러 원문이 한 슬롯에 모일 수 있다.
+
+    합친 text 는 원문을 이어붙인 것과 정확히 같아야 하며(공백 차이는 허용),
+    출력 item_id 는 입력 item_id 를 재사용하지 않는다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="원인을 조사했다 해결책을 적용했다",
+                    source_item_ids=["it_1", "it_2"],
+                ),
+                StructureLlmItem(
+                    item_id="empty_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.RESULT",
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "원인을 조사했다", "source": "message"},
+            {"item_id": "it_2", "text": "해결책을 적용했다", "source": "message"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    assert result["structured_items"][0]["text"] == "원인을 조사했다 해결책을 적용했다"
+
+
+@pytest.mark.asyncio
+async def test_merge_without_separator_is_accepted(fake_dependencies):
+    """조각 사이에 공백이 하나도 없이 붙여 써도 병합으로 인정한다.
+
+    실제로 재현된 경우다. 문장이 마침표로 끝나는데 모델이 다음 조각을 띄어쓰기
+    없이 바로 이어 붙였다. 조각 사이 공백을 정확히 한 칸으로 강제하면 이런
+    정상적인 병합까지 "text를 바꿨다" 며 거부하게 된다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="원인을 조사했다.해결책을 적용했다",  # 공백 없이 이어붙임
+                    source_item_ids=["it_1", "it_2"],
+                ),
+                StructureLlmItem(
+                    item_id="empty_1", action="add", parent_ref="b_1", slot_id="TASK.BASIC.RESULT"
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "원인을 조사했다.", "source": "message"},
+            {"item_id": "it_2", "text": "해결책을 적용했다", "source": "message"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    assert result["structured_items"][0]["text"] == "원인을 조사했다.해결책을 적용했다"
+
+
+@pytest.mark.asyncio
+async def test_merged_text_must_match_concatenation_exactly(fake_dependencies):
+    """합친 text 가 원문 이어붙인 것과 다르면(요약·새 문장) 거부한다."""
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="원인 조사 후 해결",  # 요약됨 — 원문과 다름
+                    source_item_ids=["it_1", "it_2"],
+                ),
+                StructureLlmItem(
+                    item_id="empty_1", action="add", parent_ref="b_1", slot_id="TASK.BASIC.RESULT"
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "원인을 조사했다", "source": "message"},
+            {"item_id": "it_2", "text": "해결책을 적용했다", "source": "message"},
+        ]
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(state)
+
+
+@pytest.mark.asyncio
+async def test_source_item_used_twice_is_rejected(fake_dependencies):
+    """같은 원문 item이 두 블록에 나눠 들어가면 안 된다."""
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.RESULT",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(make_state())
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "items",
     [
         [],
-        [StructuredItem(item_id="it_1", action="add", parent_ref="exp_1", text="바뀐 원문")],
+        [
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="exp_1",
+                text="바뀐 원문",
+                source_item_ids=["it_1"],
+            )
+        ],
     ],
 )
 async def test_missing_or_changed_source_is_rejected(fake_dependencies, items):
@@ -196,12 +345,13 @@ async def test_unknown_slot_and_partial_template_are_rejected(fake_dependencies)
     fake_dependencies(
         StructureOutput(
             items=[
-                StructuredItem(
-                    item_id="it_1",
+                StructureLlmItem(
+                    item_id="blk_1",
                     action="add",
                     parent_ref="b_1",
                     slot_id="TASK.BASIC.PURPOSE",
                     text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
                 )
             ]
         )
@@ -217,11 +367,12 @@ async def test_foreign_parent_alias_is_rejected(fake_dependencies):
     fake_dependencies(
         StructureOutput(
             items=[
-                StructuredItem(
-                    item_id="it_1",
+                StructureLlmItem(
+                    item_id="blk_1",
                     action="add",
                     parent_ref="exp_999",
                     text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
                 )
             ]
         )
@@ -249,11 +400,12 @@ async def test_new_child_gap_is_fixed_to_anchor(fake_dependencies):
     fake_dependencies(
         StructureOutput(
             items=[
-                StructuredItem(
-                    item_id="it_1",
+                StructureLlmItem(
+                    item_id="blk_1",
                     action="add",
                     parent_ref="exp_1",
                     text="재시도 로직을 추가했다",
+                    source_item_ids=["it_1"],
                 )
             ]
         )
@@ -324,15 +476,16 @@ def test_problem_solving_templates_accept_all_required_slots(template_id):
     )
     source = [{"item_id": "it_1", "text": "결제 오류를 분석하고 재시도 로직을 추가했다."}]
     items = [
-        StructuredItem(
-            item_id="it_1",
+        StructureLlmItem(
+            item_id="blk_1",
             action="add",
             parent_ref="b_1",
             slot_id=slot_ids[0],
             text=source[0]["text"],
+            source_item_ids=["it_1"],
         ),
         *[
-            StructuredItem(
+            StructureLlmItem(
                 item_id=f"empty_{index}", action="add", parent_ref="b_1", slot_id=slot_id
             )
             for index, slot_id in enumerate(slot_ids[1:], start=1)

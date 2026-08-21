@@ -1,6 +1,7 @@
 """블록 단위 구조화 노드 (에이전트 문서 5-5)."""
 
 import logging
+import re
 
 from common.llm import get_experience_map_llm
 from features.experience_map.config import get_settings
@@ -10,11 +11,30 @@ from features.experience_map.prompts.structure import (
     render_source_items,
     structure_prompt,
 )
-from features.experience_map.schemas import StructuredItem, StructureOutput
+from features.experience_map.schemas import StructureLlmItem, StructureOutput
 from features.experience_map.state import ExperienceMapState
 from features.experience_map.templates import TemplateCatalog, get_template_catalog_client
 
 logger = logging.getLogger(__name__)
+
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _normalize(text: str) -> str:
+    """공백 차이를 흡수한다. content_filter의 정규화와 같은 규칙을 쓴다."""
+    return _WHITESPACE.sub(" ", text).strip()
+
+
+def _is_concatenation(text: str, sources: list[str]) -> bool:
+    """`text`가 `sources`를 순서대로 이어붙인 것인지 확인한다.
+
+    조각 사이 공백은 0개부터 몇 개든 허용한다 — 모델이 붙여 쓰든 띄어 쓰든
+    줄바꿈으로 잇든 신경 쓰지 않는다. 허용하지 않는 건 **조각 사이에 새 낱말이
+    끼어드는 것**뿐이다. 정확히 공백 한 칸만 허용하면, 모델이 구두점 사이를
+    안 띄우고 이어 붙인 정상적인 병합까지 거부하게 된다.
+    """
+    pattern = r"\s*".join(re.escape(_normalize(source)) for source in sources)
+    return re.fullmatch(pattern, _normalize(text)) is not None
 
 
 async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
@@ -57,8 +77,13 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         logger.exception("structure: 구조화 실패")
         raise LlmError("내용을 블록 구조로 정리하지 못했습니다.", failed_node="structure") from exc
 
-    updated["structured_items"] = [item.model_dump() for item in items]
-    logger.info("structure: 원문 %d개를 operation %d개로 배정", len(source_items), len(items))
+    updated["structured_items"] = [item.to_structured_item().model_dump() for item in items]
+    logger.info(
+        "structure: 원문 item %d개를 블록 %d개로 배정 (병합 %d건)",
+        len(source_items),
+        len(items),
+        sum(1 for item in items if len(item.source_item_ids) > 1),
+    )
     return updated  # type: ignore[return-value]
 
 
@@ -91,13 +116,20 @@ def _gap_instruction(state: ExperienceMapState) -> str:
 
 
 def _validate_output(
-    items: list[StructuredItem],
+    items: list[StructureLlmItem],
     *,
     source_items: list[dict],
     catalog: TemplateCatalog,
     state: ExperienceMapState,
-) -> list[StructuredItem]:
-    """원문·slot·템플릿 전개 계약을 코드로 검증한다."""
+) -> list[StructureLlmItem]:
+    """원문·slot·템플릿 전개 계약을 코드로 검증한다.
+
+    content_filter는 문장·불릿 단위로 자르고 템플릿은 주제 단위 슬롯을
+    요구하므로, 원문 item과 출력 블록은 더 이상 1:1이 아니다. **모든 입력
+    item_id가 정확히 하나의 출력 블록에서만, 순서를 유지한 채 쓰이는지**를
+    검증한다 — 자기 own item_id로 결과를 인덱싱하던 예전 검증은 이 관계를
+    표현할 수 없었다.
+    """
     expected_text = {item["item_id"]: item["text"] for item in source_items}
     if len(expected_text) != len(source_items):
         raise ValueError("구조화 입력 item_id가 중복되었습니다.")
@@ -108,16 +140,11 @@ def _validate_output(
     if any(item.action != "add" for item in items):
         raise ValueError("구조화 노드는 add operation만 만들 수 있습니다.")
 
-    result_by_id = {item.item_id: item for item in items}
-    if set(expected_text) - set(result_by_id):
-        raise ValueError("구조화 결과에 원문 item이 누락되었습니다.")
-    for item_id, text in expected_text.items():
-        if result_by_id[item_id].text != text:
-            raise ValueError("구조화 노드는 원문 text를 변경할 수 없습니다.")
+    _validate_source_coverage(items, expected_text)
 
     for item in items:
-        if item.item_id not in expected_text and item.text is not None:
-            raise ValueError("원문에 없는 text를 가진 블록을 만들 수 없습니다.")
+        if not item.source_item_ids and item.text is not None:
+            raise ValueError("source_item_ids 없이 text를 만들 수 없습니다.")
         if item.slot_id is not None and catalog.get_slot(item.slot_id) is None:
             raise ValueError("카탈로그에 없는 slot_id입니다.")
         if item.text is None and item.slot_id is None and item.section_kind is None:
@@ -137,11 +164,37 @@ def _validate_output(
     return items
 
 
+def _validate_source_coverage(items: list[StructureLlmItem], expected_text: dict[str, str]) -> None:
+    """모든 원문 item이 정확히 한 블록에서, 이어붙인 그대로 쓰였는지 확인한다."""
+    seen: set[str] = set()
+    for item in items:
+        if not item.source_item_ids:
+            continue
+        for source_id in item.source_item_ids:
+            if source_id not in expected_text:
+                raise ValueError(f"존재하지 않는 원문 item_id를 참조했습니다: {source_id}")
+            if source_id in seen:
+                raise ValueError(f"원문 item이 두 블록 이상에서 쓰였습니다: {source_id}")
+            seen.add(source_id)
+
+        if not _is_concatenation(
+            item.text or "", [expected_text[sid] for sid in item.source_item_ids]
+        ):
+            raise ValueError(
+                "구조화 노드는 원문 text를 변경할 수 없습니다. "
+                "합칠 때도 이어붙인 것과 정확히 같아야 합니다."
+            )
+
+    missing = set(expected_text) - seen
+    if missing:
+        raise ValueError(f"구조화 결과에 원문 item이 누락되었습니다: {sorted(missing)}")
+
+
 def _validate_new_sections(
-    items: list[StructuredItem], catalog: TemplateCatalog, state: ExperienceMapState
+    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
 ) -> None:
     """새 3단계 카테고리는 해당 level 4 슬롯을 모두 전개했는지 확인한다."""
-    by_parent: dict[str, list[StructuredItem]] = {}
+    by_parent: dict[str, list[StructureLlmItem]] = {}
     for item in items:
         if item.parent_item_id:
             by_parent.setdefault(item.parent_item_id, []).append(item)
@@ -161,7 +214,7 @@ def _validate_new_sections(
             raise ValueError("새 카테고리는 해당 level 4 슬롯을 모두 생성해야 합니다.")
 
 
-def _validate_template_slots(items: list[StructuredItem], catalog: TemplateCatalog) -> None:
+def _validate_template_slots(items: list[StructureLlmItem], catalog: TemplateCatalog) -> None:
     """사용한 level 5 템플릿은 빈 슬롯을 포함해 완전하게 전개됐는지 확인한다."""
     templates = {
         f"{section.section_id}.{template.template_id}": {slot.slot_id for slot in template.slots}
@@ -181,8 +234,12 @@ def _validate_template_slots(items: list[StructuredItem], catalog: TemplateCatal
             raise ValueError("하위 템플릿은 모든 slot을 한 번씩 생성해야 합니다.")
 
 
-def _validate_gap_parent(items: list[StructuredItem], state: ExperienceMapState) -> None:
-    """new_child gap 답변은 anchor block 바로 아래에만 추가되게 한다."""
+def _validate_gap_parent(items: list[StructureLlmItem], state: ExperienceMapState) -> None:
+    """new_child gap 답변은 anchor block 바로 아래에만 추가되게 한다.
+
+    gap 답변 item이 다른 원문과 합쳐질 수 있으므로, item_id로 직접 찾지 않고
+    **어느 블록이 gap 답변을 source_item_ids에 포함했는지**로 찾는다.
+    """
     active_gap = state.get("active_gap") or {}
     if active_gap.get("gap_type") != "new_child_block" or not state.get("gap_answer_items"):
         return
@@ -197,9 +254,10 @@ def _validate_gap_parent(items: list[StructuredItem], state: ExperienceMapState)
         None,
     )
     source_ids = {item["item_id"] for item in state.get("gap_answer_items", [])}
-    if not anchor_alias or any(
-        item.item_id in source_ids and item.parent_ref != anchor_alias for item in items
-    ):
+    offending = any(
+        set(item.source_item_ids) & source_ids and item.parent_ref != anchor_alias for item in items
+    )
+    if not anchor_alias or offending:
         raise ValueError("new_child gap 답변은 anchor block 바로 아래에만 추가할 수 있습니다.")
 
 
