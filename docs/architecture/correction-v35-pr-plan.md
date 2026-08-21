@@ -7,7 +7,9 @@
 > (node `1071-1645`) — 좌상단 "v.3.4 대비 수정된 사항" 노트 2번 항목과
 > [포트폴리오 첨삭] 섹션의 화면 주석.
 >
-> **2026-08-21 현황**: 아직 착수 전. 아래 상태 표시는 이 시점의 스냅샷입니다.
+> **2026-08-21 현황**: 통합 브랜치 `feat/correction-v35` 개설. CR-01·CR-03 커밋 완료,
+> CR-02·CR-04·CR-06은 아래 열린 질문이 확정돼야 착수할 수 있습니다.
+> 아래 상태 표시는 이 시점의 스냅샷입니다.
 
 ---
 
@@ -50,13 +52,13 @@ PR 제목은 이슈와 같은 대괄호 접두사를 씁니다 — `[Feat]`, `[F
 
 ## 3. PR 목록
 
-크기 기준: **S** 하루 이내 · **M** 2~3일 · **L** 3일 이상.
+크기 기준: **S** 하루 이내 · **M** 2~3일 · **L** 3일 이상. ✅ 는 통합 브랜치 커밋 완료입니다.
 
 | # | PR | 근거 (피그마) | 의존 | 크기 |
 | --- | --- | --- | --- | --- |
-| CR-01 | 활동 최대 개수 5 → 4 | "앞에서부터 최대 4개의 활동까지 텍스트를 추출한다" | — | S |
+| ✅ CR-01 | 활동 최대 개수 5 → 4 | "앞에서부터 최대 4개의 활동까지 텍스트를 추출한다" | — | S |
 | CR-02 | 카테고리별 글자수 상한을 추출 파이프라인에 반영 | "[글자수 제한] 상세정보·배운 점 300자 / 담당업무·문제해결 700자" | — | M |
-| CR-03 | 강조 포인트 선택 항목화 | [기업 분석] 화면의 `강조 포인트`에 필수(*) 표시 없음 | — | S |
+| ✅ CR-03 | 강조 포인트 선택 항목화 | [기업 분석] 화면의 `강조 포인트`에 필수(*) 표시 없음 | — | S |
 | CR-04 | 텍스트 추출 활동 단위 스트리밍 **계약 정의** | "활동 단위로 스트리밍 한다" (1-4 텍스트 추출 스트리밍) | — | S |
 | CR-05 | 활동 단위 스트리밍 **구현** | 동일 | CR-01, CR-04 | L |
 | CR-06 | 대기 상태 메시지·추출 재시도 경로 정리 | [첨삭 생성 대기] 화면 문구, 1-3 "다시 시도하기" | — | S |
@@ -83,21 +85,21 @@ CR-02, CR-03, CR-06 : 독립
 
 **구현 체크리스트**
 
-- [ ] `features/portfolio/pdf_extraction/schemas.py:31` — `PdfExtractionResult.activities` `max_length=5` → `4`
-- [ ] `features/portfolio/pdf_extraction/service.py:142` — `result.activities[:5]` → `[:4]`
-- [ ] `features/portfolio/pdf_extraction/prompts/classification.md`
+- [x] `features/portfolio/pdf_extraction/schemas.py:31` — `PdfExtractionResult.activities` `max_length=5` → `4`
+- [x] `features/portfolio/pdf_extraction/service.py:142` — `result.activities[:5]` → `[:4]`
+- [x] `features/portfolio/pdf_extraction/prompts/classification.md`
   - `:76` "1번째~5번째 활동만 선택" → 4번째까지
   - `:78-79` "배열의 길이는 최대 5개", "활동이 5개 미만인 경우" → 4 기준
   - `:177-182` 순서 매핑에서 `activities[4]` 줄 제거
-- [ ] `features/correction/service.py:305-306` — `len(portfolio_ids) > 5` → `> 4`, 메시지도 "최대 4개"
-- [ ] 테스트 갱신: `tests/test_features/test_portfolio/test_pdf_extraction_schemas.py:45`,
+- [x] `features/correction/service.py:305-306` — `len(portfolio_ids) > 5` → `> 4`, 메시지도 "최대 4개"
+- [x] 테스트 갱신: `tests/test_features/test_portfolio/test_pdf_extraction_schemas.py:45`,
       `test_pdf_extraction_prompt.py:21`, `test_pdf_extraction_service.py:207`
 
 **Definition of Done**
 
-- [ ] 활동 5개짜리 PDF 추출 결과가 앞 4개로 잘리는지 검증
-- [ ] `portfolio_ids` 5개 요청이 `ValueError("포트폴리오는 최대 4개까지 허용됩니다.")`로 막히는지 검증
-- [ ] 프롬프트 문자열 단정 테스트가 4 기준으로 통과
+- [x] 활동 5개짜리 PDF 추출 결과가 앞 4개로 잘리는지 검증
+- [x] `portfolio_ids` 5개 요청이 `ValueError("포트폴리오는 최대 4개까지 허용됩니다.")`로 막히는지 검증
+- [x] 프롬프트 문자열 단정 테스트가 4 기준으로 통과
 
 **리스크 / 메모**
 
@@ -160,16 +162,16 @@ CR-02, CR-03, CR-06 : 독립
 
 **구현 체크리스트**
 
-- [ ] `app/schemas/correction.py:63` — `min_length=1` 제거 (빈 문자열 허용)
-- [ ] `features/correction/service.py`의 `emphasis_points` 빈 값 경로 확인 —
+- [x] `app/schemas/correction.py:63` — `min_length=1` 제거 (빈 문자열 허용)
+- [x] `features/correction/service.py`의 `emphasis_points` 빈 값 경로 확인 —
       이미 `correction.get("highlightPoint") or ""`로 빈 문자열을 다루므로 generator 프롬프트가
       빈 강조 포인트에서 자연스러운 출력을 내는지 확인
-- [ ] 테스트: 빈 강조 포인트로 PATCH 200, 빈 강조 포인트로 첨삭 생성이 성공
+- [x] 테스트: 빈 강조 포인트로 PATCH 200, 빈 강조 포인트로 첨삭 생성이 성공
 
 **Definition of Done**
 
-- [ ] `PATCH /corrections/{id}/emphasis-points`에 `{"emphasis_points": ""}` 요청이 200
-- [ ] 강조 포인트가 빈 상태의 첨삭 생성 스냅샷 테스트 통과
+- [x] `PATCH /corrections/{id}/emphasis-points`에 `{"emphasis_points": ""}` 요청이 200
+- [x] 강조 포인트가 빈 상태의 첨삭 생성 스냅샷 테스트 통과
 
 ---
 
