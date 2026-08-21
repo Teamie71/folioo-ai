@@ -158,8 +158,11 @@ def _validate_output(
         if item.section_kind is not None and (item.text is not None or item.slot_id is not None):
             raise ValueError("카테고리 컨테이너에는 text나 slot_id를 둘 수 없습니다.")
 
-    _validate_new_sections(items, catalog, state)
+    # 순서가 중요하다. level 5를 카테고리 컨테이너에 잘못 붙이면 새 카테고리의
+    # level 4 슬롯 개수 검사도 같이 걸리는데, 그 일반적인 메시지보다 "앵커
+    # 아래에 붙여야 한다" 는 구체적인 원인을 먼저 보여준다.
     _validate_template_slots(items, catalog)
+    _validate_new_sections(items, catalog, state)
     _validate_gap_parent(items, state)
     return items
 
@@ -193,16 +196,27 @@ def _validate_source_coverage(items: list[StructureLlmItem], expected_text: dict
 def _validate_new_sections(
     items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
 ) -> None:
-    """새 3단계 카테고리는 해당 level 4 슬롯을 모두 전개했는지 확인한다."""
+    """새 3단계 카테고리는 해당 level 4 슬롯을 모두, 딱 한 번만 전개했는지 확인한다.
+
+    같은 `section_kind`를 두 번 만드는 것도 막는다. 실제로 모델이 문제해결
+    템플릿 6종을 하나만 고르지 않고, 6개의 `PROBLEM_SOLVING` 카테고리 컨테이너를
+    중첩해서 만든 적이 있다 — 명세는 카테고리를 하나만 만들고 그 아래 템플릿을
+    하나 골라 채우라고 하는데, 프롬프트가 "정확히 하나" 라는 걸 강조하지
+    않아서였다.
+    """
     by_parent: dict[str, list[StructureLlmItem]] = {}
     for item in items:
         if item.parent_item_id:
             by_parent.setdefault(item.parent_item_id, []).append(item)
 
     sections = {section.section_id: section for section in catalog.sections}
+    seen_kinds: set[str] = set()
     for item in items:
         if item.section_kind is None:
             continue
+        if item.section_kind in seen_kinds:
+            raise ValueError(f"같은 카테고리를 두 번 만들 수 없습니다: {item.section_kind}")
+        seen_kinds.add(item.section_kind)
         if item.parent_ref != state.get("target_experience_alias"):
             raise ValueError("새 카테고리는 선택 활동 바로 아래에만 만들 수 있습니다.")
         section = sections.get(item.section_kind)
@@ -215,12 +229,21 @@ def _validate_new_sections(
 
 
 def _validate_template_slots(items: list[StructureLlmItem], catalog: TemplateCatalog) -> None:
-    """사용한 level 5 템플릿은 빈 슬롯을 포함해 완전하게 전개됐는지 확인한다."""
+    """사용한 level 5 템플릿은 빈 슬롯을 포함해 완전하게 전개됐는지,
+    그리고 그 부모가 실제 앵커(level 4, is_anchor) 블록인지 확인한다.
+
+    실제로 모델이 level 5 슬롯들을 앵커가 아니라 **카테고리 컨테이너**(level 3)
+    바로 아래에 붙인 적이 있다. 명세 3-0은 "level 5는 반드시 앵커 슬롯 아래에
+    붙는다" 고 못박는데, 프롬프트가 그 연결 대상을 명시하지 않아 모델이
+    카테고리 컨테이너를 앵커로 착각했다.
+    """
     templates = {
         f"{section.section_id}.{template.template_id}": {slot.slot_id for slot in template.slots}
         for section in catalog.sections
         for template in section.templates
     }
+    anchor_item_ids = {item.item_id for item in items if _is_anchor_slot(item.slot_id, catalog)}
+
     grouped: dict[tuple[str, str], list[str]] = {}
     for item in items:
         if not item.slot_id or item.slot_id.count(".") != 2:
@@ -229,9 +252,37 @@ def _validate_template_slots(items: list[StructureLlmItem], catalog: TemplateCat
         parent = item.parent_ref or item.parent_item_id or ""
         grouped.setdefault((parent, prefix), []).append(item.slot_id)
 
+        # parent_ref(기존 블록)는 그게 앵커인지 알 방법이 없어 여기서는 넘어간다.
+        # 새로 만든 parent_item_id만, 방금 만든 앵커를 가리키는지 확인한다.
+        if item.parent_item_id and item.parent_item_id not in anchor_item_ids:
+            raise ValueError(
+                "level 5 슬롯은 카테고리 컨테이너가 아니라 그 앵커(level 4) 블록 "
+                "아래에 만들어야 합니다."
+            )
+
     for (_, prefix), slot_ids in grouped.items():
-        if set(slot_ids) != templates.get(prefix) or len(slot_ids) != len(set(slot_ids)):
-            raise ValueError("하위 템플릿은 모든 slot을 한 번씩 생성해야 합니다.")
+        expected = templates.get(prefix)
+        if expected is None:
+            raise ValueError(f"카탈로그에 없는 하위 템플릿입니다: {prefix}")
+        if len(slot_ids) != len(set(slot_ids)):
+            raise ValueError(f"같은 slot을 두 번 이상 만들었습니다: {prefix}")
+        invented = set(slot_ids) - expected
+        if invented:
+            # 실제로 이런 경우가 있었다 — 모델이 TROUBLESHOOTING 템플릿을 쓰다가
+            # BASIC 템플릿의 RESULT 를 끼워 넣었다. "모두 생성해야 한다" 는
+            # 뭉뚱그린 메시지 대신, 정확히 어떤 slot이 잘못됐는지 짚는다.
+            raise ValueError(f"{prefix} 템플릿에 없는 slot을 만들었습니다: {sorted(invented)}")
+        missing = expected - set(slot_ids)
+        if missing:
+            raise ValueError(f"{prefix} 템플릿의 slot이 빠졌습니다: {sorted(missing)}")
+
+
+def _is_anchor_slot(slot_id: str | None, catalog: TemplateCatalog) -> bool:
+    """slot_id가 카탈로그에서 앵커(level 4, is_anchor)인지 확인한다."""
+    if slot_id is None:
+        return False
+    slot = catalog.get_slot(slot_id)
+    return slot is not None and slot.is_anchor
 
 
 def _validate_gap_parent(items: list[StructureLlmItem], state: ExperienceMapState) -> None:

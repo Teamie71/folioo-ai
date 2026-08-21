@@ -341,6 +341,141 @@ async def test_missing_or_changed_source_is_rejected(fake_dependencies, items):
 
 
 @pytest.mark.asyncio
+async def test_level5_slot_must_attach_to_anchor_not_container(fake_dependencies):
+    """level 5 슬롯은 카테고리 컨테이너가 아니라 앵커(level 4) 블록 아래에 붙는다.
+
+    실제로 재현된 경우다. 모델이 하위 템플릿의 level 5 슬롯들을 카테고리
+    컨테이너에 바로 매달았다. 이 미배치는 "카테고리가 level 4 슬롯을 모두
+    생성해야 한다" 는 기존 검사도 같이 걸리게 만드는데(level 5 슬롯이 그
+    개수 계산에 섞여 들어가서), 그 일반적인 메시지 대신 **원인을 정확히
+    짚는 메시지**가 먼저 뜨는지까지 확인한다 — 검증 순서를 바꿔 뒀다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="TASK"
+                ),
+                StructureLlmItem(
+                    item_id="anchor_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",  # 컨테이너에 바로 붙임 — 잘못됨
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="원인을 조사했다",
+                    source_item_ids=["it_2"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "결제 오류를 해결했다", "source": "message"},
+            {"item_id": "it_2", "text": "원인을 조사했다", "source": "message"},
+        ]
+    )
+
+    with pytest.raises(LlmError) as exc_info:
+        await structure_blocks(state)
+
+    # 카테고리가 level 4 슬롯을 모두 생성 못 했다는 일반 메시지가 아니라,
+    # 원인을 정확히 짚는 메시지여야 한다.
+    assert "앵커" in str(exc_info.value.__cause__)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_section_kind_is_rejected(fake_dependencies):
+    """같은 카테고리를 두 번 만들 수 없다.
+
+    실제로 재현된 경우다. 문제해결 템플릿 6종 중 하나만 골라야 하는데, 모델이
+    템플릿마다 별도의 PROBLEM_SOLVING 카테고리 컨테이너를 중첩해서 만들었다.
+
+    두 카테고리 모두 슬롯까지 올바르게 채워서 만든다 — 그래야 "슬롯을 모두
+    생성해야 한다" 는 기존 검사가 아니라 **중복 검사 자체**가 걸리는지 본다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="DETAIL"
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="category_2", action="add", parent_ref="exp_1", section_kind="DETAIL"
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_item_id="category_2",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="재시도 로직을 추가했다",
+                    source_item_ids=["it_2"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "결제 오류를 해결했다", "source": "message"},
+            {"item_id": "it_2", "text": "재시도 로직을 추가했다", "source": "message"},
+        ]
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(state)
+
+
+@pytest.mark.asyncio
+async def test_new_sibling_after_ref_is_rejected(fake_dependencies):
+    """방금 만든 블록의 id를 after_ref 에 쓰면 거부한다.
+
+    실제로 재현된 경우다. `after_ref` 는 기존 블록 별칭만 가리킬 수 있는데,
+    모델이 이걸로 새로 만든 카테고리끼리 순서를 매기려다 걸렸다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="DETAIL"
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="category_2",
+                    action="add",
+                    parent_ref="exp_1",
+                    section_kind="TASK",
+                    after_ref="category_1",  # 기존 별칭이 아니라 방금 만든 id
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(make_state())
+
+
+@pytest.mark.asyncio
 async def test_unknown_slot_and_partial_template_are_rejected(fake_dependencies):
     fake_dependencies(
         StructureOutput(
