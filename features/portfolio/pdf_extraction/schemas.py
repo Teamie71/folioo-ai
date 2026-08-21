@@ -28,6 +28,6 @@ class PdfExtractionResult(BaseModel):
     activities: list[PdfActivity] = Field(
         ...,
         min_length=1,
-        max_length=5,
+        max_length=4,
         description="PDF에서 추출한 활동 목록",
     )

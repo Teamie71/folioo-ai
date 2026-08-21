@@ -41,8 +41,8 @@ def test_pdf_extraction_result_rejects_empty_activities():
         PdfExtractionResult.model_validate({"activities": []})
 
 
-def test_pdf_extraction_result_rejects_more_than_five_activities():
-    """PDF 추출 성공 결과는 활동 5개를 초과할 수 없다."""
+def test_pdf_extraction_result_rejects_more_than_four_activities():
+    """PDF 추출 성공 결과는 활동 4개를 초과할 수 없다."""
     with pytest.raises(ValidationError):
         PdfExtractionResult.model_validate(
             {
@@ -54,7 +54,7 @@ def test_pdf_extraction_result_rejects_more_than_five_activities():
                         "problem_solving": [],
                         "learning": ["배운 점"],
                     }
-                    for index in range(6)
+                    for index in range(5)
                 ]
             }
         )

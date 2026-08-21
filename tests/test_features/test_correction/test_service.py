@@ -958,6 +958,25 @@ async def test_run_generation_no_portfolio_ids_fails():
 
 
 @pytest.mark.asyncio
+async def test_run_generation_rejects_more_than_four_portfolios():
+    """_run_generation은 포트폴리오가 4개를 초과하면 FAILED 상태가 된다."""
+    client = DummyCorrectionClient()
+    client.corrections[1] = _make_correction(
+        status="GENERATING",
+        company_insight="인사이트",
+        portfolio_ids=[1, 2, 3, 4, 5],
+    )
+    service = CorrectionService(
+        client, DummyPortfolioClient(), DummyGenerator(), DummyRagPipeline()
+    )
+
+    await service._run_generation(1)
+
+    assert client.updated_statuses[-1] == {"correction_id": 1, "status": "FAILED"}
+    assert client.updated_results == []
+
+
+@pytest.mark.asyncio
 async def test_run_generation_failure_when_overall_summary_fails():
     """총평 생성 실패 시 전체 첨삭을 FAILED 처리한다."""
     client = DummyCorrectionClient()

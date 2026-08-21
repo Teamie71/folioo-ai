@@ -204,7 +204,7 @@ async def test_background_extraction_complete_callback_failure_does_not_call_fai
 
 
 def test_validate_result_truncates_deduplicates_and_reindexes():
-    """검증 로직은 앞 5개만 유지하고 중복 제거 후 순번을 재정렬한다."""
+    """검증 로직은 중복 제거 후 앞 4개만 유지하고 순번을 재정렬한다."""
     service = PdfExtractionService(
         correction_client=DummyCorrectionClient(),
         generator=DummyGenerator(),
@@ -278,6 +278,36 @@ def test_validate_result_truncates_deduplicates_and_reindexes():
         "Delta",
     ]
     assert [item.no for item in activities[0].problem_solving] == [1, 2]
+
+
+def test_validate_result_truncates_after_deduplication():
+    """중복 활동은 상한 슬롯을 차지하지 않고, 서로 다른 활동 4개가 남는다."""
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    names = ["Alpha", "Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
+    result = PdfExtractionResult.model_construct(
+        activities=[
+            PdfActivity(
+                activity_name=name,
+                detail=["상세"],
+                responsibility=["담당"],
+                problem_solving=[],
+                learning=["배운 점"],
+            )
+            for name in names
+        ]
+    )
+
+    activities = service._validate_result(result)
+
+    assert [activity.activity_name for activity in activities] == [
+        "Alpha",
+        "Beta",
+        "Gamma",
+        "Delta",
+    ]
 
 
 def test_validate_result_skips_blank_activity_names_and_trims_values():

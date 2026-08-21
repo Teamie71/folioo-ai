@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 _service: "PdfExtractionService | None" = None
 _MAX_PDF_FILE_SIZE_BYTES = 10 * 1024 * 1024
+_MAX_ACTIVITY_COUNT = 4
 _PDF_MIME_TYPE = "application/pdf"
 
 
@@ -139,7 +140,7 @@ class PdfExtractionService:
     @classmethod
     def _validate_result(cls, result: PdfExtractionResult) -> list[PdfActivity]:
         """추출 결과를 후처리하고 메인 서버 콜백 형식으로 정리한다."""
-        activities = list(result.activities[:5])
+        activities = list(result.activities)
         if not activities:
             raise ValueError("PDF에서 추출된 활동이 없습니다.")
 
@@ -184,7 +185,9 @@ class PdfExtractionService:
         if not normalized_activities:
             raise ValueError("PDF에서 추출된 활동이 없습니다.")
 
-        return normalized_activities
+        # 중복 제거 후에 자른다. 먼저 자르면 중복 활동이 상한 슬롯을 차지해
+        # 실제 활동이 _MAX_ACTIVITY_COUNT개보다 적게 남는다.
+        return normalized_activities[:_MAX_ACTIVITY_COUNT]
 
 
 def _create_default_generator() -> "PdfExtractionGenerator":

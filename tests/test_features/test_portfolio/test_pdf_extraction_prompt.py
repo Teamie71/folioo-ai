@@ -18,7 +18,7 @@ def test_build_pdf_extraction_messages_includes_filename_and_pdf_data_url():
     assert isinstance(messages[0], SystemMessage)
     assert isinstance(messages[1], HumanMessage)
     assert 'input_variables: ["ocr_text"]' not in messages[0].content
-    assert "`activities` 배열의 길이는 최대 5개입니다." in messages[0].content
+    assert "`activities` 배열의 길이는 최대 4개입니다." in messages[0].content
     assert (
         "원문 텍스트의 단어, 조사, 문장 구조를 단 한 글자도 바꾸지 않고 그대로 복사"
         in messages[0].content
