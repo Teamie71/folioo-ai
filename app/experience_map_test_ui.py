@@ -5,7 +5,6 @@
 `EXPERIENCE_MAP_TEST_UI_ENABLED=true`일 때만 앱에 등록한다.
 """
 
-import html
 import os
 import secrets
 import time
@@ -52,12 +51,12 @@ def _issue_test_ticket(user_id: str, session_id: str) -> str:
 async def test_page() -> HTMLResponse:
     """브라우저에서 경험정리 흐름을 수동 검증하는 페이지를 반환한다.
 
-    API 키 입력란에 실제 `AI_SERVICE_API_KEY`를 미리 채워 둔다. 하드코딩된
-    placeholder("demo-key")를 그대로 두면 로컬에서 세션 생성이 항상 401로
-    실패한다.
+    API 키를 페이지 소스에 심지 않는다 — 이 페이지가 Tailscale Funnel 등으로
+    외부에 공개될 수 있는데, HTML에 실제 키를 박아 두면 누구나 페이지 소스로
+    키를 보고 인증 없이 실제 LLM API를 호출해 과금을 유발할 수 있다. 빈
+    입력란으로 두고, 키는 이 서버를 운영하는 사람이 직접 붙여넣는다.
     """
-    api_key = html.escape(os.getenv("AI_SERVICE_API_KEY", ""))
-    html_page = TEST_PAGE_HTML.replace('value="demo-key"', f'value="{api_key}"')
+    html_page = TEST_PAGE_HTML.replace('value="demo-key"', 'value=""')
     return HTMLResponse(html_page)
 
 

@@ -51,6 +51,53 @@ async def test_test_template_catalog_matches_agent_doc_3_0():
 
 
 @pytest.mark.asyncio
+async def test_test_map_store_gives_empty_blocks_a_placeholder_guide():
+    """빈 슬롯 블록은 커밋 시 카탈로그의 placeholder 문구를 받아야 한다.
+
+    명세 3-7: 빈 블록은 커밋 시점에 placeholder를 부여받아 화면에 가이드
+    문구로 보인다. 이게 없으면 테스트 콘솔 트리에서 빈 블록이 전부
+    "(빈 블록)"으로만 보여, 어떤 슬롯인지 사람도 구분할 수 없었다.
+    """
+    store = InMemoryTestMapStore()
+
+    await store.commit(
+        {
+            "user_id": "9000005",
+            "request_id": "550e8400-e29b-41d4-a716-446655440004",
+            "alias_to_block_id": {"exp_1": "200"},
+            "commit_items": [
+                {
+                    "item_id": "blk_1",
+                    "action": "add",
+                    "parent_ref": "exp_1",
+                    "section_kind": "TASK",
+                },
+                {
+                    "item_id": "blk_2",
+                    "action": "add",
+                    "parent_item_id": "blk_1",
+                    "slot_id": "TASK.SUMMARY",
+                    "text": "백엔드 API 설계를 담당했다.",
+                },
+                {
+                    "item_id": "blk_3",
+                    "action": "add",
+                    "parent_item_id": "blk_2",
+                    "slot_id": "TASK.BASIC.RESULT",  # text 없음 — 빈 슬롯
+                },
+            ],
+        }
+    )
+
+    snapshot = await store.snapshot("9000005")
+    context = snapshot.get_activity_context("exp_1")
+
+    # 카테고리 컨테이너(slot_id 없음)는 그대로 "(빈 블록)" — 정상이다.
+    # 빈 슬롯(TASK.BASIC.RESULT)만 가이드 문구를 받아야 한다.
+    assert "가이드: 업무 완료 후 나타난 결과는" in context.tree_text
+
+
+@pytest.mark.asyncio
 async def test_test_map_store_applies_update_to_selected_block():
     """수정 operation은 테스트 전용 맵에 반영되고 version을 올린다."""
     store = InMemoryTestMapStore()

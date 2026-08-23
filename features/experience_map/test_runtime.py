@@ -444,7 +444,16 @@ class InMemoryTestMapStore:
         return {"map_version": snapshot.map_version, "activities": activities}
 
     async def commit(self, state: ExperienceMapState) -> ExperienceMapState:
-        """검증된 operation을 샘플 맵에 반영하고 커밋 결과를 만든다."""
+        """검증된 operation을 샘플 맵에 반영하고 커밋 결과를 만든다.
+
+        명세 3-7: 빈 블록은 커밋 시점에 `placeholder`를 부여받아 화면에
+        가이드 문구로 보인다. 이걸 안 채우면 테스트 콘솔 트리에 빈 블록이
+        전부 `(빈 블록)`으로만 보여서, 사람이 봐도 그게 어떤 카테고리·슬롯인지
+        구분이 안 된다.
+        """
+        # 이 클래스는 테스트 콘솔 전용이라, 앱 전역 카탈로그 클라이언트(운영 시
+        # 메인 서버 조회가 필요한 싱글톤) 대신 항상 테스트 카탈로그를 직접 쓴다.
+        catalog = await create_test_template_catalog_client().get_catalog()
         user_id = str(state["user_id"])
         async with self._lock:
             current = self._maps.setdefault(user_id, _UserMap(version=1, rows=_initial_rows()))
@@ -500,6 +509,7 @@ class InMemoryTestMapStore:
                     )
                     + 1
                 )
+                slot = catalog.get_slot(item.slot_id) if item.slot_id else None
                 added = MapBlockRow(
                     block_id=new_id,
                     parent_id=parent_id,
@@ -507,7 +517,7 @@ class InMemoryTestMapStore:
                     kind="CONTENT",
                     position=position,
                     content=item.text,
-                    placeholder=None,
+                    placeholder=slot.placeholder if slot else None,
                     is_text_editable=True,
                     is_deletable=True,
                 )
