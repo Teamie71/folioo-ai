@@ -1,6 +1,7 @@
 """블록 단위 구조화 노드 (에이전트 문서 5-5)."""
 
 import logging
+import re
 
 from common.llm import get_experience_map_llm
 from features.experience_map.config import get_settings
@@ -10,7 +11,11 @@ from features.experience_map.prompts.structure import (
     render_source_items,
     structure_prompt,
 )
-from features.experience_map.schemas import StructureLlmItem, StructureOutput
+from features.experience_map.schemas import (
+    ExistingCategoryClassification,
+    StructureLlmItem,
+    StructureOutput,
+)
 from features.experience_map.state import ExperienceMapState
 from features.experience_map.templates import TemplateCatalog, get_template_catalog_client
 
@@ -60,7 +65,11 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         pruned_items = _prune_extra_templates(reparented_items)
         filled_items = _fill_missing_template_slots(pruned_items, catalog)
         items = _validate_output(
-            filled_items, source_items=source_items, catalog=catalog, state=state
+            filled_items,
+            source_items=source_items,
+            catalog=catalog,
+            state=state,
+            existing_categories=result.existing_categories,
         )
     except LlmError:
         raise
@@ -372,6 +381,7 @@ def _validate_output(
     source_items: list[dict],
     catalog: TemplateCatalog,
     state: ExperienceMapState,
+    existing_categories: list[ExistingCategoryClassification] | None = None,
 ) -> list[StructureLlmItem]:
     """원문·slot·템플릿 전개 계약을 코드로 검증한다.
 
@@ -414,9 +424,162 @@ def _validate_output(
     # 아래에 붙여야 한다" 는 구체적인 원인을 먼저 보여준다.
     _validate_template_slots(items, catalog)
     _validate_new_sections(items, catalog, state)
+    _validate_category_reuse(items, existing_categories or [])
+    _validate_anchor_reuse(items, existing_categories or [], catalog)
+    _validate_anchor_reuse_deterministic(items, catalog, state)
     _validate_non_empty_subtrees(items, catalog)
     _validate_gap_parent(items, state)
     return items
+
+
+def _validate_category_reuse(
+    items: list[StructureLlmItem], existing_categories: list[ExistingCategoryClassification]
+) -> None:
+    """모델이 스스로 분류한 기존 카테고리와 같은 section을 또 새로 만들면 거부한다.
+
+    "활동 트리에 이미 있으면 재사용하라"는 지시만으로는 모델이 자기가 방금
+    분류한 것과 모순되게 행동하는 사고가 절반 가까이 재발했다 — 트리를 읽고
+    기존 컨테이너의 section을 맞게 판단해 놓고도, 그 판단과 무관하게 새
+    `section_kind` 컨테이너를 또 만들었다. `existing_categories`로 그 판단을
+    출력에 미리 못박게 해서, 이후 자기모순(판단 따로·행동 따로)을 코드가
+    바로 걸러 재시도를 유도한다.
+    """
+    classified_sections = {category.section_kind for category in existing_categories}
+    for item in items:
+        if item.section_kind is not None and item.section_kind in classified_sections:
+            alias = next(
+                category.alias
+                for category in existing_categories
+                if category.section_kind == item.section_kind
+            )
+            raise ValueError(
+                f"[{item.section_kind}] section은 이미 활동 트리의 [{alias}]로 판단하고도 "
+                "새 카테고리를 또 만들었습니다. 새로 만들지 말고 그 별칭을 parent_ref로 "
+                "재사용하세요."
+            )
+
+
+def _validate_anchor_reuse(
+    items: list[StructureLlmItem],
+    existing_categories: list[ExistingCategoryClassification],
+    catalog: TemplateCatalog,
+) -> None:
+    """기존 컨테이너를 재사용하면서 그 안에 이미 있는 앵커를 또 새로 만들면 거부한다.
+
+    카테고리 컨테이너는 제대로 재사용해도(`section_kind`를 또 안 만들어도),
+    그 아래 앵커(level 4)는 매 턴 새로 하나씩 또 만드는 사고가 있었다 — 같은
+    컨테이너 밑에 "문제해결 요약" 앵커가 두 개씩 생기는 식이다. 앵커도
+    `existing_categories.existing_anchor_alias`로 미리 신고하게 해서, 이미
+    있다고 신고한 컨테이너에 새 앵커를 또 붙이면 코드가 걸러 재시도를 유도한다.
+    """
+    anchor_alias_by_container = {
+        category.alias: category.existing_anchor_alias
+        for category in existing_categories
+        if category.existing_anchor_alias
+    }
+    for item in items:
+        if item.parent_ref is None or not _is_anchor_slot(item.slot_id, catalog):
+            continue
+        existing_anchor = anchor_alias_by_container.get(item.parent_ref)
+        if existing_anchor is not None:
+            raise ValueError(
+                f"[{item.parent_ref}] 아래에는 이미 앵커 [{existing_anchor}]가 있다고 "
+                "신고하고도 새 앵커를 또 만들었습니다. 새로 만들지 말고 그 별칭을 "
+                "parent_ref로 재사용하세요."
+            )
+
+
+_TREE_LINE_RE = re.compile(r"^( *)\[(\w+)\] (.*)$")
+_EMPTY_SLOT_GUIDE_RE = re.compile(r"^\(빈 블록 — 가이드: (.+)\)$")
+
+
+def _parse_tree_lines(tree_text: str) -> list[tuple[int, str, str]]:
+    """activity_tree_text를 (depth, alias, label) 목록으로 파싱한다.
+
+    depth는 `map_context.py`의 렌더링 규칙(들여쓰기 2칸당 1단계)을 그대로 따른다.
+    """
+    parsed: list[tuple[int, str, str]] = []
+    for line in tree_text.splitlines():
+        match = _TREE_LINE_RE.match(line)
+        if not match:
+            continue
+        indent, alias, label = match.groups()
+        parsed.append((len(indent) // 2, alias, label))
+    return parsed
+
+
+def _placeholder_to_slot_map(catalog: TemplateCatalog) -> dict[str, str]:
+    """빈 슬롯 가이드 문구로 slot_id를 되짚을 수 있는, placeholder가 겹치지 않는 슬롯만."""
+    by_placeholder: dict[str, list[str]] = {}
+    for slot in catalog.iter_slots():
+        by_placeholder.setdefault(slot.placeholder, []).append(slot.slot_id)
+    return {
+        placeholder: slot_ids[0]
+        for placeholder, slot_ids in by_placeholder.items()
+        if len(slot_ids) == 1
+    }
+
+
+def _subtree_known_slot_ids(
+    tree_lines: list[tuple[int, str, str]], root_alias: str, placeholder_to_slot: dict[str, str]
+) -> set[str]:
+    """root_alias 서브트리 안에서, 빈 슬롯 가이드 문구로 알아낼 수 있는 slot_id들.
+
+    한 번이라도 커밋된 빈 슬롯은 카탈로그의 placeholder 문구를 그대로 달고
+    있다(명세 3-7). 그 문구를 거꾸로 slot_id에 매핑하면 "이 서브트리가 이미
+    어느 section의 템플릿을 갖고 있는지"를 LLM 자기 신고 없이도 코드가
+    독립적으로 판별할 수 있다 — `existing_categories` 자기 신고 자체를
+    빠뜨리는 사고까지 잡기 위한 이중 방어다.
+    """
+    depth_by_alias = {alias: depth for depth, alias, _ in tree_lines}
+    if root_alias not in depth_by_alias:
+        return set()
+    root_depth = depth_by_alias[root_alias]
+
+    slot_ids: set[str] = set()
+    in_subtree = False
+    for depth, alias, label in tree_lines:
+        if alias == root_alias:
+            in_subtree = True
+            continue
+        if not in_subtree:
+            continue
+        if depth <= root_depth:
+            break
+        match = _EMPTY_SLOT_GUIDE_RE.match(label)
+        if match:
+            slot_id = placeholder_to_slot.get(match.group(1))
+            if slot_id:
+                slot_ids.add(slot_id)
+    return slot_ids
+
+
+def _validate_anchor_reuse_deterministic(
+    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
+) -> None:
+    """활동 트리에 이미 있는 빈 슬롯 가이드 문구로, 자기 신고 없이도 앵커 중복을 잡는다.
+
+    `_validate_anchor_reuse`는 모델이 `existing_categories`에 스스로 신고한
+    것과만 대조한다 — 신고 자체를 빠뜨리면 못 잡는다. 실제로 그런 경우가
+    있었다: 컨테이너는 재사용하고도 그 안에 이미 있는 앵커를 신고하지 않은
+    채 새 앵커를 또 만들었다. 여기서는 신고를 아예 신뢰하지 않고, 새로
+    만드는 앵커가 붙는 부모(`parent_ref`)의 실제 서브트리를 코드가 직접 훑어
+    같은 section의 슬롯이 이미 있는지 확인한다.
+    """
+    tree_lines = _parse_tree_lines(state.get("activity_tree_text") or "")
+    placeholder_to_slot = _placeholder_to_slot_map(catalog)
+    for item in items:
+        if item.parent_ref is None or not _is_anchor_slot(item.slot_id, catalog):
+            continue
+        section = item.slot_id.split(".")[0]
+        existing_slot_ids = _subtree_known_slot_ids(
+            tree_lines, item.parent_ref, placeholder_to_slot
+        )
+        if any(slot_id.split(".")[0] == section for slot_id in existing_slot_ids):
+            raise ValueError(
+                f"[{item.parent_ref}] 아래에는 이미 {section} section의 앵커·하위 템플릿이 "
+                "있습니다. 새 앵커를 또 만들지 말고 기존 구조를 재사용하세요."
+            )
 
 
 def _validate_non_empty_subtrees(items: list[StructureLlmItem], catalog: TemplateCatalog) -> None:

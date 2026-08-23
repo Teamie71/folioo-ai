@@ -461,6 +461,114 @@ async def test_duplicate_section_kind_is_rejected(fake_dependencies):
 
 
 @pytest.mark.asyncio
+async def test_new_category_contradicting_self_reported_classification_is_rejected(
+    fake_dependencies,
+):
+    """existing_categories에서 이미 있다고 판단한 section을 또 새로 만들면 거부한다.
+
+    실제로 재현된 경우다. 활동 트리에 이미 TASK 컨테이너(자식이 자유 텍스트로만
+    있는)가 있는데, 이후 요청에서 모델이 그 컨테이너를 재사용하지 않고 같은
+    section의 새 카테고리를 또 만들었다 — "트리에 있으면 재사용하라"는 지시만
+    으로는 재발이 잦아, 모델이 스스로 분류한 결과와 실제 행동이 모순되면 코드가
+    바로 걸러 재시도를 유도한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            existing_categories=[{"alias": "b_1", "section_kind": "TASK"}],
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="TASK"
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(make_state())
+
+
+@pytest.mark.asyncio
+async def test_new_anchor_contradicting_self_reported_existing_anchor_is_rejected(
+    fake_dependencies,
+):
+    """existing_anchor_alias로 이미 있다고 신고한 앵커를 또 새로 만들면 거부한다.
+
+    실제로 재현된 경우다. 카테고리 컨테이너는 제대로 재사용했는데, 그 아래
+    앵커(level 4)는 매 턴 새로 하나씩 또 만들어서 같은 컨테이너 밑에 "담당업무
+    요약" 앵커가 두 개 생겼다. 컨테이너 재사용 검증만으로는 안 걸리므로,
+    앵커도 스스로 신고하게 하고 그 신고와 모순되면 코드가 거른다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            existing_categories=[
+                {"alias": "b_1", "section_kind": "TASK", "existing_anchor_alias": "b_4"}
+            ],
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 시스템을 강화했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+    state = make_state(alias_to_block_id={"exp_1": "101", "b_1": "305", "b_4": "306"})
+
+    with pytest.raises(LlmError):
+        await structure_blocks(state)
+
+
+@pytest.mark.asyncio
+async def test_new_anchor_duplicating_undeclared_existing_slots_is_rejected(fake_dependencies):
+    """`existing_categories` 자기 신고를 아예 빠뜨려도, 트리의 빈 슬롯 가이드 문구로
+    코드가 독립적으로 앵커 중복을 잡는다.
+
+    실제로 재현된 경우다. 모델이 `existing_categories`에 아무것도 신고하지
+    않은 채(신고 자체를 빠뜨림) 이미 TASK 템플릿이 붙어 있는 컨테이너에 새
+    앵커를 또 만들었다. 자기 신고에만 기대면 이 경우를 못 잡으므로, 활동
+    트리에 이미 커밋된 빈 슬롯의 가이드 문구(명세 3-7)를 코드가 직접 읽어
+    같은 section이 이미 있는지 확인한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 시스템을 강화했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305", "b_4": "306", "b_5": "307"},
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n"
+            "  [b_1] (빈 블록)\n"
+            "    [b_4] 기존 담당업무 내용\n"
+            "      [b_5] (빈 블록 — 가이드: 결과)"
+        ),
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(state)
+
+
+@pytest.mark.asyncio
 async def test_new_sibling_after_ref_is_rejected(fake_dependencies):
     """방금 만든 블록의 id를 after_ref 에 쓰면 거부한다.
 

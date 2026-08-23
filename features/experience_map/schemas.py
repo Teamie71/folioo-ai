@@ -103,6 +103,22 @@ class ContentFilterOutput(BaseModel):
     excluded_reasons: list[str] = Field(default_factory=list, description="반영 제외 사유")
 
 
+class ExistingCategoryClassification(BaseModel):
+    """활동 트리에 이미 있는 최상위 카테고리 컨테이너 하나의 section 판단 결과."""
+
+    alias: str = Field(..., description="활동 트리에 있는 카테고리 컨테이너의 블록 별칭")
+    section_kind: SectionKind = Field(
+        ..., description="그 컨테이너 자식 내용을 보고 판단한 section"
+    )
+    existing_anchor_alias: str | None = Field(
+        None,
+        description=(
+            "그 컨테이너 아래에 이미 앵커(level 4) 블록이 있으면 그 블록의 별칭. "
+            "컨테이너만 있고 앵커가 아직 없으면 null."
+        ),
+    )
+
+
 class StructureOutput(BaseModel):
     """구조화 노드 출력.
 
@@ -112,6 +128,13 @@ class StructureOutput(BaseModel):
     참조한 원문들을 순서대로 이어붙인 것과 같은지는 노드가 코드로 검증한다.
     """
 
+    existing_categories: list[ExistingCategoryClassification] = Field(
+        default_factory=list,
+        description=(
+            "활동 트리에 이미 있는 최상위 카테고리 컨테이너를 전부 나열하고 그 section을"
+            " 판단한 결과. 새 카테고리를 만들지 재사용할지 결정하기 전에 먼저 채운다."
+        ),
+    )
     items: list["StructureLlmItem"] = Field(default_factory=list)
 
 
