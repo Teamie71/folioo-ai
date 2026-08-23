@@ -45,6 +45,7 @@ NodeName = Literal[
     "commit",
     "gap_analysis",
     "suggestion_response",
+    "fallback",
 ]
 
 
@@ -102,14 +103,105 @@ class ContentFilterOutput(BaseModel):
     excluded_reasons: list[str] = Field(default_factory=list, description="반영 제외 사유")
 
 
+class ExistingCategoryClassification(BaseModel):
+    """활동 트리에 이미 있는 최상위 카테고리 컨테이너 하나의 section 판단 결과."""
+
+    alias: str = Field(..., description="활동 트리에 있는 카테고리 컨테이너의 블록 별칭")
+    section_kind: SectionKind = Field(
+        ..., description="그 컨테이너 자식 내용을 보고 판단한 section"
+    )
+    existing_anchor_alias: str | None = Field(
+        None,
+        description=(
+            "그 컨테이너 아래에 이미 앵커(level 4) 블록이 있으면 그 블록의 별칭. "
+            "컨테이너만 있고 앵커가 아직 없으면 null."
+        ),
+    )
+
+
 class StructureOutput(BaseModel):
     """구조화 노드 출력.
 
-    원문 item은 하나씩 정확히 보존하고, 템플릿을 전개할 때만 내용 없는 item을
-    추가할 수 있다. 이 계약은 노드가 코드로 다시 검증한다.
+    원문 item은 하나도 빠짐없이 정확히 보존한다. content_filter 는 문장·불릿
+    단위로 자르고 템플릿은 주제 단위 슬롯을 요구하므로, 여러 원문 item을 한
+    블록에 합칠 수 있다 (`StructureLlmItem.source_item_ids`). 합친 텍스트가
+    참조한 원문들을 순서대로 이어붙인 것과 같은지는 노드가 코드로 검증한다.
     """
 
-    items: list["StructuredItem"] = Field(default_factory=list)
+    existing_categories: list[ExistingCategoryClassification] = Field(
+        default_factory=list,
+        description=(
+            "활동 트리에 이미 있는 최상위 카테고리 컨테이너를 전부 나열하고 그 section을"
+            " 판단한 결과. 새 카테고리를 만들지 재사용할지 결정하기 전에 먼저 채운다."
+        ),
+    )
+    items: list["StructureLlmItem"] = Field(default_factory=list)
+
+
+class StructureLlmItem(BaseModel):
+    """구조화 노드가 LLM 에게서 직접 받는 형식.
+
+    `StructuredItem` 과 거의 같지만 `source_item_ids` 가 더 있다. **커밋
+    페이로드로 보내는 공용 스키마(`StructuredItem`)에는 이 필드를 넣지
+    않는다** — `main_client.py` 가 `exclude_none=True` 로 직렬화하는데 빈
+    리스트는 `None` 이 아니라서 걸러지지 않고, 메인 서버가 모르는 필드가
+    그대로 새어나간다. 검증을 통과한 뒤 `StructuredItem` 으로 변환해 이후
+    노드에 넘긴다.
+    """
+
+    item_id: str = Field(..., description="요청 안에서 유일한 식별자")
+    action: ItemAction = Field(..., description="add 또는 update")
+    parent_ref: str | None = Field(None, description="기존 블록 별칭. 커밋의 parent_id로 변환된다")
+    parent_item_id: str | None = Field(
+        None, description="같은 요청에서 앞서 정의한 add item의 item_id"
+    )
+    target_ref: str | None = Field(None, description="update 대상 블록 별칭")
+    section_kind: SectionKind | None = Field(None, description="level 3 카테고리를 생성할 때만")
+    slot_id: str | None = Field(None, description="템플릿 슬롯 식별자")
+    text: str | None = Field(None, description="블록 내용. 템플릿 빈 슬롯은 None")
+    after_ref: str | None = Field(None, description="같은 부모의 형제 블록 별칭")
+    source_item_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "이 블록의 text 를 구성하는 원문 item_id (순서대로). "
+            "여러 개를 합쳤으면 전부 나열한다. text 가 없는 컨테이너·빈 슬롯은 비운다."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_refs(self) -> "StructureLlmItem":
+        """부모 참조와 action별 필수 필드를 검증한다. `StructuredItem` 과 동일한 규칙."""
+        if self.parent_ref is not None and self.parent_item_id is not None:
+            raise ValueError(
+                "parent_ref와 parent_item_id를 동시에 지정할 수 없습니다. "
+                "기존 블록이면 parent_ref, 같은 요청의 신규 블록이면 parent_item_id를 씁니다."
+            )
+
+        if self.action == "add":
+            if self.parent_ref is None and self.parent_item_id is None:
+                raise ValueError("add는 parent_ref 또는 parent_item_id가 필요합니다.")
+            if self.target_ref is not None:
+                raise ValueError("add는 target_ref를 가질 수 없습니다.")
+        else:
+            if self.target_ref is None:
+                raise ValueError("update는 target_ref가 필요합니다.")
+            if self.parent_ref is not None or self.parent_item_id is not None:
+                raise ValueError("update는 parent_ref·parent_item_id를 가질 수 없습니다.")
+        return self
+
+    def to_structured_item(self) -> "StructuredItem":
+        """검증을 통과한 뒤 공용 스키마로 변환한다. `source_item_ids` 는 버린다."""
+        return StructuredItem(
+            item_id=self.item_id,
+            action=self.action,
+            parent_ref=self.parent_ref,
+            parent_item_id=self.parent_item_id,
+            target_ref=self.target_ref,
+            section_kind=self.section_kind,
+            slot_id=self.slot_id,
+            text=self.text,
+            after_ref=self.after_ref,
+        )
 
 
 class StructuredItem(BaseModel):

@@ -25,6 +25,21 @@ from features.experience_map.state import ExperienceMapState
 
 logger = logging.getLogger(__name__)
 
+GRAPH_NODE_NAMES = frozenset(
+    {
+        "router",
+        "file_processor",
+        "content_filter",
+        "target_activity",
+        "structure",
+        "refine",
+        "validate",
+        "fallback",
+    }
+)
+"""`graph.py` 가 `add_node` 로 등록한 노드 이름. `astream_events` 잡음(RunnableSequence
+등 내부 컴포넌트)에서 실제 노드 경계만 걸러내는 데 쓴다."""
+
 
 class GraphRunner(Protocol):
     """그래프 실행 인터페이스
@@ -64,13 +79,38 @@ class CheckpointGraphRunner:
 
     async def run(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
         """새 요청 state로 graph를 실행한다."""
-        result = await self._graph.ainvoke(state, _thread_config(state))
-        async for event in self._state_events(result):
+        async for event in self._stream(state, _thread_config(state)):
             yield event
 
     async def resume(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
         """checkpoint의 실패 지점부터 재개한다."""
-        result = await self._graph.ainvoke(None, _thread_config(state))
+        async for event in self._stream(None, _thread_config(state)):
+            yield event
+
+    async def _stream(
+        self, input_state: ExperienceMapState | None, config: dict
+    ) -> AsyncIterator[ExperienceMapEvent]:
+        """노드 시작·종료마다 `node_status`를 내며 실행하고, 끝나면 최종 state로
+        후속 이벤트를 만든다.
+
+        `ainvoke` 한 번으로 끝내면 실제 요청에서 진행 상태를 하나도 못 보여준다.
+        `astream_events`로 노드 경계(on_chain_start/end)만 걸러 듣고, 맨 끝
+        `LangGraph` 체인의 출력을 최종 state로 쓴다 — `ainvoke`가 돌려주는 것과 같다.
+        """
+        result: ExperienceMapState | None = None
+        async for event in self._graph.astream_events(input_state, config, version="v2"):
+            name = event.get("name")
+            if name not in GRAPH_NODE_NAMES:
+                if event["event"] == "on_chain_end" and name == "LangGraph":
+                    result = event["data"].get("output")
+                continue
+            if event["event"] == "on_chain_start":
+                yield NodeStatusEvent(node=name, status="running")
+            elif event["event"] == "on_chain_end":
+                yield NodeStatusEvent(node=name, status="completed")
+
+        if result is None:
+            raise RuntimeError("그래프 실행이 최종 state를 내지 않았습니다.")
         async for event in self._state_events(result):
             yield event
 

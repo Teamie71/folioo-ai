@@ -121,10 +121,10 @@ async def test_commit_result_is_emitted_before_slow_gap_suggestion():
         return suggestion_state()
 
     events = coordinate(state(), commit_runner=run_commit, gap_runner=run_gap)
-    first = await anext(events)
-    second = await anext(events)
-    assert first.type == "commit_result"
-    assert second.type == "message_complete"
+    assert (await anext(events)).type == "node_status"  # commit: running
+    assert (await anext(events)).type == "node_status"  # commit: completed
+    assert (await anext(events)).type == "commit_result"
+    assert (await anext(events)).type == "message_complete"
     release_gap.set()
     assert (await anext(events)).type == "suggestion_ready"
     assert (await anext(events)).type == "message_complete"
@@ -140,7 +140,12 @@ async def test_gap_failure_does_not_fail_committed_result():
 
     events = await collect(commit_runner=run_commit, gap_runner=run_gap)
 
-    assert [event.type for event in events] == ["commit_result", "message_complete"]
+    assert [event.type for event in events] == [
+        "node_status",
+        "node_status",
+        "commit_result",
+        "message_complete",
+    ]
 
 
 @pytest.mark.asyncio
@@ -179,6 +184,8 @@ async def test_successful_gap_is_persisted_after_commit():
     events = await collect(commit_runner=run_commit, gap_runner=run_gap, save_active_gap=save_gap)
 
     assert [event.type for event in events] == [
+        "node_status",
+        "node_status",
         "commit_result",
         "message_complete",
         "suggestion_ready",

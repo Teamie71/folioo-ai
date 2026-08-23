@@ -14,8 +14,87 @@ async def test_test_template_catalog_is_available_without_main_server():
     """테스트 UI는 메인 서버 없이도 구조화 카탈로그를 읽을 수 있어야 한다."""
     catalog = await create_test_template_catalog_client().get_catalog()
 
-    assert catalog.version == "test-v1"
+    assert catalog.version == "agent-doc-3-0"
     assert catalog.get_slot("PROBLEM_SOLVING.SUMMARY") is not None
+
+
+@pytest.mark.asyncio
+async def test_test_template_catalog_matches_agent_doc_3_0():
+    """전체 38개 슬롯(level 4 10개 + level 5 28개)이 실려 있어야 한다.
+
+    예전엔 슬롯 2개짜리 가짜 카탈로그를 썼다. 그러면 담당업무·문제해결의 실제
+    하위 템플릿이 하나도 없어서, 테스트 콘솔에서 어떤 입력을 넣어도 세부 템플릿
+    슬롯이 적용되는 걸 볼 수 없었다.
+    """
+    catalog = await create_test_template_catalog_client().get_catalog()
+    slots = list(catalog.iter_slots())
+
+    assert len(slots) == 38
+    assert len([s for s in slots if s.level == 4]) == 10
+    assert len([s for s in slots if s.level == 5]) == 28
+    assert {s.slot_id for s in slots if s.is_anchor} == {
+        "TASK.SUMMARY",
+        "PROBLEM_SOLVING.SUMMARY",
+    }
+
+    for slot_id in (
+        "DETAIL.MOTIVATION",
+        "ACHIEVEMENT.QUANTITATIVE",
+        "LEARNING.GROWTH",
+        "TASK.BASIC.RESULT",
+        "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+        "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+        "PROBLEM_SOLVING.RECOVERY.CHANGE",
+    ):
+        assert catalog.get_slot(slot_id) is not None, f"{slot_id} 이 카탈로그에 없습니다."
+
+
+@pytest.mark.asyncio
+async def test_test_map_store_gives_empty_blocks_a_placeholder_guide():
+    """빈 슬롯 블록은 커밋 시 카탈로그의 placeholder 문구를 받아야 한다.
+
+    명세 3-7: 빈 블록은 커밋 시점에 placeholder를 부여받아 화면에 가이드
+    문구로 보인다. 이게 없으면 테스트 콘솔 트리에서 빈 블록이 전부
+    "(빈 블록)"으로만 보여, 어떤 슬롯인지 사람도 구분할 수 없었다.
+    """
+    store = InMemoryTestMapStore()
+
+    await store.commit(
+        {
+            "user_id": "9000005",
+            "request_id": "550e8400-e29b-41d4-a716-446655440004",
+            "alias_to_block_id": {"exp_1": "200"},
+            "commit_items": [
+                {
+                    "item_id": "blk_1",
+                    "action": "add",
+                    "parent_ref": "exp_1",
+                    "section_kind": "TASK",
+                },
+                {
+                    "item_id": "blk_2",
+                    "action": "add",
+                    "parent_item_id": "blk_1",
+                    "slot_id": "TASK.SUMMARY",
+                    "text": "백엔드 API 설계를 담당했다.",
+                },
+                {
+                    "item_id": "blk_3",
+                    "action": "add",
+                    "parent_item_id": "blk_2",
+                    "slot_id": "TASK.BASIC.RESULT",  # text 없음 — 빈 슬롯
+                },
+            ],
+        }
+    )
+
+    snapshot = await store.snapshot("9000005")
+    context = snapshot.get_activity_context("exp_1")
+
+    # 카테고리 컨테이너(slot_id 없음)는 그대로 "(빈 블록)" — 정상이다.
+    # 빈 슬롯(TASK.BASIC.RESULT)만 가이드 문구를 받아야 한다.
+    assert "가이드: 업무 완료 후 나타난 결과는" in context.tree_text
 
 
 @pytest.mark.asyncio
@@ -45,6 +124,48 @@ async def test_test_map_store_applies_update_to_selected_block():
     assert after.map_version == 2
     assert after.block_contents()["301"] == "GA4 퍼널에서 이탈 구간을 확인해 개선 목표를 설정했다."
     assert updated["commit_result"]["applied"][0]["block_id"] == "301"
+
+
+@pytest.mark.asyncio
+async def test_test_map_store_resolves_parent_item_id_chain_within_one_commit():
+    """새 카테고리(컨테이너 → 앵커 → level 5)는 같은 커밋 배치 안에서 서로를
+    parent_item_id로 가리킨다. 이 배치 안에서 방금 만든 블록이라
+    alias_to_block_id에 미리 있을 수 없으니, 커밋 처리 중에 새로 배정한
+    block_id로 직접 풀어야 한다.
+    """
+    store = InMemoryTestMapStore()
+
+    updated = await store.commit(
+        {
+            "user_id": "9000004",
+            "request_id": "550e8400-e29b-41d4-a716-446655440003",
+            "alias_to_block_id": {"exp_1": "200"},
+            "commit_items": [
+                {
+                    "item_id": "blk_1",
+                    "action": "add",
+                    "parent_ref": "exp_1",
+                    "section_kind": "TASK",
+                },
+                {
+                    "item_id": "blk_2",
+                    "action": "add",
+                    "parent_item_id": "blk_1",
+                    "slot_id": "TASK.SUMMARY",
+                    "text": "백엔드 API 설계를 담당했다.",
+                },
+            ],
+        }
+    )
+
+    applied = {item["item_id"]: item["block_id"] for item in updated["commit_result"]["applied"]}
+    after = await store.snapshot("9000004")
+    contents = after.block_contents()
+    assert contents[applied["blk_2"]] == "백엔드 API 설계를 담당했다."
+    # 컨테이너(blk_1) 밑에 실제로 붙었는지 path로 확인한다 — parent_item_id가
+    # 안 풀리면 애초에 commit()이 ValueError를 던져서 여기까지 오지 못한다.
+    applied_path = {item["item_id"]: item["path"] for item in updated["commit_result"]["applied"]}
+    assert applied_path["blk_2"] == "교내 커머스 리뉴얼"
 
 
 @pytest.mark.asyncio

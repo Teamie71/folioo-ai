@@ -49,8 +49,15 @@ def _issue_test_ticket(user_id: str, session_id: str) -> str:
 
 @router.get("", include_in_schema=False, response_class=HTMLResponse)
 async def test_page() -> HTMLResponse:
-    """브라우저에서 경험정리 흐름을 수동 검증하는 페이지를 반환한다."""
-    return HTMLResponse(TEST_PAGE_HTML)
+    """브라우저에서 경험정리 흐름을 수동 검증하는 페이지를 반환한다.
+
+    API 키를 페이지 소스에 심지 않는다 — 이 페이지가 Tailscale Funnel 등으로
+    외부에 공개될 수 있는데, HTML에 실제 키를 박아 두면 누구나 페이지 소스로
+    키를 보고 인증 없이 실제 LLM API를 호출해 과금을 유발할 수 있다. 빈
+    입력란으로 두고, 키는 이 서버를 운영하는 사람이 직접 붙여넣는다.
+    """
+    html_page = TEST_PAGE_HTML.replace('value="demo-key"', 'value=""')
+    return HTMLResponse(html_page)
 
 
 @router.post("/session")
@@ -240,8 +247,8 @@ document.querySelector('#send').onclick = async () => {
   let streamSucceeded = false;
   try {
     const selected = blockSelect.selectedOptions[0];
-    const prompt = selected ? `수정 대상 블록: ${selected.dataset.blockText}\n\n사용자 지시: ${document.querySelector('#message').value}` : document.querySelector('#message').value;
-    addMessage('user', document.querySelector('#message').value); const form = new FormData(); form.append('request', JSON.stringify({ request_id: state.requestId, user_message: prompt, context_experience_id: selected?.dataset.activityId, view: document.querySelector('#view').value }));
+    const prompt = document.querySelector('#message').value;
+    addMessage('user', prompt); const form = new FormData(); form.append('request', JSON.stringify({ request_id: state.requestId, user_message: prompt, context_experience_id: selected?.dataset.activityId, view: document.querySelector('#view').value }));
     for (const file of document.querySelector('#files').files) form.append('files', file);
     await readSse(await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/chat/stream`, { method: 'POST', headers: authHeaders(), body: form }));
     streamSucceeded = true;
