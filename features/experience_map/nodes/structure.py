@@ -262,8 +262,37 @@ def _validate_output(
     # 아래에 붙여야 한다" 는 구체적인 원인을 먼저 보여준다.
     _validate_template_slots(items, catalog)
     _validate_new_sections(items, catalog, state)
+    _validate_non_empty_anchors(items, catalog)
     _validate_gap_parent(items, state)
     return items
+
+
+def _validate_non_empty_anchors(items: list[StructureLlmItem], catalog: TemplateCatalog) -> None:
+    """새로 만드는 앵커(level 4) 서브트리에는 실제 내용이 하나는 있어야 한다.
+
+    실제로 모델이 관련 없는 **기존** 카테고리(예: 이미 내용이 있는 "성과")
+    밑에도 새 앵커 + 하위 템플릿을 통째로 만들면서, 그 서브트리 전체를
+    text가 전부 null인 빈 슬롯으로만 채운 적이 있다. "슬롯을 빠짐없이
+    전개하라"는 규칙을 엉뚱한 곳까지 적용한 것이다. 빈 슬롯 자체는 정상
+    (템플릿의 일부 slot만 채워질 수 있다) 이지만, **앵커 서브트리 전체가
+    처음부터 끝까지 비어 있으면** 그건 애초에 만들지 말았어야 할 카테고리다.
+    """
+    by_parent: dict[str, list[StructureLlmItem]] = {}
+    for item in items:
+        if item.parent_item_id:
+            by_parent.setdefault(item.parent_item_id, []).append(item)
+
+    def subtree_has_text(item: StructureLlmItem) -> bool:
+        if item.text is not None:
+            return True
+        return any(subtree_has_text(child) for child in by_parent.get(item.item_id, []))
+
+    for item in items:
+        if _is_anchor_slot(item.slot_id, catalog) and not subtree_has_text(item):
+            raise ValueError(
+                f"[{item.item_id}] 앵커와 그 아래 슬롯 전체에 실제 내용이 없습니다. "
+                "내용 없는 카테고리·템플릿을 통째로 새로 만들지 마세요."
+            )
 
 
 def _validate_source_coverage(items: list[StructureLlmItem], expected_text: dict[str, str]) -> None:

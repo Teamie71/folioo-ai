@@ -730,6 +730,48 @@ def test_prune_extra_templates_leaves_ambiguous_multi_content_alone():
     assert {item.item_id for item in pruned} == {"blk_1", "blk_2"}
 
 
+@pytest.mark.asyncio
+async def test_entirely_empty_new_anchor_subtree_is_rejected(fake_dependencies):
+    """새 앵커 서브트리 전체가 비어 있으면(내용이 하나도 없으면) 거부한다.
+
+    실제로 모델이 이번 입력과 무관한 **기존** 카테고리(예: 이미 내용이 있는
+    "성과") 밑에도 앵커 + 빈 하위 슬롯을 통째로 만들어버린 적이 있다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                # 실제로 반영하는 내용 — 이건 정상.
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+                # 무관한 기존 카테고리(b_2)에 내용 없이 앵커+빈 슬롯만 새로 추가.
+                StructureLlmItem(
+                    item_id="empty_anchor",
+                    action="add",
+                    parent_ref="b_2",
+                    slot_id="TASK.SUMMARY",
+                ),
+                StructureLlmItem(
+                    item_id="empty_child",
+                    action="add",
+                    parent_item_id="empty_anchor",
+                    slot_id="TASK.BASIC.PURPOSE",
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(
+            make_state(alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306"})
+        )
+
+
 def test_two_templates_under_one_anchor_are_rejected():
     """앵커 하나에는 문제해결 하위 템플릿 6종 중 정확히 하나만 붙어야 한다.
 
