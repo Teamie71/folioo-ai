@@ -105,6 +105,22 @@ STRUCTURE_SYSTEM = """\
       └ ...
 ```
 
+**기존 카테고리를 재사용할 때도 이 3단 구조는 그대로 지킵니다.** 카테고리
+컨테이너가 이미 트리에 있을 뿐, 앵커는 **이번에 새로** 만드는 겁니다 —
+level 5를 그 기존 컨테이너 별칭에 바로 붙이면 안 됩니다:
+
+```
+[b_1]          (트리에 이미 있는 카테고리 컨테이너 — section_kind 다시 안 만듦)
+  └ [앵커]      slot_id=PROBLEM_SOLVING.SUMMARY, parent_ref="b_1"   ← 컨테이너 별칭에 직접
+      ├ [level 5]  slot_id=...PROBLEM, parent_item_id=앵커 id       ← 앵커의 새 item_id에
+      ├ [level 5]  slot_id=...CAUSE,   parent_item_id=앵커 id
+      └ ...
+```
+
+`parent_ref="b_1"`은 **앵커 한 항목에만** 씁니다. level 5 항목들은
+`parent_ref="b_1"`이 아니라 그 앵커의 `parent_item_id`를 가리켜야 합니다 —
+`b_1`에 직접 붙이면 앵커를 건너뛴 것이라 거부됩니다.
+
 # 절대 규칙
 
 - `action`은 항상 `add`입니다. 기존 블록을 수정하거나 이동·삭제하지 않습니다.
