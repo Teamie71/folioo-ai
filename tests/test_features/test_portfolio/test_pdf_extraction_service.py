@@ -647,3 +647,238 @@ def test_pdf_extraction_service_singleton_get_init_reset(monkeypatch: pytest.Mon
     reset_pdf_extraction_service()
     third = get_pdf_extraction_service()
     assert third is not initialized
+
+
+# ------------------------------------------------------------------
+# 활동 단위 스트리밍
+# ------------------------------------------------------------------
+
+
+class DummyStreamGenerator:
+    """활동을 하나씩 흘려보내는 generator 테스트 더블"""
+
+    def __init__(
+        self,
+        activities: list[PdfActivity] | None = None,
+        exc: Exception | None = None,
+        raise_after: int | None = None,
+    ) -> None:
+        self.activities = activities or []
+        self.exc = exc
+        self.raise_after = raise_after
+        self.yielded = 0
+
+    def extract(self, _file_bytes: bytes, _filename: str) -> PdfExtractionResult:
+        raise AssertionError("스트리밍 경로에서는 extract 를 호출하지 않는다")
+
+    async def extract_stream(self, _file_bytes: bytes, _filename: str):
+        if self.exc is not None and self.raise_after is None:
+            raise self.exc
+
+        for activity in self.activities:
+            if self.raise_after is not None and self.yielded >= self.raise_after:
+                raise self.exc or RuntimeError("스트림 실패")
+            self.yielded += 1
+            yield activity
+
+
+def _stream_activity(name: str) -> PdfActivity:
+    return PdfActivity(
+        activity_name=name,
+        detail=["상세"],
+        responsibility=["담당"],
+        problem_solving=[],
+        learning=["배운 점"],
+    )
+
+
+async def _collect(stream) -> list[dict]:
+    """SSE 이벤트를 파싱해 리스트로 모은다."""
+    import json
+
+    events = []
+    async for event in stream:
+        events.append({"event": str(event["event"]), "data": json.loads(event["data"])})
+    return events
+
+
+@pytest.mark.asyncio
+async def test_stream_extraction_emits_activity_events_in_order():
+    """활동이 완성될 때마다 index 순서대로 이벤트를 내보낸다."""
+    client = DummyCorrectionClient()
+    generator = DummyStreamGenerator(
+        [_stream_activity("Alpha"), _stream_activity("Beta"), _stream_activity("Gamma")]
+    )
+    service = PdfExtractionService(correction_client=client, generator=generator)
+
+    events = await _collect(
+        service.stream_extraction(
+            correction_id=123,
+            file_bytes=b"%PDF-1.4",
+            filename="portfolio.pdf",
+            content_type="application/pdf",
+        )
+    )
+
+    assert [event["event"] for event in events] == [
+        "extraction_started",
+        "activity_completed",
+        "activity_completed",
+        "activity_completed",
+        "extraction_completed",
+    ]
+    activity_events = [e for e in events if e["event"] == "activity_completed"]
+    assert [e["data"]["index"] for e in activity_events] == [0, 1, 2]
+    assert [e["data"]["activity"]["activityName"] for e in activity_events] == [
+        "Alpha",
+        "Beta",
+        "Gamma",
+    ]
+    assert events[-1]["data"]["activityCount"] == 3
+
+
+@pytest.mark.asyncio
+async def test_stream_extraction_sends_batch_callback_once_at_the_end():
+    """저장은 스트림이 끝난 뒤 기존 배치 콜백 1회로 처리한다."""
+    client = DummyCorrectionClient()
+    generator = DummyStreamGenerator([_stream_activity("Alpha"), _stream_activity("Beta")])
+    service = PdfExtractionService(correction_client=client, generator=generator)
+
+    await _collect(
+        service.stream_extraction(
+            correction_id=123,
+            file_bytes=b"%PDF-1.4",
+            filename="portfolio.pdf",
+            content_type="application/pdf",
+        )
+    )
+
+    assert len(client.completed_calls) == 1
+    correction_id, activities, source_type = client.completed_calls[0]
+    assert correction_id == 123
+    assert [activity["activity_name"] for activity in activities] == ["Alpha", "Beta"]
+    assert source_type == "EXTERNAL"
+    assert client.failed_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stream_extraction_stops_at_activity_count_limit(monkeypatch: pytest.MonkeyPatch):
+    """활동 개수 상한에 도달하면 더 받지 않고 멈춘다."""
+    monkeypatch.setattr(
+        pdf_extraction_service_module,
+        "get_pdf_extraction_limits",
+        lambda: _limits(max_activity_count=2),
+    )
+    client = DummyCorrectionClient()
+    generator = DummyStreamGenerator(
+        [_stream_activity("Alpha"), _stream_activity("Beta"), _stream_activity("Gamma")]
+    )
+    service = PdfExtractionService(correction_client=client, generator=generator)
+
+    events = await _collect(
+        service.stream_extraction(
+            correction_id=123,
+            file_bytes=b"%PDF-1.4",
+            filename="portfolio.pdf",
+            content_type="application/pdf",
+        )
+    )
+
+    activity_events = [e for e in events if e["event"] == "activity_completed"]
+    assert [e["data"]["activity"]["activityName"] for e in activity_events] == ["Alpha", "Beta"]
+    assert generator.yielded == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_extraction_skips_duplicate_activity_names():
+    """중복 활동명은 이벤트를 내보내지 않는다."""
+    client = DummyCorrectionClient()
+    generator = DummyStreamGenerator(
+        [_stream_activity("Alpha"), _stream_activity(" Alpha "), _stream_activity("Beta")]
+    )
+    service = PdfExtractionService(correction_client=client, generator=generator)
+
+    events = await _collect(
+        service.stream_extraction(
+            correction_id=123,
+            file_bytes=b"%PDF-1.4",
+            filename="portfolio.pdf",
+            content_type="application/pdf",
+        )
+    )
+
+    activity_events = [e for e in events if e["event"] == "activity_completed"]
+    assert [e["data"]["activity"]["activityName"] for e in activity_events] == ["Alpha", "Beta"]
+    assert [e["data"]["index"] for e in activity_events] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_stream_extraction_reports_failure_and_sends_fail_callback():
+    """스트림 도중 실패하면 실패 이벤트와 실패 콜백을 함께 처리한다."""
+    client = DummyCorrectionClient()
+    generator = DummyStreamGenerator(
+        [_stream_activity("Alpha"), _stream_activity("Beta")],
+        exc=RuntimeError("LLM 연결 끊김"),
+        raise_after=1,
+    )
+    service = PdfExtractionService(correction_client=client, generator=generator)
+
+    events = await _collect(
+        service.stream_extraction(
+            correction_id=123,
+            file_bytes=b"%PDF-1.4",
+            filename="portfolio.pdf",
+            content_type="application/pdf",
+        )
+    )
+
+    assert [event["event"] for event in events] == [
+        "extraction_started",
+        "activity_completed",
+        "extraction_failed",
+    ]
+    assert events[-1]["data"]["error"]["code"] == "extraction_failed"
+    assert client.failed_calls == [(123, "LLM 연결 끊김")]
+    assert client.completed_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stream_extraction_reports_empty_result_as_failure():
+    """활동이 하나도 없으면 실패로 처리한다."""
+    client = DummyCorrectionClient()
+    service = PdfExtractionService(correction_client=client, generator=DummyStreamGenerator([]))
+
+    events = await _collect(
+        service.stream_extraction(
+            correction_id=123,
+            file_bytes=b"%PDF-1.4",
+            filename="portfolio.pdf",
+            content_type="application/pdf",
+        )
+    )
+
+    assert [event["event"] for event in events] == ["extraction_started", "extraction_failed"]
+    assert client.failed_calls == [(123, "PDF에서 추출된 활동이 없습니다.")]
+    assert client.completed_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stream_extraction_rejects_invalid_file_before_calling_llm():
+    """파일 검증 실패는 LLM 호출 없이 실패 이벤트로 끝낸다."""
+    client = DummyCorrectionClient()
+    generator = DummyStreamGenerator([_stream_activity("Alpha")])
+    service = PdfExtractionService(correction_client=client, generator=generator)
+
+    events = await _collect(
+        service.stream_extraction(
+            correction_id=123,
+            file_bytes=b"",
+            filename="portfolio.pdf",
+            content_type="application/pdf",
+        )
+    )
+
+    assert [event["event"] for event in events] == ["extraction_failed"]
+    assert events[0]["data"]["error"]["code"] == "extraction_invalid_file"
+    assert generator.yielded == 0
+    assert client.failed_calls == []

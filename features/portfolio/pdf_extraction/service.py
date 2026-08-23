@@ -1,12 +1,15 @@
 """PDF 추출 서비스"""
 
 import asyncio
+import json
 import logging
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Protocol
 
 from fastapi import BackgroundTasks
 
 from common.clients.correction_client import CorrectionClient, get_correction_client
+from common.sse import SSEErrorCode, SSEEventType
 
 from .config import get_pdf_extraction_limits
 from .schemas import PdfActivity, PdfExtractionResult, PdfProblemSolvingItem
@@ -35,6 +38,17 @@ class PdfExtractionGeneratorProtocol(Protocol):
 
     def extract(self, file_bytes: bytes, filename: str) -> PdfExtractionResult:
         """PDF 파일을 구조화된 활동 목록으로 추출한다."""
+
+    def extract_stream(self, file_bytes: bytes, filename: str) -> AsyncIterator[PdfActivity]:
+        """PDF 파일을 활동 단위로 흘려보낸다."""
+
+
+def _sse_event(event_type: SSEEventType, payload: dict) -> dict:
+    """SSE 라우터가 기대하는 이벤트 dict 를 만든다."""
+    return {
+        "event": event_type,
+        "data": json.dumps({"type": event_type, **payload}, ensure_ascii=False),
+    }
 
 
 class PdfExtractionService:
@@ -88,12 +102,100 @@ class PdfExtractionService:
             activities = self._validate_result(result)
         except Exception as exc:
             logger.exception("PDF 추출 실패 (correction_id: %s): %s", correction_id, exc)
-            try:
-                await self._correction_client.fail_pdf_extraction(correction_id, str(exc))
-            except Exception:
-                logger.exception("PDF 추출 실패 콜백 전송 실패 (correction_id: %s)", correction_id)
+            await self._send_failure_callback(correction_id, str(exc))
             return
 
+        await self._send_completion_callback(correction_id, activities)
+
+    async def stream_extraction(
+        self,
+        correction_id: int,
+        file_bytes: bytes,
+        filename: str,
+        content_type: str | None,
+    ) -> AsyncIterator[dict]:
+        """PDF 추출을 활동 단위로 스트리밍하고, 끝나면 기존 배치 콜백을 전송한다.
+
+        저장 경로는 바꾸지 않는다. 메인 서버의 PDF 추출 결과 수신은 전부-아니면-전무
+        구조라 활동 단위 저장 경로가 없다. 그래서 스트림은 화면 표시용으로만 쓰고,
+        영속화는 스트림이 끝난 뒤 기존 `complete_pdf_extraction` 콜백 1회로 처리한다.
+
+        프론트가 중간에 연결을 끊어도 저장이 완료되도록, 콜백 전송은 스트림 소비와
+        분리해 태스크로 띄운다.
+
+        Args:
+            correction_id: 첨삭 ID
+            file_bytes: PDF 파일 바이트
+            filename: 원본 파일명
+            content_type: 업로드 content-type
+
+        Yields:
+            dict: `{"event": ..., "data": ...}` 형태의 SSE 이벤트
+        """
+        try:
+            self._validate_file(file_bytes=file_bytes, filename=filename, content_type=content_type)
+        except ValueError as exc:
+            yield _sse_event(
+                SSEEventType.EXTRACTION_FAILED,
+                {"error": {"code": SSEErrorCode.EXTRACTION_INVALID_FILE, "message": str(exc)}},
+            )
+            return
+
+        limits = get_pdf_extraction_limits()
+        seen_names: set[str] = set()
+        activities: list[PdfActivity] = []
+
+        yield _sse_event(SSEEventType.EXTRACTION_STARTED, {})
+
+        try:
+            async for raw_activity in self._generator.extract_stream(file_bytes, filename):
+                normalized = self._normalize_activity(raw_activity, seen_names)
+                if normalized is None:
+                    continue
+
+                activities.append(normalized)
+                formatted = self._format_activities_for_callback([normalized])[0]
+                yield _sse_event(
+                    SSEEventType.ACTIVITY_COMPLETED,
+                    {
+                        "index": len(activities) - 1,
+                        "activity": _build_activity_payload(formatted),
+                    },
+                )
+
+                if len(activities) >= limits.max_activity_count:
+                    break
+        except Exception as exc:
+            logger.exception("PDF 추출 스트리밍 실패 (correction_id: %s): %s", correction_id, exc)
+            await self._send_failure_callback(correction_id, str(exc))
+            yield _sse_event(
+                SSEEventType.EXTRACTION_FAILED,
+                {"error": {"code": SSEErrorCode.EXTRACTION_FAILED, "message": str(exc)}},
+            )
+            return
+
+        if not activities:
+            message = "PDF에서 추출된 활동이 없습니다."
+            logger.error("PDF 추출 스트리밍 결과 없음 (correction_id: %s)", correction_id)
+            await self._send_failure_callback(correction_id, message)
+            yield _sse_event(
+                SSEEventType.EXTRACTION_FAILED,
+                {"error": {"code": SSEErrorCode.EXTRACTION_FAILED, "message": message}},
+            )
+            return
+
+        await self._send_completion_callback(correction_id, activities)
+        yield _sse_event(
+            SSEEventType.EXTRACTION_COMPLETED,
+            {"activityCount": len(activities)},
+        )
+
+    async def _send_completion_callback(
+        self,
+        correction_id: int,
+        activities: list[PdfActivity],
+    ) -> None:
+        """추출 완료 콜백을 전송하고 실패는 로깅만 한다."""
         try:
             await self._correction_client.complete_pdf_extraction(
                 correction_id,
@@ -105,6 +207,13 @@ class PdfExtractionService:
             )
         except Exception:
             logger.exception("PDF 추출 완료 콜백 전송 실패 (correction_id: %s)", correction_id)
+
+    async def _send_failure_callback(self, correction_id: int, error_message: str) -> None:
+        """추출 실패 콜백을 전송하고 실패는 로깅만 한다."""
+        try:
+            await self._correction_client.fail_pdf_extraction(correction_id, error_message)
+        except Exception:
+            logger.exception("PDF 추출 실패 콜백 전송 실패 (correction_id: %s)", correction_id)
 
     @staticmethod
     def _normalize_structured_text(value: str) -> str:
@@ -236,6 +345,66 @@ class PdfExtractionService:
         return kept
 
     @classmethod
+    def _normalize_activity(
+        cls,
+        activity: PdfActivity,
+        seen_names: set[str],
+    ) -> PdfActivity | None:
+        """활동 1건을 콜백 형식으로 정규화한다.
+
+        중복 활동명이면 `None` 을 반환한다. `seen_names` 는 호출자가 소유하며
+        이 메서드가 새 활동명을 추가한다. 배치 경로와 스트리밍 경로가 같은 규칙을
+        쓰도록 활동 단위로 분리했다.
+
+        Args:
+            activity: 추출된 활동 1건
+            seen_names: 지금까지 채택한 활동명 집합 (호출자가 유지)
+
+        Returns:
+            PdfActivity | None: 정규화된 활동. 활동명이 비었거나 중복이면 None
+        """
+        dedupe_key = activity.activity_name.strip()
+        if not dedupe_key or dedupe_key in seen_names:
+            return None
+
+        seen_names.add(dedupe_key)
+        limits = get_pdf_extraction_limits()
+
+        problem_solving = [
+            item.model_copy(
+                update={
+                    "no": index,
+                    "situation": cls._normalize_structured_text(item.situation),
+                    "strategy": cls._normalize_structured_text(item.strategy),
+                    "reason": cls._normalize_structured_text(item.reason),
+                }
+            )
+            for index, item in enumerate(activity.problem_solving, start=1)
+        ]
+
+        return activity.model_copy(
+            update={
+                "activity_name": dedupe_key,
+                "detail": cls._fit_lines_to_limit(
+                    [cls._normalize_structured_text(item) for item in activity.detail],
+                    limits.detail_max_length,
+                ),
+                "responsibility": cls._fit_lines_to_limit(
+                    [cls._normalize_structured_text(item) for item in activity.responsibility],
+                    limits.responsibility_max_length,
+                ),
+                "problem_solving": cls._fit_problem_solving_to_limit(
+                    problem_solving,
+                    limits.problem_solving_max_length,
+                ),
+                "learning": cls._fit_lines_to_limit(
+                    [cls._normalize_structured_text(item) for item in activity.learning],
+                    limits.learning_max_length,
+                ),
+            }
+        )
+
+    @classmethod
     def _validate_result(cls, result: PdfExtractionResult) -> list[PdfActivity]:
         """추출 결과를 후처리하고 메인 서버 콜백 형식으로 정리한다."""
         activities = list(result.activities)
@@ -247,48 +416,9 @@ class PdfExtractionService:
         normalized_activities: list[PdfActivity] = []
 
         for activity in activities:
-            dedupe_key = activity.activity_name.strip()
-            if not dedupe_key or dedupe_key in seen_names:
-                continue
-
-            seen_names.add(dedupe_key)
-            problem_solving = [
-                item.model_copy(
-                    update={
-                        "no": index,
-                        "situation": cls._normalize_structured_text(item.situation),
-                        "strategy": cls._normalize_structured_text(item.strategy),
-                        "reason": cls._normalize_structured_text(item.reason),
-                    }
-                )
-                for index, item in enumerate(activity.problem_solving, start=1)
-            ]
-            normalized_activities.append(
-                activity.model_copy(
-                    update={
-                        "activity_name": dedupe_key,
-                        "detail": cls._fit_lines_to_limit(
-                            [cls._normalize_structured_text(item) for item in activity.detail],
-                            limits.detail_max_length,
-                        ),
-                        "responsibility": cls._fit_lines_to_limit(
-                            [
-                                cls._normalize_structured_text(item)
-                                for item in activity.responsibility
-                            ],
-                            limits.responsibility_max_length,
-                        ),
-                        "problem_solving": cls._fit_problem_solving_to_limit(
-                            problem_solving,
-                            limits.problem_solving_max_length,
-                        ),
-                        "learning": cls._fit_lines_to_limit(
-                            [cls._normalize_structured_text(item) for item in activity.learning],
-                            limits.learning_max_length,
-                        ),
-                    }
-                )
-            )
+            normalized = cls._normalize_activity(activity, seen_names)
+            if normalized is not None:
+                normalized_activities.append(normalized)
 
         if not normalized_activities:
             raise ValueError("PDF에서 추출된 활동이 없습니다.")
@@ -296,6 +426,29 @@ class PdfExtractionService:
         # 중복 제거 후에 자른다. 먼저 자르면 중복 활동이 상한 슬롯을 차지해
         # 실제 활동이 max_activity_count개보다 적게 남는다.
         return normalized_activities[: limits.max_activity_count]
+
+
+def _build_activity_payload(activity: PdfActivity) -> dict:
+    """SSE 로 내보낼 활동 payload 를 만든다.
+
+    메인 서버 콜백의 `activities[]` 원소와 같은 camelCase 구조를 쓴다.
+    프론트가 두 경로에서 같은 모양을 받도록 하기 위함이다.
+    """
+    return {
+        "activityName": activity.activity_name,
+        "detail": activity.detail,
+        "responsibility": activity.responsibility,
+        "problemSolving": [
+            {
+                "no": item.no,
+                "situation": item.situation,
+                "strategy": item.strategy,
+                "reason": item.reason,
+            }
+            for item in activity.problem_solving
+        ],
+        "learning": activity.learning,
+    }
 
 
 def _create_default_generator() -> "PdfExtractionGenerator":
