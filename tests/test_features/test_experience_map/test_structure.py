@@ -223,12 +223,13 @@ async def test_multiple_source_items_can_merge_into_one_slot(fake_dependencies):
 
 
 @pytest.mark.asyncio
-async def test_merge_without_separator_is_accepted(fake_dependencies):
-    """조각 사이에 공백이 하나도 없이 붙여 써도 병합으로 인정한다.
+async def test_merge_ignores_llm_typed_separator(fake_dependencies):
+    """병합 블록의 text는 LLM이 뭐라고 썼든 코드가 원문을 그대로 이어붙여 만든다.
 
     실제로 재현된 경우다. 문장이 마침표로 끝나는데 모델이 다음 조각을 띄어쓰기
-    없이 바로 이어 붙였다. 조각 사이 공백을 정확히 한 칸으로 강제하면 이런
-    정상적인 병합까지 "text를 바꿨다" 며 거부하게 된다.
+    없이 바로 이어 붙이는 등, 이어붙이는 방식이 매번 달랐다. text는 이제
+    LLM이 검증만 통과하면 되는 게 아니라 애초에 코드가 새로 조립하므로,
+    LLM이 뭘 쓰든(공백 유무 등) 항상 같은 결과가 나와야 한다.
     """
     fake_dependencies(
         StructureOutput(
@@ -256,12 +257,17 @@ async def test_merge_without_separator_is_accepted(fake_dependencies):
 
     result = await structure_blocks(state)
 
-    assert result["structured_items"][0]["text"] == "원인을 조사했다.해결책을 적용했다"
+    assert result["structured_items"][0]["text"] == "원인을 조사했다. 해결책을 적용했다"
 
 
 @pytest.mark.asyncio
-async def test_merged_text_must_match_concatenation_exactly(fake_dependencies):
-    """합친 text 가 원문 이어붙인 것과 다르면(요약·새 문장) 거부한다."""
+async def test_merged_text_ignores_llm_summary(fake_dependencies):
+    """LLM이 합친 text를 요약·윤문해도, 실제 커밋되는 text는 원문 그대로다.
+
+    예전엔 이 경우를 거부하고 재시도를 유도했는데, LLM이 재시도에서도 같은
+    실수를 반복하는 일이 잦았다. 이제는 LLM이 뭐라고 썼든 코드가 무시하고
+    원문을 그대로 조립하므로, 이 실수 자체가 실패로 이어지지 않는다.
+    """
     fake_dependencies(
         StructureOutput(
             items=[
@@ -270,7 +276,7 @@ async def test_merged_text_must_match_concatenation_exactly(fake_dependencies):
                     action="add",
                     parent_ref="b_1",
                     slot_id="TASK.BASIC.PURPOSE",
-                    text="원인 조사 후 해결",  # 요약됨 — 원문과 다름
+                    text="원인 조사 후 해결",  # 요약됨 — 무시되고 원문으로 대체된다
                     source_item_ids=["it_1", "it_2"],
                 ),
                 StructureLlmItem(
@@ -286,8 +292,9 @@ async def test_merged_text_must_match_concatenation_exactly(fake_dependencies):
         ]
     )
 
-    with pytest.raises(LlmError):
-        await structure_blocks(state)
+    result = await structure_blocks(state)
+
+    assert result["structured_items"][0]["text"] == "원인을 조사했다 해결책을 적용했다"
 
 
 @pytest.mark.asyncio
@@ -321,29 +328,37 @@ async def test_source_item_used_twice_is_rejected(fake_dependencies):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "items",
-    [
-        [],
-        [
-            StructureLlmItem(
-                item_id="blk_1",
-                action="add",
-                parent_ref="exp_1",
-                text="바뀐 원문",
-                source_item_ids=["it_1"],
-            )
-        ],
-    ],
-)
-async def test_missing_or_changed_source_is_rejected(fake_dependencies, items):
-    """구조화가 원문을 누락하거나 고쳐 쓰면 다음 단계로 넘기지 않는다."""
-    fake_dependencies(StructureOutput(items=items))
+async def test_missing_source_is_rejected(fake_dependencies):
+    """구조화가 원문 item을 아예 누락하면 다음 단계로 넘기지 않는다."""
+    fake_dependencies(StructureOutput(items=[]))
 
     with pytest.raises(LlmError) as exc_info:
         await structure_blocks(make_state())
 
     assert exc_info.value.failed_node == "structure"
+
+
+@pytest.mark.asyncio
+async def test_changed_source_text_is_silently_corrected(fake_dependencies):
+    """LLM이 원문을 고쳐 써도, source_item_ids만 맞으면 실패하지 않고 원문으로
+    바로잡힌 채 커밋된다 — text 자체는 이제 검증 대상이 아니다."""
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="exp_1",
+                    text="바뀐 원문",
+                    source_item_ids=["it_1"],
+                )
+            ]
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    assert result["structured_items"][0]["text"] == "결제 오류를 해결했다"
 
 
 @pytest.mark.asyncio

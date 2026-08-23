@@ -1,7 +1,6 @@
 """블록 단위 구조화 노드 (에이전트 문서 5-5)."""
 
 import logging
-import re
 
 from common.llm import get_experience_map_llm
 from features.experience_map.config import get_settings
@@ -16,25 +15,6 @@ from features.experience_map.state import ExperienceMapState
 from features.experience_map.templates import TemplateCatalog, get_template_catalog_client
 
 logger = logging.getLogger(__name__)
-
-_WHITESPACE = re.compile(r"\s+")
-
-
-def _normalize(text: str) -> str:
-    """공백 차이를 흡수한다. content_filter의 정규화와 같은 규칙을 쓴다."""
-    return _WHITESPACE.sub(" ", text).strip()
-
-
-def _is_concatenation(text: str, sources: list[str]) -> bool:
-    """`text`가 `sources`를 순서대로 이어붙인 것인지 확인한다.
-
-    조각 사이 공백은 0개부터 몇 개든 허용한다 — 모델이 붙여 쓰든 띄어 쓰든
-    줄바꿈으로 잇든 신경 쓰지 않는다. 허용하지 않는 건 **조각 사이에 새 낱말이
-    끼어드는 것**뿐이다. 정확히 공백 한 칸만 허용하면, 모델이 구두점 사이를
-    안 띄우고 이어 붙인 정상적인 병합까지 거부하게 된다.
-    """
-    pattern = r"\s*".join(re.escape(_normalize(source)) for source in sources)
-    return re.fullmatch(pattern, _normalize(text)) is not None
 
 
 async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
@@ -68,12 +48,14 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                 "source_items": render_source_items(source_items),
             }
         )
+        source_text = {item["item_id"]: item["text"] for item in source_items}
+        reconstructed_items = _reconstruct_verbatim_text(result.items, source_text)
         # 순서가 중요하다. 프루닝은 "같은 부모 밑 여러 템플릿 중 내용 있는
         # 것만 남긴다" 는 판단을 parent_item_id 기준으로 한다. 앵커를
         # 건너뛴 level 5가 서로 다른 가짜 부모(컨테이너 별칭 vs 가짜 앵커
         # 형제)를 쓰고 있으면, 프루닝이 이걸 먼저 하면 "같은 부모"로 안 보여
         # 둘 다 살아남는다 — 앵커 연결부터 정리해야 프루닝이 제대로 본다.
-        rerooted_items = _fix_new_section_parent(result.items, state)
+        rerooted_items = _fix_new_section_parent(reconstructed_items, state)
         reparented_items = _reparent_orphan_level5_items(rerooted_items, catalog)
         pruned_items = _prune_extra_templates(reparented_items)
         filled_items = _fill_missing_template_slots(pruned_items, catalog)
@@ -122,6 +104,32 @@ def _gap_instruction(state: ExperienceMapState) -> str:
     if not anchor_alias:
         return "gap 기준 블록 별칭을 확인할 수 없습니다. 임의 배정하지 마세요.\n\n"
     return f"gap 답변 item은 반드시 기존 [{anchor_alias}] 바로 아래에 추가하세요.\n\n"
+
+
+def _reconstruct_verbatim_text(
+    items: list[StructureLlmItem], source_text: dict[str, str]
+) -> list[StructureLlmItem]:
+    """블록 text를 LLM이 다시 타이핑한 것 대신, 원문을 코드가 직접 이어붙여 만든다.
+
+    LLM이 실제로 결정해야 하는 건 "어느 원문 item을 어느 슬롯에 배정할지"뿐이다
+    — 그런데 그 배정된 원문을 `text`로 다시 타이핑하게 시키면, 살짝 요약하거나
+    윤문해 버리는 실수가 반복됐다(원문 보존 검증 실패의 최대 원인이었다).
+    `source_item_ids`로 어느 원문인지는 이미 확정됐으니, 실제 커밋되는 text는
+    LLM이 쓴 걸 검증하는 대신 코드가 원문 그대로 이어붙여 확정한다 — 원문 보존을
+    "검증해서 걸러내는" 대신 애초에 어길 수 없게 만든다.
+
+    `source_item_ids`가 가리키는 원문 id가 존재하지 않거나 중복 사용되는 경우는
+    건드리지 않고 그대로 둔다 — 그건 별도 계약 위반이라 이후 검증이 원래
+    메시지로 잡아야 사용자가 원인을 정확히 알 수 있다.
+    """
+    rebuilt: list[StructureLlmItem] = []
+    for item in items:
+        if not item.source_item_ids or any(sid not in source_text for sid in item.source_item_ids):
+            rebuilt.append(item)
+            continue
+        text = " ".join(source_text[sid].strip() for sid in item.source_item_ids)
+        rebuilt.append(item.model_copy(update={"text": text}))
+    return rebuilt
 
 
 def _fix_new_section_parent(
@@ -442,7 +450,13 @@ def _validate_non_empty_subtrees(items: list[StructureLlmItem], catalog: Templat
 
 
 def _validate_source_coverage(items: list[StructureLlmItem], expected_text: dict[str, str]) -> None:
-    """모든 원문 item이 정확히 한 블록에서, 이어붙인 그대로 쓰였는지 확인한다."""
+    """모든 원문 item이 정확히 한 블록에서만 쓰였는지 확인한다.
+
+    text 자체가 원문과 정확히 같은지는 여기서 안 본다 — `_reconstruct_verbatim_text`
+    가 이미 `source_item_ids`로부터 text를 코드로 다시 조립해서, 어긋날 수가
+    없다. 여기서 보는 건 배정 그래프 자체의 정합성(존재하는 id인지, 두 번
+    안 쓰였는지, 빠짐없이 다 쓰였는지)뿐이다.
+    """
     seen: set[str] = set()
     for item in items:
         if not item.source_item_ids:
@@ -453,14 +467,6 @@ def _validate_source_coverage(items: list[StructureLlmItem], expected_text: dict
             if source_id in seen:
                 raise ValueError(f"원문 item이 두 블록 이상에서 쓰였습니다: {source_id}")
             seen.add(source_id)
-
-        if not _is_concatenation(
-            item.text or "", [expected_text[sid] for sid in item.source_item_ids]
-        ):
-            raise ValueError(
-                "구조화 노드는 원문 text를 변경할 수 없습니다. "
-                "합칠 때도 이어붙인 것과 정확히 같아야 합니다."
-            )
 
     missing = set(expected_text) - seen
     if missing:
