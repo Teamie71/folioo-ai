@@ -68,7 +68,13 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                 "source_items": render_source_items(source_items),
             }
         )
-        pruned_items = _prune_extra_templates(result.items)
+        # 순서가 중요하다. 프루닝은 "같은 부모 밑 여러 템플릿 중 내용 있는
+        # 것만 남긴다" 는 판단을 parent_item_id 기준으로 한다. 앵커를
+        # 건너뛴 level 5가 서로 다른 가짜 부모(컨테이너 별칭 vs 가짜 앵커
+        # 형제)를 쓰고 있으면, 프루닝이 이걸 먼저 하면 "같은 부모"로 안 보여
+        # 둘 다 살아남는다 — 앵커 연결부터 정리해야 프루닝이 제대로 본다.
+        reparented_items = _reparent_orphan_level5_items(result.items, catalog)
+        pruned_items = _prune_extra_templates(reparented_items)
         filled_items = _fill_missing_template_slots(pruned_items, catalog)
         items = _validate_output(
             filled_items, source_items=source_items, catalog=catalog, state=state
@@ -115,6 +121,121 @@ def _gap_instruction(state: ExperienceMapState) -> str:
     if not anchor_alias:
         return "gap 기준 블록 별칭을 확인할 수 없습니다. 임의 배정하지 마세요.\n\n"
     return f"gap 답변 item은 반드시 기존 [{anchor_alias}] 바로 아래에 추가하세요.\n\n"
+
+
+def _reparent_orphan_level5_items(
+    items: list[StructureLlmItem], catalog: TemplateCatalog
+) -> list[StructureLlmItem]:
+    """level 5 슬롯이 앵커를 안 거치고 컨테이너에 닿으면 코드가 바로잡는다.
+
+    "기존 카테고리를 재사용하라"는 지시를 따르는 모델이 앵커를 건너뛰는
+    사고가 프롬프트를 몇 번 강화해도 계속 재발했다. 두 가지 모양으로
+    나타난다: (1) level 5가 컨테이너 별칭에 형제로 직접 붙거나, (2) 형제
+    level 5 중 하나를 마치 앵커인 것처럼 `parent_item_id`로 가리킨다 — 그
+    "가짜 앵커"도 결국 컨테이너 별칭에 직접 붙어 있다. 두 경우 다 각 item의
+    부모 체인을 위로 따라가며 **진짜 앵커를 거치지 않고** 컨테이너 별칭에
+    닿는지로 판별한다. 같은 컨테이너·section에 이미 진짜 앵커가 있으면
+    거기로 연결하고, 없으면 코드가 빈 앵커를 새로 만들어 끼워 넣는다.
+    """
+    anchor_slot_by_section: dict[str, str] = {
+        section.section_id: slot.slot_id
+        for section in catalog.sections
+        for slot in section.slots
+        if slot.is_anchor
+    }
+    by_id = {item.item_id: item for item in items}
+
+    def resolve_container_alias(item: StructureLlmItem) -> str | None:
+        """앵커 여부와 상관없이, item의 부모 체인을 끝까지 따라가 컨테이너 별칭을 찾는다."""
+        current = item
+        seen: set[str] = set()
+        while True:
+            if current.item_id in seen:
+                return None  # 순환 참조 — 다른 검증이 잡는다.
+            seen.add(current.item_id)
+            if current.parent_ref is not None:
+                return current.parent_ref
+            if current.parent_item_id is None:
+                return None
+            parent = by_id.get(current.parent_item_id)
+            if parent is None:
+                return None
+            current = parent
+
+    def find_broken_container_alias(item: StructureLlmItem) -> str | None:
+        """진짜 앵커를 거치지 않고 컨테이너 별칭에 닿으면 그 별칭을 반환한다."""
+        current = item
+        seen: set[str] = set()
+        while True:
+            if current.item_id in seen:
+                return None  # 순환 참조 — 다른 검증이 잡는다.
+            seen.add(current.item_id)
+            if current.parent_ref is not None:
+                return current.parent_ref
+            if current.parent_item_id is None:
+                return None
+            parent = by_id.get(current.parent_item_id)
+            if parent is None:
+                return None
+            if _is_anchor_slot(parent.slot_id, catalog):
+                return None  # 정상 — 앵커를 거쳤다.
+            current = parent
+
+    orphan_groups: dict[str, list[StructureLlmItem]] = {}
+    for item in items:
+        if not item.slot_id or item.slot_id.count(".") != 2:
+            continue
+        section_id = item.slot_id.split(".")[0]
+        if section_id not in anchor_slot_by_section:
+            continue  # 하위 템플릿이 없는 section이면 애초에 level 5가 없다.
+        alias = find_broken_container_alias(item)
+        if alias is None:
+            continue
+        orphan_groups.setdefault(f"{alias}::{section_id}", []).append(item)
+
+    if not orphan_groups:
+        return items
+
+    new_anchors: list[StructureLlmItem] = []
+    reparent_to: dict[str, str] = {}  # orphan item_id -> anchor item_id
+    counter = 0
+    for key, group in orphan_groups.items():
+        parent_ref, section_id = key.split("::", 1)
+        anchor_slot_id = anchor_slot_by_section[section_id]
+        existing_anchor = next(
+            (
+                it
+                for it in items
+                if it.slot_id == anchor_slot_id and resolve_container_alias(it) == parent_ref
+            ),
+            None,
+        )
+        if existing_anchor is not None:
+            anchor_id = existing_anchor.item_id
+        else:
+            counter += 1
+            anchor_id = f"auto_anchor_{section_id}_{counter}"
+            new_anchors.append(
+                StructureLlmItem(
+                    item_id=anchor_id,
+                    action="add",
+                    slot_id=anchor_slot_id,
+                    text=None,
+                    source_item_ids=[],
+                    parent_ref=parent_ref,
+                )
+            )
+        for orphan in group:
+            reparent_to[orphan.item_id] = anchor_id
+
+    result = [
+        item.model_copy(update={"parent_ref": None, "parent_item_id": reparent_to[item.item_id]})
+        if item.item_id in reparent_to
+        else item
+        for item in items
+    ]
+    result.extend(new_anchors)
+    return result
 
 
 def _prune_extra_templates(items: list[StructureLlmItem]) -> list[StructureLlmItem]:

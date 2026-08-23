@@ -7,6 +7,7 @@ from features.experience_map.errors import LlmError
 from features.experience_map.nodes import structure as structure_node
 from features.experience_map.nodes.structure import (
     _prune_extra_templates,
+    _reparent_orphan_level5_items,
     _validate_output,
     next_node,
     structure_blocks,
@@ -346,14 +347,15 @@ async def test_missing_or_changed_source_is_rejected(fake_dependencies, items):
 
 
 @pytest.mark.asyncio
-async def test_level5_slot_must_attach_to_anchor_not_container(fake_dependencies):
-    """level 5 슬롯은 카테고리 컨테이너가 아니라 앵커(level 4) 블록 아래에 붙는다.
+async def test_level5_slot_attached_to_container_is_auto_reparented_to_anchor(fake_dependencies):
+    """level 5 슬롯이 앵커가 아니라 카테고리 컨테이너에 바로 붙으면, 코드가
+    같은 배치의 진짜 앵커 밑으로 자동으로 옮긴다.
 
-    실제로 재현된 경우다. 모델이 하위 템플릿의 level 5 슬롯들을 카테고리
-    컨테이너에 바로 매달았다. 이 미배치는 "카테고리가 level 4 슬롯을 모두
-    생성해야 한다" 는 기존 검사도 같이 걸리게 만드는데(level 5 슬롯이 그
-    개수 계산에 섞여 들어가서), 그 일반적인 메시지 대신 **원인을 정확히
-    짚는 메시지**가 먼저 뜨는지까지 확인한다 — 검증 순서를 바꿔 뒀다.
+    실제로 재현된 경우다. 모델이 하위 템플릿의 level 5 슬롯 하나를 앵커가
+    아니라 카테고리 컨테이너에 바로 매달았다. 예전엔 이걸 에러로 거부하고
+    재시도를 유도했는데, 모델이 재시도에서도 같은 실수를 반복하는 일이
+    잦아서 — 이미 배치 안에 진짜 앵커가 있는 이상 코드가 결정론적으로
+    바로잡는다.
     """
     fake_dependencies(
         StructureOutput(
@@ -387,12 +389,11 @@ async def test_level5_slot_must_attach_to_anchor_not_container(fake_dependencies
         ]
     )
 
-    with pytest.raises(LlmError) as exc_info:
-        await structure_blocks(state)
+    result = await structure_blocks(state)
 
-    # 카테고리가 level 4 슬롯을 모두 생성 못 했다는 일반 메시지가 아니라,
-    # 원인을 정확히 짚는 메시지여야 한다.
-    assert "앵커" in str(exc_info.value.__cause__)
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    anchor_id = items_by_slot["TASK.SUMMARY"]["item_id"]
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_item_id"] == anchor_id
 
 
 @pytest.mark.asyncio
@@ -672,6 +673,101 @@ def test_problem_solving_templates_accept_all_required_slots(template_id):
     )
 
     assert [item.slot_id for item in validated] == slot_ids
+
+
+def test_reparent_orphan_level5_creates_anchor_when_missing():
+    """level 5가 앵커 없이 컨테이너 별칭에 바로 붙으면, 빈 앵커를 새로 만들어
+    그 아래로 옮긴다 — 실제로 모델이 '기존 카테고리 재사용'을 지시받고도
+    앵커를 건너뛰고 level 5를 컨테이너에 형제로 붙이는 사고가 반복됐다.
+    """
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="TASK.BASIC.PURPOSE",
+            text="결제 오류를 해결했다",
+            source_item_ids=["it_1"],
+        ),
+    ]
+
+    result = _reparent_orphan_level5_items(items, catalog)
+
+    by_id = {item.item_id: item for item in result}
+    orphan = by_id["blk_1"]
+    assert orphan.parent_ref is None
+    assert orphan.parent_item_id is not None
+    anchor = by_id[orphan.parent_item_id]
+    assert anchor.slot_id == "TASK.SUMMARY"
+    assert anchor.parent_ref == "b_1"
+    assert anchor.text is None
+
+
+def test_reparent_orphan_level5_reuses_anchor_already_in_batch():
+    """같은 배치에 이미 맞는 앵커가 있으면, 새로 만들지 않고 거기로 연결한다."""
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    items = [
+        StructureLlmItem(
+            item_id="anchor_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="TASK.SUMMARY",
+            text="결제 오류 해결 업무",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="TASK.BASIC.PURPOSE",
+            text="결제 오류를 해결했다",
+            source_item_ids=["it_2"],
+        ),
+    ]
+
+    result = _reparent_orphan_level5_items(items, catalog)
+
+    assert len(result) == 2  # 앵커를 새로 만들지 않았다.
+    by_id = {item.item_id: item for item in result}
+    assert by_id["blk_1"].parent_item_id == "anchor_1"
+    assert by_id["blk_1"].parent_ref is None
+
+
+def test_reparent_orphan_level5_fixes_fake_anchor_hub():
+    """level 5 형제 중 하나를 마치 앵커인 것처럼 가리키는 경우도 바로잡는다.
+
+    실제로 재현된 경우다 — 진짜 앵커(TASK.SUMMARY)는 안 만들고, level 5
+    슬롯 하나(blk_1)를 다른 level 5 슬롯들의 `parent_item_id`로 써서 마치
+    앵커처럼 취급했다. blk_1도 결국 컨테이너 별칭에 바로 붙어 있으므로,
+    셋 다 새로 만든 진짜 앵커 밑으로 평평하게 옮겨져야 한다.
+    """
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="TASK.BASIC.PURPOSE",
+            text="결제 오류를 해결했다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="blk_2",
+            action="add",
+            parent_item_id="blk_1",  # blk_1을 가짜 앵커처럼 씀 — 잘못됨
+            slot_id="TASK.BASIC.RESULT",
+        ),
+    ]
+
+    result = _reparent_orphan_level5_items(items, catalog)
+
+    by_id = {item.item_id: item for item in result}
+    anchor_candidates = [it for it in result if it.slot_id == "TASK.SUMMARY"]
+    assert len(anchor_candidates) == 1
+    anchor_id = anchor_candidates[0].item_id
+    assert by_id["blk_1"].parent_item_id == anchor_id
+    assert by_id["blk_2"].parent_item_id == anchor_id
 
 
 def test_prune_extra_templates_keeps_only_the_one_with_real_content():
