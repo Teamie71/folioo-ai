@@ -73,7 +73,8 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         # 건너뛴 level 5가 서로 다른 가짜 부모(컨테이너 별칭 vs 가짜 앵커
         # 형제)를 쓰고 있으면, 프루닝이 이걸 먼저 하면 "같은 부모"로 안 보여
         # 둘 다 살아남는다 — 앵커 연결부터 정리해야 프루닝이 제대로 본다.
-        reparented_items = _reparent_orphan_level5_items(result.items, catalog)
+        rerooted_items = _fix_new_section_parent(result.items, state)
+        reparented_items = _reparent_orphan_level5_items(rerooted_items, catalog)
         pruned_items = _prune_extra_templates(reparented_items)
         filled_items = _fill_missing_template_slots(pruned_items, catalog)
         items = _validate_output(
@@ -121,6 +122,28 @@ def _gap_instruction(state: ExperienceMapState) -> str:
     if not anchor_alias:
         return "gap 기준 블록 별칭을 확인할 수 없습니다. 임의 배정하지 마세요.\n\n"
     return f"gap 답변 item은 반드시 기존 [{anchor_alias}] 바로 아래에 추가하세요.\n\n"
+
+
+def _fix_new_section_parent(
+    items: list[StructureLlmItem], state: ExperienceMapState
+) -> list[StructureLlmItem]:
+    """새 카테고리 컨테이너는 항상 선택 활동 바로 아래에만 만들 수 있다.
+
+    실제로 한 요청에 서로 다른 두 카테고리(하나는 기존 재사용, 하나는 신규
+    생성)를 같이 처리할 때, 모델이 새 컨테이너의 `parent_ref`를 활동 별칭이
+    아니라 **같은 요청에서 다루던 다른 기존 카테고리 블록**으로 잘못 쓰는
+    사고가 있었다. 이 규칙은 항상 참이라 모호함이 없으므로, 검증해서
+    거부하는 대신 코드가 바로 활동 별칭으로 고쳐 끼운다.
+    """
+    target_alias = state.get("target_experience_alias")
+    if not target_alias:
+        return items
+    return [
+        item.model_copy(update={"parent_ref": target_alias})
+        if item.section_kind is not None and item.parent_ref != target_alias
+        else item
+        for item in items
+    ]
 
 
 def _reparent_orphan_level5_items(

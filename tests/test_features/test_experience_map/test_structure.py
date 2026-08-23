@@ -770,6 +770,44 @@ def test_reparent_orphan_level5_fixes_fake_anchor_hub():
     assert by_id["blk_2"].parent_item_id == anchor_id
 
 
+@pytest.mark.asyncio
+async def test_new_section_wrongly_rooted_under_other_category_is_fixed(fake_dependencies):
+    """새 카테고리 컨테이너가 활동이 아니라 다른 기존 카테고리 밑에 잘못
+    붙어도, 코드가 활동 별칭으로 바로잡는다.
+
+    실제로 재현된 경우다 — 한 요청에 서로 다른 두 카테고리(하나는 재사용,
+    하나는 신규 생성)를 같이 처리할 때, 모델이 새 컨테이너의 `parent_ref`를
+    활동 별칭이 아니라 같이 다루던 다른 기존 카테고리 블록으로 잘못 썼다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="category_1",
+                    action="add",
+                    parent_ref="b_1",  # 잘못됨 — exp_1 이어야 한다
+                    section_kind="DETAIL",
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+            ]
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    container = next(
+        item for item in result["structured_items"] if item["section_kind"] == "DETAIL"
+    )
+    assert container["parent_ref"] == "exp_1"
+
+
 def test_prune_extra_templates_keeps_only_the_one_with_real_content():
     """모델이 원문이 짧아 하위 템플릿 6종을 다 만들어도, 내용 있는 것만 남긴다."""
     items = [
