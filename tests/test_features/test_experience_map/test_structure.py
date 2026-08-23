@@ -772,6 +772,34 @@ async def test_entirely_empty_new_anchor_subtree_is_rejected(fake_dependencies):
         )
 
 
+@pytest.mark.asyncio
+async def test_entirely_empty_new_section_container_is_rejected(fake_dependencies):
+    """앵커가 없는 section(`DETAIL` 등)도, 새 컨테이너 서브트리가 전부
+    비어 있으면 거부한다 — 앵커가 있는 section에만 걸리면 이 경로는 빠진다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="empty_container",
+                    action="add",
+                    parent_ref="exp_1",
+                    section_kind="DETAIL",
+                ),
+                StructureLlmItem(
+                    item_id="empty_slot",
+                    action="add",
+                    parent_item_id="empty_container",
+                    slot_id="DETAIL.MOTIVATION",
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(make_state())
+
+
 def test_two_templates_under_one_anchor_are_rejected():
     """앵커 하나에는 문제해결 하위 템플릿 6종 중 정확히 하나만 붙어야 한다.
 
