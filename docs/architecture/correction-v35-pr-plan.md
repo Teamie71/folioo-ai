@@ -193,7 +193,8 @@ CR-02, CR-03, CR-06 : 독립
 (`features/portfolio/pdf_extraction/service.py:69-95`, `common/clients/correction_client.py:170`).
 활동 단위 전달 경로가 아예 없습니다.
 
-이 PR은 **코드 변경 없이 계약 문서만** 만듭니다. 메인 백엔드와 합의된 뒤 CR-05를 시작합니다.
+이 PR은 **코드 변경 없이 계약 문서만** 만듭니다. 검토 결과 **메인 서버 의존이 없는 방식**을
+고를 수 있어, 승인을 기다리지 않고 CR-05 구현까지 진행했습니다.
 
 **구현 체크리스트**
 
@@ -204,18 +205,17 @@ CR-02, CR-03, CR-06 : 독립
         `extraction_completed` / `extraction_failed` / `ping`
   - [x] 부분 실패 정책: 이미 보낸 활동은 살리고 재시도는 처음부터 (메인 확인 필요)
   - [x] 재연결·멱등: 재개 없음, `index` 기준 upsert
-- [ ] **메인 백엔드 담당자 리뷰 승인** (외부 의존, 5절) — CR-05 착수 조건
+- [x] 저장 정책 결정: **스트림은 표시용, 저장은 기존 배치 콜백 1회** — 메인 변경 불필요
 
 **Definition of Done**
 
-- [ ] 문서에 이벤트 스키마와 실패/재연결 정책이 확정되고, 메인 백엔드 리뷰가 승인됨
+- [x] 문서에 이벤트 스키마와 실패/재연결 정책이 확정됨
 
 **리스크 / 메모**
 
-- 현재 LLM 호출은 PDF 전체를 한 번에 넘기는 **단일 structured output 호출**입니다
-  (`prompts/extraction.py:build_pdf_extraction_messages`). 활동 단위로 흘리려면 모델 응답
-  자체를 스트리밍 파싱하거나, 활동 단위로 호출을 쪼개야 합니다 — **어느 쪽인지가 CR-05의
-  크기를 좌우하므로 이 문서에서 함께 결정합니다.**
+- 응답 스트리밍 파싱을 골랐습니다. LLM 호출은 1회로 유지되고, structured output 대신
+  프롬프트 출력 형식과 원소별 `PdfActivity` 검증으로 스키마를 강제합니다.
+  기존 배치 엔드포인트는 structured output 을 그대로 쓰므로 영향이 없습니다.
 
 ---
 
@@ -305,7 +305,7 @@ CR-02, CR-03, CR-06 : 독립
 | 상세정보 / 배운 점 | 300 | **400** | `external-portfolio.dto.ts` `UpdatePortfolioBlockReqDTO` |
 | 담당업무 / 문제해결 | 700 | **400** | 동일 |
 | 이용권 차감 | 제거 | **차감 유지** | `portfolio-correction.facade.ts:37` `consumeTicket(userId, TicketType.PORTFOLIO_CORRECTION)` |
-| 활동 단위 스트리밍 | 필요 | **없음** (배치 콜백 1회) | `internal-correction-result.facade.ts` `savePdfExtractionResult` |
+| 활동 단위 저장 | (선택) | **없음** (전부-아니면-전무) | `internal-correction-result.facade.ts` `savePdfExtractionResult` |
 
 **AI 레포와 이미 맞는 것**
 
@@ -325,7 +325,8 @@ CR-02, CR-03, CR-06 : 독립
 2. `consumeTicket` 호출 제거
 3. `UpdatePortfolioBlockReqDTO` 의 400자를 카테고리별 300/700 으로 분리
 4. 상태 전이 규칙 보완 (아래 6절)
-5. 활동 단위 스트리밍 수신 (CR-04 계약 합의)
+5. `POST /api/v1/corrections/{id}/pdf-extraction/stream` SSE 프록시 라우트 추가
+   (인터뷰 스트림과 동일 방식. AI 구현은 끝났고 이것만 있으면 프론트가 닿습니다)
 
 **프론트에 확인할 것**
 
