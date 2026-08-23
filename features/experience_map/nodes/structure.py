@@ -68,8 +68,10 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                 "source_items": render_source_items(source_items),
             }
         )
+        pruned_items = _prune_extra_templates(result.items)
+        filled_items = _fill_missing_template_slots(pruned_items, catalog)
         items = _validate_output(
-            result.items, source_items=source_items, catalog=catalog, state=state
+            filled_items, source_items=source_items, catalog=catalog, state=state
         )
     except LlmError:
         raise
@@ -113,6 +115,103 @@ def _gap_instruction(state: ExperienceMapState) -> str:
     if not anchor_alias:
         return "gap 기준 블록 별칭을 확인할 수 없습니다. 임의 배정하지 마세요.\n\n"
     return f"gap 답변 item은 반드시 기존 [{anchor_alias}] 바로 아래에 추가하세요.\n\n"
+
+
+def _prune_extra_templates(items: list[StructureLlmItem]) -> list[StructureLlmItem]:
+    """앵커 하나에 하위 템플릿을 여러 개 만들었으면, 내용이 실린 템플릿만 남긴다.
+
+    문제해결처럼 하위 템플릿이 여럿인 카테고리에서, 원문이 한두 문장뿐이라
+    어느 템플릿이 맞는지 애매하면 모델이 "안전하게" 6종을 전부 만들어 버리는
+    사고가 프롬프트를 강화해도 반복됐다. 나머지 5종은 전부 text가 없는
+    placeholder뿐이므로 — 실제 내용(text)이 있는 템플릿이 **정확히 하나**면,
+    그게 모델이 진짜로 고른 답이라고 보고 나머지는 코드가 조용히 버린다.
+    애매해서 여러 템플릿에 내용이 걸쳐 있거나 전부 비어 있으면 그대로 두고
+    이후 검증이 명확한 에러로 재시도를 유도하게 한다.
+    """
+    groups: dict[tuple[str, str], list[StructureLlmItem]] = {}
+    for item in items:
+        if not item.slot_id or item.slot_id.count(".") != 2:
+            continue
+        prefix = ".".join(item.slot_id.split(".")[:2])
+        parent = item.parent_ref or item.parent_item_id or ""
+        groups.setdefault((parent, prefix), []).append(item)
+
+    prefixes_by_parent: dict[str, set[str]] = {}
+    for parent, prefix in groups:
+        prefixes_by_parent.setdefault(parent, set()).add(prefix)
+
+    drop: set[str] = set()
+    for parent, prefixes in prefixes_by_parent.items():
+        if len(prefixes) <= 1:
+            continue
+        with_text = [
+            prefix
+            for prefix in prefixes
+            if any(item.text is not None for item in groups[(parent, prefix)])
+        ]
+        if len(with_text) != 1:
+            continue  # 애매하다 — 그대로 두고 검증기가 에러로 보고하게 한다.
+        for prefix in prefixes:
+            if prefix != with_text[0]:
+                drop.update(item.item_id for item in groups[(parent, prefix)])
+
+    if not drop:
+        return items
+    return [item for item in items if item.item_id not in drop]
+
+
+def _fill_missing_template_slots(
+    items: list[StructureLlmItem], catalog: TemplateCatalog
+) -> list[StructureLlmItem]:
+    """모델이 빠뜨린 level 5 빈 슬롯을 코드가 직접 채워 넣는다.
+
+    명세는 "선택한 하위 템플릿의 slot을 빈 슬롯까지 전부 전개"하라고 못박지만,
+    원문이 짧을 때 모델이 정보 있는 slot 하나만 만들고 나머지 null placeholder를
+    누락하는 사고가 반복됐다. 프롬프트 문구를 아무리 강화해도 매 요청마다
+    비결정적으로 재발해서, "어떤 하위 템플릿을 어느 부모 아래 만들었는지"가
+    이미 출력에 다 드러난 이상 나머지 slot_id는 코드가 결정론적으로 채운다 —
+    모델의 확률적 성실성에 기대지 않는다.
+    """
+    templates = {
+        f"{section.section_id}.{template.template_id}": [slot.slot_id for slot in template.slots]
+        for section in catalog.sections
+        for template in section.templates
+    }
+
+    groups: dict[tuple[str, str], list[StructureLlmItem]] = {}
+    for item in items:
+        if not item.slot_id or item.slot_id.count(".") != 2:
+            continue
+        prefix = ".".join(item.slot_id.split(".")[:2])
+        parent = item.parent_ref or item.parent_item_id or ""
+        groups.setdefault((parent, prefix), []).append(item)
+
+    filled = list(items)
+    counter = 0
+    for (parent, prefix), group_items in groups.items():
+        expected = templates.get(prefix)
+        if expected is None:
+            continue  # 카탈로그에 없는 템플릿이면 이후 검증이 에러로 보고한다.
+        present = {item.slot_id for item in group_items}
+        missing = [slot_id for slot_id in expected if slot_id not in present]
+        if not missing:
+            continue
+        anchor = group_items[0]
+        for slot_id in missing:
+            counter += 1
+            filled.append(
+                StructureLlmItem(
+                    item_id=f"auto_{prefix}_{counter}",
+                    action="add",
+                    slot_id=slot_id,
+                    text=None,
+                    source_item_ids=[],
+                    parent_ref=anchor.parent_ref,
+                    parent_item_id=anchor.parent_item_id,
+                    after_ref=None,
+                )
+            )
+    return filled
 
 
 def _validate_output(
@@ -275,6 +374,19 @@ def _validate_template_slots(items: list[StructureLlmItem], catalog: TemplateCat
         missing = expected - set(slot_ids)
         if missing:
             raise ValueError(f"{prefix} 템플릿의 slot이 빠졌습니다: {sorted(missing)}")
+
+    prefixes_by_parent: dict[str, set[str]] = {}
+    for parent, prefix in grouped:
+        prefixes_by_parent.setdefault(parent, set()).add(prefix)
+    for parent, prefixes in prefixes_by_parent.items():
+        if len(prefixes) > 1:
+            # 앵커 하나에는 하위 템플릿 중 내용에 맞는 딱 하나만 붙는다. 여러
+            # 템플릿을 한꺼번에 만들면 카탈로그 전체를 기계적으로 채운 것이지,
+            # 실제 내용에 맞춰 고른 게 아니다.
+            raise ValueError(
+                f"앵커 [{parent}] 아래에 하위 템플릿을 두 개 이상 만들었습니다: "
+                f"{sorted(prefixes)}. 내용에 맞는 템플릿 하나만 고르세요."
+            )
 
 
 def _is_anchor_slot(slot_id: str | None, catalog: TemplateCatalog) -> bool:

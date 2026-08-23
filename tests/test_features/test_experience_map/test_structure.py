@@ -5,7 +5,12 @@ from langchain_core.runnables import RunnableLambda
 
 from features.experience_map.errors import LlmError
 from features.experience_map.nodes import structure as structure_node
-from features.experience_map.nodes.structure import _validate_output, next_node, structure_blocks
+from features.experience_map.nodes.structure import (
+    _prune_extra_templates,
+    _validate_output,
+    next_node,
+    structure_blocks,
+)
 from features.experience_map.schemas import StructureLlmItem, StructureOutput
 from features.experience_map.state import start_turn
 from features.experience_map.templates import TemplateCatalog, TemplateCatalogClient
@@ -476,7 +481,14 @@ async def test_new_sibling_after_ref_is_rejected(fake_dependencies):
 
 
 @pytest.mark.asyncio
-async def test_unknown_slot_and_partial_template_are_rejected(fake_dependencies):
+async def test_partial_template_is_auto_filled_not_rejected(fake_dependencies):
+    """모델이 빈 슬롯 placeholder를 누락해도 코드가 나머지를 채운다.
+
+    원문이 짧으면 모델이 채울 slot 하나만 만들고 나머지 null placeholder를
+    빠뜨리는 사고가 실제로 반복됐다. 프롬프트만으로는 신뢰할 수 없어서, 이미
+    출력에 드러난 하위 템플릿·부모 정보로 코드가 결정론적으로 나머지 slot을
+    채운다 — 더 이상 이 사고로 요청 전체가 실패하지 않는다.
+    """
     fake_dependencies(
         StructureOutput(
             items=[
@@ -485,6 +497,31 @@ async def test_unknown_slot_and_partial_template_are_rejected(fake_dependencies)
                     action="add",
                     parent_ref="b_1",
                     slot_id="TASK.BASIC.PURPOSE",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                )
+            ]
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "결제 오류를 해결했다"
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_slot_id_is_rejected(fake_dependencies):
+    """카탈로그에 없는 slot_id를 지어내면 자동 보정 대신 거부한다."""
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.NOT_A_REAL_SLOT",
                     text="결제 오류를 해결했다",
                     source_item_ids=["it_1"],
                 )
@@ -635,3 +672,138 @@ def test_problem_solving_templates_accept_all_required_slots(template_id):
     )
 
     assert [item.slot_id for item in validated] == slot_ids
+
+
+def test_prune_extra_templates_keeps_only_the_one_with_real_content():
+    """모델이 원문이 짧아 하위 템플릿 6종을 다 만들어도, 내용 있는 것만 남긴다."""
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.FEEDBACK.NEED",
+            text="피드백을 받았다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="empty_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.BASIC.PROBLEM",
+        ),
+        StructureLlmItem(
+            item_id="empty_2",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        ),
+    ]
+
+    pruned = _prune_extra_templates(items)
+
+    assert [item.item_id for item in pruned] == ["blk_1"]
+
+
+def test_prune_extra_templates_leaves_ambiguous_multi_content_alone():
+    """두 템플릿 다 실제 내용이 있으면 애매하니 건드리지 않고 검증기에 맡긴다."""
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.FEEDBACK.NEED",
+            text="피드백을 받았다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="blk_2",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.BASIC.PROBLEM",
+            text="문제가 있었다",
+            source_item_ids=["it_2"],
+        ),
+    ]
+
+    pruned = _prune_extra_templates(items)
+
+    assert {item.item_id for item in pruned} == {"blk_1", "blk_2"}
+
+
+def test_two_templates_under_one_anchor_are_rejected():
+    """앵커 하나에는 문제해결 하위 템플릿 6종 중 정확히 하나만 붙어야 한다.
+
+    실제로 모델이 원문이 짧을 때 6종 전부를 한꺼번에 만든 적이 있다 — 내용에
+    맞춰 고른 게 아니라 카탈로그를 기계적으로 다 채운 것이다.
+    """
+    catalog = TemplateCatalog.model_validate(
+        {
+            "version": "v1",
+            "sections": [
+                {
+                    "section_id": "PROBLEM_SOLVING",
+                    "label": "문제해결",
+                    "slots": [
+                        {
+                            "slot_id": "PROBLEM_SOLVING.SUMMARY",
+                            "level": 4,
+                            "placeholder": "에피소드 요약",
+                            "example": "결제 오류 해결",
+                            "is_anchor": True,
+                        }
+                    ],
+                    "templates": [
+                        {
+                            "template_id": "BASIC",
+                            "label": "BASIC",
+                            "slots": [
+                                {
+                                    "slot_id": "PROBLEM_SOLVING.BASIC.PROBLEM",
+                                    "level": 5,
+                                    "placeholder": "문제",
+                                    "example": "예시",
+                                }
+                            ],
+                        },
+                        {
+                            "template_id": "FEEDBACK",
+                            "label": "FEEDBACK",
+                            "slots": [
+                                {
+                                    "slot_id": "PROBLEM_SOLVING.FEEDBACK.NEED",
+                                    "level": 5,
+                                    "placeholder": "필요",
+                                    "example": "예시",
+                                }
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    source = [{"item_id": "it_1", "text": "피드백을 받아 개선했다"}]
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.BASIC.PROBLEM",
+            text=source[0]["text"],
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="blk_2",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.FEEDBACK.NEED",
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="하위 템플릿을 두 개 이상"):
+        _validate_output(
+            items,
+            source_items=source,
+            catalog=catalog,
+            state={"target_experience_alias": "exp_1", "alias_to_block_id": {"b_1": "305"}},
+        )

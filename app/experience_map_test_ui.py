@@ -5,6 +5,7 @@
 `EXPERIENCE_MAP_TEST_UI_ENABLED=true`일 때만 앱에 등록한다.
 """
 
+import html
 import os
 import secrets
 import time
@@ -49,8 +50,15 @@ def _issue_test_ticket(user_id: str, session_id: str) -> str:
 
 @router.get("", include_in_schema=False, response_class=HTMLResponse)
 async def test_page() -> HTMLResponse:
-    """브라우저에서 경험정리 흐름을 수동 검증하는 페이지를 반환한다."""
-    return HTMLResponse(TEST_PAGE_HTML)
+    """브라우저에서 경험정리 흐름을 수동 검증하는 페이지를 반환한다.
+
+    API 키 입력란에 실제 `AI_SERVICE_API_KEY`를 미리 채워 둔다. 하드코딩된
+    placeholder("demo-key")를 그대로 두면 로컬에서 세션 생성이 항상 401로
+    실패한다.
+    """
+    api_key = html.escape(os.getenv("AI_SERVICE_API_KEY", ""))
+    html_page = TEST_PAGE_HTML.replace('value="demo-key"', f'value="{api_key}"')
+    return HTMLResponse(html_page)
 
 
 @router.post("/session")
@@ -240,8 +248,8 @@ document.querySelector('#send').onclick = async () => {
   let streamSucceeded = false;
   try {
     const selected = blockSelect.selectedOptions[0];
-    const prompt = selected ? `수정 대상 블록: ${selected.dataset.blockText}\n\n사용자 지시: ${document.querySelector('#message').value}` : document.querySelector('#message').value;
-    addMessage('user', document.querySelector('#message').value); const form = new FormData(); form.append('request', JSON.stringify({ request_id: state.requestId, user_message: prompt, context_experience_id: selected?.dataset.activityId, view: document.querySelector('#view').value }));
+    const prompt = document.querySelector('#message').value;
+    addMessage('user', prompt); const form = new FormData(); form.append('request', JSON.stringify({ request_id: state.requestId, user_message: prompt, context_experience_id: selected?.dataset.activityId, view: document.querySelector('#view').value }));
     for (const file of document.querySelector('#files').files) form.append('files', file);
     await readSse(await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/chat/stream`, { method: 'POST', headers: authHeaders(), body: form }));
     streamSucceeded = true;
