@@ -452,6 +452,11 @@ class InMemoryTestMapStore:
             aliases = state.get("alias_to_block_id", {})
             previous_version = current.version
             applied: list[AppliedItem] = []
+            # 같은 커밋 배치 안에서 새로 만든 item_id → 실제 block_id. 구조화
+            # 노드가 새 카테고리(컨테이너 → 앵커 → level 5)를 만들 때 뒤 item이
+            # 앞 item을 parent_item_id로 가리키는데, 그 앞 item도 이번 배치에서
+            # 방금 생긴 블록이라 미리 alias_to_block_id에 있을 수 없다.
+            new_block_ids: dict[str, str] = {}
 
             for raw in state.get("commit_items", []):
                 item = StructuredItem.model_validate(raw)
@@ -480,7 +485,10 @@ class InMemoryTestMapStore:
                     )
                     continue
 
-                parent_id = aliases.get(item.parent_ref or "")
+                if item.parent_item_id is not None:
+                    parent_id = new_block_ids.get(item.parent_item_id)
+                else:
+                    parent_id = aliases.get(item.parent_ref or "")
                 if parent_id is None or parent_id not in by_id:
                     raise ValueError("테스트 맵에서 추가 대상 부모 블록을 찾을 수 없습니다.")
                 parent = by_id[parent_id]
@@ -505,6 +513,7 @@ class InMemoryTestMapStore:
                 )
                 current.rows.append(added)
                 by_id[new_id] = added
+                new_block_ids[item.item_id] = new_id
                 applied.append(
                     AppliedItem(item_id=item.item_id, block_id=new_id, path=_path(by_id, new_id))
                 )

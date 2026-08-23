@@ -80,6 +80,48 @@ async def test_test_map_store_applies_update_to_selected_block():
 
 
 @pytest.mark.asyncio
+async def test_test_map_store_resolves_parent_item_id_chain_within_one_commit():
+    """새 카테고리(컨테이너 → 앵커 → level 5)는 같은 커밋 배치 안에서 서로를
+    parent_item_id로 가리킨다. 이 배치 안에서 방금 만든 블록이라
+    alias_to_block_id에 미리 있을 수 없으니, 커밋 처리 중에 새로 배정한
+    block_id로 직접 풀어야 한다.
+    """
+    store = InMemoryTestMapStore()
+
+    updated = await store.commit(
+        {
+            "user_id": "9000004",
+            "request_id": "550e8400-e29b-41d4-a716-446655440003",
+            "alias_to_block_id": {"exp_1": "200"},
+            "commit_items": [
+                {
+                    "item_id": "blk_1",
+                    "action": "add",
+                    "parent_ref": "exp_1",
+                    "section_kind": "TASK",
+                },
+                {
+                    "item_id": "blk_2",
+                    "action": "add",
+                    "parent_item_id": "blk_1",
+                    "slot_id": "TASK.SUMMARY",
+                    "text": "백엔드 API 설계를 담당했다.",
+                },
+            ],
+        }
+    )
+
+    applied = {item["item_id"]: item["block_id"] for item in updated["commit_result"]["applied"]}
+    after = await store.snapshot("9000004")
+    contents = after.block_contents()
+    assert contents[applied["blk_2"]] == "백엔드 API 설계를 담당했다."
+    # 컨테이너(blk_1) 밑에 실제로 붙었는지 path로 확인한다 — parent_item_id가
+    # 안 풀리면 애초에 commit()이 ValueError를 던져서 여기까지 오지 못한다.
+    applied_path = {item["item_id"]: item["path"] for item in updated["commit_result"]["applied"]}
+    assert applied_path["blk_2"] == "교내 커머스 리뉴얼"
+
+
+@pytest.mark.asyncio
 async def test_applied_path_points_at_the_parent_category():
     """`path`는 블록이 **놓인 자리**다. 블록 자신도, 최상위 루트도 넣지 않는다.
 
