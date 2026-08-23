@@ -10,6 +10,7 @@ from app.schemas.experience_map import (
     CompletedMessage,
     ExperienceMapEvent,
     MessageCompleteEvent,
+    NodeStatusEvent,
     SuggestionGap,
     SuggestionReadyEvent,
 )
@@ -40,6 +41,7 @@ async def coordinate(
     넘겨 서로의 중간 필드를 덮어쓰지 못하게 한다.
     """
     run_gap = gap_runner or _run_gap
+    yield NodeStatusEvent(node="commit", status="running")
     commit_task = asyncio.create_task(commit_runner(dict(state)))
     gap_task = asyncio.create_task(run_gap(dict(state)))
 
@@ -51,6 +53,7 @@ async def coordinate(
             await gap_task
         raise
 
+    yield NodeStatusEvent(node="commit", status="completed")
     result = CommitResult.model_validate(committed_state.get("commit_result"))
     yield CommitResultEvent(result=result)
     yield MessageCompleteEvent(

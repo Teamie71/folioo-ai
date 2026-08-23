@@ -45,6 +45,7 @@ NodeName = Literal[
     "commit",
     "gap_analysis",
     "suggestion_response",
+    "fallback",
 ]
 
 

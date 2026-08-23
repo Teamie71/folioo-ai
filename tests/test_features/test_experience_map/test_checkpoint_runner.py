@@ -6,17 +6,22 @@ from langgraph.checkpoint.memory import InMemorySaver
 from app.schemas.experience_map import MessageCompleteEvent, NodeStatusEvent
 from features.experience_map import graph as graph_module
 from features.experience_map.graph_runner import CheckpointGraphRunner, _state_events
+from features.experience_map.nodes.fallback import FALLBACK_MESSAGES
 
 
 class GraphStub:
-    """ainvoke 입력을 기록하는 compiled graph 대역."""
+    """astream_events 입력을 기록하고 최종 state 하나만 내는 compiled graph 대역."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[object, dict]] = []
 
-    async def ainvoke(self, value, config):
+    async def astream_events(self, value, config, version="v2"):
         self.calls.append((value, config))
-        return {"request_id": "request"}
+        yield {
+            "event": "on_chain_end",
+            "name": "LangGraph",
+            "data": {"output": {"request_id": "request"}},
+        }
 
 
 async def events(state):
@@ -51,7 +56,7 @@ async def test_run_passes_new_state_to_graph():
 
 @pytest.mark.asyncio
 async def test_out_of_scope_input_runs_graph_and_emits_fallback_sse(monkeypatch):
-    """기능 밖 입력은 실제 graph 배선을 거쳐 fallback SSE 하나로 끝난다."""
+    """기능 밖 입력은 실제 graph 배선을 거쳐 router node_status + fallback SSE로 끝난다."""
 
     async def out_of_scope(state):
         return {**state, "intent": "out_of_scope", "fallback_reason": "out_of_scope"}
@@ -68,11 +73,13 @@ async def test_out_of_scope_input_runs_graph_and_emits_fallback_sse(monkeypatch)
         )
     ]
 
-    assert len(events) == 1
-    assert isinstance(events[0], MessageCompleteEvent)
-    assert events[0].message.response_kind == "fallback"
-    assert events[0].message.committed is False
-    assert events[0].message.ai_response == "아직 지원하지 않는 기능이에요."
+    node_events = [event for event in events if isinstance(event, NodeStatusEvent)]
+    message_events = [event for event in events if isinstance(event, MessageCompleteEvent)]
+    assert {event.node for event in node_events} == {"router", "fallback"}
+    assert len(message_events) == 1
+    assert message_events[0].message.response_kind == "fallback"
+    assert message_events[0].message.committed is False
+    assert message_events[0].message.ai_response == FALLBACK_MESSAGES["out_of_scope"]
 
 
 @pytest.mark.asyncio
@@ -103,10 +110,10 @@ async def test_unreadable_file_runs_graph_and_emits_file_fallback_sse(monkeypatc
         )
     ]
 
-    assert len(events) == 1
-    assert isinstance(events[0], MessageCompleteEvent)
-    assert events[0].message.response_kind == "fallback"
-    assert events[0].message.ai_response.startswith("파일에서 내용을 읽지 못했어요.")
+    message_events = [event for event in events if isinstance(event, MessageCompleteEvent)]
+    assert len(message_events) == 1
+    assert message_events[0].message.response_kind == "fallback"
+    assert message_events[0].message.ai_response.startswith("파일에서 내용을 읽지 못했어요.")
 
 
 @pytest.mark.asyncio
@@ -227,7 +234,8 @@ async def test_gap_answer_uses_expected_graph_path_before_commit(
         )
     ]
 
-    assert events == []
+    # capture_state는 아무것도 안 내므로, 남는 건 실제 graph가 낸 node_status뿐이다.
+    assert all(isinstance(event, NodeStatusEvent) for event in events)
     assert calls == expected_path
     assert len(completed_states) == 1
     assert completed_states[0]["commit_items"]

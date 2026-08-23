@@ -19,7 +19,8 @@ async def test_demo_endpoint_returns_events_and_in_memory_map():
 
     assert response.status_code == 200
     body = response.json()
-    assert [event["type"] for event in body["events"]] == [
+    non_status_events = [event["type"] for event in body["events"] if event["type"] != "node_status"]
+    assert non_status_events == [
         "commit_result",
         "message_complete",
         "suggestion_ready",
