@@ -106,7 +106,7 @@ def fake_dependencies(monkeypatch):
         client = TemplateCatalogClient(_fetcher)
         monkeypatch.setattr(structure_node, "get_template_catalog_client", lambda: client)
 
-        def _handle(prompt_value) -> StructureOutput:
+        async def _handle(prompt_value) -> StructureOutput:
             prompts.append(prompt_value.to_string())
             if isinstance(result, Exception):
                 raise result

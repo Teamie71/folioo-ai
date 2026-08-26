@@ -36,6 +36,7 @@ FallbackReason = Literal["out_of_scope", "file_unreadable", "nothing_to_apply", 
 NodeName = Literal[
     "router",
     "file_processor",
+    "file_cleanup",
     "content_filter",
     "target_activity",
     "gap_resolver",
@@ -243,6 +244,8 @@ class StructuredItem(BaseModel):
                 raise ValueError("update는 부모를 바꿀 수 없습니다.")
             if self.section_kind is not None:
                 raise ValueError("update는 section_kind를 가질 수 없습니다.")
+            if self.slot_id is not None or self.after_ref is not None:
+                raise ValueError("update는 slot_id·after_ref를 가질 수 없습니다.")
 
         return self
 

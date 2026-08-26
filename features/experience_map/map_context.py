@@ -6,6 +6,8 @@ DB 조회는 메인 서버 DDL이 확정된 뒤 Repository에 붙인다. 이 모
 
 from dataclasses import dataclass, field
 
+from features.experience_map.state import AliasBlockMetadata
+
 
 @dataclass(frozen=True)
 class MapBlockRow:
@@ -38,6 +40,7 @@ class ActivityContext:
     activity_id: str
     tree_text: str
     alias_to_block_id: dict[str, str]
+    alias_metadata: dict[str, AliasBlockMetadata]
 
     def resolve_alias(self, alias: str) -> str | None:
         """현재 활동 컨텍스트에 있는 alias만 실제 ID로 역변환한다."""
@@ -89,23 +92,32 @@ class ExperienceMapSnapshot:
             return None
 
         alias_to_block_id = {activity_alias: activity.row.block_id}
+        alias_metadata: dict[str, AliasBlockMetadata] = {}
         next_block_alias = 1
 
-        def render(node: MapBlock, depth: int, alias: str) -> list[str]:
+        def render(node: MapBlock, depth: int, alias: str, parent_alias: str | None) -> list[str]:
             nonlocal next_block_alias
+            alias_metadata[alias] = {
+                "block_id": node.row.block_id,
+                "parent_alias": parent_alias,
+                "level": node.row.level,
+                "kind": node.row.kind,
+                "is_text_editable": node.row.is_text_editable,
+            }
             lines = [f"{'  ' * depth}[{alias}] {_label(node)}"]
             for child in node.children:
                 child_alias = _block_alias(next_block_alias)
                 next_block_alias += 1
                 alias_to_block_id[child_alias] = child.row.block_id
-                lines.extend(render(child, depth + 1, child_alias))
+                lines.extend(render(child, depth + 1, child_alias, alias))
             return lines
 
         return ActivityContext(
             activity_alias=activity_alias,
             activity_id=activity.row.block_id,
-            tree_text="\n".join(render(activity, 0, activity_alias)),
+            tree_text="\n".join(render(activity, 0, activity_alias, None)),
             alias_to_block_id=alias_to_block_id,
+            alias_metadata=alias_metadata,
         )
 
     def block_id_to_activity_alias(self) -> dict[str, str]:

@@ -13,7 +13,11 @@ from features.experience_map.extractors import (
     extractor_kind,
 )
 from features.experience_map.nodes import file_processor as node_module
-from features.experience_map.nodes.file_processor import next_node, process_files
+from features.experience_map.nodes.file_processor import (
+    cleanup_extracted_files,
+    next_node,
+    process_files,
+)
 from features.experience_map.state import start_turn
 from features.experience_map.upload_store import UploadStore
 
@@ -145,14 +149,16 @@ async def test_source_hash_and_extractor_are_recorded(store, fake_extract):
 
 
 @pytest.mark.asyncio
-async def test_original_is_deleted_after_extraction(store, fake_extract):
-    """추출 결과가 checkpoint 에 남으므로 원본은 바로 지운다."""
+async def test_original_is_deleted_only_after_checkpoint_cleanup_node(store, fake_extract):
+    """추출 state를 반환한 뒤 별도 cleanup 단계에서만 원본을 지운다."""
     ref = reference("f_1", "메모.txt", "text/plain")
     store.objects[ref["gcs_object"]] = b"x"
     fake_extract({"메모.txt": "글"})
 
-    await process_files(make_state(file_references=[ref]))
+    extracted = await process_files(make_state(file_references=[ref]))
 
+    assert store.deleted == []
+    await cleanup_extracted_files(extracted)
     assert ref["gcs_object"] in store.deleted
 
 

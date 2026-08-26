@@ -147,6 +147,7 @@ def _select_with_context(updated: dict, activity_alias: str) -> None:
     if context:
         updated["activity_tree_text"] = context["tree_text"]
         updated["alias_to_block_id"] = context["alias_to_block_id"]
+        updated["alias_metadata"] = context["alias_metadata"]
 
 
 def next_node(state: ExperienceMapState) -> str:

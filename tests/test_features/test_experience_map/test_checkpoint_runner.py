@@ -10,18 +10,14 @@ from features.experience_map.nodes.fallback import FALLBACK_MESSAGES
 
 
 class GraphStub:
-    """astream_events 입력을 기록하고 최종 state 하나만 내는 compiled graph 대역."""
+    """astream 입력을 기록하고 최종 state 하나만 내는 compiled graph 대역."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[object, dict]] = []
 
-    async def astream_events(self, value, config, version="v2"):
-        self.calls.append((value, config))
-        yield {
-            "event": "on_chain_end",
-            "name": "LangGraph",
-            "data": {"output": {"request_id": "request"}},
-        }
+    async def astream(self, value, config, **kwargs):
+        self.calls.append((value, config, kwargs))
+        yield "values", {"request_id": "request"}
 
 
 async def events(state):
@@ -38,9 +34,14 @@ async def test_resume_uses_checkpoint_without_replaying_input_state():
     received = [event async for event in runner.resume({"session_id": "session-1"})]
 
     assert received[0].node == "refine"
-    assert graph.calls == [
-        (None, {"configurable": {"thread_id": "session-1", "checkpoint_ns": "experience_map"}})
-    ]
+    assert graph.calls[0][0:2] == (
+        None,
+        {"configurable": {"thread_id": "session-1", "checkpoint_ns": "experience_map"}},
+    )
+    assert graph.calls[0][2] == {
+        "stream_mode": ["tasks", "values"],
+        "durability": "sync",
+    }
 
 
 @pytest.mark.asyncio
@@ -110,7 +111,14 @@ async def test_unreadable_file_runs_graph_and_emits_file_fallback_sse(monkeypatc
         )
     ]
 
+    node_events = [event for event in events if isinstance(event, NodeStatusEvent)]
     message_events = [event for event in events if isinstance(event, MessageCompleteEvent)]
+    assert {event.node for event in node_events} == {
+        "router",
+        "file_processor",
+        "file_cleanup",
+        "fallback",
+    }
     assert len(message_events) == 1
     assert message_events[0].message.response_kind == "fallback"
     assert message_events[0].message.ai_response.startswith("파일에서 내용을 읽지 못했어요.")
@@ -230,6 +238,22 @@ async def test_gap_answer_uses_expected_graph_path_before_commit(
                 "user_id": "1",
                 "active_gap": {"gap_type": gap_type, "anchor_block_id": "305"},
                 "alias_to_block_id": {"exp_1": "101", "b_1": "305"},
+                "alias_metadata": {
+                    "exp_1": {
+                        "block_id": "101",
+                        "parent_alias": None,
+                        "level": 2,
+                        "kind": "ACTIVITY",
+                        "is_text_editable": False,
+                    },
+                    "b_1": {
+                        "block_id": "305",
+                        "parent_alias": "exp_1",
+                        "level": 4,
+                        "kind": "ITEM",
+                        "is_text_editable": True,
+                    },
+                },
             }
         )
     ]

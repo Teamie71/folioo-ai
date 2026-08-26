@@ -51,7 +51,7 @@ def fake_llm(monkeypatch):
     def _set(result: RefinementOutput | Exception) -> list[str]:
         prompts: list[str] = []
 
-        def _handle(prompt_value) -> RefinementOutput:
+        async def _handle(prompt_value) -> RefinementOutput:
             prompts.append(prompt_value.to_string())
             if isinstance(result, Exception):
                 raise result

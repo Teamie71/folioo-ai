@@ -43,7 +43,7 @@ def fake_llm(monkeypatch):
     def _set(result: GapOutput | Exception) -> list[str]:
         prompts: list[str] = []
 
-        def _handle(prompt_value) -> GapOutput:
+        async def _handle(prompt_value) -> GapOutput:
             prompts.append(prompt_value.to_string())
             if isinstance(result, Exception):
                 raise result

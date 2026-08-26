@@ -2,9 +2,9 @@
 
 업로드한 파일에서 텍스트를 뽑아 `extracted_text` 를 채운다.
 
-**추출에 성공한 파일의 원본은 즉시 지운다.** 결과는 checkpoint 에 남으므로,
-재시도할 때 원본이 없어도 이어서 갈 수 있다. 반대로 추출 자체가 실패하면
-원본을 1시간 유지해 다른 worker 가 다시 시도할 수 있게 한다 (명세 4-4).
+**추출에 성공한 파일의 원본은 다음 `file_cleanup` 노드에서 지운다.** 노드를
+분리하면 LangGraph가 추출 결과를 checkpoint한 뒤에만 삭제가 시작된다. 반대로
+추출 자체가 실패하면 원본을 1시간 유지해 다른 worker가 다시 시도할 수 있다.
 
 **두 실패를 구분한다.**
 
@@ -79,9 +79,6 @@ async def process_files(state: ExperienceMapState) -> ExperienceMapState:
                 extractor=extractor_kind(reference["content_type"]),
             )
         )
-        # 추출 결과가 checkpoint 에 남으므로 원본은 더 필요하지 않다.
-        await store.delete_object(reference["gcs_object"])
-
     updated["extracted_files"] = extracted
     updated["extracted_text"] = _join(extracted, references)
 
@@ -92,6 +89,26 @@ async def process_files(state: ExperienceMapState) -> ExperienceMapState:
     elif unreadable:
         logger.info("file_processor: %d개 추출, %d개는 읽지 못했습니다", len(extracted), unreadable)
 
+    return updated  # type: ignore[return-value]
+
+
+async def cleanup_extracted_files(state: ExperienceMapState) -> ExperienceMapState:
+    """checkpoint된 추출 결과가 있는 파일의 GCS 원본만 삭제한다.
+
+    이 노드는 `file_processor` 다음 superstep에서 실행된다. 따라서 프로세스가
+    삭제 도중 종료돼도 직전 checkpoint의 `extracted_files`로 재개할 수 있다.
+    읽을 수 없었던 파일과 시스템 오류가 난 파일은 TTL 복구를 위해 남긴다.
+    """
+    updated = dict(state)
+    updated["current_node"] = "file_cleanup"
+    extracted_ids = {item["file_id"] for item in state.get("extracted_files") or []}
+    if not extracted_ids:
+        return updated  # type: ignore[return-value]
+
+    store = get_upload_store()
+    for reference in state.get("file_references") or []:
+        if reference["file_id"] in extracted_ids:
+            await store.delete_object(reference["gcs_object"])
     return updated  # type: ignore[return-value]
 
 

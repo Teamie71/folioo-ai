@@ -15,8 +15,7 @@
 import logging
 
 from common.llm import get_experience_map_llm
-from features.experience_map.config import get_settings
-from features.experience_map.errors import LlmError
+from features.experience_map.config import NODE_MAX_ATTEMPTS, get_settings
 from features.experience_map.prompts.router import build_gap_context, router_prompt
 from features.experience_map.schemas import RouterOutput
 from features.experience_map.state import ExperienceMapState
@@ -27,9 +26,8 @@ logger = logging.getLogger(__name__)
 async def route(state: ExperienceMapState) -> ExperienceMapState:
     """입력 의도를 판정해 `intent` 를 채운다.
 
-    Raises:
-        LlmError: LLM 호출 실패. 자동 재시도 대상이며, 재시도 후에도 실패하면
-            graph 가 fallback 으로 보낸다 (5-1)
+    LLM 분류는 정확히 한 번 자동 재시도한다. 두 번 모두 실패하면 문서 5-1에 따라
+    시스템 실패로 남기지 않고 Fallback으로 완료한다.
     """
     updated = dict(state)
     updated["current_node"] = "router"
@@ -49,19 +47,27 @@ async def route(state: ExperienceMapState) -> ExperienceMapState:
         logger.info("router: 입력이 비어 out_of_scope")
         return updated  # type: ignore[return-value]
 
-    try:
-        llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
-        chain = router_prompt | llm.with_structured_output(RouterOutput)
-        result: RouterOutput = await chain.ainvoke(
-            {
-                "user_message": user_message,
-                "gap_context": build_gap_context(state.get("active_gap")),
-            }
-        )
-    except Exception as exc:
-        # 입력 원문은 로그에 남기지 않는다.
-        logger.exception("router: LLM 호출 실패")
-        raise LlmError("입력을 분류하지 못했습니다.", failed_node="router") from exc
+    result: RouterOutput | None = None
+    for attempt in range(1, NODE_MAX_ATTEMPTS + 1):
+        try:
+            llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
+            chain = router_prompt | llm.with_structured_output(RouterOutput)
+            result = await chain.ainvoke(
+                {
+                    "user_message": user_message,
+                    "gap_context": build_gap_context(state.get("active_gap")),
+                }
+            )
+            break
+        except Exception:
+            # 입력 원문과 예외 문자열은 로그에 남기지 않는다.
+            logger.warning("router: LLM 분류 실패 (%d/%d)", attempt, NODE_MAX_ATTEMPTS)
+
+    if result is None:
+        updated["intent"] = "out_of_scope"
+        updated["fallback_reason"] = "out_of_scope"
+        logger.warning("router: 분류 재시도 소진으로 fallback")
+        return updated  # type: ignore[return-value]
 
     updated["intent"] = result.intent
     if result.intent == "out_of_scope":

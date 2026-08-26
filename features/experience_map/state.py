@@ -65,6 +65,16 @@ class ValidationError(TypedDict):
     repair_target: Literal["structure", "refine"]
 
 
+class AliasBlockMetadata(TypedDict):
+    """선택 활동 alias가 가리키는 기존 블록의 검증용 메타데이터."""
+
+    block_id: str
+    parent_alias: str | None
+    level: int
+    kind: str
+    is_text_editable: bool
+
+
 class ExperienceMapState(TypedDict, total=False):
     """경험정리 그래프의 공유 state"""
 
@@ -98,6 +108,7 @@ class ExperienceMapState(TypedDict, total=False):
     outline: list[OutlineNode]
     target_experience_alias: str | None
     alias_to_block_id: dict[str, str]
+    alias_metadata: dict[str, AliasBlockMetadata]
     activity_tree_text: str | None
     block_id_to_experience_alias: dict[str, str]
     block_id_to_content: dict[str, str]
@@ -148,6 +159,7 @@ TURN_FIELD_DEFAULTS: dict[str, Any] = {
     "outline": [],
     "target_experience_alias": None,
     "alias_to_block_id": {},
+    "alias_metadata": {},
     "activity_tree_text": None,
     "block_id_to_experience_alias": {},
     "block_id_to_content": {},

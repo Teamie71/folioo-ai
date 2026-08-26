@@ -192,3 +192,54 @@ async def test_successful_gap_is_persisted_after_commit():
         "message_complete",
     ]
     assert saved == [("123", suggestion_state()["active_gap"])]
+
+
+@pytest.mark.asyncio
+async def test_first_map_conflict_reprocesses_and_restarts_gap_from_recovered_state():
+    """첫 충돌은 최신 state를 재처리하고 최종 items 기준으로 gap 분석을 다시 시작한다."""
+    commit_calls: list[dict] = []
+    gap_started: list[str] = []
+    first_gap_cancelled = asyncio.Event()
+
+    async def run_commit(input_state):
+        commit_calls.append(input_state)
+        if len(commit_calls) == 1:
+            return input_state | {"commit_recovery_node": "validate"}
+        return committed_state()
+
+    async def run_gap(input_state):
+        marker = str(input_state.get("recovered", "initial"))
+        gap_started.append(marker)
+        if marker == "initial":
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                first_gap_cancelled.set()
+                raise
+        return suggestion_state()
+
+    async def recover(input_state, entry_node):
+        assert entry_node == "validate"
+        return input_state | {
+            "recovered": "latest-map",
+            "commit_recovery_node": None,
+            "commit_items": [{"item_id": "add_1", "action": "add"}],
+        }
+
+    events = await collect(
+        commit_runner=run_commit,
+        gap_runner=run_gap,
+        recover_commit=recover,
+    )
+
+    assert first_gap_cancelled.is_set()
+    assert gap_started == ["initial", "latest-map"]
+    assert len(commit_calls) == 2
+    assert [event.type for event in events] == [
+        "node_status",
+        "node_status",
+        "commit_result",
+        "message_complete",
+        "suggestion_ready",
+        "message_complete",
+    ]

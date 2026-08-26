@@ -17,6 +17,22 @@ def make_state(**overrides):
     state.update(
         target_experience_alias="exp_1",
         alias_to_block_id={"exp_1": "101", "b_1": "305"},
+        alias_metadata={
+            "exp_1": {
+                "block_id": "101",
+                "parent_alias": None,
+                "level": 2,
+                "kind": "ACTIVITY",
+                "is_text_editable": False,
+            },
+            "b_1": {
+                "block_id": "305",
+                "parent_alias": "exp_1",
+                "level": 3,
+                "kind": "CATEGORY",
+                "is_text_editable": False,
+            },
+        },
         structured_items=[
             {
                 "item_id": "it_1",
@@ -94,10 +110,21 @@ def test_third_validation_drops_only_invalid_item():
 def test_gap_update_metadata_is_validated_with_structure_items():
     result = validate_operations(
         make_state(
+            alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306"},
+            alias_metadata={
+                **make_state()["alias_metadata"],
+                "b_2": {
+                    "block_id": "306",
+                    "parent_alias": "b_1",
+                    "level": 4,
+                    "kind": "ITEM",
+                    "is_text_editable": True,
+                },
+            },
             gap_update_item={
                 "item_id": "gap_update:305",
                 "action": "update",
-                "target_ref": "b_1",
+                "target_ref": "b_2",
                 "text": "기존 내용과 답변",
             },
             refined_items=[
@@ -110,6 +137,76 @@ def test_gap_update_metadata_is_validated_with_structure_items():
     assert result["commit_items"][-1] == {
         "item_id": "gap_update:305",
         "action": "update",
-        "target_ref": "b_1",
+        "target_ref": "b_2",
         "text": "결합 정제 결과",
     }
+
+
+def test_level_three_update_routes_back_to_structure():
+    result = validate_operations(
+        make_state(
+            structured_items=[
+                {"item_id": "it_1", "action": "update", "target_ref": "b_1", "text": "원문"}
+            ]
+        )
+    )
+
+    assert {error["code"] for error in result["validation_errors"]} >= {
+        "protected_level_update",
+        "not_text_editable",
+    }
+    assert next_node(result) == "structure"
+
+
+def test_level_five_parent_cannot_receive_child():
+    metadata = {
+        **make_state()["alias_metadata"],
+        "b_5": {
+            "block_id": "500",
+            "parent_alias": "b_1",
+            "level": 5,
+            "kind": "SUB_ITEM",
+            "is_text_editable": True,
+        },
+    }
+    result = validate_operations(
+        make_state(
+            alias_to_block_id={"exp_1": "101", "b_1": "305", "b_5": "500"},
+            alias_metadata=metadata,
+            structured_items=[
+                {"item_id": "it_1", "action": "add", "parent_ref": "b_5", "text": "원문"}
+            ],
+        )
+    )
+
+    assert result["validation_errors"][0]["code"] == "max_level_exceeded"
+
+
+def test_after_ref_must_be_sibling_under_same_parent():
+    metadata = {
+        **make_state()["alias_metadata"],
+        "b_2": {
+            "block_id": "306",
+            "parent_alias": "exp_1",
+            "level": 3,
+            "kind": "CATEGORY",
+            "is_text_editable": False,
+        },
+    }
+    result = validate_operations(
+        make_state(
+            alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306"},
+            alias_metadata=metadata,
+            structured_items=[
+                {
+                    "item_id": "it_1",
+                    "action": "add",
+                    "parent_ref": "b_1",
+                    "after_ref": "b_2",
+                    "text": "원문",
+                }
+            ],
+        )
+    )
+
+    assert any(error["code"] == "after_not_sibling" for error in result["validation_errors"])

@@ -49,7 +49,7 @@ def fake_llm(monkeypatch):
     def _set(result: TargetActivityOutput | Exception) -> list[str]:
         prompts: list[str] = []
 
-        def _handle(prompt_value) -> TargetActivityOutput:
+        async def _handle(prompt_value) -> TargetActivityOutput:
             prompts.append(prompt_value.to_string())
             if isinstance(result, Exception):
                 raise result
@@ -168,6 +168,15 @@ async def test_selection_applies_only_selected_activity_context(fake_llm):
                 "exp_2": {
                     "tree_text": "[exp_2] 추천 시스템 개선\n  [b_9] 주요성과",
                     "alias_to_block_id": {"exp_2": "202", "b_9": "909"},
+                    "alias_metadata": {
+                        "exp_2": {
+                            "block_id": "202",
+                            "parent_alias": None,
+                            "level": 2,
+                            "kind": "ACTIVITY",
+                            "is_text_editable": False,
+                        }
+                    },
                 }
             }
         )
@@ -175,3 +184,4 @@ async def test_selection_applies_only_selected_activity_context(fake_llm):
 
     assert result["activity_tree_text"] == "[exp_2] 추천 시스템 개선\n  [b_9] 주요성과"
     assert result["alias_to_block_id"] == {"exp_2": "202", "b_9": "909"}
+    assert result["alias_metadata"]["exp_2"]["block_id"] == "202"

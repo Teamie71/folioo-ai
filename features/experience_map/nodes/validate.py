@@ -2,7 +2,11 @@
 
 from pydantic import ValidationError as PydanticValidationError
 
-from features.experience_map.config import MAX_CONTENT_LENGTH, MAX_VALIDATION_REPAIRS
+from features.experience_map.config import (
+    MAX_BLOCK_LEVEL,
+    MAX_CONTENT_LENGTH,
+    MAX_VALIDATION_REPAIRS,
+)
 from features.experience_map.schemas import StructuredItem
 from features.experience_map.state import ExperienceMapState, ValidationError
 
@@ -91,7 +95,9 @@ def _validate_operations(
     """operation별 schema·alias·권한·content 제약을 검사한다."""
     errors: list[ValidationError] = []
     aliases = state.get("alias_to_block_id", {})
+    alias_metadata = state.get("alias_metadata", {})
     seen_items: set[str] = set()
+    new_item_levels: dict[str, int] = {}
 
     for index, raw in enumerate(operations):
         item_id = str(raw.get("item_id", f"__item_{index}"))
@@ -113,32 +119,45 @@ def _validate_operations(
             continue
 
         if item.action == "add":
-            if item.parent_ref is not None and item.parent_ref not in aliases:
-                errors.append(
-                    _error(item_id, "unknown_parent", "선택 활동 밖 부모 별칭입니다.", "structure")
-                )
-            if item.parent_item_id is not None and item.parent_item_id not in seen_items:
-                errors.append(
-                    _error(
-                        item_id, "parent_order", "신규 부모는 앞선 item이어야 합니다.", "structure"
-                    )
-                )
-        elif item.target_ref not in aliases:
-            errors.append(
-                _error(item_id, "unknown_target", "선택 활동 밖 수정 대상 별칭입니다.", "structure")
+            parent_level = _validate_add_parent(
+                item,
+                item_id=item_id,
+                aliases=aliases,
+                alias_metadata=alias_metadata,
+                seen_items=seen_items,
+                new_item_levels=new_item_levels,
+                errors=errors,
+            )
+            if parent_level is not None:
+                item_level = parent_level + 1
+                new_item_levels[item.item_id] = item_level
+                _validate_add_level(item, item_id=item_id, item_level=item_level, errors=errors)
+            _validate_after_ref(
+                item,
+                item_id=item_id,
+                aliases=aliases,
+                alias_metadata=alias_metadata,
+                errors=errors,
+            )
+        else:
+            _validate_update_target(
+                item,
+                item_id=item_id,
+                aliases=aliases,
+                alias_metadata=alias_metadata,
+                errors=errors,
             )
 
         if item.after_ref is not None and item.after_ref not in aliases:
             errors.append(
                 _error(item_id, "unknown_after", "선택 활동 밖 형제 별칭입니다.", "structure")
             )
-        if item.action == "update" and item.target_ref == state.get("target_experience_alias"):
-            errors.append(
-                _error(item_id, "activity_edit", "level 2 활동은 수정할 수 없습니다.", "structure")
-            )
-
         text = item.text
-        if text is not None and not text.strip():
+        if item.action == "update" and text is None:
+            errors.append(
+                _error(item_id, "missing_update_content", "수정할 내용이 필요합니다.", "refine")
+            )
+        elif text is not None and not text.strip():
             errors.append(
                 _error(item_id, "empty_content", "내용은 공백만일 수 없습니다.", "refine")
             )
@@ -147,6 +166,170 @@ def _validate_operations(
                 _error(item_id, "content_too_long", "내용이 최대 글자 수를 넘었습니다.", "refine")
             )
     return errors
+
+
+def _validate_add_parent(
+    item: StructuredItem,
+    *,
+    item_id: str,
+    aliases: dict,
+    alias_metadata: dict,
+    seen_items: set[str],
+    new_item_levels: dict[str, int],
+    errors: list[ValidationError],
+) -> int | None:
+    """기존·신규 부모의 존재와 위계를 확인한다."""
+    if item.parent_ref is not None:
+        if item.parent_ref not in aliases:
+            errors.append(
+                _error(item_id, "unknown_parent", "선택 활동 밖 부모 별칭입니다.", "structure")
+            )
+            return None
+        parent_metadata = alias_metadata.get(item.parent_ref)
+        if parent_metadata is None:
+            errors.append(
+                _error(
+                    item_id,
+                    "missing_parent_metadata",
+                    "부모 블록의 위계 정보를 확인할 수 없습니다.",
+                    "structure",
+                )
+            )
+            return None
+        return int(parent_metadata["level"])
+
+    parent_item_id = item.parent_item_id
+    if parent_item_id not in seen_items:
+        errors.append(
+            _error(item_id, "parent_order", "신규 부모는 앞선 item이어야 합니다.", "structure")
+        )
+        return None
+    parent_level = new_item_levels.get(parent_item_id or "")
+    if parent_level is None:
+        errors.append(
+            _error(
+                item_id,
+                "invalid_new_parent",
+                "신규 부모의 위계를 확인할 수 없습니다.",
+                "structure",
+            )
+        )
+    return parent_level
+
+
+def _validate_add_level(
+    item: StructuredItem,
+    *,
+    item_id: str,
+    item_level: int,
+    errors: list[ValidationError],
+) -> None:
+    """생성 블록의 최대 위계와 slot·section 위계를 확인한다."""
+    if item_level > MAX_BLOCK_LEVEL:
+        errors.append(
+            _error(
+                item_id,
+                "max_level_exceeded",
+                "level 5 아래에는 블록을 추가할 수 없습니다.",
+                "structure",
+            )
+        )
+    if item.section_kind is not None and item_level != 3:
+        errors.append(
+            _error(
+                item_id,
+                "invalid_section_level",
+                "section_kind는 level 3 카테고리 생성에만 사용할 수 있습니다.",
+                "structure",
+            )
+        )
+    if item.slot_id is not None and item_level != item.slot_id.count(".") + 3:
+        errors.append(
+            _error(
+                item_id,
+                "slot_level_mismatch",
+                "slot_id 형식과 생성 블록의 위계가 일치하지 않습니다.",
+                "structure",
+            )
+        )
+
+
+def _validate_after_ref(
+    item: StructuredItem,
+    *,
+    item_id: str,
+    aliases: dict,
+    alias_metadata: dict,
+    errors: list[ValidationError],
+) -> None:
+    """after_ref가 같은 기존 부모 아래의 형제인지 확인한다."""
+    if item.after_ref is None or item.after_ref not in aliases:
+        return
+    after_metadata = alias_metadata.get(item.after_ref)
+    if after_metadata is None:
+        errors.append(
+            _error(
+                item_id,
+                "missing_after_metadata",
+                "after_ref 블록의 부모 정보를 확인할 수 없습니다.",
+                "structure",
+            )
+        )
+        return
+    if item.parent_ref is None or after_metadata["parent_alias"] != item.parent_ref:
+        errors.append(
+            _error(
+                item_id,
+                "after_not_sibling",
+                "after_ref는 같은 부모의 기존 형제 블록이어야 합니다.",
+                "structure",
+            )
+        )
+
+
+def _validate_update_target(
+    item: StructuredItem,
+    *,
+    item_id: str,
+    aliases: dict,
+    alias_metadata: dict,
+    errors: list[ValidationError],
+) -> None:
+    """수정 대상의 소유권, 위계, 텍스트 편집 권한을 확인한다."""
+    if item.target_ref not in aliases:
+        errors.append(
+            _error(item_id, "unknown_target", "선택 활동 밖 수정 대상 별칭입니다.", "structure")
+        )
+        return
+    target_metadata = alias_metadata.get(item.target_ref or "")
+    if target_metadata is None:
+        errors.append(
+            _error(
+                item_id,
+                "missing_target_metadata",
+                "수정 대상의 위계·편집 권한을 확인할 수 없습니다.",
+                "structure",
+            )
+        )
+        return
+    if target_metadata["level"] <= 3:
+        errors.append(
+            _error(
+                item_id,
+                "protected_level_update",
+                "level 1~3 블록은 수정할 수 없습니다.",
+                "structure",
+            )
+        )
+    if not target_metadata["is_text_editable"]:
+        errors.append(
+            _error(
+                item_id,
+                "not_text_editable",
+                "텍스트 편집이 허용되지 않은 블록입니다.",
+                "structure",
+            )
+        )
 
 
 def _error(item_id: str, code: str, message: str, repair_target: str) -> ValidationError:

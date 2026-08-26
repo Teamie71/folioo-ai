@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
+from typing import Literal
 
 from app.schemas.experience_map import (
     CommitResultEvent,
@@ -24,6 +25,9 @@ from features.experience_map.state import ExperienceMapState
 logger = logging.getLogger(__name__)
 
 StateRunner = Callable[[ExperienceMapState], Awaitable[ExperienceMapState]]
+CommitRecoveryRunner = Callable[
+    [ExperienceMapState, Literal["validate", "structure"]], Awaitable[ExperienceMapState]
+]
 ActiveGapSaver = Callable[[str, dict | None], Awaitable[None]]
 
 
@@ -32,6 +36,7 @@ async def coordinate(
     *,
     commit_runner: StateRunner = commit_changes,
     gap_runner: StateRunner | None = None,
+    recover_commit: CommitRecoveryRunner | None = None,
     save_active_gap: ActiveGapSaver | None = None,
 ) -> AsyncIterator[ExperienceMapEvent]:
     """커밋 결과를 우선 보내고, 늦은 gap 분석은 뒤이어 보낸다.
@@ -42,11 +47,25 @@ async def coordinate(
     """
     run_gap = gap_runner or _run_gap
     yield NodeStatusEvent(node="commit", status="running")
-    commit_task = asyncio.create_task(commit_runner(dict(state)))
-    gap_task = asyncio.create_task(run_gap(dict(state)))
+    commit_input = dict(state)
+    commit_task = asyncio.create_task(commit_runner(commit_input))
+    gap_task = asyncio.create_task(run_gap(dict(commit_input)))
 
     try:
         committed_state = await commit_task
+        while recovery_node := committed_state.get("commit_recovery_node"):
+            if recover_commit is None:
+                raise RuntimeError("map version 충돌 복구 실행기가 설정되지 않았습니다.")
+
+            # 최초 commit items를 기준으로 돌던 gap 분석 결과는 더 이상 유효하지 않다.
+            # 최신 맵에서 재구성·재검증한 state를 기준으로 다시 분석한다.
+            gap_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await gap_task
+
+            recovered_state = await recover_commit(committed_state, recovery_node)
+            gap_task = asyncio.create_task(run_gap(dict(recovered_state)))
+            committed_state = await commit_runner(dict(recovered_state))
     except BaseException:
         gap_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
@@ -105,4 +124,4 @@ def _required_string(state: ExperienceMapState, field: str) -> str:
     return value
 
 
-__all__ = ["ActiveGapSaver", "StateRunner", "coordinate"]
+__all__ = ["ActiveGapSaver", "CommitRecoveryRunner", "StateRunner", "coordinate"]

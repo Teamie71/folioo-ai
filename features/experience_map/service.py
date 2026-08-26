@@ -557,6 +557,7 @@ async def _build_state(
         alias: {
             "tree_text": context.tree_text,
             "alias_to_block_id": context.alias_to_block_id,
+            "alias_metadata": context.alias_metadata,
         }
         for alias in state["block_id_to_experience_alias"].values()
         if (context := snapshot.get_activity_context(alias)) is not None
@@ -576,6 +577,7 @@ def _apply_activity_context(state: ExperienceMapState, activity_alias: str) -> N
     state["target_experience_alias"] = activity_alias
     state["activity_tree_text"] = context["tree_text"]
     state["alias_to_block_id"] = context["alias_to_block_id"]
+    state["alias_metadata"] = context["alias_metadata"]
 
 
 def _to_request_state(row: RequestRow) -> RequestStateResponse:

@@ -42,6 +42,10 @@ async def test_input_kind_reaches_new_block_commit_candidate(
             "extracted_text": source_text,
         }
 
+    async def cleanup_files(state):
+        calls.append("file_cleanup")
+        return {**state, "current_node": "file_cleanup"}
+
     async def filter_content(state):
         calls.append("content_filter")
         assert state.get("extracted_text") == source_text if state.get("file_references") else True
@@ -91,6 +95,7 @@ async def test_input_kind_reaches_new_block_commit_candidate(
 
     monkeypatch.setattr(graph_module, "route", route)
     monkeypatch.setattr(graph_module, "process_files", process_files)
+    monkeypatch.setattr(graph_module, "cleanup_extracted_files", cleanup_files)
     monkeypatch.setattr(graph_module, "filter_content", filter_content)
     monkeypatch.setattr(graph_module, "select_target_activity", select_target)
     monkeypatch.setattr(graph_module, "structure_blocks", structure)
@@ -117,12 +122,28 @@ async def test_input_kind_reaches_new_block_commit_candidate(
             else []
         ),
         "alias_to_block_id": {"exp_1": "101", "b_1": "305"},
+        "alias_metadata": {
+            "exp_1": {
+                "block_id": "101",
+                "parent_alias": None,
+                "level": 2,
+                "kind": "experience",
+                "is_text_editable": False,
+            },
+            "b_1": {
+                "block_id": "305",
+                "parent_alias": "exp_1",
+                "level": 3,
+                "kind": "category",
+                "is_text_editable": False,
+            },
+        },
     }
     result = await graph.ainvoke(state, build_thread_config(state["session_id"]))
 
     expected = ["router"]
     if content_type:
-        expected.append("file_processor")
+        expected.extend(["file_processor", "file_cleanup"])
     expected.extend(["content_filter", "target_activity", "structure", "refine"])
     assert calls == expected
     assert result["commit_items"] == [
