@@ -327,3 +327,56 @@ async def test_unsupported_type_is_unreadable():
 )
 def test_extractor_kind(content_type, expected):
     assert extractor_kind(content_type) == expected
+
+
+# ===== OCR 첨부 블록 형식 =====
+
+
+def test_pdf_uses_file_block_not_image_url():
+    """PDF 는 `type: file` 블록으로 보낸다.
+
+    `image_url` 은 PNG·JPEG 전용이다. PDF 를 거기 넣으면 모델이 이미지로
+    해석을 시도하다 실패해, 완전히 못 읽지도 않고 깨끗이 읽지도 못한 애매한
+    텍스트가 나온다. 그 결과 content_filter 가 정상 경험 서술문을 "불분명함"
+    으로 걸러내는 조용한 실패로 이어진다.
+    """
+    block = extractors._ocr_attachment_block("application/pdf", "resume.pdf", "QkFTRTY0")
+
+    assert block == {
+        "type": "file",
+        "file": {"filename": "resume.pdf", "file_data": "data:application/pdf;base64,QkFTRTY0"},
+    }
+
+
+@pytest.mark.parametrize("content_type", ["image/png", "image/jpeg"])
+def test_images_still_use_image_url(content_type):
+    """이미지는 그대로 `image_url` 블록을 쓴다."""
+    block = extractors._ocr_attachment_block(content_type, "shot.png", "QkFTRTY0")
+
+    assert block == {
+        "type": "image_url",
+        "image_url": {"url": f"data:{content_type};base64,QkFTRTY0"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_extract_with_ocr_sends_pdf_as_file_block(monkeypatch):
+    """`extract_with_ocr` 이 실제로 file 블록을 태워 보내는지 end-to-end 로 본다."""
+    captured: list = []
+
+    class _FakeResponse:
+        content = "추출된 텍스트"
+
+    class _FakeLlm:
+        async def ainvoke(self, messages):
+            captured.extend(messages[0].content)
+            return _FakeResponse()
+
+    monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: _FakeLlm())
+
+    text = await extractors.extract_with_ocr(b"%PDF-1.4 ...", "resume.pdf", "application/pdf")
+
+    assert text == "추출된 텍스트"
+    attachment = next(block for block in captured if block.get("type") != "text")
+    assert attachment["type"] == "file"
+    assert attachment["file"]["filename"] == "resume.pdf"

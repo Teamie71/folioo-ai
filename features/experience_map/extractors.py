@@ -125,6 +125,28 @@ async def extract_with_parser(data: bytes, filename: str, content_type: str) -> 
     return _truncate(text)
 
 
+def _ocr_attachment_block(content_type: str, filename: str, encoded: str) -> dict:
+    """콘텐츠 타입에 맞는 첨부 블록을 만든다.
+
+    **`image_url` 은 PNG·JPEG 전용이다.** PDF 를 여기 넣으면 모델이 이미지로
+    해석을 시도하다 실패한다. 완전히 못 읽지도 않고(그러면 `FileUnreadableError`
+    로 걸린다) 깨끗이 읽지도 못한 애매한 텍스트가 나와서, 다음 단계인
+    content_filter 가 "불분명함"으로 정확히 분류하고 마는 조용한 실패였다.
+
+    PDF 는 `type: "file"` 블록을 써야 한다. `features/portfolio/pdf_extraction`
+    이 이미 이 형식으로 PDF 를 정상 처리하고 있다.
+    """
+    if content_type == "application/pdf":
+        return {
+            "type": "file",
+            "file": {
+                "filename": filename,
+                "file_data": f"data:{content_type};base64,{encoded}",
+            },
+        }
+    return {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{encoded}"}}
+
+
 async def extract_with_ocr(data: bytes, filename: str, content_type: str) -> str:
     """OCR 모델로 텍스트를 뽑는다 (PDF·PNG·JPEG).
 
@@ -138,7 +160,7 @@ async def extract_with_ocr(data: bytes, filename: str, content_type: str) -> str
     message = HumanMessage(
         content=[
             {"type": "text", "text": OCR_INSTRUCTION},
-            {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{encoded}"}},
+            _ocr_attachment_block(content_type, filename, encoded),
         ]
     )
 
