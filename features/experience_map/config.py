@@ -65,12 +65,15 @@ MAX_BLOCK_LEVEL = 5
 NODE_MAX_ATTEMPTS = 2
 """LangGraph RetryPolicy. 1회 자동 재시도를 의미한다."""
 
-MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 6
+MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 3
 """구조화 노드가 LLM 한 번에 배정을 맡기는 최대 원문 item 수.
 
 실제로 원문이 15개를 넘어가면(파일 업로드 시 흔함) 모델이 일부를 빠뜨리거나
 잘못 연결하는 사고가 눈에 띄게 잦아졌다. 한 번에 맡기는 양을 줄이고 여러
-배치로 나눠 순차 처리하면 배치당 실패율이 크게 낮아진다."""
+배치로 나눠 순차 처리하면 배치당 실패율이 크게 낮아진다. 특히 한 배치
+안에 서로 다른 카테고리(예: 담당업무 + 문제해결) 내용이 섞이면 새 카테고리
+생성과 템플릿 전개를 동시에 시켜야 해서 실패율이 눈에 띄게 더 높았다 —
+배치를 작게 유지해 그 확률 자체를 줄인다."""
 
 MAX_VALIDATION_REPAIRS = 2
 """validate → structure/refine 회귀 최대 횟수."""

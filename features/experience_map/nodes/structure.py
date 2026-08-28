@@ -45,6 +45,13 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         catalog = await get_template_catalog_client().get_catalog()
         llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
         chain = structure_prompt | llm.with_structured_output(StructureOutput)
+        # 재시도 전용 체인은 temperature를 살짝 올린다. temperature 0에서는
+        # 같은 프롬프트에 같은 실수를 그대로 반복하는 게 실제로 재현됐다 —
+        # 지시문을 더 붙여도(`_missing_items_repair_instruction` 등) 모델이
+        # 같은 패턴을 고수했다. 재시도는 애초에 "1차와는 다른 결과"를
+        # 바라는 것이므로, 결정론을 깨는 편이 목적에 맞는다.
+        retry_llm = get_experience_map_llm(timeout=get_settings().timeouts.llm, temperature=0.4)
+        retry_chain = structure_prompt | retry_llm.with_structured_output(StructureOutput)
         base_instruction = _gap_instruction(state)
         base_prompt_vars = {
             "target_alias": state["target_experience_alias"],
@@ -93,8 +100,9 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                     ),
                     "source_items": render_source_items(round_source_items),
                 }
+                active_chain = chain if attempt == 0 else retry_chain
                 try:
-                    result: StructureOutput = await chain.ainvoke(
+                    result: StructureOutput = await active_chain.ainvoke(
                         {**prompt_vars, "gap_instruction": instruction}
                     )
                 except Exception:
@@ -102,6 +110,10 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                     # parent_item_id도 없는 item) — pydantic이 파싱 단계에서 바로
                     # 거부해 결과를 볼 기회조차 없다. 이걸 여기서 안 잡으면 배치
                     # 하나의 일시적 실수가 이미 끝낸 앞 배치들까지 통째로 날린다.
+                    #
+                    # 같은 프롬프트를 그대로 다시 보내면 온도 0에서는 같은 실수를
+                    # 그대로 반복한다 — 실제로 재현됐다. 무엇이 잘못됐는지 구체적인
+                    # 지시문을 덧붙여 입력 자체를 바꿔야 재시도가 의미 있다.
                     if attempt == 1:
                         raise
                     logger.warning(
@@ -109,6 +121,13 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                         batch_index + 1,
                         len(batches),
                         exc_info=True,
+                    )
+                    instruction = base_instruction + (
+                        "**주의: 이전 시도에서 일부 item에 parent_ref와 parent_item_id가 "
+                        "둘 다 없었습니다.** 모든 item은 둘 중 하나를 반드시 가져야 "
+                        "합니다 — 새 카테고리 컨테이너는 parent_ref(활동 별칭)만, "
+                        "그 아래 앵커·하위 슬롯은 parent_item_id(방금 만든 item_id)만 "
+                        "씁니다.\n\n"
                     )
                     continue
                 # 이번 호출이 새로 만든 item_id가 이전 호출(다른 배치, 또는
@@ -726,7 +745,7 @@ def _validate_output(
         if not item.source_item_ids and item.text is not None:
             raise ValueError("source_item_ids 없이 text를 만들 수 없습니다.")
         if item.slot_id is not None and catalog.get_slot(item.slot_id) is None:
-            raise ValueError("카탈로그에 없는 slot_id입니다.")
+            raise ValueError(f"카탈로그에 없는 slot_id입니다: [{item.item_id}] {item.slot_id}")
         if item.text is None and item.slot_id is None and item.section_kind is None:
             raise ValueError("내용 없는 블록에는 slot_id 또는 section_kind가 필요합니다.")
         if item.parent_ref is not None and item.parent_ref not in state.get(
