@@ -4,10 +4,11 @@ import logging
 import re
 
 from common.llm import get_experience_map_llm
-from features.experience_map.config import get_settings
+from features.experience_map.config import MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH, get_settings
 from features.experience_map.errors import LlmError
 from features.experience_map.prompts.structure import (
     render_catalog,
+    render_previous_batch_note,
     render_source_items,
     structure_prompt,
 )
@@ -44,32 +45,116 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         catalog = await get_template_catalog_client().get_catalog()
         llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
         chain = structure_prompt | llm.with_structured_output(StructureOutput)
-        result: StructureOutput = await chain.ainvoke(
-            {
-                "target_alias": state["target_experience_alias"],
-                "activity_tree": state["activity_tree_text"],
-                "catalog": render_catalog(catalog),
-                "gap_instruction": _gap_instruction(state),
-                "source_items": render_source_items(source_items),
-            }
-        )
-        source_text = {item["item_id"]: item["text"] for item in source_items}
-        reconstructed_items = _reconstruct_verbatim_text(result.items, source_text)
-        # 순서가 중요하다. 프루닝은 "같은 부모 밑 여러 템플릿 중 내용 있는
-        # 것만 남긴다" 는 판단을 parent_item_id 기준으로 한다. 앵커를
-        # 건너뛴 level 5가 서로 다른 가짜 부모(컨테이너 별칭 vs 가짜 앵커
-        # 형제)를 쓰고 있으면, 프루닝이 이걸 먼저 하면 "같은 부모"로 안 보여
-        # 둘 다 살아남는다 — 앵커 연결부터 정리해야 프루닝이 제대로 본다.
-        rerooted_items = _fix_new_section_parent(reconstructed_items, state)
-        reparented_items = _reparent_orphan_level5_items(rerooted_items, catalog)
-        pruned_items = _prune_extra_templates(reparented_items)
-        filled_items = _fill_missing_template_slots(pruned_items, catalog)
-        items = _validate_output(
+        base_instruction = _gap_instruction(state)
+        base_prompt_vars = {
+            "target_alias": state["target_experience_alias"],
+            "activity_tree": state["activity_tree_text"],
+            "catalog": render_catalog(catalog),
+        }
+
+        # 원문이 많으면(실제로 파일 업로드에서 15개 넘는 경우가 흔하다) 한
+        # 번에 다 맡길수록 모델이 일부를 빠뜨리거나 잘못 연결하는 사고가
+        # 눈에 띄게 잦아진다. 작은 배치로 나눠 순차 처리하면 배치당 실패율이
+        # 크게 낮아진다 — 뒤 배치는 앞 배치가 이미 만든 카테고리·앵커를
+        # `previous_batch_note`로 안내받아 재사용할 수 있다.
+        items: list[StructureLlmItem] = []
+        existing_categories: list[ExistingCategoryClassification] = []
+        cumulative_source_text: dict[str, str] = {}
+        call_index = 0
+        batches = [
+            source_items[index : index + MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH]
+            for index in range(0, len(source_items), MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH)
+        ]
+        for batch_index, batch in enumerate(batches):
+            batch_source_text = {item["item_id"]: item["text"] for item in batch}
+            cumulative_source_text.update(batch_source_text)
+            # 배치 하나당 최대 2번 시도한다(그래프 RetryPolicy의 "노드마다
+            # 1회"와는 별개로, 이 노드 실행 하나 안에서 완결된다). 모델이
+            # 원문 일부를 통째로 빠뜨리는 사고가 실제로 있었는데, 같은
+            # 프롬프트를 그대로 다시 보내도 결과가 매번 조금씩 달라
+            # 재시도만으로 고쳐지는 경우가 많았다 — 그렇다면 빠진 항목을
+            # 콕 집어 다시 요청하는 편이 통째로 재시도하는 것보다 낫다.
+            #
+            # 재시도는 **배치 전체를 다시 시키지 않는다** — 처음엔 그렇게
+            # 했는데, 이미 잘 배정한 부분까지 모델이 처음부터 다시 만들면서
+            # 새로운 실수(같은 슬롯을 두 번 만드는 등)를 또 냈다. 대신
+            # 1차에서 성공한 부분은 `previous_batch_note`로 "이미 만든 것"
+            # 취급해 그대로 두고, 빠진 item만 새 source_items로 좁혀서
+            # 다시 맡긴다 — 모델이 풀어야 할 문제 자체를 작게 줄인다.
+            round_note_items = items
+            round_source_items = batch
+            instruction = base_instruction
+            batch_items: list[StructureLlmItem] = []
+            for attempt in range(2):
+                prompt_vars = {
+                    **base_prompt_vars,
+                    "previous_batch_note": render_previous_batch_note(
+                        _render_previous_batch_lines(round_note_items, catalog)
+                    ),
+                    "source_items": render_source_items(round_source_items),
+                }
+                try:
+                    result: StructureOutput = await chain.ainvoke(
+                        {**prompt_vars, "gap_instruction": instruction}
+                    )
+                except Exception:
+                    # LLM이 스키마 자체를 어기는 item을 낼 때가 있다(예: parent_ref도
+                    # parent_item_id도 없는 item) — pydantic이 파싱 단계에서 바로
+                    # 거부해 결과를 볼 기회조차 없다. 이걸 여기서 안 잡으면 배치
+                    # 하나의 일시적 실수가 이미 끝낸 앞 배치들까지 통째로 날린다.
+                    if attempt == 1:
+                        raise
+                    logger.warning(
+                        "structure: 배치 %d/%d 응답 파싱 실패, 같은 배치 재시도",
+                        batch_index + 1,
+                        len(batches),
+                        exc_info=True,
+                    )
+                    continue
+                # 이번 호출이 새로 만든 item_id가 이전 호출(다른 배치, 또는
+                # 같은 배치의 이전 시도)과 겹칠 수 있다 — 각 호출은 서로의
+                # 출력을 모르는 채 독립적으로 "blk_1" 같은 이름을 짓는다.
+                # 병합할 게 있는(call_index > 0) 모든 호출에 접두사를 붙여
+                # 겹치지 않게 한다. 첫 호출(call_index == 0)은 병합 대상이
+                # 없으니 그대로 둔다 — item_id가 굳이 안 바뀌는 편이 낫다.
+                namespaced = (
+                    _namespace_batch_item_ids(result.items, call_index)
+                    if call_index > 0
+                    else result.items
+                )
+                call_index += 1
+                candidate = _apply_structuring_fixups(
+                    round_note_items + namespaced, cumulative_source_text, state, catalog
+                )
+                existing_categories = result.existing_categories
+                missing = _missing_source_ids(candidate, batch_source_text)
+                batch_items = candidate
+                if not missing:
+                    break
+                if attempt == 0:
+                    logger.warning(
+                        "structure: 배치 %d/%d 원문 item 누락 감지, 빠진 것만 좁혀서 재시도 (누락 %d개)",
+                        batch_index + 1,
+                        len(batches),
+                        len(missing),
+                    )
+                    round_note_items = candidate
+                    round_source_items = [item for item in batch if item["item_id"] in missing]
+                    instruction = base_instruction + _missing_items_repair_instruction(
+                        missing, batch
+                    )
+            items = batch_items
+
+        # 배치를 다 처리한 뒤 딱 한 번만 빈 슬롯을 채운다 — 배치마다 채우면
+        # 뒤 배치가 실제로 채우려는 slot을 앞 배치가 먼저 빈 슬롯으로 선점해
+        # 같은 slot이 두 번 생긴다.
+        filled_items = _fill_missing_template_slots(items, catalog)
+        validated = _validate_output(
             filled_items,
             source_items=source_items,
             catalog=catalog,
             state=state,
-            existing_categories=result.existing_categories,
+            existing_categories=existing_categories,
         )
     except LlmError:
         raise
@@ -77,12 +162,12 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         logger.exception("structure: 구조화 실패")
         raise LlmError("내용을 블록 구조로 정리하지 못했습니다.", failed_node="structure") from exc
 
-    updated["structured_items"] = [item.to_structured_item().model_dump() for item in items]
+    updated["structured_items"] = [item.to_structured_item().model_dump() for item in validated]
     logger.info(
         "structure: 원문 item %d개를 블록 %d개로 배정 (병합 %d건)",
         len(source_items),
-        len(items),
-        sum(1 for item in items if len(item.source_item_ids) > 1),
+        len(validated),
+        sum(1 for item in validated if len(item.source_item_ids) > 1),
     )
     return updated  # type: ignore[return-value]
 
@@ -115,6 +200,131 @@ def _gap_instruction(state: ExperienceMapState) -> str:
     return f"gap 답변 item은 반드시 기존 [{anchor_alias}] 바로 아래에 추가하세요.\n\n"
 
 
+def _apply_structuring_fixups(
+    raw_items: list[StructureLlmItem],
+    source_text: dict[str, str],
+    state: ExperienceMapState,
+    catalog: TemplateCatalog,
+) -> list[StructureLlmItem]:
+    """LLM 원시 출력에 결정론적 보정을 순서대로 적용한다.
+
+    순서가 중요하다. 프루닝은 "같은 부모 밑 여러 템플릿 중 내용 있는 것만
+    남긴다"는 판단을 parent_item_id 기준으로 한다. 앵커를 건너뛴 level 5가
+    서로 다른 가짜 부모(컨테이너 별칭 vs 가짜 앵커 형제)를 쓰고 있으면,
+    프루닝이 이걸 먼저 하면 "같은 부모"로 안 보여 둘 다 살아남는다 — 앵커
+    연결부터 정리해야 프루닝이 제대로 본다. 배치 안에서 방금 만든 item을
+    parent_ref로 잘못 가리키는 것부터 parent_item_id로 바로잡아야, 그다음
+    앵커 연결 정리가 진짜 부모 체인을 볼 수 있다.
+
+    **빈 슬롯 채우기(`_fill_missing_template_slots`)는 여기 없다.** 여러
+    배치로 나눠 처리할 때 배치마다 이걸 하면, 뒤 배치가 아직 안 채운 slot을
+    앞 배치가 먼저 "빈 슬롯"으로 채워 넣어 버린다 — 뒤 배치가 그 slot에 실제
+    내용을 채우면 같은 slot이 두 번 생겨 거부된다. 모든 배치를 다 처리한
+    뒤 한 번만 불러야 한다.
+    """
+    reconstructed = _reconstruct_verbatim_text(raw_items, source_text)
+    rerefed = _fix_batch_local_parent_ref(reconstructed, state)
+    dereffed = _clear_invalid_after_ref(rerefed, state)
+    rerooted = _fix_new_section_parent(dereffed, state)
+    reparented = _reparent_orphan_level5_items(rerooted, catalog)
+    deduped = _dedupe_anchor_matching_child_source(reparented, catalog)
+    return _prune_extra_templates(deduped)
+
+
+def _missing_source_ids(items: list[StructureLlmItem], source_text: dict[str, str]) -> set[str]:
+    """어느 블록에도 배정되지 않은 원문 item_id를 찾는다.
+
+    `_validate_source_coverage`와 달리 중복 배정은 신경 쓰지 않는다 — 중복은
+    이미 결정론적 보정으로 처리되므로, 여기서는 재시도로 이어질 "완전히
+    빠뜨린" 경우만 미리 알아내 재시도 프롬프트에 콕 집어 넣는다.
+    """
+    used = {sid for item in items for sid in item.source_item_ids}
+    return set(source_text) - used
+
+
+def _missing_items_repair_instruction(missing: set[str], source_items: list[dict]) -> str:
+    """빠뜨린 원문 item을 다시 배정하라는 지시문을 만든다."""
+    lines = "\n".join(
+        f"- [{item['item_id']}] {item['text']}"
+        for item in source_items
+        if item["item_id"] in missing
+    )
+    return (
+        "**주의: 이전 시도에서 다음 원문 item을 어느 블록에도 배정하지 않고 "
+        f"빠뜨렸습니다. 이번에는 반드시 포함해 배정하세요:**\n{lines}\n\n"
+    )
+
+
+def _render_previous_batch_lines(
+    items: list[StructureLlmItem], catalog: TemplateCatalog
+) -> list[str]:
+    """앞 배치가 이번 요청 안에서 이미 만든 카테고리·앵커·슬롯을 프롬프트용 목록으로 만든다."""
+    lines: list[str] = []
+    for item in items:
+        if item.section_kind is not None:
+            lines.append(f"- [{item.item_id}] 카테고리 컨테이너 (section_kind={item.section_kind})")
+        elif item.slot_id is not None:
+            anchor = " · 앵커" if _is_anchor_slot(item.slot_id, catalog) else ""
+            content = f': "{item.text}"' if item.text else " (빈 슬롯)"
+            lines.append(f"- [{item.item_id}] {item.slot_id}{anchor}{content}")
+    return lines
+
+
+def _namespace_batch_item_ids(
+    raw_items: list[StructureLlmItem], batch_index: int
+) -> list[StructureLlmItem]:
+    """이번 배치가 새로 만든 item_id에 접두사를 붙여 다른 배치와 안 겹치게 한다.
+
+    각 배치는 서로의 출력을 모르는 채 독립적으로 item_id를 짓는다 — 실제로
+    두 배치가 똑같이 "blk_1"을 써서 병합 시 `item_id가 중복되었습니다`로
+    거부된 적이 있다. `parent_item_id`가 이번 배치 안의 item을 가리키면
+    같이 바꾸고, 앞 배치의 item(예: `previous_batch_note`로 안내받아
+    재사용하는 앵커)을 가리키면 이미 고유하므로 그대로 둔다.
+
+    `parent_ref`도 같은 이유로 살핀다 — 배치 안에서 방금 만든 item을
+    `parent_ref`로 잘못 가리키는 사고(`_fix_batch_local_parent_ref`가 뒤에서
+    바로잡는 패턴)가 여기서 먼저 처리되지 않으면, 그 검증이 찾는 값이 이미
+    접두사가 붙어 바뀐 뒤라 못 알아본다.
+    """
+    prefix = f"batch{batch_index}_"
+    own_ids = {item.item_id for item in raw_items}
+
+    def remap(value: str | None) -> str | None:
+        return f"{prefix}{value}" if value is not None and value in own_ids else value
+
+    return [
+        item.model_copy(
+            update={
+                "item_id": f"{prefix}{item.item_id}",
+                "parent_ref": remap(item.parent_ref),
+                "parent_item_id": remap(item.parent_item_id),
+            }
+        )
+        for item in raw_items
+    ]
+
+
+def _clear_invalid_after_ref(
+    items: list[StructureLlmItem], state: ExperienceMapState
+) -> list[StructureLlmItem]:
+    """존재하지 않는 별칭을 가리키는 `after_ref`는 비운다.
+
+    `after_ref`는 프롬프트가 명시하듯 **기존에 있던** 형제 블록에만 쓸 수
+    있다 — 방금 만든 블록끼리의 순서는 `items` 배열 순서를 따르므로,
+    `after_ref`가 없어도 순서 정보를 잃지 않는다. 실제로 모델이 존재하지
+    않는 별칭(다른 배치의 item_id 등)을 `after_ref`에 써서 거부된 적이
+    있다 — 순서는 이미 배열 순서로 확보되니, 잘못된 참조는 거부 대신
+    코드가 비운다.
+    """
+    known_aliases = state.get("alias_to_block_id", {})
+    return [
+        item.model_copy(update={"after_ref": None})
+        if item.after_ref is not None and item.after_ref not in known_aliases
+        else item
+        for item in items
+    ]
+
+
 def _reconstruct_verbatim_text(
     items: list[StructureLlmItem], source_text: dict[str, str]
 ) -> list[StructureLlmItem]:
@@ -139,6 +349,31 @@ def _reconstruct_verbatim_text(
         text = " ".join(source_text[sid].strip() for sid in item.source_item_ids)
         rebuilt.append(item.model_copy(update={"text": text}))
     return rebuilt
+
+
+def _fix_batch_local_parent_ref(
+    items: list[StructureLlmItem], state: ExperienceMapState
+) -> list[StructureLlmItem]:
+    """방금 만든 item을 `parent_ref`로 가리키면 `parent_item_id`로 바로잡는다.
+
+    `parent_ref`는 활동 트리에 이미 있는 블록 별칭(`b_1` 등)에만 써야 하고,
+    같은 요청에서 방금 만든 블록은 `parent_item_id`로 가리켜야 한다 — 실제로
+    모델이 이 둘을 헷갈려서, 방금 만든 앵커(`blk_3`)를 `parent_item_id`가
+    아니라 `parent_ref="blk_3"`으로 가리킨 적이 있다. `blk_3`은 활동 트리의
+    별칭일 수 없으므로(그런 별칭은 서버가 절대 `b_`가 아닌 이런 이름으로
+    안 준다), 방금 만든 item_id를 가리키려던 의도가 명백하다 — 검증해서
+    거부하는 대신 코드가 바로 `parent_item_id`로 고쳐 끼운다.
+    """
+    known_aliases = state.get("alias_to_block_id", {})
+    item_ids = {item.item_id for item in items}
+    return [
+        item.model_copy(update={"parent_ref": None, "parent_item_id": item.parent_ref})
+        if item.parent_ref is not None
+        and item.parent_ref not in known_aliases
+        and item.parent_ref in item_ids
+        else item
+        for item in items
+    ]
 
 
 def _fix_new_section_parent(
@@ -275,6 +510,37 @@ def _reparent_orphan_level5_items(
         for item in items
     ]
     result.extend(new_anchors)
+    return result
+
+
+def _dedupe_anchor_matching_child_source(
+    items: list[StructureLlmItem], catalog: TemplateCatalog
+) -> list[StructureLlmItem]:
+    """앵커가 자기 바로 아래 level 5 슬롯과 같은 원문을 또 쓰면 앵커를 비운다.
+
+    프롬프트는 "같은 입력 item을 SUMMARY 앵커와 세부 슬롯에 동시에 쓰지
+    말라 — 더 구체적인 세부 슬롯에만 배정하고, 앵커는 요약할 별도 원문이
+    없으면 비워 둔다"고 명시하는데도, 모델이 앵커와 그 하위 level 5 슬롯에
+    **완전히 같은** `source_item_ids`를 중복 배정하는 사고가 있었다. 어느
+    쪽이 "더 구체적인 배정"인지 모호하지 않다 — level 5가 항상 더
+    구체적이므로, 앵커 쪽 배정을 비워서 프롬프트가 원래 원하는 모습으로
+    코드가 되돌린다. 완전히 같은 집합일 때만 다룬다 — 일부만 겹치거나
+    앵커가 더 많은 원문을 요약한 경우는 모호해서 건드리지 않는다.
+    """
+    children_by_parent: dict[str, list[StructureLlmItem]] = {}
+    for item in items:
+        if item.parent_item_id:
+            children_by_parent.setdefault(item.parent_item_id, []).append(item)
+
+    result = list(items)
+    for index, item in enumerate(result):
+        if not item.source_item_ids or not _is_anchor_slot(item.slot_id, catalog):
+            continue
+        anchor_sources = set(item.source_item_ids)
+        for child in children_by_parent.get(item.item_id, []):
+            if child.source_item_ids and set(child.source_item_ids) == anchor_sources:
+                result[index] = item.model_copy(update={"text": None, "source_item_ids": []})
+                break
     return result
 
 
@@ -424,8 +690,8 @@ def _validate_output(
     # 아래에 붙여야 한다" 는 구체적인 원인을 먼저 보여준다.
     _validate_template_slots(items, catalog)
     _validate_new_sections(items, catalog, state)
-    _validate_category_reuse(items, existing_categories or [])
-    _validate_anchor_reuse(items, existing_categories or [], catalog)
+    _validate_category_reuse(items, existing_categories or [], state)
+    _validate_anchor_reuse(items, existing_categories or [], catalog, state)
     _validate_anchor_reuse_deterministic(items, catalog, state)
     _validate_non_empty_subtrees(items, catalog)
     _validate_gap_parent(items, state)
@@ -433,7 +699,9 @@ def _validate_output(
 
 
 def _validate_category_reuse(
-    items: list[StructureLlmItem], existing_categories: list[ExistingCategoryClassification]
+    items: list[StructureLlmItem],
+    existing_categories: list[ExistingCategoryClassification],
+    state: ExperienceMapState,
 ) -> None:
     """모델이 스스로 분류한 기존 카테고리와 같은 section을 또 새로 만들면 거부한다.
 
@@ -443,14 +711,24 @@ def _validate_category_reuse(
     `section_kind` 컨테이너를 또 만들었다. `existing_categories`로 그 판단을
     출력에 미리 못박게 해서, 이후 자기모순(판단 따로·행동 따로)을 코드가
     바로 걸러 재시도를 유도한다.
+
+    실제로 모델이 카테고리 컨테이너가 하나도 없는 활동에서 **활동 별칭 자체**를
+    "이미 있는 카테고리"로 잘못 신고한 적이 있다 — 새 카테고리는 항상 활동
+    별칭을 `parent_ref`로 삼으므로, 그 신고를 곧이곧대로 믿으면 정상적으로
+    새 카테고리를 만드는 정상 케이스까지 자기모순으로 오판해 거부하게 된다.
+    카테고리 컨테이너는 언제나 활동의 **하위**(level 3)이지 활동 자신이 될 수
+    없으므로, 활동 별칭을 가리키는 신고는 무시한다.
     """
-    classified_sections = {category.section_kind for category in existing_categories}
+    target_alias = state.get("target_experience_alias")
+    classified_sections = {
+        category.section_kind for category in existing_categories if category.alias != target_alias
+    }
     for item in items:
         if item.section_kind is not None and item.section_kind in classified_sections:
             alias = next(
                 category.alias
                 for category in existing_categories
-                if category.section_kind == item.section_kind
+                if category.section_kind == item.section_kind and category.alias != target_alias
             )
             raise ValueError(
                 f"[{item.section_kind}] section은 이미 활동 트리의 [{alias}]로 판단하고도 "
@@ -463,6 +741,7 @@ def _validate_anchor_reuse(
     items: list[StructureLlmItem],
     existing_categories: list[ExistingCategoryClassification],
     catalog: TemplateCatalog,
+    state: ExperienceMapState,
 ) -> None:
     """기존 컨테이너를 재사용하면서 그 안에 이미 있는 앵커를 또 새로 만들면 거부한다.
 
@@ -471,11 +750,16 @@ def _validate_anchor_reuse(
     컨테이너 밑에 "문제해결 요약" 앵커가 두 개씩 생기는 식이다. 앵커도
     `existing_categories.existing_anchor_alias`로 미리 신고하게 해서, 이미
     있다고 신고한 컨테이너에 새 앵커를 또 붙이면 코드가 걸러 재시도를 유도한다.
+
+    `_validate_category_reuse`와 같은 이유로, 활동 별칭 자체를 컨테이너로
+    신고한 항목은 무시한다 — 카테고리 컨테이너는 활동의 하위일 뿐 활동 자신일
+    수 없다.
     """
+    target_alias = state.get("target_experience_alias")
     anchor_alias_by_container = {
         category.alias: category.existing_anchor_alias
         for category in existing_categories
-        if category.existing_anchor_alias
+        if category.existing_anchor_alias and category.alias != target_alias
     }
     for item in items:
         if item.parent_ref is None or not _is_anchor_slot(item.slot_id, catalog):

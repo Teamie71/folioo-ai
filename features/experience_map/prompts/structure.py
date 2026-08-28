@@ -220,7 +220,7 @@ STRUCTURE_USER = """\
 템플릿 카탈로그:
 {catalog}
 
-{gap_instruction}반영할 원문 item:
+{previous_batch_note}{gap_instruction}반영할 원문 item:
 {source_items}
 """
 
@@ -247,3 +247,23 @@ def render_catalog(catalog: TemplateCatalog) -> str:
 def render_source_items(items: list[dict]) -> str:
     """원문 item ID와 텍스트를 프롬프트에 명시한다."""
     return "\n".join(f"- [{item['item_id']}] {item['text']}" for item in items)
+
+
+def render_previous_batch_note(lines: list[str]) -> str:
+    """이전 배치에서 이번 요청 안에 이미 만든 블록 목록을 안내문으로 감싼다.
+
+    원문이 많아 여러 배치로 나눠 처리할 때, 뒤 배치가 앞 배치가 이미 만든
+    카테고리·앵커를 못 보면 똑같은 카테고리를 또 만든다. 활동 트리에는 아직
+    없는(커밋 전) 블록이라 `parent_ref`로는 가리킬 수 없다는 것도 같이
+    못박는다.
+    """
+    if not lines:
+        return ""
+    body = "\n".join(lines)
+    return (
+        "이번 요청 안에서 이미 만든 새 블록입니다 (아직 커밋 전이라 활동 트리에는 "
+        "없습니다. `parent_ref`가 아니라 `parent_item_id`로만 가리킬 수 있습니다):\n"
+        f"{body}\n"
+        "같은 section·같은 주제의 내용이 이번 배치에도 있다면, 새로 만들지 말고 "
+        "위 목록의 카테고리·앵커를 재사용하세요.\n\n"
+    )

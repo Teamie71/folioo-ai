@@ -95,10 +95,16 @@ def make_state(**overrides):
 
 @pytest.fixture
 def fake_dependencies(monkeypatch):
-    """카탈로그와 LLM 대역을 주입하고 렌더된 프롬프트를 모은다."""
+    """카탈로그와 LLM 대역을 주입하고 렌더된 프롬프트를 모은다.
 
-    def _set(result: StructureOutput | Exception) -> list[str]:
+    `result`에 리스트를 주면 호출 순서대로 하나씩 반환한다(마지막 값은
+    이후 호출에도 계속 쓰인다) — 원문 누락 재시도처럼 첫 호출과 재시도
+    호출의 응답이 달라야 하는 테스트에 쓴다.
+    """
+
+    def _set(result: StructureOutput | Exception | list) -> list[str]:
         prompts: list[str] = []
+        sequence = result if isinstance(result, list) else [result]
 
         async def _fetcher():
             return catalog_payload()
@@ -108,9 +114,10 @@ def fake_dependencies(monkeypatch):
 
         async def _handle(prompt_value) -> StructureOutput:
             prompts.append(prompt_value.to_string())
-            if isinstance(result, Exception):
-                raise result
-            return result
+            current = sequence[min(len(prompts) - 1, len(sequence) - 1)]
+            if isinstance(current, Exception):
+                raise current
+            return current
 
         class _FakeLlm:
             def with_structured_output(self, schema):
@@ -412,6 +419,351 @@ async def test_level5_slot_attached_to_container_is_auto_reparented_to_anchor(fa
 
 
 @pytest.mark.asyncio
+async def test_level5_using_parent_ref_for_batch_local_anchor_is_reinterpreted(
+    fake_dependencies,
+):
+    """방금 만든 앵커를 `parent_ref`로 가리키면 `parent_item_id`로 바로잡는다.
+
+    실제 PDF 이력서 입력으로 재현된 경우다. 모델이 새로 만든 앵커
+    (`blk_1`)를 그 하위 level 5 슬롯의 부모로 연결하면서 `parent_item_id`가
+    아니라 `parent_ref="blk_1"`을 썼다. `blk_1`은 활동 트리의 블록 별칭일
+    수 없으므로(서버가 그런 별칭을 주지 않는다), 방금 만든 item을 가리키려던
+    의도가 명백해 코드가 `parent_item_id`로 고쳐 끼운다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="사내 결제 시스템 백엔드 개발을 담당했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_ref="blk_1",  # 잘못됨 — parent_item_id="blk_1"이어야 한다
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_2"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_3",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.RESULT",
+                    text="전환율이 올랐다",
+                    source_item_ids=["it_3"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {
+                "item_id": "it_1",
+                "text": "사내 결제 시스템 백엔드 개발을 담당했다",
+                "source": "file",
+            },
+            {"item_id": "it_2", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_3", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    anchor_id = items_by_slot["TASK.SUMMARY"]["item_id"]
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_ref"] is None
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_item_id"] == anchor_id
+
+
+@pytest.mark.asyncio
+async def test_anchor_reusing_same_source_as_its_level5_child_is_emptied(fake_dependencies):
+    """앵커가 하위 level 5 슬롯과 똑같은 원문을 또 쓰면, 앵커를 빈 슬롯으로 되돌린다.
+
+    실제 PDF 이력서 입력으로 재현된 경우다. 프롬프트는 "같은 입력 item을
+    SUMMARY 앵커와 세부 슬롯에 동시에 쓰지 말고, 더 구체적인 세부 슬롯에만
+    배정하라"고 명시하는데도, 모델이 같은 문장을 앵커와 그 바로 아래
+    level 5 슬롯에 완전히 똑같이 중복 배정했다 — 원문 하나가 두 블록에서
+    쓰여 `_validate_source_coverage`가 거부했다. level 5가 항상 더
+    구체적이므로, 코드가 앵커 쪽 배정만 비워 원문을 한 곳에서만 쓰게 한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_1"],  # 앵커와 완전히 같은 원문 — 중복
+                ),
+                StructureLlmItem(
+                    item_id="blk_3",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.RESULT",
+                    text="전환율이 올랐다",
+                    source_item_ids=["it_2"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_2", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.SUMMARY"]["text"] is None
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+
+
+@pytest.mark.asyncio
+async def test_missing_source_item_triggers_one_targeted_retry(fake_dependencies):
+    """원문 item을 통째로 빠뜨리면, 빠진 것만 콕 집어 한 번 더 시도한다.
+
+    실제 PDF 이력서(원문 15개) 입력으로 재현된 경우다. 첫 시도에서 모델이
+    일부 원문 item을 어느 블록에도 배정하지 않고 빠뜨렸다 — 그래프 수준
+    RetryPolicy가 같은 프롬프트를 그대로 재시도해도 결과가 매번 달라
+    운에 맡기는 것보다, 빠진 item을 명시해 다시 요청하는 편이 낫다. 이
+    재시도는 이 노드 실행 한 번 안에서 끝나므로 "노드마다 1회"라는
+    문서(3절)의 자동 재시도 정책과 별개다.
+    """
+    first_attempt = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="전환율 개선을 목표로 했다",
+                source_item_ids=["it_1"],
+            ),
+            # it_2 는 빠뜨렸다.
+        ]
+    )
+    second_attempt = StructureOutput(
+        items=[
+            # 재시도는 빠진 it_2 하나만 새로 맡는다 — blk_1(it_1)은 1차에서
+            # 이미 성공했으므로 다시 만들 필요가 없다.
+            StructureLlmItem(
+                item_id="blk_2",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="전환율이 올랐다",
+                source_item_ids=["it_2"],
+            ),
+        ]
+    )
+    prompts = fake_dependencies([first_attempt, second_attempt])
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_2", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "전환율이 올랐다"
+    assert len(prompts) == 2
+    assert "it_2" in prompts[1] and "전환율이 올랐다" in prompts[1]
+    # 재시도 프롬프트의 "반영할 원문 item" 절에는 빠진 it_2만 실린다 — 이미
+    # 성공한 it_1을 다시 만들면서 새 실수를 낼 여지를 줄인다.
+    retry_source_section = prompts[1].split("반영할 원문 item:")[1]
+    assert "it_1" not in retry_source_section
+
+
+@pytest.mark.asyncio
+async def test_schema_violating_response_retries_the_same_batch(fake_dependencies):
+    """모델 응답이 스키마 자체를 어겨 파싱이 실패해도, 같은 배치를 한 번 더 시도한다.
+
+    실제로 재현된 경우다. 모델이 `parent_ref`도 `parent_item_id`도 없는 item을
+    내서 pydantic이 파싱 단계에서 바로 거부했다 — 결과를 볼 기회조차 없어
+    "원문 누락" 재시도 경로를 못 타고 그대로 예외가 번져나갔다. 여러 배치로
+    나눠 처리할 때 이 배치 하나의 일시적 실수가 이미 끝낸 앞 배치들까지
+    통째로 날리면 안 된다.
+    """
+    prompts = fake_dependencies(
+        [
+            ValueError("모델이 parent_ref/parent_item_id 없는 item을 냄 (pydantic 파싱 실패)"),
+            StructureOutput(
+                items=[
+                    StructureLlmItem(
+                        item_id="blk_1",
+                        action="add",
+                        parent_ref="b_1",
+                        slot_id="TASK.BASIC.PURPOSE",
+                        text="전환율 개선을 목표로 했다",
+                        source_item_ids=["it_1"],
+                    ),
+                ]
+            ),
+        ]
+    )
+    state = make_state(
+        new_items=[{"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"}]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+    assert len(prompts) == 2
+
+
+@pytest.mark.asyncio
+async def test_large_input_is_split_into_batches_that_reuse_earlier_anchors(
+    fake_dependencies, monkeypatch
+):
+    """원문이 많으면 배치로 나눠 순차 처리하고, 뒤 배치는 앞 배치가 만든 앵커를 재사용한다.
+
+    실제 PDF 이력서(원문 15개)로 재현된 문제의 근본 대책이다. 한 번에 너무
+    많이 맡기면 모델이 일부를 빠뜨리거나 잘못 연결하는 사고가 잦아져서,
+    작은 배치로 나눠 순차 처리한다 — 뒤 배치는 `previous_batch_note`로 앞
+    배치가 이미 만든 카테고리·앵커를 안내받아 새로 만들지 않고 재사용해야
+    한다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 2)
+
+    first_batch_response = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="category_1", action="add", parent_ref="exp_1", section_kind="TASK"
+            ),
+            StructureLlmItem(
+                item_id="anchor_1",
+                action="add",
+                parent_item_id="category_1",
+                slot_id="TASK.SUMMARY",
+                text="결제 시스템 백엔드 개발을 담당했다",
+                source_item_ids=["it_1"],
+            ),
+            StructureLlmItem(
+                item_id="blk_purpose",
+                action="add",
+                parent_item_id="anchor_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="전환율 개선을 목표로 했다",
+                source_item_ids=["it_2"],
+            ),
+        ]
+    )
+    second_batch_response = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_result",
+                action="add",
+                # 앞 배치가 만든 앵커를 재사용한다. 이 요청의 첫 호출(call_index
+                # 0)이 만든 item_id는 병합할 대상이 없어 접두사 없이 그대로다.
+                parent_item_id="anchor_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="전환율이 올랐다 재발도 없었다",
+                source_item_ids=["it_3", "it_4"],
+            ),
+        ]
+    )
+    prompts = fake_dependencies([first_batch_response, second_batch_response])
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "결제 시스템 백엔드 개발을 담당했다", "source": "file"},
+            {"item_id": "it_2", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_3", "text": "전환율이 올랐다", "source": "file"},
+            {"item_id": "it_4", "text": "재발도 없었다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    assert len(prompts) == 2
+    # 두 번째 배치 프롬프트에 첫 배치가 만든 앵커 안내가 실려야 한다.
+    assert "anchor_1" in prompts[1] and "TASK.SUMMARY" in prompts[1]
+    # 첫 배치 프롬프트에는 아직 아무것도 안내할 게 없다.
+    assert "anchor_1" not in prompts[0]
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.SUMMARY"]["text"] == "결제 시스템 백엔드 개발을 담당했다"
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "전환율이 올랐다 재발도 없었다"
+    assert (
+        items_by_slot["TASK.BASIC.RESULT"]["parent_item_id"]
+        == items_by_slot["TASK.SUMMARY"]["item_id"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_batches_reusing_the_same_item_id_are_namespaced_apart(
+    fake_dependencies, monkeypatch
+):
+    """서로 다른 배치가 우연히 같은 item_id를 지어도 충돌하지 않는다.
+
+    실제 PDF 이력서(원문 15개, 여러 배치)로 재현된 경우다. 각 배치는 서로의
+    출력을 모르는 채 독립적으로 item_id를 지으므로, 두 배치가 똑같이
+    "blk_1"을 써서 `item_id가 중복되었습니다`로 거부된 적이 있다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 1)
+
+    first_batch_response = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",  # 배치 1의 blk_1
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="전환율 개선을 목표로 했다",
+                source_item_ids=["it_1"],
+            ),
+        ]
+    )
+    second_batch_response = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",  # 배치 2도 우연히 같은 이름을 지었다
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="전환율이 올랐다",
+                source_item_ids=["it_2"],
+            ),
+        ]
+    )
+    fake_dependencies([first_batch_response, second_batch_response])
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_2", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    item_ids = [item["item_id"] for item in result["structured_items"]]
+    assert len(item_ids) == len(set(item_ids))
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "전환율이 올랐다"
+
+
+@pytest.mark.asyncio
 async def test_duplicate_section_kind_is_rejected(fake_dependencies):
     """같은 카테고리를 두 번 만들 수 없다.
 
@@ -496,6 +848,44 @@ async def test_new_category_contradicting_self_reported_classification_is_reject
 
 
 @pytest.mark.asyncio
+async def test_reporting_the_activity_alias_itself_as_existing_category_is_ignored(
+    fake_dependencies,
+):
+    """활동 별칭 자체를 '이미 있는 카테고리'로 잘못 신고해도 새 카테고리 생성은 정상 처리된다.
+
+    실제로 재현된 경우다. 카테고리 컨테이너가 하나도 없는 활동에서 모델이
+    existing_categories에 활동 별칭(exp_1)을 section_kind=TASK로 잘못 신고했다.
+    새 카테고리는 항상 활동 별칭을 parent_ref로 삼으므로, 이 신고를 곧이곧대로
+    믿으면 정상적으로 새 카테고리를 만드는 매 요청이 자기모순으로 오판되어
+    거부됐다. 카테고리 컨테이너는 활동의 하위일 뿐 활동 자신일 수 없으므로,
+    활동 별칭을 가리키는 신고는 무시해야 한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            existing_categories=[{"alias": "exp_1", "section_kind": "TASK"}],
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="TASK"
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.SUMMARY"]["text"] == "결제 오류를 해결했다"
+
+
+@pytest.mark.asyncio
 async def test_new_anchor_contradicting_self_reported_existing_anchor_is_rejected(
     fake_dependencies,
 ):
@@ -569,11 +959,13 @@ async def test_new_anchor_duplicating_undeclared_existing_slots_is_rejected(fake
 
 
 @pytest.mark.asyncio
-async def test_new_sibling_after_ref_is_rejected(fake_dependencies):
-    """방금 만든 블록의 id를 after_ref 에 쓰면 거부한다.
+async def test_new_sibling_after_ref_is_cleared_not_rejected(fake_dependencies):
+    """방금 만든 블록의 id를 after_ref 에 쓰면 코드가 비운다.
 
     실제로 재현된 경우다. `after_ref` 는 기존 블록 별칭만 가리킬 수 있는데,
-    모델이 이걸로 새로 만든 카테고리끼리 순서를 매기려다 걸렸다.
+    모델이 이걸로 새로 만든 카테고리끼리 순서를 매기려다 걸렸다. 새로
+    만드는 형제끼리의 순서는 `items` 배열 순서로 이미 확보되므로, 잘못된
+    참조는 거부 대신 코드가 비운다 — 순서 정보를 잃지 않는다.
     """
     fake_dependencies(
         StructureOutput(
@@ -596,12 +988,28 @@ async def test_new_sibling_after_ref_is_rejected(fake_dependencies):
                     section_kind="TASK",
                     after_ref="category_1",  # 기존 별칭이 아니라 방금 만든 id
                 ),
+                StructureLlmItem(
+                    item_id="anchor_2",
+                    action="add",
+                    parent_item_id="category_2",
+                    slot_id="TASK.SUMMARY",
+                    text="전환율 개선을 담당했다",
+                    source_item_ids=["it_2"],
+                ),
             ]
         )
     )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "결제 오류를 해결했다", "source": "message"},
+            {"item_id": "it_2", "text": "전환율 개선을 담당했다", "source": "message"},
+        ]
+    )
 
-    with pytest.raises(LlmError):
-        await structure_blocks(make_state())
+    result = await structure_blocks(state)
+
+    items_by_id = {item["item_id"]: item for item in result["structured_items"]}
+    assert items_by_id["category_2"]["after_ref"] is None
 
 
 @pytest.mark.asyncio
