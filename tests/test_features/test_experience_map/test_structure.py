@@ -764,6 +764,62 @@ async def test_batches_reusing_the_same_item_id_are_namespaced_apart(
 
 
 @pytest.mark.asyncio
+async def test_duplicate_slot_under_same_parent_is_merged_not_rejected(fake_dependencies):
+    """같은 부모 아래 같은 slot을 두 item으로 쪼개 만들면 하나로 합친다.
+
+    실제 PDF 이력서 입력으로 재현된 경우다. 모델이 TASK.BASIC.PURPOSE를
+    같은 앵커 아래 두 item으로 나눠 만들어 "같은 slot을 두 번 이상
+    만들었습니다"로 거부됐다. 어느 쪽을 버릴지 모호하므로(둘 다 서로 다른
+    원문일 수 있다) 버리지 않고 원문을 합쳐 하나로 만든다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",  # 같은 부모·같은 slot 중복
+                    text="이탈률도 함께 낮추고자 했다",
+                    source_item_ids=["it_2"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_3",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.RESULT",
+                    text="전환율이 올랐다",
+                    source_item_ids=["it_3"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_2", "text": "이탈률도 함께 낮추고자 했다", "source": "file"},
+            {"item_id": "it_3", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == (
+        "전환율 개선을 목표로 했다 이탈률도 함께 낮추고자 했다"
+    )
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "전환율이 올랐다"
+
+
+@pytest.mark.asyncio
 async def test_duplicate_section_kind_is_rejected(fake_dependencies):
     """같은 카테고리를 두 번 만들 수 없다.
 

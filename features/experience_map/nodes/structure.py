@@ -200,6 +200,54 @@ def _gap_instruction(state: ExperienceMapState) -> str:
     return f"gap 답변 item은 반드시 기존 [{anchor_alias}] 바로 아래에 추가하세요.\n\n"
 
 
+def _merge_duplicate_slot_items(items: list[StructureLlmItem]) -> list[StructureLlmItem]:
+    """같은 부모 아래 같은 slot_id를 두 번 이상 만들면 하나로 합친다.
+
+    실제로 모델이 같은 template slot(예: TASK.BASIC.PURPOSE)을 같은 부모
+    아래 두 item으로 쪼개 만든 적이 있다 — 검증(`_validate_template_slots`)이
+    "같은 slot을 두 번 이상 만들었습니다"로 거부하는데, 재시도해도 같은
+    실수가 반복됐다. 어느 쪽을 버릴지는 모호하다(둘 다 서로 다른 원문을
+    담고 있을 수 있다) — 그래서 버리지 않고 `source_item_ids`를 합쳐
+    첫 item 하나로 만든다. 이미 있는 "여러 원문이 한 슬롯에 합쳐질 수
+    있다"는 규칙의 연장이다.
+    """
+    order: list[tuple[str, str]] = []
+    groups: dict[tuple[str, str], list[StructureLlmItem]] = {}
+    for item in items:
+        if not item.slot_id:
+            continue
+        key = (item.parent_ref or item.parent_item_id or "", item.slot_id)
+        if key not in groups:
+            order.append(key)
+        groups.setdefault(key, []).append(item)
+
+    merge_into: dict[str, list[str]] = {}
+    drop: set[str] = set()
+    for key in order:
+        group = groups[key]
+        if len(group) <= 1:
+            continue
+        keep_id = group[0].item_id
+        combined: list[str] = []
+        for member in group:
+            combined.extend(member.source_item_ids)
+            if member.item_id != keep_id:
+                drop.add(member.item_id)
+        merge_into[keep_id] = combined
+
+    if not drop:
+        return items
+    result: list[StructureLlmItem] = []
+    for item in items:
+        if item.item_id in drop:
+            continue
+        if item.item_id in merge_into:
+            result.append(item.model_copy(update={"source_item_ids": merge_into[item.item_id]}))
+        else:
+            result.append(item)
+    return result
+
+
 def _apply_structuring_fixups(
     raw_items: list[StructureLlmItem],
     source_text: dict[str, str],
@@ -221,8 +269,13 @@ def _apply_structuring_fixups(
     앞 배치가 먼저 "빈 슬롯"으로 채워 넣어 버린다 — 뒤 배치가 그 slot에 실제
     내용을 채우면 같은 slot이 두 번 생겨 거부된다. 모든 배치를 다 처리한
     뒤 한 번만 불러야 한다.
+
+    같은 (부모, slot_id) 중복을 텍스트 재조립보다 먼저 병합하는 이유도
+    같다 — 병합된 item의 `source_item_ids`가 재조립 단계에 그대로
+    들어가야 최종 text가 원문을 빠짐없이 담는다.
     """
-    reconstructed = _reconstruct_verbatim_text(raw_items, source_text)
+    merged = _merge_duplicate_slot_items(raw_items)
+    reconstructed = _reconstruct_verbatim_text(merged, source_text)
     rerefed = _fix_batch_local_parent_ref(reconstructed, state)
     dereffed = _clear_invalid_after_ref(rerefed, state)
     rerooted = _fix_new_section_parent(dereffed, state)
