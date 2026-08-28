@@ -27,8 +27,10 @@ import zipfile
 from common.llm.client import get_file_processor_llm
 from features.experience_map.config import (
     MAX_FILE_TEXT_CHARS,
+    MAX_PDF_PAGES,
     OCR_MIME_TYPES,
     PARSER_MIME_TYPES,
+    PDF_RENDER_SCALE,
     get_settings,
 )
 
@@ -113,6 +115,48 @@ def _suffix(filename: str) -> str:
     return f".{ext.lower()}" if dot else ""
 
 
+def _render_pdf_pages(data: bytes) -> list[bytes]:
+    """PDF 페이지를 PNG 이미지로 직접 렌더링한다.
+
+    PDF 원본 바이트를 그대로 vision 모델에 `image_url`로 넘기면, 제공자가
+    내부적으로 PDF를 이미지로 변환하는 과정에서 한글처럼 폰트가 내장된 텍스트를
+    제대로 래스터화하지 못해 **한글만 빈칸으로 사라지는** 사고가 실제로
+    있었다(영문·숫자·문장부호는 기본 폰트라 살아남는다). PDFium은 CJK를
+    포함한 폰트 렌더링을 자체적으로 처리하므로, 서버가 직접 페이지를 그려
+    실제 이미지로 만든 뒤 그 이미지를 모델에 보낸다 — "PDF는 OCR로 처리한다"는
+    정책(문서 3-2)은 그대로 지키면서 래스터화 결함만 없앤다.
+
+    페이지가 너무 많으면 비용·시간이 무한정 늘어나므로 앞쪽 `MAX_PDF_PAGES`
+    장만 쓴다 — 이력서·포트폴리오류는 뒤로 갈수록 부가 자료인 경우가 많다.
+    """
+    import pypdfium2 as pdfium
+
+    try:
+        pdf = pdfium.PdfDocument(data)
+    except pdfium.PdfiumError as exc:
+        raise FileUnreadableError("PDF를 열 수 없습니다.") from exc
+
+    try:
+        page_count = min(len(pdf), MAX_PDF_PAGES)
+        if page_count == 0:
+            raise FileUnreadableError("PDF에 페이지가 없습니다.")
+        images: list[bytes] = []
+        for index in range(page_count):
+            page = pdf[index]
+            try:
+                bitmap = page.render(scale=PDF_RENDER_SCALE)
+                buffer = io.BytesIO()
+                bitmap.to_pil().save(buffer, format="PNG")
+                images.append(buffer.getvalue())
+            finally:
+                page.close()
+        return images
+    except pdfium.PdfiumError as exc:
+        raise FileUnreadableError("PDF 페이지를 읽을 수 없습니다.") from exc
+    finally:
+        pdf.close()
+
+
 async def extract_with_parser(data: bytes, filename: str, content_type: str) -> str:
     """파서로 텍스트를 뽑는다 (TXT·DOCX·PPTX)."""
     if content_type == "text/plain":
@@ -125,22 +169,41 @@ async def extract_with_parser(data: bytes, filename: str, content_type: str) -> 
     return _truncate(text)
 
 
+def _image_blocks(images: list[bytes], mime_type: str) -> list[dict]:
+    """PNG/JPEG 바이트 목록을 vision 메시지의 `image_url` 블록으로 바꾼다."""
+    blocks = []
+    for image in images:
+        encoded = base64.b64encode(image).decode("utf-8")
+        blocks.append(
+            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}}
+        )
+    return blocks
+
+
 async def extract_with_ocr(data: bytes, filename: str, content_type: str) -> str:
     """OCR 모델로 텍스트를 뽑는다 (PDF·PNG·JPEG).
 
+    PDF는 원본 바이트를 그대로 보내지 않는다. 페이지를 PNG로 직접 렌더링한
+    뒤(`_render_pdf_pages`) 그 이미지들을 보낸다 — 한글 래스터화 결함을 없애기
+    위해서다. PNG·JPEG는 이미 raster 이미지라 그대로 보낸다.
+
     Raises:
-        FileUnreadableError: 모델이 읽을 내용을 찾지 못함
+        FileUnreadableError: 모델이 읽을 내용을 찾지 못함, 또는 PDF 자체를 열 수 없음
         Exception: 시스템 오류 (타임아웃·API 실패) — 노드 실패로 올라간다
     """
     from langchain_core.messages import HumanMessage
 
-    encoded = base64.b64encode(data).decode("utf-8")
-    message = HumanMessage(
-        content=[
-            {"type": "text", "text": OCR_INSTRUCTION},
-            {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{encoded}"}},
-        ]
-    )
+    if content_type == "application/pdf":
+        pages = await asyncio.to_thread(_render_pdf_pages, data)
+        image_blocks = _image_blocks(pages, "image/png")
+        instruction = OCR_INSTRUCTION
+        if len(pages) > 1:
+            instruction += "\n- 여러 페이지입니다. 순서대로 이어서 옮겨 적습니다.\n"
+    else:
+        image_blocks = _image_blocks([data], content_type)
+        instruction = OCR_INSTRUCTION
+
+    message = HumanMessage(content=[{"type": "text", "text": instruction}, *image_blocks])
 
     llm = get_file_processor_llm()
     response = await asyncio.wait_for(llm.ainvoke([message]), timeout=get_settings().timeouts.file)

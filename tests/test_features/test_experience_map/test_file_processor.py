@@ -1,9 +1,11 @@
 """파일처리 노드 테스트 (에이전트 문서 5-2)"""
 
+import base64
 import io
 import zipfile
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from features.experience_map import extractors
 from features.experience_map.errors import LlmError
@@ -333,3 +335,91 @@ async def test_unsupported_type_is_unreadable():
 )
 def test_extractor_kind(content_type, expected):
     assert extractor_kind(content_type) == expected
+
+
+# ===== PDF OCR: 페이지를 직접 이미지로 렌더링 =====
+
+
+def minimal_pdf() -> bytes:
+    """Helvetica 기본 폰트만 쓰는 최소 1페이지 PDF."""
+    return b"""%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj
+4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+5 0 obj<</Length 44>>stream
+BT /F1 24 Tf 20 100 Td (Hello PDF) Tj ET
+endstream
+endobj
+xref
+0 6
+trailer<</Size 6/Root 1 0 R>>
+startxref
+0
+%%EOF"""
+
+
+class _CaptureVisionLlm:
+    """OCR vision 호출을 기록하는 대역."""
+
+    def __init__(self, response_text: str) -> None:
+        self.response_text = response_text
+        self.invocations: list[list] = []
+
+    async def ainvoke(self, messages):
+        self.invocations.append(messages)
+        return AIMessage(content=self.response_text)
+
+
+@pytest.mark.asyncio
+async def test_pdf_is_rendered_to_png_images_before_ocr(monkeypatch):
+    """PDF 원본 바이트를 그대로 보내지 않고, 페이지를 렌더링한 PNG를 보낸다.
+
+    원본 바이트를 그대로 `image_url`로 보내면, 제공자가 내부적으로 PDF를
+    이미지로 바꾸는 과정에서 한글처럼 폰트가 내장된 텍스트를 제대로
+    래스터화하지 못해 한글만 빈칸으로 사라지는 사고가 실제로 있었다. 이
+    테스트는 모델에 실제로 전달되는 content block이 `image/png`인지 확인한다
+    — `application/pdf` 그대로 보내면 회귀다.
+    """
+    fake_llm = _CaptureVisionLlm("Hello PDF")
+    monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: fake_llm)
+
+    text = await extractors.extract_with_ocr(minimal_pdf(), "이력서.pdf", "application/pdf")
+
+    assert text == "Hello PDF"
+    [message] = fake_llm.invocations[0]
+    image_blocks = [block for block in message.content if block["type"] == "image_url"]
+    assert len(image_blocks) == 1
+    assert image_blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_image_files_are_sent_as_is_without_rendering(monkeypatch):
+    """PNG·JPEG는 이미 raster 이미지이므로 렌더링 없이 그대로 보낸다."""
+    fake_llm = _CaptureVisionLlm("이미지 속 텍스트")
+    monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: fake_llm)
+
+    text = await extractors.extract_with_ocr(b"fake-png-bytes", "스크린샷.png", "image/png")
+
+    assert text == "이미지 속 텍스트"
+    [message] = fake_llm.invocations[0]
+    image_blocks = [block for block in message.content if block["type"] == "image_url"]
+    assert image_blocks[0]["image_url"]["url"] == (
+        "data:image/png;base64," + base64.b64encode(b"fake-png-bytes").decode()
+    )
+
+
+@pytest.mark.asyncio
+async def test_corrupt_pdf_is_unreadable(monkeypatch):
+    """PDF 자체를 열 수 없으면 품질 문제다. 노드 실패가 아니다."""
+    monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: _CaptureVisionLlm(""))
+
+    with pytest.raises(FileUnreadableError):
+        await extractors.extract_with_ocr(b"not a pdf", "손상.pdf", "application/pdf")
+
+
+def test_render_pdf_pages_returns_one_png_per_page():
+    images = extractors._render_pdf_pages(minimal_pdf())
+
+    assert len(images) == 1
+    assert images[0].startswith(b"\x89PNG")

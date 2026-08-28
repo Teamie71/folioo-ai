@@ -50,6 +50,12 @@ MAX_FILE_TEXT_CHARS = 40_000
 MAX_TOTAL_TEXT_CHARS = 80_000
 """요청 전체 추출 텍스트 상한. 프롬프트 토큰과 비용을 묶어 둔다."""
 
+MAX_PDF_PAGES = 10
+"""PDF에서 OCR로 렌더링할 최대 페이지 수. 넘으면 앞쪽 페이지만 쓴다."""
+
+PDF_RENDER_SCALE = 2.0
+"""PDF→이미지 렌더링 배율. 한글처럼 획이 많은 글자가 뭉개지지 않을 정도로 키운다."""
+
 # ===== 블록 제약 (API 명세 4-2) =====
 MAX_CONTENT_LENGTH = 500
 MIN_CONTENT_LENGTH = 1
