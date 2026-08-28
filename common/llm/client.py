@@ -16,6 +16,7 @@ def _build_llm(
     *,
     disable_streaming: bool = False,
     max_retries: int | None = None,
+    max_tokens: int | None = None,
 ) -> ChatOpenAI:
     api_key = os.getenv("OPENROUTER_API_KEY")
     base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
@@ -34,6 +35,8 @@ def _build_llm(
     }
     if max_retries is not None:
         llm_kwargs["max_retries"] = max_retries
+    if max_tokens is not None:
+        llm_kwargs["max_tokens"] = max_tokens
 
     return ChatOpenAI(
         **llm_kwargs,
@@ -100,6 +103,13 @@ def get_experience_map_llm(
     )
 
 
+FILE_PROCESSOR_MAX_TOKENS = 16384
+"""OCR 출력 상한. 지정하지 않으면 provider 기본값(예: 65536)을 그대로 요청해,
+계정 잔여 크레딧이 그 최대치를 못 감당하면 실제로 쓸 토큰이 훨씬 적어도
+402(크레딧 부족)로 통째로 거부된다. 추출 텍스트는 어차피
+`MAX_FILE_TEXT_CHARS`(40,000자)에서 다시 자르므로 이 정도면 충분하다."""
+
+
 @lru_cache(maxsize=4)
 def get_file_processor_llm(
     model: str | None = None,
@@ -113,6 +123,7 @@ def get_file_processor_llm(
         timeout=120,
         disable_streaming=True,
         max_retries=0,
+        max_tokens=FILE_PROCESSOR_MAX_TOKENS,
     )
 
 
@@ -128,6 +139,7 @@ def get_file_processor_llm_uncached(
         timeout=120,
         disable_streaming=True,
         max_retries=0,
+        max_tokens=FILE_PROCESSOR_MAX_TOKENS,
     )
 
 

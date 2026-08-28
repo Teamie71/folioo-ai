@@ -315,6 +315,9 @@ def test_get_file_processor_llm_uses_dedicated_configuration(monkeypatch):
     assert captured["request_timeout"] == 120
     assert captured["disable_streaming"] is True
     assert captured["max_retries"] == 0
+    # max_tokens를 안 정하면 provider 기본값(예: 65536)을 그대로 요청해,
+    # 계정 잔여 크레딧이 그 최대치를 못 감당하면 402로 통째로 거부된다.
+    assert captured["max_tokens"] == llm_client.FILE_PROCESSOR_MAX_TOKENS
     llm_client.get_file_processor_llm.cache_clear()
 
 
