@@ -5,6 +5,7 @@ import pytest
 from features.experience_map.nodes.result_response import _path_parts
 from features.experience_map.test_runtime import (
     InMemoryTestMapStore,
+    _blank_initial_rows,
     create_test_template_catalog_client,
 )
 
@@ -48,6 +49,47 @@ async def test_test_template_catalog_matches_agent_doc_3_0():
         "PROBLEM_SOLVING.RECOVERY.CHANGE",
     ):
         assert catalog.get_slot(slot_id) is not None, f"{slot_id} 이 카탈로그에 없습니다."
+
+
+@pytest.mark.asyncio
+async def test_blank_test_map_has_only_required_root_and_activity():
+    """실제 테스트 콘솔은 샘플 내용 없이 에이전트가 쓸 최소 위계만 제공한다."""
+    store = InMemoryTestMapStore(initial_rows_factory=_blank_initial_rows)
+
+    snapshot = await store.snapshot("9000010")
+    context = snapshot.get_activity_context("exp_1")
+
+    assert set(snapshot.block_contents()) == {"100", "200"}
+    assert context is not None
+    assert context.tree_text == "[exp_1] 새 경험"
+    assert context.alias_to_block_id == {"exp_1": "200"}
+
+
+@pytest.mark.asyncio
+async def test_reset_removes_previous_test_map_content():
+    """새 테스트 세션은 같은 user_id의 이전 메모리 맵을 이어받지 않는다."""
+    store = InMemoryTestMapStore(initial_rows_factory=_blank_initial_rows)
+    await store.commit(
+        {
+            "user_id": "9000011",
+            "request_id": "550e8400-e29b-41d4-a716-446655440011",
+            "alias_to_block_id": {"exp_1": "200"},
+            "commit_items": [
+                {
+                    "item_id": "category_1",
+                    "action": "add",
+                    "parent_ref": "exp_1",
+                    "section_kind": "DETAIL",
+                }
+            ],
+        }
+    )
+
+    await store.reset("9000011")
+    reset_snapshot = await store.snapshot("9000011")
+
+    assert reset_snapshot.map_version == 1
+    assert set(reset_snapshot.block_contents()) == {"100", "200"}
 
 
 @pytest.mark.asyncio

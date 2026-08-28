@@ -6,6 +6,7 @@ lifespan에서 주입하며, 운영 Repository·메인 서버 쓰기를 대체�
 """
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -57,6 +58,38 @@ def _initial_rows() -> list[MapBlockRow]:
         row("302", "300", 4, 2, "GA4 퍼널 분석 후 입력 단계를 5개에서 3개로 줄였다."),
         row("400", "200", 3, 2, "성과"),
         row("401", "400", 4, 1, "신청 전환율과 완료율을 개선했다."),
+    ]
+
+
+def _blank_initial_rows() -> list[MapBlockRow]:
+    """테스트 콘솔이 빈 경험에서 시작할 수 있는 최소 위계만 만든다.
+
+    에이전트는 권한상 level 1·2를 생성할 수 없으므로 루트와 활동 하나는
+    시스템 구조로 둔다. 샘플 카테고리·내용 블록은 넣지 않는다.
+    """
+    return [
+        MapBlockRow(
+            block_id="100",
+            parent_id=None,
+            level=1,
+            kind="CONTENT",
+            position=1,
+            content="경험 맵",
+            placeholder=None,
+            is_text_editable=False,
+            is_deletable=False,
+        ),
+        MapBlockRow(
+            block_id="200",
+            parent_id="100",
+            level=2,
+            kind="CONTENT",
+            position=1,
+            content="새 경험",
+            placeholder=None,
+            is_text_editable=False,
+            is_deletable=False,
+        ),
     ]
 
 
@@ -415,14 +448,25 @@ class _UserMap:
 class InMemoryTestMapStore:
     """사용자별 샘플 맵을 메모리에 유지한다."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, initial_rows_factory: Callable[[], list[MapBlockRow]] = _initial_rows
+    ) -> None:
         self._maps: dict[str, _UserMap] = {}
         self._lock = asyncio.Lock()
+        self._initial_rows_factory = initial_rows_factory
+
+    def _new_user_map(self) -> _UserMap:
+        return _UserMap(version=1, rows=self._initial_rows_factory())
+
+    async def reset(self, user_id: str) -> None:
+        """새 테스트 세션이 기존 메모리 맵을 물려받지 않도록 초기화한다."""
+        async with self._lock:
+            self._maps[user_id] = self._new_user_map()
 
     async def snapshot(self, user_id: str) -> ExperienceMapSnapshot:
         """사용자 맵을 만들거나 현재 스냅샷을 반환한다."""
         async with self._lock:
-            current = self._maps.setdefault(user_id, _UserMap(version=1, rows=_initial_rows()))
+            current = self._maps.setdefault(user_id, self._new_user_map())
             return build_map_snapshot(list(current.rows), current.version)
 
     async def display_map(self, user_id: str) -> dict[str, Any]:
@@ -456,7 +500,7 @@ class InMemoryTestMapStore:
         catalog = await create_test_template_catalog_client().get_catalog()
         user_id = str(state["user_id"])
         async with self._lock:
-            current = self._maps.setdefault(user_id, _UserMap(version=1, rows=_initial_rows()))
+            current = self._maps.setdefault(user_id, self._new_user_map())
             by_id = {row.block_id: row for row in current.rows}
             aliases = state.get("alias_to_block_id", {})
             previous_version = current.version
@@ -600,7 +644,7 @@ class TestUiGraphRunner(GraphRunner):
                 yield event
 
 
-_store = InMemoryTestMapStore()
+_store = InMemoryTestMapStore(initial_rows_factory=_blank_initial_rows)
 
 
 def get_test_map_store() -> InMemoryTestMapStore:
