@@ -172,6 +172,9 @@ class NodeStatusEvent(BaseModel):
     type: Literal["node_status"] = "node_status"
     node: NodeName
     status: Literal["running", "completed", "failed"]
+    phrase: str | None = Field(
+        None, description="에이전트 문서 4절 노드별 고정 문구. running 상태에만 채운다."
+    )
 
 
 class CommitResultEvent(BaseModel):

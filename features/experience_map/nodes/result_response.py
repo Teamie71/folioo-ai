@@ -1,8 +1,8 @@
-"""커밋 결과를 사용자용 완료 문구로 바꾸는 결정적 템플릿."""
+"""커밋 결과를 사용자용 완료 문구로 바꾸는 결정적 템플릿 (에이전트 문서 3-8)."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from features.experience_map.schemas import CommitResult
+from features.experience_map.schemas import SECTION_LABELS, CommitResult
 from features.experience_map.state import ExperienceMapState
 
 
@@ -22,43 +22,84 @@ class ResultResponseContext:
     experience_name: str
     categories: tuple[CategorySummary, ...]
     dropped_count: int
+    new_categories: frozenset[str] = field(default_factory=frozenset)
 
 
 def build_result_response(state: ExperienceMapState, result: CommitResult) -> str:
-    """LLM 없이 커밋 결과에서 완료 문구를 만든다."""
+    """LLM 없이 커밋 결과에서 문서 3-8 템플릿 그대로 완료 문구를 만든다."""
     context = build_result_context(state, result)
-    if len(context.categories) == 1:
-        message = _single_category_message(context.experience_name, context.categories[0])
-    else:
-        message = _multiple_category_message(context.experience_name, context.categories)
+    lines = ["내용을 분석하여 경험을 정리했어요."]
+    for category in context.categories:
+        if category.updated_count:
+            lines.append(f"- {category.label} 아래 {category.updated_count}개의 블록 수정")
+        if category.added_count:
+            lines.append(f"- {category.label} 아래 {category.added_count}개의 블록 생성")
+        if category.label in context.new_categories:
+            lines.append(f"- {category.label} 생성")
+    message = "\n".join(lines)
     if context.dropped_count:
         message = f"{message}\n\n{context.dropped_count}개는 글자 수 제한(500자)을 넘어 넣지 못했어요. 나눠서 입력해 주세요."
     return message
 
 
 def build_result_context(state: ExperienceMapState, result: CommitResult) -> ResultResponseContext:
-    """커밋된 item의 path·action으로 결과 문구 변수를 계산한다."""
-    action_by_item = {
-        item.get("item_id"): item.get("action") for item in state.get("commit_items", [])
+    """커밋된 item의 path·action으로 결과 문구 변수를 계산한다.
+
+    새로 만든 3단계 카테고리 컨테이너는 내용이 없어(명세 2-4-3) `path`에 자기
+    라벨이 실리지 않는다 — 컨테이너 자신도 `applied`에는 있지만 path는 그
+    부모(활동)까지만 담는다. 그래서 카테고리가 이번에 새로 만들어졌는지는
+    `path` 대신 `commit_items`의 `section_kind`로 판단하고, 그 라벨은
+    `SECTION_LABELS`에서 가져온다.
+    """
+    commit_items = state.get("commit_items", [])
+    items_by_id = {item.get("item_id"): item for item in commit_items}
+    action_by_item = {item_id: item.get("action") for item_id, item in items_by_id.items()}
+    new_container_labels = {
+        item_id: SECTION_LABELS[item["section_kind"]]
+        for item_id, item in items_by_id.items()
+        if item.get("section_kind")
     }
+
+    def new_category_label(item_id: str | None) -> str | None:
+        """item_id의 부모 체인을 따라가 이번에 새로 만든 카테고리 컨테이너를 찾는다."""
+        seen: set[str] = set()
+        current_id = item_id
+        while current_id is not None and current_id in items_by_id and current_id not in seen:
+            seen.add(current_id)
+            if current_id in new_container_labels:
+                return new_container_labels[current_id]
+            current_id = items_by_id[current_id].get("parent_item_id")
+        return None
+
     grouped: dict[str, CategorySummary] = {}
+    new_categories: set[str] = set()
     experience_name = "경험"
     for applied in result.applied:
-        activity, category = _path_parts(applied.path)
+        activity, path_category = _path_parts(applied.path)
         experience_name = activity
-        current = grouped.get(category, CategorySummary(label=category))
+
+        if applied.item_id in new_container_labels:
+            # 컨테이너 자신은 블록 수·생성 수에 세지 않는다 — "카테고리 생성" 표시만 한다.
+            label = new_container_labels[applied.item_id]
+            grouped.setdefault(label, CategorySummary(label=label))
+            new_categories.add(label)
+            continue
+
+        label = new_category_label(applied.item_id) or path_category
+        if label in new_container_labels.values():
+            new_categories.add(label)
+
+        current = grouped.get(label, CategorySummary(label=label))
         if action_by_item.get(applied.item_id) == "update":
-            grouped[category] = CategorySummary(
-                category, current.added_count, current.updated_count + 1
-            )
+            grouped[label] = CategorySummary(label, current.added_count, current.updated_count + 1)
         else:
-            grouped[category] = CategorySummary(
-                category, current.added_count + 1, current.updated_count
-            )
+            grouped[label] = CategorySummary(label, current.added_count + 1, current.updated_count)
+
     return ResultResponseContext(
         experience_name=experience_name,
         categories=tuple(grouped.values()),
         dropped_count=len(result.dropped),
+        new_categories=frozenset(new_categories),
     )
 
 
@@ -70,27 +111,6 @@ def _path_parts(path: str) -> tuple[str, str]:
     if len(parts) == 1:
         return parts[0], "정리 항목"
     return parts[0], parts[-1]
-
-
-def _single_category_message(experience_name: str, category: CategorySummary) -> str:
-    """단일 카테고리 또는 기존 블록 수정 전용 문구."""
-    path = f"{experience_name} > {category.label}"
-    if category.updated_count and not category.added_count:
-        return f"{path} 내용을 보완했어요."
-    return f"{path}에 {category.added_count}개를 정리했어요."
-
-
-def _multiple_category_message(
-    experience_name: str, categories: tuple[CategorySummary, ...]
-) -> str:
-    """여러 카테고리의 추가·수정 내역을 목록으로 만든다."""
-    lines = [f"{experience_name}에 정리했어요."]
-    for category in categories:
-        if category.added_count:
-            lines.append(f"- {category.label} — {category.added_count}개 추가")
-        if category.updated_count:
-            lines.append(f"- {category.label} — {category.updated_count}개 수정")
-    return "\n".join(lines)
 
 
 __all__ = [

@@ -761,12 +761,20 @@ gap 분석 또는 제안 생성이 **실패**했을 때만 `suggestion_ready`와
 {
   "type": "node_status",
   "node": "structure",
-  "status": "running"
+  "status": "running",
+  "phrase": "경험 블록을 정리하고 있어요."
 }
 ```
 
 `node` 값: `router`, `file_processor`, `content_filter`, `gap_resolver`,
 `structure`, `refine`, `validate`, `commit`.
+
+`phrase`는 에이전트 문서 4절의 노드별 고정 문구다. `status: "running"`일 때만
+채워지며, 문구가 없는 노드(`target_activity`·`gap_resolver`·`gap_analysis`·
+`fallback` 등)와 `completed`/`failed` 상태에서는 `null`이다. Validation이
+제한사항 미준수로 이전 노드를 되돌려 재실행시키는 경우, 그 재실행에는
+`phrase`가 실리지 않는다 — 화면에는 Validation의 문구가 계속 보여야 하므로
+클라이언트는 `phrase`가 `null`이면 마지막으로 받은 문구를 그대로 유지한다.
 
 ### `commit_result`
 

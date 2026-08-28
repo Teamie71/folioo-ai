@@ -5,7 +5,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.schemas.experience_map import MessageCompleteEvent, NodeStatusEvent
 from features.experience_map import graph as graph_module
-from features.experience_map.graph_runner import CheckpointGraphRunner, _state_events
+from features.experience_map.graph_runner import (
+    NODE_STREAMING_PHRASES,
+    CheckpointGraphRunner,
+    _state_events,
+)
 from features.experience_map.nodes.fallback import FALLBACK_MESSAGES
 
 
@@ -53,6 +57,45 @@ async def test_run_passes_new_state_to_graph():
     await anext(runner.run(state))
 
     assert graph.calls[0][0] == state
+
+
+class RepeatedNodeGraphStub:
+    """validate가 structure를 되돌려 재실행시키는 상황을 흉내 내는 그래프 대역."""
+
+    async def astream(self, value, config, **kwargs):
+        for name in ("structure", "validate", "structure", "validate"):
+            yield "tasks", {"name": name}
+            yield "tasks", {"name": name, "result": None}
+        yield "values", {"request_id": "request"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_phrase_is_sent_only_on_a_nodes_first_run():
+    """에이전트 문서 4절: Validation이 structure를 되돌려도 화면 문구가 유지된다.
+
+    validate 실패로 structure가 두 번째 도는 경우, 그 재실행에는 phrase를
+    비워서 클라이언트가 마지막으로 받은 문구(Validation의 것)를 계속 보여주게
+    한다 — 문서 4절 Validation 행의 "이전 노드로 회귀 시에도 스트리밍 문구 유지"
+    정책이다.
+    """
+    runner = CheckpointGraphRunner(RepeatedNodeGraphStub(), state_events=events)
+
+    received = [
+        event async for event in runner.run({"session_id": "session-1", "request_id": "request"})
+    ]
+
+    running_phrases = [
+        event.phrase
+        for event in received
+        if isinstance(event, NodeStatusEvent)
+        if event.status == "running"
+    ]
+    assert running_phrases == [
+        NODE_STREAMING_PHRASES["structure"],
+        NODE_STREAMING_PHRASES["validate"],
+        None,
+        None,
+    ]
 
 
 @pytest.mark.asyncio

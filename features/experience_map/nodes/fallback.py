@@ -19,11 +19,23 @@ from features.experience_map.state import ExperienceMapState
 logger = logging.getLogger(__name__)
 
 FALLBACK_MESSAGES: dict[str, str] = {
-    "out_of_scope": "아직 지원하지 않는 기능이에요.",
+    # 에이전트 문서 3-10 응답 템플릿 1 — 선행 노드가 Router인 경우. 문구를 그대로 옮긴다.
+    "out_of_scope": (
+        "지금은 제공해주신 내용을 바탕으로 경험을 정리하는 것만 도와드릴 수 있어요.\n"
+        "정리하고 싶은 경험의 상황, 맡은 역할, 진행 과정, 결과를 알려주시면 적절한 블록으로 "
+        "정리해드릴게요."
+    ),
     "file_unreadable": (
         "파일에서 내용을 읽지 못했어요. 다른 파일로 올려 주시거나 내용을 직접 입력해 주세요."
     ),
-    "nothing_to_apply": "정리에 반영할 내용을 찾지 못했어요. 어떤 경험을 하셨는지 알려주세요.",
+    # 에이전트 문서 3-10 응답 템플릿 2 — 선행 노드가 블록 반영 내용 필터링인 경우. 문구를
+    # 그대로 옮긴다. structure·refine이 반영할 내용을 못 찾아 뒤늦게 fallback 하는 경우도
+    # "반영할 내용을 찾지 못했다"는 같은 사용자 경험이라 이 문구를 그대로 쓴다.
+    "nothing_to_apply": (
+        "경험정리 블록에 반영할 수 있는 내용을 찾지 못했어요.\n"
+        "어떤 활동에서 무엇을 했고, 어떤 방식으로 진행했으며, 결과가 어땠는지 알려주시면 "
+        "블록으로 정리해드릴게요."
+    ),
     "ambiguous_target": "어떤 경험에 정리할지 알려주세요.",
 }
 

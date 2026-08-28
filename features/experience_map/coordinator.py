@@ -15,6 +15,7 @@ from app.schemas.experience_map import (
     SuggestionGap,
     SuggestionReadyEvent,
 )
+from features.experience_map.graph_runner import NODE_STREAMING_PHRASES
 from features.experience_map.nodes.commit import commit_changes
 from features.experience_map.nodes.gap_analysis import analyze_gap
 from features.experience_map.nodes.result_response import build_result_response
@@ -46,7 +47,9 @@ async def coordinate(
     넘겨 서로의 중간 필드를 덮어쓰지 못하게 한다.
     """
     run_gap = gap_runner or _run_gap
-    yield NodeStatusEvent(node="commit", status="running")
+    yield NodeStatusEvent(
+        node="commit", status="running", phrase=NODE_STREAMING_PHRASES.get("commit")
+    )
     commit_input = dict(state)
     commit_task = asyncio.create_task(commit_runner(commit_input))
     gap_task = asyncio.create_task(run_gap(dict(commit_input)))

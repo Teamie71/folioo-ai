@@ -75,14 +75,15 @@ async def collect(**kwargs) -> list:
     return [event async for event in coordinate(state(), **kwargs)]
 
 
-def test_result_response_uses_single_category_and_dropped_template():
+def test_result_response_uses_fixed_intro_and_dropped_template():
+    """에이전트 문서 3-8: 첫 문장은 항상 고정, 글자 수 초과 안내는 별도 문단."""
     message = build_result_response(state(), result(dropped=2))
 
-    assert message.startswith("커머스 리뉴얼 > 담당업무에 1개를 정리했어요.")
+    assert message.startswith("내용을 분석하여 경험을 정리했어요.\n- 담당업무 아래 1개의 블록 생성")
     assert "2개는 글자 수 제한(500자)을 넘어" in message
 
 
-def test_result_response_uses_multiple_categories_and_update_counts():
+def test_result_response_lists_each_category_as_its_own_bullet():
     commit_result = result(
         applied=[
             AppliedItem(item_id="add_1", block_id="401", path="커머스 리뉴얼 > 담당업무"),
@@ -92,9 +93,11 @@ def test_result_response_uses_multiple_categories_and_update_counts():
 
     message = build_result_response(state(), commit_result)
 
-    assert "커머스 리뉴얼에 정리했어요." in message
-    assert "- 담당업무 — 1개 추가" in message
-    assert "- 주요성과 — 1개 수정" in message
+    assert message == (
+        "내용을 분석하여 경험을 정리했어요.\n"
+        "- 담당업무 아래 1개의 블록 생성\n"
+        "- 주요성과 아래 1개의 블록 수정"
+    )
 
 
 def test_result_response_uses_update_only_template():
@@ -102,9 +105,37 @@ def test_result_response_uses_update_only_template():
         applied=[AppliedItem(item_id="update_1", block_id="402", path="커머스 리뉴얼 > 주요성과")]
     )
 
-    assert (
-        build_result_response(state(), commit_result)
-        == "커머스 리뉴얼 > 주요성과 내용을 보완했어요."
+    assert build_result_response(state(), commit_result) == (
+        "내용을 분석하여 경험을 정리했어요.\n- 주요성과 아래 1개의 블록 수정"
+    )
+
+
+def test_result_response_marks_newly_created_category():
+    """에이전트 문서 3-8: 3단계 카테고리를 새로 만든 경우에만 '{카테고리} 생성' 불렛이 붙는다.
+
+    새 컨테이너는 내용이 없어 path에 자기 라벨이 실리지 않으므로(2-4-3), commit_items의
+    section_kind로 새로 만든 카테고리인지 판단해야 한다.
+    """
+    commit_state = state() | {
+        "commit_items": [
+            {"item_id": "category_1", "action": "add", "section_kind": "TASK"},
+            {"item_id": "anchor_1", "action": "add", "parent_item_id": "category_1"},
+            {"item_id": "add_1", "action": "add", "parent_item_id": "anchor_1"},
+        ]
+    }
+    commit_result = result(
+        applied=[
+            # 컨테이너 자신의 path는 활동명뿐이다 — 내용이 없어 자기 라벨이 안 실린다.
+            AppliedItem(item_id="category_1", block_id="400", path="커머스 리뉴얼"),
+            AppliedItem(item_id="anchor_1", block_id="401", path="커머스 리뉴얼"),
+            AppliedItem(item_id="add_1", block_id="402", path="커머스 리뉴얼"),
+        ]
+    )
+
+    message = build_result_response(commit_state, commit_result)
+
+    assert message == (
+        "내용을 분석하여 경험을 정리했어요.\n- 담당업무 아래 2개의 블록 생성\n- 담당업무 생성"
     )
 
 

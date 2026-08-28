@@ -41,6 +41,18 @@ GRAPH_NODE_NAMES = frozenset(
 """`graph.py` 가 `add_node` 로 등록한 노드 이름. `astream_events` 잡음(RunnableSequence
 등 내부 컴포넌트)에서 실제 노드 경계만 걸러내는 데 쓴다."""
 
+NODE_STREAMING_PHRASES: dict[str, str] = {
+    "router": "입력 내용을 확인하고 있어요.",
+    "file_processor": "파일을 읽고 있어요.",
+    "content_filter": "경험 정리에 반영할 내용을 분석하고 있어요.",
+    "structure": "경험 블록을 정리하고 있어요.",
+    "refine": "문장을 다듬고 있어요.",
+    "validate": "정리된 내용을 검토한 뒤 저장 중이에요.",
+    "commit": "보완할 수 있는 내용을 확인하고 있어요.",
+}
+"""에이전트 문서 4절 노드별 고정 스트리밍 문구. `target_activity`·`file_cleanup`·결과
+응답·gap 분석·Fallback은 명세에 문구가 없어 여기 없으면 `phrase=None`이다."""
+
 
 class GraphRunner(Protocol):
     """그래프 실행 인터페이스
@@ -102,8 +114,17 @@ class CheckpointGraphRunner:
         durability를 `sync`로 두어 각 superstep checkpoint가 다음 노드보다 먼저
         저장되게 한다. 특히 file_processor 결과가 저장되기 전에 file_cleanup이 원본을
         삭제하면 안 된다.
+
+        문구가 붙은 노드(`NODE_STREAMING_PHRASES`)는 이번 실행에서 **처음 도는
+        때만** phrase를 싣는다. Validation이 제한사항 미준수로 structure·refine을
+        되돌려 재실행시켜도 같은 노드가 이 stream 안에서 또 뜨는데, 문서 4절의
+        Validation 행 정책("이전 노드로 회귀 시에도 스트리밍 문구 유지")은 그때도
+        화면 문구가 Validation의 것으로 남아 있어야 한다고 못박는다. 재실행에는
+        phrase를 비워서 클라이언트가 마지막으로 받은 문구(Validation의 것)를 계속
+        보여주게 한다.
         """
         result: ExperienceMapState | None = None
+        phrased_nodes: set[str] = set()
         stream = self._graph.astream(
             input_state,
             config,
@@ -122,7 +143,11 @@ class CheckpointGraphRunner:
                 if name not in GRAPH_NODE_NAMES:
                     continue
                 if "result" not in data and "error" not in data:
-                    yield NodeStatusEvent(node=name, status="running")
+                    phrase = None
+                    if name not in phrased_nodes:
+                        phrase = NODE_STREAMING_PHRASES.get(name)
+                        phrased_nodes.add(name)
+                    yield NodeStatusEvent(node=name, status="running", phrase=phrase)
                 elif data.get("error") is None:
                     yield NodeStatusEvent(node=name, status="completed")
         finally:
@@ -244,7 +269,9 @@ class PartialGraphRunner:
         from features.experience_map.nodes.router import next_node as router_next
         from features.experience_map.nodes.router import route
 
-        yield NodeStatusEvent(node="router", status="running")
+        yield NodeStatusEvent(
+            node="router", status="running", phrase=NODE_STREAMING_PHRASES.get("router")
+        )
         current = await route(state)
         yield NodeStatusEvent(node="router", status="completed")
 
@@ -254,7 +281,11 @@ class PartialGraphRunner:
             return
 
         if router_next(current) == "file_processor":
-            yield NodeStatusEvent(node="file_processor", status="running")
+            yield NodeStatusEvent(
+                node="file_processor",
+                status="running",
+                phrase=NODE_STREAMING_PHRASES.get("file_processor"),
+            )
             current = await process_files(current)
             yield NodeStatusEvent(node="file_processor", status="completed")
             yield NodeStatusEvent(node="file_cleanup", status="running")
@@ -266,7 +297,11 @@ class PartialGraphRunner:
                     yield event
                 return
 
-        yield NodeStatusEvent(node="content_filter", status="running")
+        yield NodeStatusEvent(
+            node="content_filter",
+            status="running",
+            phrase=NODE_STREAMING_PHRASES.get("content_filter"),
+        )
         current = await filter_content(current)
         yield NodeStatusEvent(node="content_filter", status="completed")
 
