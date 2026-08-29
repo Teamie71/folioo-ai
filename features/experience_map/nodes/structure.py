@@ -267,6 +267,32 @@ def _merge_duplicate_slot_items(items: list[StructureLlmItem]) -> list[Structure
     return result
 
 
+def _drop_empty_invalid_slot_items(
+    items: list[StructureLlmItem], catalog: TemplateCatalog
+) -> list[StructureLlmItem]:
+    """내용도 없고 카탈로그에도 없는 slot_id를 단 item은 통째로 버린다.
+
+    실제로 재현된 경우다. 모델이 실제 슬롯을 채우는 item과는 별개로,
+    text도 source_item_ids도 없는 빈 item에 slot_id로 실제 슬롯이 아니라
+    템플릿 id 자체(예: `TASK.BASIC.PURPOSE`가 아니라 `TASK.BASIC`)를 적어
+    넣은 적이 있다. 내용이 전혀 없으니 버려도 잃을 정보가 없고, 카탈로그에
+    없는 slot_id를 그대로 두면 이후 검증만 막힌다 — 다른 item이 이 item을
+    `parent_item_id`로 참조하고 있지 않을 때만 안전하게 버린다.
+    """
+    referenced_as_parent = {item.parent_item_id for item in items if item.parent_item_id}
+    return [
+        item
+        for item in items
+        if not (
+            item.slot_id is not None
+            and catalog.get_slot(item.slot_id) is None
+            and item.text is None
+            and not item.source_item_ids
+            and item.item_id not in referenced_as_parent
+        )
+    ]
+
+
 def _apply_structuring_fixups(
     raw_items: list[StructureLlmItem],
     source_text: dict[str, str],
@@ -294,7 +320,8 @@ def _apply_structuring_fixups(
     들어가야 최종 text가 원문을 빠짐없이 담는다.
     """
     merged = _merge_duplicate_slot_items(raw_items)
-    reconstructed = _reconstruct_verbatim_text(merged, source_text)
+    pruned_junk = _drop_empty_invalid_slot_items(merged, catalog)
+    reconstructed = _reconstruct_verbatim_text(pruned_junk, source_text)
     rerefed = _fix_batch_local_parent_ref(reconstructed, state)
     dereffed = _clear_invalid_after_ref(rerefed, state)
     rerooted = _fix_new_section_parent(dereffed, state)
@@ -990,26 +1017,69 @@ def _reuse_existing_filled_anchor(
         if item.parent_ref is None or not _is_anchor_slot(item.slot_id, catalog):
             continue
         section = item.slot_id.split(".")[0]
-        matches = [
-            (slot_id, alias, parent_alias)
+        known_by_slot = {
+            slot_id: (alias, parent_alias)
             for slot_id, alias, parent_alias in _subtree_known_slots_with_parent(
                 tree_lines, item.parent_ref, placeholder_to_slot
             )
             if slot_id.split(".")[0] == section
-        ]
-        if len(matches) != 1:
-            continue  # 0개(중복 아님) 또는 여러 개(모호함) — 여기선 안 건드린다.
-        target_slot_id, _, real_anchor_alias = matches[0]
+        }
+        if not known_by_slot:
+            continue  # 겹치는 section 자체가 없다 — 진짜 새 앵커다.
 
-        # 이 가짜 앵커가 만든 빈 템플릿 나머지 슬롯(자기 자신을 부모로 둔
-        # 빈 item)은 실제 앵커 쪽에 이미 있으므로 버린다.
-        drop.update(other.item_id for other in items if other.parent_item_id == item.item_id)
-        by_id[item.item_id] = item.model_copy(
-            update={
-                "slot_id": target_slot_id,
-                "parent_ref": real_anchor_alias,
-                "parent_item_id": None,
-            }
+        # 이 가짜 앵커 자신과 그 아래 자동 생성된 하위 템플릿 중, 실제
+        # 내용(text 또는 source_item_ids)이 있는 것만 "무엇을 채우려던
+        # 의도인지"를 판단할 근거로 쓴다 — 빈 자리 채우기용 자동 생성
+        # item은 section만 같을 뿐 아무 것도 알려주지 않는다.
+        group = [item] + [other for other in items if other.parent_item_id == item.item_id]
+        filled = [entry for entry in group if entry.text or entry.source_item_ids]
+        if not filled:
+            continue
+
+        # 내용 있는 item의 slot_id가 실제 빈 슬롯 중 하나와 정확히 같으면
+        # 그 자체가 확실한 증거다 — 다른 후보가 몇 개든 상관없다(예: 같은
+        # section에 빈 슬롯이 둘 있어도, 모델이 이미 그중 하나와 정확히
+        # 같은 slot_id를 골랐다면 나머지 후보는 무시해도 안전하다).
+        resolved: dict[str, str] = {}  # item_id -> real_anchor_alias
+        unresolved = []
+        used_slots: set[str] = set()
+        for entry in filled:
+            if entry.slot_id in known_by_slot:
+                resolved[entry.item_id] = known_by_slot[entry.slot_id][1]
+                used_slots.add(entry.slot_id)
+            else:
+                unresolved.append(entry)
+
+        if unresolved:
+            # slot_id 자체로 확인이 안 된 나머지는, 아직 안 쓰인 빈 슬롯이
+            # 정확히 하나 더 남아 있을 때만(그리고 안 쓰인 게 단 하나뿐일
+            # 때만) 그리로 되돌린다 — 모델이 slot_id를 잘못 골랐어도(예:
+            # 앵커 자신에 실제로는 세부 슬롯 내용을 적음), 남는 자리가
+            # 하나뿐이면 의도가 명백하다.
+            remaining = {sid: v for sid, v in known_by_slot.items() if sid not in used_slots}
+            if len(unresolved) != 1 or len(remaining) != 1:
+                continue  # 모호하다 — 이 그룹은 손대지 않는다.
+            entry = unresolved[0]
+            target_slot_id, (_, real_anchor_alias) = next(iter(remaining.items()))
+            by_id[entry.item_id] = entry.model_copy(
+                update={"slot_id": target_slot_id, "parent_ref": None, "parent_item_id": None}
+            )
+            resolved[entry.item_id] = real_anchor_alias
+
+        for entry_id, real_anchor_alias in resolved.items():
+            current = by_id[entry_id]
+            by_id[entry_id] = current.model_copy(
+                update={"parent_ref": real_anchor_alias, "parent_item_id": None}
+            )
+
+        # 가짜 앵커 자신(내용이 옮겨진 경우 제외)과 내용 없는 나머지 자동
+        # 생성 slot은 실제 앵커 쪽에 이미 자리가 있으므로 버린다.
+        if item.item_id not in resolved:
+            drop.add(item.item_id)
+        drop.update(
+            other.item_id
+            for other in group
+            if other.item_id not in resolved and other.item_id != item.item_id
         )
         changed = True
 

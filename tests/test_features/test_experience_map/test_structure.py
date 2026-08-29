@@ -1069,6 +1069,124 @@ async def test_new_anchor_duplicating_existing_slots_ambiguously_is_rejected(fak
 
 
 @pytest.mark.asyncio
+async def test_new_anchor_group_with_correct_child_slot_is_redirected_by_slot_id(
+    fake_dependencies,
+):
+    """새 앵커의 자식 중 실제 내용 있는 것의 slot_id가 정확히 겹치면, 후보가 여럿이어도 되돌린다.
+
+    실제로 재현된 경우다(gap 질문에 답하는 흐름). 컨테이너 밑에 이미 채워진
+    앵커(`b_2`)가 있고, 그 아래 빈 슬롯이 "목적"·"조사" 두 개나 남아 있는데,
+    모델이 그 옆에 새 앵커 + 템플릿 전체(목적 슬롯만 실제 내용, 나머지는
+    빈 자동 생성)를 또 만들었다. 남은 빈 슬롯이 두 개라 section만 보면
+    모호하지만, 실제 내용 있는 자식의 slot_id(`TASK.BASIC.PURPOSE`)가 그중
+    하나와 정확히 같으므로 다른 후보(조사)는 무시하고 그 슬롯으로 되돌려야
+    한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text=None,
+                    source_item_ids=[],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="이탈률을 낮추는 게 목표였다.",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_3",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.RESEARCH",
+                    text=None,
+                    source_item_ids=[],
+                ),
+            ],
+        )
+    )
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306", "b_3": "307"},
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n"
+            "  [b_1] (빈 블록)\n"
+            "    [b_2] 기존 담당업무 내용\n"
+            "      [b_3] (빈 블록 — 가이드: 목적)\n"
+            "      [b_4] (빈 블록 — 가이드: 조사)"
+        ),
+        new_items=[
+            {"item_id": "it_1", "text": "이탈률을 낮추는 게 목표였다.", "source": "message"}
+        ],
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "이탈률을 낮추는 게 목표였다."
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_ref"] == "b_2"
+    assert "TASK.SUMMARY" not in items_by_slot
+    assert "TASK.BASIC.RESEARCH" not in items_by_slot
+    assert len(result["structured_items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_item_with_invalid_slot_id_is_dropped_not_rejected(fake_dependencies):
+    """내용도 없고 카탈로그에도 없는 slot_id를 단 item은 검증에 걸리지 않고 버려진다.
+
+    실제로 재현된 경우다. 모델이 실제 슬롯을 채우는 item과는 별개로,
+    빈 item에 slot_id로 실제 슬롯이 아니라 템플릿 id 자체
+    (`TASK.BASIC.PURPOSE`가 아니라 `TASK.BASIC`)를 적어 넣었다. text도
+    source_item_ids도 없어 버려도 잃을 정보가 없다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    section_kind="TASK",
+                    parent_ref="exp_1",
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.SUMMARY",
+                    text="담당업무를 수행했다.",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_3",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC",
+                    text=None,
+                    source_item_ids=[],
+                ),
+            ],
+        )
+    )
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305"},
+        activity_tree_text="[exp_1] 교내 커머스 리뉴얼\n  [b_1] (빈 블록)",
+        new_items=[{"item_id": "it_1", "text": "담당업무를 수행했다.", "source": "message"}],
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert "TASK.SUMMARY" in items_by_slot
+    assert "TASK.BASIC" not in items_by_slot
+
+
+@pytest.mark.asyncio
 async def test_new_sibling_after_ref_is_cleared_not_rejected(fake_dependencies):
     """방금 만든 블록의 id를 after_ref 에 쓰면 코드가 비운다.
 
