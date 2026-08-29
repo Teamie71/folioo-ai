@@ -71,12 +71,14 @@ NODE_MAX_ATTEMPTS = 2
 MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 3
 """구조화 노드가 LLM 한 번에 배정을 맡기는 최대 원문 item 수.
 
-실제로 원문이 15개를 넘어가면(파일 업로드 시 흔함) 모델이 일부를 빠뜨리거나
-잘못 연결하는 사고가 눈에 띄게 잦아졌다. 한 번에 맡기는 양을 줄이고 여러
-배치로 나눠 순차 처리하면 배치당 실패율이 크게 낮아진다. 특히 한 배치
-안에 서로 다른 카테고리(예: 담당업무 + 문제해결) 내용이 섞이면 새 카테고리
-생성과 템플릿 전개를 동시에 시켜야 해서 실패율이 눈에 띄게 더 높았다 —
-배치를 작게 유지해 그 확률 자체를 줄인다."""
+채팅 원문은 짧은 문장 여러 개가 한 주제를 구성하는 경우가 많아 최대 3개를 함께
+배정한다. 파일 원문은 아래의 더 작은 별도 한도를 적용한다."""
+
+MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 1
+"""PDF·문서에서 추출한 원문을 구조화 LLM 한 번에 맡기는 최대 item 수.
+
+파일 원문을 2~3개씩 맡기면 서로 다른 카테고리·하위 템플릿 판단이 한 응답에
+섞이면서 60초 제한을 넘거나 계약을 어기는 경우가 반복돼 하나씩 처리한다."""
 
 MAX_SOURCE_ITEM_CHARS = MAX_CONTENT_LENGTH
 """구조화에 넘기는 원문 item 하나의 최대 글자 수.
@@ -88,6 +90,9 @@ PDF OCR 결과처럼 긴 문단 하나가 통째로 분류되면 item 개수 제
 
 MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH = 1_200
 """구조화 LLM 한 번에 전달하는 원문 text 총 글자 수 상한."""
+
+MAX_FILE_SOURCE_CHARS_PER_STRUCTURE_BATCH = MAX_SOURCE_ITEM_CHARS
+"""파일 원문 구조화 호출의 text 총 글자 수 상한."""
 
 MAX_VALIDATION_REPAIRS = 2
 """validate → structure/refine 회귀 최대 횟수."""

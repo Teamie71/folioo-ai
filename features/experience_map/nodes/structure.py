@@ -5,11 +5,13 @@ import re
 
 from common.llm import get_experience_map_llm
 from features.experience_map.config import (
+    MAX_FILE_SOURCE_CHARS_PER_STRUCTURE_BATCH,
+    MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH,
     MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH,
     MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH,
     get_settings,
 )
-from features.experience_map.errors import LlmError
+from features.experience_map.errors import LlmError, NodeTimeoutError
 from features.experience_map.prompts.structure import (
     render_catalog,
     render_previous_batch_note,
@@ -120,7 +122,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                     result: StructureOutput = await active_chain.ainvoke(
                         {**prompt_vars, "gap_instruction": instruction}
                     )
-                except Exception:
+                except Exception as exc:
                     # LLM이 스키마 자체를 어기는 item을 낼 때가 있다(예: parent_ref도
                     # parent_item_id도 없는 item) — pydantic이 파싱 단계에서 바로
                     # 거부해 결과를 볼 기회조차 없다. 이걸 여기서 안 잡으면 배치
@@ -131,6 +133,18 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                     # 지시문을 덧붙여 입력 자체를 바꿔야 재시도가 의미 있다.
                     if attempt == 1:
                         raise
+                    if _is_timeout_exception(exc):
+                        logger.warning(
+                            "structure: 배치 %d/%d LLM 제한 시간 초과, 같은 배치 재시도",
+                            batch_index + 1,
+                            len(batches),
+                        )
+                        instruction = base_instruction + (
+                            "**주의: 이전 시도는 제한 시간 안에 끝나지 않았습니다.** "
+                            "이번 원문 item만 가장 가까운 카테고리와 템플릿 하나에 "
+                            "배정하고, 관련 없는 카테고리·템플릿은 출력하지 마세요.\n\n"
+                        )
+                        continue
                     logger.warning(
                         "structure: 배치 %d/%d 응답 파싱 실패, 같은 배치 재시도",
                         batch_index + 1,
@@ -188,17 +202,42 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         # 배치를 다 처리한 뒤 딱 한 번만 빈 슬롯을 채운다 — 배치마다 채우면
         # 뒤 배치가 실제로 채우려는 slot을 앞 배치가 먼저 빈 슬롯으로 선점해
         # 같은 slot이 두 번 생긴다.
-        filled_items = _fill_missing_template_slots(items, catalog, state)
-        validated = _validate_output(
-            filled_items,
-            source_items=source_items,
-            catalog=catalog,
-            state=state,
-            existing_categories=existing_categories,
-        )
+        non_empty_items = _drop_empty_new_section_subtrees(items)
+        section_filled_items = _fill_missing_section_slots(non_empty_items, catalog)
+        filled_items = _fill_missing_template_slots(section_filled_items, catalog, state)
+        try:
+            validated = _validate_output(
+                filled_items,
+                source_items=source_items,
+                catalog=catalog,
+                state=state,
+                existing_categories=existing_categories,
+            )
+        except Exception:
+            logger.error(
+                "structure: 검증 실패 item 연결 정보=%s",
+                [
+                    {
+                        "item_id": item.item_id,
+                        "parent_ref": item.parent_ref,
+                        "parent_item_id": item.parent_item_id,
+                        "section_kind": item.section_kind,
+                        "slot_id": item.slot_id,
+                        "has_text": item.text is not None,
+                        "source_count": len(item.source_item_ids),
+                    }
+                    for item in filled_items
+                ],
+            )
+            raise
     except LlmError:
         raise
     except Exception as exc:
+        if _is_timeout_exception(exc):
+            logger.exception("structure: LLM 제한 시간 초과")
+            raise NodeTimeoutError(
+                "블록 구조화 시간이 초과되었습니다.", failed_node="structure"
+            ) from exc
         logger.exception("structure: 구조화 실패")
         raise LlmError("내용을 블록 구조로 정리하지 못했습니다.", failed_node="structure") from exc
 
@@ -210,6 +249,26 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         sum(1 for item in validated if len(item.source_item_ids) > 1),
     )
     return updated  # type: ignore[return-value]
+
+
+def _is_timeout_exception(exc: BaseException) -> bool:
+    """LangChain/OpenAI/httpx 예외 체인에 제한 시간 초과가 있는지 확인한다."""
+    timeout_names = {
+        "APITimeoutError",
+        "ConnectTimeout",
+        "PoolTimeout",
+        "ReadTimeout",
+        "TimeoutException",
+        "WriteTimeout",
+    }
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError) or type(current).__name__ in timeout_names:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _source_items(state: ExperienceMapState) -> list[dict]:
@@ -227,16 +286,26 @@ def _source_batches(source_items: list[dict]) -> list[list[dict]]:
     체크포인트 복구나 직접 노드 호출처럼 그 단계를 우회한 입력도 한 번의 LLM
     호출에 과도하게 합쳐지지 않도록 하는 방어선이다.
     """
+    has_file_source = any(item.get("source") == "file" for item in source_items)
+    max_items = (
+        MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH
+        if has_file_source
+        else MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH
+    )
+    max_chars = (
+        MAX_FILE_SOURCE_CHARS_PER_STRUCTURE_BATCH
+        if has_file_source
+        else MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH
+    )
+
     batches: list[list[dict]] = []
     current: list[dict] = []
     current_chars = 0
 
     for item in source_items:
         item_chars = len(str(item.get("text") or ""))
-        exceeds_count = len(current) >= MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH
-        exceeds_chars = (
-            current and current_chars + item_chars > MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH
-        )
+        exceeds_count = len(current) >= max_items
+        exceeds_chars = current and current_chars + item_chars > max_chars
         if exceeds_count or exceeds_chars:
             batches.append(current)
             current = []
@@ -319,6 +388,28 @@ def _merge_duplicate_slot_items(items: list[StructureLlmItem]) -> list[Structure
     return result
 
 
+def _merge_duplicate_section_items(items: list[StructureLlmItem]) -> list[StructureLlmItem]:
+    """같은 section_kind의 신규 카테고리를 하나로 합치고 자식을 다시 연결한다."""
+    canonical_by_kind: dict[str, str] = {}
+    redirect: dict[str, str] = {}
+    for item in items:
+        if item.section_kind is None:
+            continue
+        canonical = canonical_by_kind.setdefault(item.section_kind, item.item_id)
+        if canonical != item.item_id:
+            redirect[item.item_id] = canonical
+
+    if not redirect:
+        return items
+    return [
+        item.model_copy(
+            update={"parent_item_id": redirect.get(item.parent_item_id, item.parent_item_id)}
+        )
+        for item in items
+        if item.item_id not in redirect
+    ]
+
+
 def _drop_empty_invalid_slot_items(
     items: list[StructureLlmItem], catalog: TemplateCatalog
 ) -> list[StructureLlmItem]:
@@ -372,13 +463,15 @@ def _apply_structuring_fixups(
     들어가야 최종 text가 원문을 빠짐없이 담는다.
     """
     normalized_slots = _normalize_known_slot_aliases(raw_items, catalog)
-    merged = _merge_duplicate_slot_items(normalized_slots)
+    merged_sections = _merge_duplicate_section_items(normalized_slots)
+    merged = _merge_duplicate_slot_items(merged_sections)
     pruned_junk = _drop_empty_invalid_slot_items(merged, catalog)
     reconstructed = _reconstruct_verbatim_text(pruned_junk, source_text)
     rerefed = _fix_batch_local_parent_ref(reconstructed, state)
     dereffed = _clear_invalid_after_ref(rerefed, state)
     rerooted = _fix_new_section_parent(dereffed, state)
-    reparented = _reparent_orphan_level5_items(rerooted, catalog)
+    normalized_hierarchy = _normalize_new_hierarchy(rerooted, catalog, state)
+    reparented = _reparent_orphan_level5_items(normalized_hierarchy, catalog)
     # `_reuse_existing_filled_anchor`는 반드시 `_reparent_orphan_level5_items`
     # 뒤에 와야 한다. 앞서 두면, 이게 앵커를 level 5로 바꿔 기존 앵커에
     # `parent_ref`로 직접 붙인 결과를 `_reparent_orphan_level5_items`가
@@ -483,8 +576,7 @@ def _render_previous_batch_lines(
             lines.append(f"- [{item.item_id}] 카테고리 컨테이너 (section_kind={item.section_kind})")
         elif item.slot_id is not None:
             anchor = " · 앵커" if _is_anchor_slot(item.slot_id, catalog) else ""
-            content = f': "{item.text}"' if item.text else " (빈 슬롯)"
-            lines.append(f"- [{item.item_id}] {item.slot_id}{anchor}{content}")
+            lines.append(f"- [{item.item_id}] {item.slot_id}{anchor}")
     return lines
 
 
@@ -614,6 +706,182 @@ def _fix_new_section_parent(
         else item
         for item in items
     ]
+
+
+def _normalize_new_hierarchy(
+    items: list[StructureLlmItem],
+    catalog: TemplateCatalog,
+    state: ExperienceMapState,
+) -> list[StructureLlmItem]:
+    """신규 블록의 카테고리·앵커·level 5 부모 계층을 복구한다.
+
+    파일 원문을 한 item씩 배치 처리하면 뒤 배치가 앞 배치의 item_id를 보면서도
+    그 의미를 잘못 읽는 경우가 있다. 확인된 형태는 앵커를 활동 바로 아래에
+    붙이거나, level 5를 같은 section의 다른 level 5 또는 다른 section 앵커
+    아래에 붙이는 것이다. slot_id의 첫 부분이 section이고 카탈로그가 앵커를
+    명시하므로 올바른 부모는 결정적이다. 기존 블록 별칭의 실제 level은 이
+    응답만으로 알 수 없으므로, 신규 item 체인 또는 선택 활동 별칭까지 연결된
+    경우만 보정한다.
+    """
+    target_alias = state.get("target_experience_alias")
+    if not target_alias:
+        return items
+
+    anchor_slot_by_section = {
+        section.section_id: slot.slot_id
+        for section in catalog.sections
+        for slot in section.slots
+        if slot.is_anchor
+    }
+    if not anchor_slot_by_section:
+        return items
+
+    result = list(items)
+    used_ids = {item.item_id for item in result}
+
+    def unique_id(prefix: str) -> str:
+        counter = 1
+        candidate = f"{prefix}_{counter}"
+        while candidate in used_ids:
+            counter += 1
+            candidate = f"{prefix}_{counter}"
+        used_ids.add(candidate)
+        return candidate
+
+    def by_id() -> dict[str, StructureLlmItem]:
+        return {item.item_id: item for item in result}
+
+    def ancestor(item: StructureLlmItem, predicate) -> StructureLlmItem | None:
+        lookup = by_id()
+        current = item
+        seen: set[str] = set()
+        while current.parent_item_id is not None:
+            if current.item_id in seen:
+                return None
+            seen.add(current.item_id)
+            parent = lookup.get(current.parent_item_id)
+            if parent is None:
+                return None
+            if predicate(parent):
+                return parent
+            current = parent
+        return None
+
+    def root_ref(item: StructureLlmItem) -> str | None:
+        lookup = by_id()
+        current = item
+        seen: set[str] = set()
+        while True:
+            if current.item_id in seen:
+                return None
+            seen.add(current.item_id)
+            if current.parent_ref is not None:
+                return current.parent_ref
+            if current.parent_item_id is None:
+                return None
+            parent = lookup.get(current.parent_item_id)
+            if parent is None:
+                return None
+            current = parent
+
+    def category_for(section_id: str) -> StructureLlmItem:
+        existing = next(
+            (item for item in result if item.section_kind == section_id),
+            None,
+        )
+        if existing is not None:
+            return existing
+        category = StructureLlmItem(
+            item_id=unique_id(f"auto_category_{section_id}"),
+            action="add",
+            parent_ref=target_alias,
+            section_kind=section_id,  # type: ignore[arg-type]
+        )
+        result.append(category)
+        return category
+
+    # 먼저 앵커를 올바른 카테고리 바로 아래로 옮긴다. 그래야 이어지는
+    # level 5 보정이 안정된 부모 체인을 기준으로 판단할 수 있다.
+    for index, item in enumerate(list(result)):
+        if not _is_anchor_slot(item.slot_id, catalog):
+            continue
+        section_id = (item.slot_id or "").split(".")[0]
+        direct_parent = by_id().get(item.parent_item_id or "")
+        if direct_parent is not None and direct_parent.section_kind == section_id:
+            continue
+        matching_category = ancestor(item, lambda parent: parent.section_kind == section_id)
+        if matching_category is not None:
+            result[index] = item.model_copy(
+                update={"parent_ref": None, "parent_item_id": matching_category.item_id}
+            )
+            continue
+        # 기존 별칭 바로 아래의 앵커는 그 별칭이 기존 카테고리일 수 있어
+        # 보존한다. 선택 활동까지 닿거나 다른 신규 section 체인에 들어간
+        # 경우에만 같은 section 카테고리를 만들거나 재사용한다.
+        if root_ref(item) == target_alias:
+            category = category_for(section_id)
+            result[index] = item.model_copy(
+                update={"parent_ref": None, "parent_item_id": category.item_id}
+            )
+
+    def anchor_for(section_id: str, child: StructureLlmItem) -> StructureLlmItem | None:
+        anchor_slot_id = anchor_slot_by_section.get(section_id)
+        if anchor_slot_id is None:
+            return None
+        matching = ancestor(child, lambda parent: parent.slot_id == anchor_slot_id)
+        if matching is not None:
+            return matching
+
+        matching_category = ancestor(child, lambda parent: parent.section_kind == section_id)
+        child_root_ref = root_ref(child)
+        if matching_category is None and child_root_ref == target_alias:
+            matching_category = category_for(section_id)
+
+        if matching_category is not None:
+            existing = next(
+                (
+                    item
+                    for item in result
+                    if item.slot_id == anchor_slot_id
+                    and item.parent_item_id == matching_category.item_id
+                ),
+                None,
+            )
+            if existing is not None:
+                return existing
+            anchor = StructureLlmItem(
+                item_id=unique_id(f"auto_anchor_{section_id}"),
+                action="add",
+                parent_item_id=matching_category.item_id,
+                slot_id=anchor_slot_id,
+                text=None,
+                source_item_ids=[],
+            )
+            result.append(anchor)
+            return anchor
+
+        # 선택 활동이 아닌 기존 별칭에서 끝나면 그 별칭은 기존 카테고리로
+        # 간주한다. 기존 앵커인지 카테고리인지 판별할 정보가 없던 종전 규칙과
+        # 동일하게, 이미 level 5가 직접 붙어 있으면 건드리지 않는다.
+        return None
+
+    for index, item in enumerate(list(result)):
+        if not item.slot_id or item.slot_id.count(".") != 2:
+            continue
+        section_id = item.slot_id.split(".")[0]
+        expected_anchor_slot = anchor_slot_by_section.get(section_id)
+        if expected_anchor_slot is None:
+            continue
+        direct_parent = by_id().get(item.parent_item_id or "")
+        if direct_parent is not None and direct_parent.slot_id == expected_anchor_slot:
+            continue
+        anchor = anchor_for(section_id, item)
+        if anchor is not None:
+            result[index] = item.model_copy(
+                update={"parent_ref": None, "parent_item_id": anchor.item_id}
+            )
+
+    return result
 
 
 def _reparent_orphan_level5_items(
@@ -868,6 +1136,97 @@ def _fill_missing_template_slots(
                 )
             )
     return filled
+
+
+def _fill_missing_section_slots(
+    items: list[StructureLlmItem], catalog: TemplateCatalog
+) -> list[StructureLlmItem]:
+    """새 카테고리에서 모델이 생략한 level 4 빈 슬롯을 카탈로그대로 채운다.
+
+    새 section과 그 자식 관계가 확정된 뒤에는 빠진 level 4 슬롯의
+    ``slot_id``·부모·빈 text가 모두 결정적이다. level 5에 적용하던 같은
+    원칙으로 코드가 생성하며, 원문이 배정된 기존 item은 건드리지 않는다.
+    """
+    sections = {section.section_id: section for section in catalog.sections}
+    children_by_parent: dict[str, set[str]] = {}
+    used_item_ids = {item.item_id for item in items}
+    for item in items:
+        if item.parent_item_id and item.slot_id:
+            children_by_parent.setdefault(item.parent_item_id, set()).add(item.slot_id)
+
+    filled = list(items)
+    counter = 0
+    for category in items:
+        if category.section_kind is None:
+            continue
+        section = sections.get(category.section_kind)
+        if section is None:
+            continue
+        present = children_by_parent.get(category.item_id, set())
+        for slot in section.slots:
+            if slot.slot_id in present:
+                continue
+            counter += 1
+            item_id = f"auto_section_slot_{counter}"
+            while item_id in used_item_ids:
+                counter += 1
+                item_id = f"auto_section_slot_{counter}"
+            used_item_ids.add(item_id)
+            filled.append(
+                StructureLlmItem(
+                    item_id=item_id,
+                    action="add",
+                    parent_item_id=category.item_id,
+                    slot_id=slot.slot_id,
+                    text=None,
+                    source_item_ids=[],
+                )
+            )
+    return filled
+
+
+def _drop_empty_new_section_subtrees(
+    items: list[StructureLlmItem],
+) -> list[StructureLlmItem]:
+    """최종 배정 뒤 실제 내용이 전혀 없는 신규 카테고리 서브트리를 제거한다.
+
+    여러 파일 배치를 처리하는 동안 모델이 관련 가능성이 있는 카테고리를 먼저
+    만들었지만 끝까지 어떤 원문도 배정하지 않는 경우가 있다. 중간에는 뒤 배치가
+    채울 수 있으므로 유지하고, 모든 배치가 끝난 뒤 text/source가 없는 서브트리만
+    제거한다.
+    """
+    children_by_parent: dict[str, list[StructureLlmItem]] = {}
+    for item in items:
+        if item.parent_item_id:
+            children_by_parent.setdefault(item.parent_item_id, []).append(item)
+
+    def subtree_ids(root: StructureLlmItem) -> set[str]:
+        collected: set[str] = set()
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            if current.item_id in collected:
+                continue
+            collected.add(current.item_id)
+            pending.extend(children_by_parent.get(current.item_id, []))
+        return collected
+
+    by_id = {item.item_id: item for item in items}
+    drop: set[str] = set()
+    for category in items:
+        if category.section_kind is None:
+            continue
+        candidate_ids = subtree_ids(category)
+        has_content = any(
+            by_id[item_id].text is not None or bool(by_id[item_id].source_item_ids)
+            for item_id in candidate_ids
+        )
+        if not has_content:
+            drop.update(candidate_ids)
+
+    if not drop:
+        return items
+    return [item for item in items if item.item_id not in drop]
 
 
 def _validate_output(

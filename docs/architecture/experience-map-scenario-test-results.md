@@ -1,9 +1,9 @@
 # 경험 정리 에이전트 시나리오 테스트 결과
 
-- 실행일: 2026-08-29
+- 실행일: 2026-08-29, 재검증 2026-08-30
 - 기준 브랜치: `fix/structure-template-decomposition`
-- 기준 커밋: `c308956 fix: align experience map agent with architecture`
-- 결과: 7개 시나리오 통과
+- 기준 변경: `4c6740f` 이후 PDF 구조 계층 보정 포함
+- 결과: 8개 시나리오 통과
 
 ## 테스트 범위
 
@@ -393,6 +393,59 @@ router → file_processor(OCR 3페이지) → file_cleanup → content_filter
 item을 기존 맵 별칭으로 오인하는 경우는 원문이나 배정 사실을 추측하지 않는
 결정적 보정으로 처리했다.
 
+### 2026-08-30 실패 재현 후 회귀 실행
+
+사용자 환경에서 재시작 후에도 실패한 요청과 같은 조건으로 스캔 PDF를 다시
+실행했다. 첫 구조화 이후 검증 보정으로 구조화를 다시 수행할 때, 모델이
+`활동 → 카테고리 → 앵커 → level 5 슬롯` 계층을 건너뛰거나 다른 section의
+앵커 아래에 슬롯을 붙이는 문제를 재현했다. slot_id와 카탈로그의 앵커 정의로
+부모가 확정되는 신규 item만 결정적으로 재연결하도록 수정한 뒤 실제 API를 다시
+호출했다.
+
+최종 요청:
+
+```text
+request_id: 8c1f5c30-82ba-4f7c-ad96-f97508347744
+router → file_processor → file_cleanup → content_filter → target_activity
+→ structure → refine → validate → commit → processing_complete
+```
+
+실제 응답:
+
+> 내용을 분석하여 경험을 정리했어요.
+>
+> - 담당업무 아래 5개의 블록 생성
+> - 담당업무 생성
+
+실제 커밋 결과:
+
+```json
+{
+  "previous_version": 1,
+  "map_version": 2,
+  "applied_count": 6,
+  "dropped": []
+}
+```
+
+실제 블록 생성 결과:
+
+```text
+[exp_1] 새 경험
+  [b_1] (담당업무 카테고리 컨테이너)
+    [b_2] 프로젝트: 교내 커머스 리뉴얼
+      [b_3] 행사 신청 과정에서 사용자의 이탈률이 높았습니다.
+      [b_4] GA4 퍼널 분석을 통해 입력 단계를 5개에서 3개로 줄이고,
+            Redis 캐시를 적용해 중복 조회를 감소시켰습니다.
+      [b_5] 신청 완료율이 18% 증가하고 평균 응답 시간이 40% 감소하는
+            성과를 거두었습니다.
+      [b_6] (빈 조사·학습 슬롯)
+```
+
+판정: 내장 텍스트가 없는 3페이지 PDF의 OCR부터 실제 블록 커밋까지 성공했다.
+최종 맵은 신규 카테고리와 앵커를 포함해 명세의 부모 계층을 지켰고, 중간
+level 5 슬롯 중첩이나 다른 section 앵커 연결은 남지 않았다.
+
 ## 재현 명령과 회귀 테스트
 
 1번 전체 그래프 데모:
@@ -420,7 +473,7 @@ UV_CACHE_DIR=/tmp/folioo-uv uv run pytest -q \
 최신 경험정리 전체 테스트 실행 결과:
 
 ```text
-392 passed, 51 skipped
+399 passed, 51 skipped
 ```
 
 ## 남은 실연동 확인 항목

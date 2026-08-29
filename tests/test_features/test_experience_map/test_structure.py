@@ -3,9 +3,10 @@
 import pytest
 from langchain_core.runnables import RunnableLambda
 
-from features.experience_map.errors import LlmError
+from features.experience_map.errors import LlmError, NodeTimeoutError
 from features.experience_map.nodes import structure as structure_node
 from features.experience_map.nodes.structure import (
+    _normalize_new_hierarchy,
     _prune_extra_templates,
     _reparent_orphan_level5_items,
     _validate_output,
@@ -420,7 +421,7 @@ async def test_level5_slot_attached_to_container_is_auto_reparented_to_anchor(fa
 
 @pytest.mark.asyncio
 async def test_level5_using_parent_ref_for_batch_local_anchor_is_reinterpreted(
-    fake_dependencies,
+    fake_dependencies, monkeypatch
 ):
     """방금 만든 앵커를 `parent_ref`로 가리키면 `parent_item_id`로 바로잡는다.
 
@@ -430,6 +431,7 @@ async def test_level5_using_parent_ref_for_batch_local_anchor_is_reinterpreted(
     수 없으므로(서버가 그런 별칭을 주지 않는다), 방금 만든 item을 가리키려던
     의도가 명백해 코드가 `parent_item_id`로 고쳐 끼운다.
     """
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 3)
     fake_dependencies(
         StructureOutput(
             items=[
@@ -481,7 +483,9 @@ async def test_level5_using_parent_ref_for_batch_local_anchor_is_reinterpreted(
 
 
 @pytest.mark.asyncio
-async def test_anchor_reusing_same_source_as_its_level5_child_is_emptied(fake_dependencies):
+async def test_anchor_reusing_same_source_as_its_level5_child_is_emptied(
+    fake_dependencies, monkeypatch
+):
     """앵커가 하위 level 5 슬롯과 똑같은 원문을 또 쓰면, 앵커를 빈 슬롯으로 되돌린다.
 
     실제 PDF 이력서 입력으로 재현된 경우다. 프롬프트는 "같은 입력 item을
@@ -491,6 +495,7 @@ async def test_anchor_reusing_same_source_as_its_level5_child_is_emptied(fake_de
     쓰여 `_validate_source_coverage`가 거부했다. level 5가 항상 더
     구체적이므로, 코드가 앵커 쪽 배정만 비워 원문을 한 곳에서만 쓰게 한다.
     """
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 2)
     fake_dependencies(
         StructureOutput(
             items=[
@@ -644,6 +649,7 @@ async def test_large_input_is_split_into_batches_that_reuse_earlier_anchors(
     한다.
     """
     monkeypatch.setattr(structure_node, "MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 2)
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 2)
 
     first_batch_response = StructureOutput(
         items=[
@@ -710,14 +716,25 @@ async def test_large_input_is_split_into_batches_that_reuse_earlier_anchors(
     )
 
 
+@pytest.mark.asyncio
+async def test_structure_timeout_is_reported_as_node_timeout(fake_dependencies):
+    """모델 제한 시간 초과를 일반 LLM 오류로 숨기지 않는다."""
+    fake_dependencies(TimeoutError("upstream timed out"))
+
+    with pytest.raises(NodeTimeoutError) as exc_info:
+        await structure_blocks(make_state())
+
+    assert exc_info.value.failed_node == "structure"
+
+
 def test_source_batches_are_also_limited_by_total_text_length(monkeypatch):
     """item 수가 적어도 긴 원문들이 한 구조화 호출에 함께 실리지 않는다."""
     monkeypatch.setattr(structure_node, "MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 3)
     monkeypatch.setattr(structure_node, "MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH", 10)
     source_items = [
-        {"item_id": "it_1", "text": "가" * 6, "source": "file"},
-        {"item_id": "it_2", "text": "나" * 6, "source": "file"},
-        {"item_id": "it_3", "text": "다" * 3, "source": "file"},
+        {"item_id": "it_1", "text": "가" * 6, "source": "message"},
+        {"item_id": "it_2", "text": "나" * 6, "source": "message"},
+        {"item_id": "it_3", "text": "다" * 3, "source": "message"},
     ]
 
     batches = structure_node._source_batches(source_items)
@@ -725,6 +742,23 @@ def test_source_batches_are_also_limited_by_total_text_length(monkeypatch):
     assert [[item["item_id"] for item in batch] for batch in batches] == [
         ["it_1"],
         ["it_2", "it_3"],
+    ]
+
+
+def test_file_source_batches_use_one_item_even_when_text_is_short(monkeypatch):
+    """PDF 원문은 주제가 섞이거나 시간 초과하지 않도록 한 item씩 처리한다."""
+    monkeypatch.setattr(structure_node, "MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 3)
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 1)
+    source_items = [
+        {"item_id": "it_1", "text": "프로젝트 배경", "source": "file"},
+        {"item_id": "it_2", "text": "담당 역할", "source": "file"},
+    ]
+
+    batches = structure_node._source_batches(source_items)
+
+    assert [[item["item_id"] for item in batch] for batch in batches] == [
+        ["it_1"],
+        ["it_2"],
     ]
 
 
@@ -838,14 +872,14 @@ async def test_duplicate_slot_under_same_parent_is_merged_not_rejected(fake_depe
 
 
 @pytest.mark.asyncio
-async def test_duplicate_section_kind_is_rejected(fake_dependencies):
-    """같은 카테고리를 두 번 만들 수 없다.
+async def test_duplicate_section_kind_is_merged(fake_dependencies):
+    """같은 카테고리를 두 번 만들면 첫 컨테이너로 자식을 합친다.
 
     실제로 재현된 경우다. 문제해결 템플릿 6종 중 하나만 골라야 하는데, 모델이
     템플릿마다 별도의 PROBLEM_SOLVING 카테고리 컨테이너를 중첩해서 만들었다.
 
-    두 카테고리 모두 슬롯까지 올바르게 채워서 만든다 — 그래야 "슬롯을 모두
-    생성해야 한다" 는 기존 검사가 아니라 **중복 검사 자체**가 걸리는지 본다.
+    두 컨테이너는 내용이 없고 section_kind가 같아 병합 대상이 명확하다. 자식
+    원문은 버리지 않고 같은 슬롯에 순서대로 합친다.
     """
     fake_dependencies(
         StructureOutput(
@@ -882,8 +916,14 @@ async def test_duplicate_section_kind_is_rejected(fake_dependencies):
         ]
     )
 
-    with pytest.raises(LlmError):
-        await structure_blocks(state)
+    result = await structure_blocks(state)
+
+    categories = [item for item in result["structured_items"] if item["section_kind"] == "DETAIL"]
+    assert len(categories) == 1
+    detail = next(
+        item for item in result["structured_items"] if item["slot_id"] == "DETAIL.MOTIVATION"
+    )
+    assert detail["text"] == "결제 오류를 해결했다 재시도 로직을 추가했다"
 
 
 @pytest.mark.asyncio
@@ -1437,6 +1477,79 @@ def test_known_problem_solving_result_alias_is_normalized():
     assert result[0].text == "재시도 후 오류가 재발하지 않았다"
 
 
+def test_missing_new_section_level4_slots_are_auto_filled():
+    """새 카테고리의 결정 가능한 빈 level 4 슬롯은 코드가 전부 만든다."""
+    payload = catalog_payload()
+    payload["sections"][0]["slots"].append(
+        {
+            "slot_id": "DETAIL.PERIOD",
+            "level": 4,
+            "placeholder": "기간",
+            "example": "2025.01~2025.03",
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    items = [
+        StructureLlmItem(
+            item_id="category_1",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="DETAIL",
+        ),
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_item_id="category_1",
+            slot_id="DETAIL.MOTIVATION",
+            text="프로젝트를 시작했다",
+            source_item_ids=["it_1"],
+        ),
+    ]
+
+    result = structure_node._fill_missing_section_slots(items, catalog)
+
+    by_slot = {item.slot_id: item for item in result if item.slot_id}
+    assert by_slot["DETAIL.MOTIVATION"].text == "프로젝트를 시작했다"
+    assert by_slot["DETAIL.PERIOD"].text is None
+    assert by_slot["DETAIL.PERIOD"].parent_item_id == "category_1"
+
+
+def test_empty_extra_new_section_subtree_is_dropped_after_all_batches():
+    """원문이 배정되지 않은 여분 카테고리만 제거하고 내용 있는 카테고리는 보존한다."""
+    items = [
+        StructureLlmItem(
+            item_id="empty_category",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="DETAIL",
+        ),
+        StructureLlmItem(
+            item_id="empty_slot",
+            action="add",
+            parent_item_id="empty_category",
+            slot_id="DETAIL.MOTIVATION",
+        ),
+        StructureLlmItem(
+            item_id="filled_category",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="TASK",
+        ),
+        StructureLlmItem(
+            item_id="filled_anchor",
+            action="add",
+            parent_item_id="filled_category",
+            slot_id="TASK.SUMMARY",
+            text="백엔드 개발을 담당했다",
+            source_item_ids=["it_1"],
+        ),
+    ]
+
+    result = structure_node._drop_empty_new_section_subtrees(items)
+
+    assert {item.item_id for item in result} == {"filled_category", "filled_anchor"}
+
+
 def test_basic_and_troubleshooting_under_same_anchor_are_collapsed():
     """배치마다 다르게 고른 일반·트러블슈팅 템플릿을 한 템플릿으로 합친다."""
     items = [
@@ -1700,6 +1813,136 @@ def test_reparent_orphan_level5_fixes_fake_anchor_hub():
     anchor_id = anchor_candidates[0].item_id
     assert by_id["blk_1"].parent_item_id == anchor_id
     assert by_id["blk_2"].parent_item_id == anchor_id
+
+
+def test_normalize_new_hierarchy_inserts_category_above_activity_rooted_anchor():
+    """앵커가 활동 바로 아래에 붙으면 같은 section 카테고리를 끼워 넣는다."""
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    items = [
+        StructureLlmItem(
+            item_id="anchor_1",
+            action="add",
+            parent_ref="exp_1",
+            slot_id="TASK.SUMMARY",
+            text="결제 오류 해결 업무",
+            source_item_ids=["it_1"],
+        )
+    ]
+
+    result = _normalize_new_hierarchy(items, catalog, make_state())
+
+    by_id = {item.item_id: item for item in result}
+    category = next(item for item in result if item.section_kind == "TASK")
+    assert category.parent_ref == "exp_1"
+    assert by_id["anchor_1"].parent_ref is None
+    assert by_id["anchor_1"].parent_item_id == category.item_id
+
+
+def test_normalize_new_hierarchy_flattens_level5_nested_under_sibling():
+    """level 5가 다른 level 5 아래에 중첩되면 같은 앵커의 직속 자식으로 옮긴다."""
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    items = [
+        StructureLlmItem(
+            item_id="category_1",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="TASK",
+        ),
+        StructureLlmItem(
+            item_id="anchor_1",
+            action="add",
+            parent_item_id="category_1",
+            slot_id="TASK.SUMMARY",
+        ),
+        StructureLlmItem(
+            item_id="purpose_1",
+            action="add",
+            parent_item_id="anchor_1",
+            slot_id="TASK.BASIC.PURPOSE",
+            text="목적",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="result_1",
+            action="add",
+            parent_item_id="purpose_1",
+            slot_id="TASK.BASIC.RESULT",
+            text="결과",
+            source_item_ids=["it_2"],
+        ),
+    ]
+
+    result = _normalize_new_hierarchy(items, catalog, make_state())
+
+    by_id = {item.item_id: item for item in result}
+    assert by_id["purpose_1"].parent_item_id == "anchor_1"
+    assert by_id["result_1"].parent_item_id == "anchor_1"
+
+
+def test_normalize_new_hierarchy_separates_level5_from_other_section_anchor():
+    """다른 section 앵커 아래의 level 5는 자기 카테고리와 앵커로 분리한다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "PROBLEM_SOLVING",
+            "label": "문제해결",
+            "slots": [
+                {
+                    "slot_id": "PROBLEM_SOLVING.SUMMARY",
+                    "level": 4,
+                    "placeholder": "문제해결 요약",
+                    "example": "결제 오류 해결",
+                    "is_anchor": True,
+                }
+            ],
+            "templates": [
+                {
+                    "template_id": "BASIC",
+                    "label": "기본",
+                    "slots": [
+                        {
+                            "slot_id": "PROBLEM_SOLVING.BASIC.SOLUTION",
+                            "level": 5,
+                            "placeholder": "해결",
+                            "example": "재시도 로직 추가",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    items = [
+        StructureLlmItem(
+            item_id="task_category",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="TASK",
+        ),
+        StructureLlmItem(
+            item_id="task_anchor",
+            action="add",
+            parent_item_id="task_category",
+            slot_id="TASK.SUMMARY",
+        ),
+        StructureLlmItem(
+            item_id="solution_1",
+            action="add",
+            parent_item_id="task_anchor",
+            slot_id="PROBLEM_SOLVING.BASIC.SOLUTION",
+            text="재시도 로직을 추가했다",
+            source_item_ids=["it_1"],
+        ),
+    ]
+
+    result = _normalize_new_hierarchy(items, catalog, make_state())
+
+    by_id = {item.item_id: item for item in result}
+    problem_category = next(item for item in result if item.section_kind == "PROBLEM_SOLVING")
+    problem_anchor = next(item for item in result if item.slot_id == "PROBLEM_SOLVING.SUMMARY")
+    assert problem_category.parent_ref == "exp_1"
+    assert problem_anchor.parent_item_id == problem_category.item_id
+    assert by_id["solution_1"].parent_item_id == problem_anchor.item_id
 
 
 @pytest.mark.asyncio
