@@ -136,6 +136,12 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                 # 병합할 게 있는(call_index > 0) 모든 호출에 접두사를 붙여
                 # 겹치지 않게 한다. 첫 호출(call_index == 0)은 병합 대상이
                 # 없으니 그대로 둔다 — item_id가 굳이 안 바뀌는 편이 낫다.
+                if any(raw_item.action != "add" for raw_item in result.items):
+                    # 구조화 LLM은 항상 add만 낸다 — update는 결정론적 보정
+                    # (`_reuse_existing_filled_anchor`,
+                    # `_redirect_leaf_add_to_existing_empty_slot`)이 add를
+                    # 안전한 경우에만 코드로 바꿔치기하는 용도로만 쓴다.
+                    raise ValueError("구조화 노드는 add operation만 만들 수 있습니다.")
                 namespaced = (
                     _namespace_batch_item_ids(result.items, call_index)
                     if call_index > 0
@@ -333,7 +339,8 @@ def _apply_structuring_fixups(
     # `parent_ref`가 실제로 앵커를 가리키는지는 그 함수가 알 방법이 없다.
     reused = _reuse_existing_filled_anchor(reparented, catalog, state)
     deduped = _dedupe_anchor_matching_child_source(reused, catalog)
-    return _prune_extra_templates(deduped)
+    pruned = _prune_extra_templates(deduped)
+    return _redirect_leaf_add_to_existing_empty_slot(pruned, catalog, state)
 
 
 def _missing_source_ids(items: list[StructureLlmItem], source_text: dict[str, str]) -> set[str]:
@@ -780,12 +787,21 @@ def _validate_output(
     item_ids = [item.item_id for item in items]
     if len(item_ids) != len(set(item_ids)):
         raise ValueError("구조화 결과 item_id가 중복되었습니다.")
-    if any(item.action != "add" for item in items):
-        raise ValueError("구조화 노드는 add operation만 만들 수 있습니다.")
 
     _validate_source_coverage(items, expected_text)
 
     for item in items:
+        if item.action == "update":
+            # LLM은 add만 낼 수 있다 — update는 결정론적 보정
+            # (`_reuse_existing_filled_anchor`,
+            # `_redirect_leaf_add_to_existing_empty_slot`)이 이미 있는 빈
+            # 슬롯 블록을 add로 중복 생성하지 않고 그 블록 자신을 채우도록
+            # 코드가 바꿔치기한 것만 여기 온다.
+            if item.target_ref not in state.get("alias_to_block_id", {}):
+                raise ValueError("선택 활동에 없는 target_ref를 사용할 수 없습니다.")
+            if not item.source_item_ids and item.text is not None:
+                raise ValueError("source_item_ids 없이 text를 만들 수 없습니다.")
+            continue
         if not item.source_item_ids and item.text is not None:
             raise ValueError("source_item_ids 없이 text를 만들 수 없습니다.")
         if item.slot_id is not None and catalog.get_slot(item.slot_id) is None:
@@ -1002,10 +1018,16 @@ def _reuse_existing_filled_anchor(
     안 잡혔다. 실제로 재현된 경우다: 이미 채워진 앵커 옆에 새 앵커 +
     빈 템플릿 전체를 또 만들었는데, 그 서브트리에 남은 진짜 빈 슬롯은 이번에
     반영하려는 내용과 정확히 하나만 일치했다 — 그렇다면 새 앵커가 아니라
-    그 빈 슬롯을 채우려던 의도가 명백하므로, 코드가 새 앵커를 그 슬롯으로
-    바꾸고 그 앵커의 부모(컨테이너)를 원래 앵커로 되돌린다. 일치가 하나가
-    아니면(0개 또는 여러 개) 모호해서 그대로 두고 이후 검증이 에러로
-    보고하게 한다.
+    그 빈 슬롯을 채우려던 의도가 명백하다.
+
+    **`add`로 앵커에 다시 붙이면 안 된다.** 빈 슬롯(예: `b_5`)은 이미
+    실제 block_id를 가진 블록이다 — `add`는 항상 새 블록을 만들므로, 그
+    슬롯을 `parent_ref`로 삼아 다시 add해도 `b_5`는 그대로 빈 채로 남고
+    형제 블록만 하나 더 생긴다. 실제로 재현된 경우다: 에러 없이 통과는
+    됐는데, 정작 화면에는 기존 빈 "목적" 블록은 그대로 비어 있고 새 블록이
+    하나 더 생겼다. 그 빈 슬롯 자신의 별칭을 `target_ref`로 삼아 `update`로
+    바꿔야 진짜로 그 블록을 채운다. 일치가 하나가 아니면(0개 또는 여러 개)
+    모호해서 그대로 두고 이후 검증이 에러로 보고하게 한다.
     """
     tree_lines = _parse_tree_lines(state.get("activity_tree_text") or "")
     placeholder_to_slot = _placeholder_to_slot_map(catalog)
@@ -1040,12 +1062,12 @@ def _reuse_existing_filled_anchor(
         # 그 자체가 확실한 증거다 — 다른 후보가 몇 개든 상관없다(예: 같은
         # section에 빈 슬롯이 둘 있어도, 모델이 이미 그중 하나와 정확히
         # 같은 slot_id를 골랐다면 나머지 후보는 무시해도 안전하다).
-        resolved: dict[str, str] = {}  # item_id -> real_anchor_alias
+        resolved: dict[str, str] = {}  # item_id -> 빈 슬롯 자신의 별칭(target_ref)
         unresolved = []
         used_slots: set[str] = set()
         for entry in filled:
             if entry.slot_id in known_by_slot:
-                resolved[entry.item_id] = known_by_slot[entry.slot_id][1]
+                resolved[entry.item_id] = known_by_slot[entry.slot_id][0]
                 used_slots.add(entry.slot_id)
             else:
                 unresolved.append(entry)
@@ -1060,16 +1082,21 @@ def _reuse_existing_filled_anchor(
             if len(unresolved) != 1 or len(remaining) != 1:
                 continue  # 모호하다 — 이 그룹은 손대지 않는다.
             entry = unresolved[0]
-            target_slot_id, (_, real_anchor_alias) = next(iter(remaining.items()))
-            by_id[entry.item_id] = entry.model_copy(
-                update={"slot_id": target_slot_id, "parent_ref": None, "parent_item_id": None}
-            )
-            resolved[entry.item_id] = real_anchor_alias
+            _, (target_alias, _) = next(iter(remaining.items()))
+            resolved[entry.item_id] = target_alias
 
-        for entry_id, real_anchor_alias in resolved.items():
+        for entry_id, target_alias in resolved.items():
             current = by_id[entry_id]
             by_id[entry_id] = current.model_copy(
-                update={"parent_ref": real_anchor_alias, "parent_item_id": None}
+                update={
+                    "action": "update",
+                    "target_ref": target_alias,
+                    "parent_ref": None,
+                    "parent_item_id": None,
+                    "slot_id": None,
+                    "section_kind": None,
+                    "after_ref": None,
+                }
             )
 
         # 가짜 앵커 자신(내용이 옮겨진 경우 제외)과 내용 없는 나머지 자동
@@ -1086,6 +1113,63 @@ def _reuse_existing_filled_anchor(
     if not changed:
         return items
     return [by_id[item.item_id] for item in items if item.item_id not in drop]
+
+
+def _redirect_leaf_add_to_existing_empty_slot(
+    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
+) -> list[StructureLlmItem]:
+    """이미 있는 앵커에 슬롯을 새로 add할 때, 그 slot이 이미 빈 블록으로 있으면 update로 바꾼다.
+
+    실제로 재현된 경우다(gap 질문에 답하는 흐름). 모델이 `existing_anchor_alias`를
+    올바르게 골라 기존 앵커(예: `b_2`)에 직접 `add`로 level 5 슬롯을 붙였다
+    — 앵커 자체는 정확히 재사용했다. 하지만 그 슬롯(예: "목적")은 이미
+    빈 블록(`b_3`)으로 트리에 있었는데, `add`는 항상 새 블록을 만들므로
+    기존 `b_3`는 그대로 빈 채 새 형제 블록이 하나 더 생겼다 — 화면에는
+    "이미 있던 빈 블록을 안 채우고 새 블록을 또 만든" 것으로 보인다.
+    `parent_ref`의 **직속 자식** 중 같은 slot_id를 가진 빈 블록이 있으면,
+    그 블록 자신을 `target_ref`로 삼아 `update`로 바꾼다.
+    """
+    tree_lines = _parse_tree_lines(state.get("activity_tree_text") or "")
+    placeholder_to_slot = _placeholder_to_slot_map(catalog)
+    known_aliases = state.get("alias_to_block_id", {})
+
+    result: list[StructureLlmItem] = []
+    changed = False
+    for item in items:
+        if (
+            item.action == "add"
+            and item.parent_ref is not None
+            and item.parent_ref in known_aliases
+            and item.slot_id is not None
+            and not _is_anchor_slot(item.slot_id, catalog)
+            and (item.text or item.source_item_ids)
+        ):
+            direct_children = {
+                slot_id: alias
+                for slot_id, alias, parent_alias in _subtree_known_slots_with_parent(
+                    tree_lines, item.parent_ref, placeholder_to_slot
+                )
+                if parent_alias == item.parent_ref
+            }
+            target_alias = direct_children.get(item.slot_id)
+            if target_alias is not None:
+                result.append(
+                    item.model_copy(
+                        update={
+                            "action": "update",
+                            "target_ref": target_alias,
+                            "parent_ref": None,
+                            "parent_item_id": None,
+                            "slot_id": None,
+                            "section_kind": None,
+                            "after_ref": None,
+                        }
+                    )
+                )
+                changed = True
+                continue
+        result.append(item)
+    return result if changed else items
 
 
 def _validate_anchor_reuse_deterministic(
@@ -1306,8 +1390,15 @@ def _validate_gap_parent(items: list[StructureLlmItem], state: ExperienceMapStat
     )
     source_ids = {item["item_id"] for item in state.get("gap_answer_items", [])}
     offending = any(
-        set(item.source_item_ids) & source_ids and item.parent_ref != anchor_alias for item in items
+        set(item.source_item_ids) & source_ids
+        and item.action == "add"
+        and item.parent_ref != anchor_alias
+        for item in items
     )
+    # update로 바뀐 item(`_reuse_existing_filled_anchor`,
+    # `_redirect_leaf_add_to_existing_empty_slot`)은 이미 그 anchor
+    # 서브트리 안에서 찾은 기존 빈 슬롯만 target_ref로 삼으므로 따로
+    # parent_ref를 비교할 필요가 없다 — update는 parent_ref 자체가 없다.
     if not anchor_alias or offending:
         raise ValueError("new_child gap 답변은 anchor block 바로 아래에만 추가할 수 있습니다.")
 

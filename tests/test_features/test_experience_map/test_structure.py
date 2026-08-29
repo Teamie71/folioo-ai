@@ -1015,14 +1015,15 @@ async def test_new_anchor_duplicating_existing_filled_anchor_is_redirected_to_it
 
     result = await structure_blocks(state)
 
-    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
-    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "결제 시스템을 강화했다"
-    assert items_by_slot["TASK.BASIC.RESULT"]["parent_ref"] == "b_4"
-    # 새로 만든 가짜 앵커(TASK.SUMMARY)는 남아있지 않다.
-    assert "TASK.SUMMARY" not in items_by_slot
-    # 기존 앵커(b_4) 밑이라 "템플릿 완전 전개"를 강제하지 않는다 — 옆에
-    # 실제 PURPOSE가 이미 있을 수도 있는데 빈 PURPOSE를 또 만들면 중복이다.
+    # add로 앵커(b_4) 밑에 새 블록을 또 만들면 안 된다 — b_5는 이미 있는
+    # 진짜 빈 블록이라, 그 자신을 target_ref로 삼아 update로 채워야 한다.
     assert len(result["structured_items"]) == 1
+    item = result["structured_items"][0]
+    assert item["action"] == "update"
+    assert item["target_ref"] == "b_5"
+    assert item["text"] == "결제 시스템을 강화했다"
+    assert item["slot_id"] is None
+    assert item["parent_ref"] is None
 
 
 @pytest.mark.asyncio
@@ -1128,12 +1129,67 @@ async def test_new_anchor_group_with_correct_child_slot_is_redirected_by_slot_id
 
     result = await structure_blocks(state)
 
-    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
-    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "이탈률을 낮추는 게 목표였다."
-    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_ref"] == "b_2"
-    assert "TASK.SUMMARY" not in items_by_slot
-    assert "TASK.BASIC.RESEARCH" not in items_by_slot
+    # b_3(목적)은 이미 있는 진짜 빈 블록이다 — add로 b_2 밑에 새 블록을
+    # 또 만들면 안 되고, b_3 자신을 target_ref로 삼아 update로 채워야 한다.
     assert len(result["structured_items"]) == 1
+    item = result["structured_items"][0]
+    assert item["action"] == "update"
+    assert item["target_ref"] == "b_3"
+    assert item["text"] == "이탈률을 낮추는 게 목표였다."
+    assert item["slot_id"] is None
+    assert item["parent_ref"] is None
+
+
+@pytest.mark.asyncio
+async def test_leaf_add_matching_existing_empty_slot_becomes_update(fake_dependencies):
+    """기존 앵커에 직접 add한 슬롯이 이미 빈 블록으로 있으면, add 대신 update로 채운다.
+
+    실제로 재현된 경우다(gap 질문에 답하는 흐름). 모델이 `existing_anchor_alias`를
+    올바르게 골라 기존 앵커(`b_2`)에 직접 level 5 슬롯을 add했다 — 가짜
+    앵커를 또 만드는 사고는 없었다. 하지만 그 slot_id(`TASK.BASIC.PURPOSE`)는
+    이미 빈 블록(`b_3`)으로 트리에 있었는데, add는 항상 새 블록을 만들므로
+    에러 없이 통과는 되지만 b_3는 그대로 비워진 채 새 형제 블록만 하나 더
+    생긴다 — 사용자에게는 "이미 있던 빈 블록을 안 채우고 새 블록을 또
+    만든" 것으로 보인다. 이 경우 add를 그 블록 자신을 향한 update로
+    바꿔야 한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_2",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="이탈률을 낮추는 게 목표였다.",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306", "b_3": "307", "b_4": "308"},
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n"
+            "  [b_1] (빈 블록)\n"
+            "    [b_2] 기존 담당업무 내용\n"
+            "      [b_3] (빈 블록 — 가이드: 목적)\n"
+            "      [b_4] (빈 블록 — 가이드: 조사)"
+        ),
+        new_items=[
+            {"item_id": "it_1", "text": "이탈률을 낮추는 게 목표였다.", "source": "message"}
+        ],
+    )
+
+    result = await structure_blocks(state)
+
+    assert len(result["structured_items"]) == 1
+    item = result["structured_items"][0]
+    assert item["action"] == "update"
+    assert item["target_ref"] == "b_3"
+    assert item["text"] == "이탈률을 낮추는 게 목표였다."
+    assert item["slot_id"] is None
+    assert item["parent_ref"] is None
 
 
 @pytest.mark.asyncio
