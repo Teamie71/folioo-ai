@@ -4,8 +4,8 @@
 
 | 처리 | 형식 |
 | --- | --- |
-| 파일 파서 | TXT, DOCX, PPTX |
-| OCR 모델 | PDF, PNG, JPG/JPEG |
+| 파일 파서 | TXT, DOCX, PPTX, 텍스트 레이어가 있는 PDF |
+| OCR 모델 | 스캔 PDF 페이지, PNG, JPG/JPEG |
 
 **두 실패를 구분하는 것이 이 모듈의 핵심이다.**
 
@@ -32,6 +32,7 @@ from features.experience_map.config import (
     MAX_PDF_PAGES,
     OCR_MIME_TYPES,
     PARSER_MIME_TYPES,
+    PDF_OCR_CONCURRENCY,
     PDF_RENDER_SCALE,
     get_settings,
 )
@@ -39,6 +40,8 @@ from features.experience_map.config import (
 logger = logging.getLogger(__name__)
 
 TRUNCATION_NOTE = "\n\n[내용이 길어 앞부분만 사용했습니다.]"
+MIN_EMBEDDED_PDF_TEXT_CHARS = 8
+"""이보다 짧은 PDF 텍스트 레이어는 이미지 캡션·페이지 번호일 수 있어 OCR한다."""
 
 OCR_INSTRUCTION = """\
 첨부한 문서나 이미지에 있는 **텍스트를 그대로 옮겨** 주세요.
@@ -157,7 +160,66 @@ def _suffix(filename: str) -> str:
     return f".{ext.lower()}" if dot else ""
 
 
-def _render_pdf_pages(data: bytes) -> list[bytes]:
+def _open_pdf(data: bytes):
+    """PDFium 문서를 열고 파일 자체가 손상된 경우 사용자 입력 오류로 구분한다."""
+    import pypdfium2 as pdfium
+
+    try:
+        return pdfium.PdfDocument(data)
+    except pdfium.PdfiumError as exc:
+        raise FileUnreadableError("PDF를 열 수 없습니다.") from exc
+
+
+def _pdf_page_count(pdf) -> int:
+    """처리 상한을 적용한 PDF 페이지 수를 반환한다."""
+    page_count = min(len(pdf), MAX_PDF_PAGES)
+    if page_count == 0:
+        raise FileUnreadableError("PDF에 페이지가 없습니다.")
+    return page_count
+
+
+def _normalize_pdf_text(text: str) -> str:
+    """PDFium 텍스트 레이어의 줄바꿈과 불필요한 줄 끝 공백을 정리한다."""
+    return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").splitlines()).strip()
+
+
+def _has_usable_pdf_text(text: str) -> bool:
+    """페이지 텍스트 레이어를 그대로 사용할 수 있는지 보수적으로 판정한다."""
+    compact = "".join(character for character in text if not character.isspace())
+    if len(compact) < MIN_EMBEDDED_PDF_TEXT_CHARS:
+        return False
+    readable = sum(character.isprintable() and character != "\ufffd" for character in compact)
+    return readable / len(compact) >= 0.9
+
+
+def _extract_pdf_page_texts(data: bytes) -> list[str | None]:
+    """PDF 텍스트 레이어를 페이지별로 읽고, OCR이 필요한 페이지는 None으로 둔다."""
+    import pypdfium2 as pdfium
+
+    pdf = _open_pdf(data)
+    try:
+        page_count = _pdf_page_count(pdf)
+        page_texts: list[str | None] = []
+        for index in range(page_count):
+            page = pdf[index]
+            try:
+                text_page = page.get_textpage()
+                try:
+                    text = _normalize_pdf_text(text_page.get_text_range())
+                finally:
+                    text_page.close()
+            except pdfium.PdfiumError:
+                logger.info("PDF %d페이지 텍스트 레이어를 읽지 못해 OCR로 전환합니다", index + 1)
+                text = ""
+            finally:
+                page.close()
+            page_texts.append(text if _has_usable_pdf_text(text) else None)
+        return page_texts
+    finally:
+        pdf.close()
+
+
+def _render_pdf_pages(data: bytes, page_indexes: list[int] | None = None) -> list[bytes]:
     """PDF 페이지를 PNG 이미지로 직접 렌더링한다.
 
     PDF 원본 바이트를 그대로 vision 모델에 `image_url`로 넘기면, 제공자가
@@ -173,17 +235,14 @@ def _render_pdf_pages(data: bytes) -> list[bytes]:
     """
     import pypdfium2 as pdfium
 
+    pdf = _open_pdf(data)
     try:
-        pdf = pdfium.PdfDocument(data)
-    except pdfium.PdfiumError as exc:
-        raise FileUnreadableError("PDF를 열 수 없습니다.") from exc
-
-    try:
-        page_count = min(len(pdf), MAX_PDF_PAGES)
-        if page_count == 0:
-            raise FileUnreadableError("PDF에 페이지가 없습니다.")
+        page_count = _pdf_page_count(pdf)
+        indexes = list(range(page_count)) if page_indexes is None else page_indexes
+        if any(index < 0 or index >= page_count for index in indexes):
+            raise ValueError("PDF 렌더링 페이지 범위가 올바르지 않습니다.")
         images: list[bytes] = []
-        for index in range(page_count):
+        for index in indexes:
             page = pdf[index]
             try:
                 bitmap = page.render(scale=PDF_RENDER_SCALE)
@@ -224,35 +283,111 @@ def _image_blocks(images: list[bytes], mime_type: str) -> list[dict]:
     return blocks
 
 
+def _response_text(content: object) -> str:
+    """provider별 텍스트 응답 표현을 하나의 문자열로 정규화한다."""
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "\n".join(parts).strip()
+
+
+async def _ocr_image(llm, image: bytes, mime_type: str, instruction: str) -> str:
+    """이미지 하나를 OCR한다."""
+    from langchain_core.messages import HumanMessage
+
+    message = HumanMessage(
+        content=[{"type": "text", "text": instruction}, *_image_blocks([image], mime_type)]
+    )
+    response = await llm.ainvoke([message])
+    return _response_text(getattr(response, "content", ""))
+
+
+async def _extract_pdf_hybrid(data: bytes) -> str:
+    """텍스트 레이어를 우선 사용하고 스캔 페이지만 제한적으로 OCR한다."""
+    page_texts = _extract_pdf_page_texts(data)
+    ocr_indexes = [index for index, text in enumerate(page_texts) if text is None]
+    logger.info(
+        "PDF 페이지 분석 완료 (pages=%d, embedded_text=%d, ocr=%d)",
+        len(page_texts),
+        len(page_texts) - len(ocr_indexes),
+        len(ocr_indexes),
+    )
+
+    if ocr_indexes:
+        images = _render_pdf_pages(data, ocr_indexes)
+        llm = get_file_processor_llm()
+        semaphore = asyncio.Semaphore(PDF_OCR_CONCURRENCY)
+
+        async def _run(index: int, image: bytes) -> tuple[int, str]:
+            async with semaphore:
+                logger.info(
+                    "PDF %d페이지 OCR 시작 (image_bytes=%d)",
+                    index + 1,
+                    len(image),
+                )
+                try:
+                    text = await _ocr_image(
+                        llm,
+                        image,
+                        "image/png",
+                        f"{OCR_INSTRUCTION}\n- PDF의 {index + 1}페이지입니다. 이 페이지만 옮겨 적습니다.\n",
+                    )
+                except Exception:
+                    logger.exception(
+                        "PDF %d페이지 OCR 실패 (image_bytes=%d)",
+                        index + 1,
+                        len(image),
+                    )
+                    raise
+                logger.info("PDF %d페이지 OCR 완료 (text_chars=%d)", index + 1, len(text))
+                return index, text
+
+        async def _run_all() -> list[tuple[int, str]]:
+            tasks: list[asyncio.Task[tuple[int, str]]] = []
+            async with asyncio.TaskGroup() as group:
+                for index, image in zip(ocr_indexes, images, strict=True):
+                    tasks.append(group.create_task(_run(index, image)))
+            return [task.result() for task in tasks]
+
+        results = await asyncio.wait_for(_run_all(), timeout=get_settings().timeouts.file)
+        for index, text in results:
+            page_texts[index] = text
+
+    text = "\n\n".join(page for page in page_texts if page and page.strip()).strip()
+    if not text:
+        raise FileUnreadableError("파일에서 텍스트를 찾지 못했습니다.")
+    return _truncate(text)
+
+
 async def extract_with_ocr(data: bytes, filename: str, content_type: str) -> str:
     """OCR 모델로 텍스트를 뽑는다 (PDF·PNG·JPEG).
 
-    PDF는 원본 바이트를 그대로 보내지 않는다. 페이지를 PNG로 직접 렌더링한
-    뒤(`_render_pdf_pages`) 그 이미지들을 보낸다 — 한글 래스터화 결함을 없애기
-    위해서다. PNG·JPEG는 이미 raster 이미지라 그대로 보낸다.
+    PDF는 먼저 페이지별 텍스트 레이어를 읽는다. 텍스트가 없는 스캔 페이지만
+    PNG로 렌더링해 페이지별 OCR 요청으로 나눈다. PDF 원본이나 최대 10페이지의
+    이미지를 한 요청에 몰아넣지 않는다. PNG·JPEG는 그대로 한 번 OCR한다.
 
     Raises:
         FileUnreadableError: 모델이 읽을 내용을 찾지 못함, 또는 PDF 자체를 열 수 없음
         Exception: 시스템 오류 (타임아웃·API 실패) — 노드 실패로 올라간다
     """
-    from langchain_core.messages import HumanMessage
-
     if content_type == "application/pdf":
-        pages = _render_pdf_pages(data)
-        image_blocks = _image_blocks(pages, "image/png")
-        instruction = OCR_INSTRUCTION
-        if len(pages) > 1:
-            instruction += "\n- 여러 페이지입니다. 순서대로 이어서 옮겨 적습니다.\n"
-    else:
-        image_blocks = _image_blocks([data], content_type)
-        instruction = OCR_INSTRUCTION
-
-    message = HumanMessage(content=[{"type": "text", "text": instruction}, *image_blocks])
+        return await _extract_pdf_hybrid(data)
 
     llm = get_file_processor_llm()
-    response = await asyncio.wait_for(llm.ainvoke([message]), timeout=get_settings().timeouts.file)
-
-    text = (getattr(response, "content", "") or "").strip()
+    text = await asyncio.wait_for(
+        _ocr_image(llm, data, content_type, OCR_INSTRUCTION),
+        timeout=get_settings().timeouts.file,
+    )
     if not text:
         # 모델은 정상 응답했는데 읽을 글자가 없다. 스캔 품질 문제이거나 빈 문서다.
         raise FileUnreadableError("파일에서 텍스트를 찾지 못했습니다.")

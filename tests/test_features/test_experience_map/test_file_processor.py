@@ -1,11 +1,13 @@
 """파일처리 노드 테스트 (에이전트 문서 5-2)"""
 
+import asyncio
 import base64
 import io
 import zipfile
 
 import pytest
 from langchain_core.messages import AIMessage
+from PIL import Image
 
 from features.experience_map import extractors
 from features.experience_map.errors import LlmError
@@ -357,7 +359,7 @@ def test_extractor_kind(content_type, expected):
     assert extractor_kind(content_type) == expected
 
 
-# ===== PDF OCR: 페이지를 직접 이미지로 렌더링 =====
+# ===== PDF: 텍스트 레이어 우선, 스캔 페이지만 OCR =====
 
 
 def minimal_pdf() -> bytes:
@@ -379,6 +381,14 @@ startxref
 %%EOF"""
 
 
+def scanned_pdf(page_count: int = 1) -> bytes:
+    """텍스트 레이어가 없는 이미지 기반 PDF."""
+    images = [Image.new("RGB", (200, 200), "white") for _ in range(page_count)]
+    buffer = io.BytesIO()
+    images[0].save(buffer, format="PDF", save_all=True, append_images=images[1:])
+    return buffer.getvalue()
+
+
 class _CaptureVisionLlm:
     """OCR vision 호출을 기록하는 대역."""
 
@@ -392,8 +402,20 @@ class _CaptureVisionLlm:
 
 
 @pytest.mark.asyncio
-async def test_pdf_is_rendered_to_png_images_before_ocr(monkeypatch):
-    """PDF 원본 바이트를 그대로 보내지 않고, 페이지를 렌더링한 PNG를 보낸다.
+async def test_text_pdf_uses_embedded_text_without_llm(monkeypatch):
+    """쓸 수 있는 텍스트 레이어가 있으면 LLM을 호출하지 않는다."""
+    fake_llm = _CaptureVisionLlm("호출되면 안 됨")
+    monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: fake_llm)
+
+    text = await extractors.extract_with_ocr(minimal_pdf(), "이력서.pdf", "application/pdf")
+
+    assert text == "Hello PDF"
+    assert fake_llm.invocations == []
+
+
+@pytest.mark.asyncio
+async def test_scanned_pdf_is_rendered_to_png_before_ocr(monkeypatch):
+    """텍스트 레이어가 없는 페이지만 PNG로 렌더링해 OCR한다.
 
     원본 바이트를 그대로 `image_url`로 보내면, 제공자가 내부적으로 PDF를
     이미지로 바꾸는 과정에서 한글처럼 폰트가 내장된 텍스트를 제대로
@@ -404,13 +426,103 @@ async def test_pdf_is_rendered_to_png_images_before_ocr(monkeypatch):
     fake_llm = _CaptureVisionLlm("Hello PDF")
     monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: fake_llm)
 
-    text = await extractors.extract_with_ocr(minimal_pdf(), "이력서.pdf", "application/pdf")
+    text = await extractors.extract_with_ocr(scanned_pdf(), "스캔.pdf", "application/pdf")
 
     assert text == "Hello PDF"
     [message] = fake_llm.invocations[0]
     image_blocks = [block for block in message.content if block["type"] == "image_url"]
     assert len(image_blocks) == 1
     assert image_blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_pdf_ocr_runs_per_page_and_preserves_page_order(monkeypatch):
+    """스캔 페이지를 한 요청에 몰지 않고 페이지별 호출한 뒤 원래 순서로 합친다."""
+
+    class PageAwareLlm:
+        def __init__(self) -> None:
+            self.invocations: list[list] = []
+
+        async def ainvoke(self, messages):
+            self.invocations.append(messages)
+            image_url = messages[0].content[1]["image_url"]["url"]
+            encoded = image_url.removeprefix("data:image/png;base64,")
+            page = base64.b64decode(encoded).decode("utf-8")
+            return AIMessage(content=f"OCR {page}")
+
+    fake_llm = PageAwareLlm()
+    monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: fake_llm)
+    monkeypatch.setattr(extractors, "_extract_pdf_page_texts", lambda _: [None, None, None])
+    monkeypatch.setattr(
+        extractors,
+        "_render_pdf_pages",
+        lambda _, indexes: [f"page-{index + 1}".encode() for index in indexes],
+    )
+
+    text = await extractors.extract_with_ocr(b"pdf", "스캔.pdf", "application/pdf")
+
+    assert text.split("\n\n") == ["OCR page-1", "OCR page-2", "OCR page-3"]
+    assert len(fake_llm.invocations) == 3
+    assert all(len(invocation[0].content) == 2 for invocation in fake_llm.invocations)
+
+
+@pytest.mark.asyncio
+async def test_pdf_ocr_limits_concurrent_page_requests(monkeypatch):
+    """페이지 수가 늘어도 OCR 동시 호출은 설정한 상한을 넘지 않는다."""
+
+    class ConcurrencyLlm:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+
+        async def ainvoke(self, messages):
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            try:
+                await asyncio.sleep(0.01)
+                return AIMessage(content="페이지 내용")
+            finally:
+                self.active -= 1
+
+    fake_llm = ConcurrencyLlm()
+    monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: fake_llm)
+    monkeypatch.setattr(extractors, "_extract_pdf_page_texts", lambda _: [None] * 7)
+    monkeypatch.setattr(
+        extractors,
+        "_render_pdf_pages",
+        lambda _, indexes: [f"page-{index + 1}".encode() for index in indexes],
+    )
+
+    text = await extractors.extract_with_ocr(b"pdf", "스캔.pdf", "application/pdf")
+
+    assert text.split("\n\n") == ["페이지 내용"] * 7
+    assert fake_llm.max_active == extractors.PDF_OCR_CONCURRENCY
+
+
+@pytest.mark.asyncio
+async def test_mixed_pdf_only_ocrs_pages_without_usable_text(monkeypatch):
+    """텍스트 PDF와 스캔 페이지가 섞여도 필요한 페이지만 OCR한다."""
+    fake_llm = _CaptureVisionLlm("OCR 둘째 페이지")
+    rendered_indexes: list[int] = []
+
+    monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: fake_llm)
+    monkeypatch.setattr(
+        extractors,
+        "_extract_pdf_page_texts",
+        lambda _: ["로컬 첫째 페이지", None, "로컬 셋째 페이지"],
+    )
+
+    def render_missing_pages(_, indexes):
+        rendered_indexes.extend(indexes)
+        return [b"page-2"]
+
+    monkeypatch.setattr(extractors, "_render_pdf_pages", render_missing_pages)
+
+    text = await extractors.extract_with_ocr(b"pdf", "혼합.pdf", "application/pdf")
+
+    assert text.split("\n\n") == ["로컬 첫째 페이지", "OCR 둘째 페이지", "로컬 셋째 페이지"]
+    assert rendered_indexes == [1]
+    assert len(fake_llm.invocations) == 1
 
 
 @pytest.mark.asyncio

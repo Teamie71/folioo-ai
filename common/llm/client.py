@@ -154,4 +154,4 @@ def get_llm_uncached(
 
 
 def _file_processor_model(model: str | None) -> str:
-    return model or os.getenv("FILE_PROCESSOR_MODEL_NAME", "google/gemini-3.1-pro-preview")
+    return model or os.getenv("FILE_PROCESSOR_MODEL_NAME", "google/gemini-3.1-flash-lite")
