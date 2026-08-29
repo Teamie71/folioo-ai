@@ -167,7 +167,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         # 배치를 다 처리한 뒤 딱 한 번만 빈 슬롯을 채운다 — 배치마다 채우면
         # 뒤 배치가 실제로 채우려는 slot을 앞 배치가 먼저 빈 슬롯으로 선점해
         # 같은 slot이 두 번 생긴다.
-        filled_items = _fill_missing_template_slots(items, catalog)
+        filled_items = _fill_missing_template_slots(items, catalog, state)
         validated = _validate_output(
             filled_items,
             source_items=source_items,
@@ -666,7 +666,7 @@ def _prune_extra_templates(items: list[StructureLlmItem]) -> list[StructureLlmIt
 
 
 def _fill_missing_template_slots(
-    items: list[StructureLlmItem], catalog: TemplateCatalog
+    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
 ) -> list[StructureLlmItem]:
     """모델이 빠뜨린 level 5 빈 슬롯을 코드가 직접 채워 넣는다.
 
@@ -676,7 +676,16 @@ def _fill_missing_template_slots(
     비결정적으로 재발해서, "어떤 하위 템플릿을 어느 부모 아래 만들었는지"가
     이미 출력에 다 드러난 이상 나머지 slot_id는 코드가 결정론적으로 채운다 —
     모델의 확률적 성실성에 기대지 않는다.
+
+    **부모가 이미 존재하는(커밋된) 블록이면 채우지 않는다.** 그 앵커
+    아래 실제로 무슨 slot이 이미 있는지는 활동 트리 문자열만으로는 알
+    방법이 없다 — 채워진 실제 내용은 placeholder 문구를 안 남기기
+    때문이다(빈 슬롯만 문구가 남는다, 명세 3-7). 실제로 이미 채워진
+    슬롯 옆에 "빠진 슬롯"이라며 또 빈 슬롯을 만들어 중복시킨 적이 있다.
+    이번 턴에 방금 새로 만든 앵커(배치 내부 item_id로만 연결된 경우)만
+    전체 템플릿 구조를 확신할 수 있으므로 그 경우에만 채운다.
     """
+    known_aliases = state.get("alias_to_block_id", {})
     templates = {
         f"{section.section_id}.{template.template_id}": [slot.slot_id for slot in template.slots]
         for section in catalog.sections
@@ -694,6 +703,8 @@ def _fill_missing_template_slots(
     filled = list(items)
     counter = 0
     for (parent, prefix), group_items in groups.items():
+        if parent in known_aliases:
+            continue  # 기존 블록 밑이면 옆에 다른 실제 slot이 있을 수 있어 안 건드린다.
         expected = templates.get(prefix)
         if expected is None:
             continue  # 카탈로그에 없는 템플릿이면 이후 검증이 에러로 보고한다.
@@ -766,7 +777,7 @@ def _validate_output(
     # 순서가 중요하다. level 5를 카테고리 컨테이너에 잘못 붙이면 새 카테고리의
     # level 4 슬롯 개수 검사도 같이 걸리는데, 그 일반적인 메시지보다 "앵커
     # 아래에 붙여야 한다" 는 구체적인 원인을 먼저 보여준다.
-    _validate_template_slots(items, catalog)
+    _validate_template_slots(items, catalog, state)
     _validate_new_sections(items, catalog, state)
     _validate_category_reuse(items, existing_categories or [], state)
     _validate_anchor_reuse(items, existing_categories or [], catalog, state)
@@ -1122,7 +1133,9 @@ def _validate_new_sections(
             raise ValueError("새 카테고리는 해당 level 4 슬롯을 모두 생성해야 합니다.")
 
 
-def _validate_template_slots(items: list[StructureLlmItem], catalog: TemplateCatalog) -> None:
+def _validate_template_slots(
+    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
+) -> None:
     """사용한 level 5 템플릿은 빈 슬롯을 포함해 완전하게 전개됐는지,
     그리고 그 부모가 실제 앵커(level 4, is_anchor) 블록인지 확인한다.
 
@@ -1130,7 +1143,15 @@ def _validate_template_slots(items: list[StructureLlmItem], catalog: TemplateCat
     바로 아래에 붙인 적이 있다. 명세 3-0은 "level 5는 반드시 앵커 슬롯 아래에
     붙는다" 고 못박는데, 프롬프트가 그 연결 대상을 명시하지 않아 모델이
     카테고리 컨테이너를 앵커로 착각했다.
+
+    **부모가 이미 존재하는(커밋된) 블록이면 "빠짐없이 전개" 요구는 넘어간다.**
+    `_fill_missing_template_slots`와 같은 이유다 — 그 앵커 아래 이미 무슨
+    slot이 있는지 활동 트리 문자열만으로는 알 수 없으므로, 이번 턴에
+    새로 만든 slot 몇 개만으로 "빠졌다"고 단정할 수 없다. 중복·엉뚱한
+    slot 검사는 이 경우에도 그대로 한다 — 그건 새 앵커든 기존 앵커든
+    항상 잘못이다.
     """
+    known_aliases = state.get("alias_to_block_id", {})
     templates = {
         f"{section.section_id}.{template.template_id}": {slot.slot_id for slot in template.slots}
         for section in catalog.sections
@@ -1154,7 +1175,7 @@ def _validate_template_slots(items: list[StructureLlmItem], catalog: TemplateCat
                 "아래에 만들어야 합니다."
             )
 
-    for (_, prefix), slot_ids in grouped.items():
+    for (parent, prefix), slot_ids in grouped.items():
         expected = templates.get(prefix)
         if expected is None:
             raise ValueError(f"카탈로그에 없는 하위 템플릿입니다: {prefix}")
@@ -1166,6 +1187,8 @@ def _validate_template_slots(items: list[StructureLlmItem], catalog: TemplateCat
             # BASIC 템플릿의 RESULT 를 끼워 넣었다. "모두 생성해야 한다" 는
             # 뭉뚱그린 메시지 대신, 정확히 어떤 slot이 잘못됐는지 짚는다.
             raise ValueError(f"{prefix} 템플릿에 없는 slot을 만들었습니다: {sorted(invented)}")
+        if parent in known_aliases:
+            continue  # 기존 블록 밑이면 옆에 다른 실제 slot이 있을 수 있어 안 건드린다.
         missing = expected - set(slot_ids)
         if missing:
             raise ValueError(f"{prefix} 템플릿의 slot이 빠졌습니다: {sorted(missing)}")

@@ -1020,6 +1020,9 @@ async def test_new_anchor_duplicating_existing_filled_anchor_is_redirected_to_it
     assert items_by_slot["TASK.BASIC.RESULT"]["parent_ref"] == "b_4"
     # 새로 만든 가짜 앵커(TASK.SUMMARY)는 남아있지 않다.
     assert "TASK.SUMMARY" not in items_by_slot
+    # 기존 앵커(b_4) 밑이라 "템플릿 완전 전개"를 강제하지 않는다 — 옆에
+    # 실제 PURPOSE가 이미 있을 수도 있는데 빈 PURPOSE를 또 만들면 중복이다.
+    assert len(result["structured_items"]) == 1
 
 
 @pytest.mark.asyncio
