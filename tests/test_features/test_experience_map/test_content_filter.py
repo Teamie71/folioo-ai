@@ -194,6 +194,37 @@ async def test_file_text_is_traceable(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_long_file_item_is_split_without_rewriting(fake_llm, monkeypatch):
+    """PDF 한 페이지가 한 item으로 와도 구조화에는 작은 원문 조각으로 넘긴다."""
+    monkeypatch.setattr(filter_node, "MAX_SOURCE_ITEM_CHARS", 30)
+    text = "첫 번째 문장에서 프로젝트 배경을 설명했다. 두 번째 문장에서 맡은 역할을 설명했다."
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", text, source="file")]))
+
+    result = await filter_content(make_state(user_message=None, extracted_text=text))
+
+    chunks = result["new_items"]
+    assert len(chunks) > 1
+    assert all(len(chunk["text"]) <= 30 for chunk in chunks)
+    assert all(chunk["source"] == "file" for chunk in chunks)
+    assert len({chunk["item_id"] for chunk in chunks}) == len(chunks)
+    assert " ".join(chunk["text"] for chunk in chunks) == text
+
+
+@pytest.mark.asyncio
+async def test_long_unbroken_file_item_uses_hard_limit(fake_llm, monkeypatch):
+    """OCR 결과에 경계가 없어도 구조화 한도를 넘기지 않는다."""
+    monkeypatch.setattr(filter_node, "MAX_SOURCE_ITEM_CHARS", 10)
+    text = "가나다라마바사아자차카타파하가나다라마바사"
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", text, source="file")]))
+
+    result = await filter_content(make_state(user_message=None, extracted_text=text))
+
+    chunks = result["new_items"]
+    assert all(len(chunk["text"]) <= 10 for chunk in chunks)
+    assert "".join(chunk["text"] for chunk in chunks) == text
+
+
+@pytest.mark.asyncio
 async def test_duplicate_item_is_dropped(fake_llm):
     """같은 문장이 두 목록에 들어오면 하나만 남긴다."""
     text = "APM 으로 병목을 찾아 쿼리 캐싱을 넣었다."

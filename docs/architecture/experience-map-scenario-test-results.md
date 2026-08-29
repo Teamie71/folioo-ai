@@ -332,6 +332,67 @@ gap 분석 단계에서 의도적으로 `LlmError`를 발생시켰다.
 판정: 보정 한도를 넘긴 뒤 `ValidationError`를 반환했으며 정상 항목까지 포함해
 어떤 operation도 부분 커밋하지 않았다.
 
+## 8. 테스트 콘솔 스캔 PDF 전체 경로
+
+테스트 일시: 2026-08-29
+
+입력:
+
+- 3페이지 한글 스캔 PDF (내장 텍스트 레이어 없음)
+- 사용자 메시지: `첨부한 프로젝트 경험을 경험 맵 블록으로 정리해줘.`
+- 파일 처리 모델: `google/gemini-3.1-flash-lite`
+- 경험정리 모델: `openai/gpt-4.1-mini`
+
+실제 테스트 콘솔의 multipart/SSE API로 업로드했다. 처리 경로는 다음 노드를 모두
+통과했다.
+
+```text
+router → file_processor(OCR 3페이지) → file_cleanup → content_filter
+→ target_activity → structure → refine → validate → commit
+```
+
+결과 응답:
+
+> 내용을 분석하여 경험을 정리했어요.
+>
+> - 문제해결 아래 5개의 블록 생성
+> - 문제해결 생성
+
+커밋 결과 요약:
+
+```json
+{
+  "previous_version": 1,
+  "map_version": 2,
+  "applied_count": 6,
+  "dropped": []
+}
+```
+
+블록 생성 결과:
+
+```text
+[exp_1] 새 경험
+  [b_1] (문제해결 카테고리 컨테이너)
+    [b_2] (문제해결 요약 빈 슬롯)
+      [b_3] 행사 신청 과정에서 사용자의 이탈률이 높았습니다.
+      [b_4] GA4 퍼널 분석을 통해 입력 단계를 5개에서 3개로 줄이고,
+            Redis 캐시를 적용해 중복 조회를 감소시켰습니다.
+      [b_5] 프로젝트: 교내 커머스 리뉴얼
+      [b_6] 신청 완료율이 18% 증가하고 평균 응답 시간이 40% 감소하는
+            성과를 거두었습니다.
+```
+
+후속 gap 응답:
+
+> GA4 퍼널 분석과 Redis 캐시 적용은 구체적으로 어떻게 진행하셨나요?
+
+판정: PDF OCR 성공만 확인한 것이 아니라 테스트 콘솔과 동일한 실제 API·LLM·SSE
+경로에서 블록 커밋과 후속 gap 생성까지 완료했다. 이 과정에서 확인된 구조화 모델의
+부모 참조 중복, 비공식 슬롯 이름, 일반·트러블슈팅 템플릿 중복 선택, 이전 배치
+item을 기존 맵 별칭으로 오인하는 경우는 원문이나 배정 사실을 추측하지 않는
+결정적 보정으로 처리했다.
+
 ## 재현 명령과 회귀 테스트
 
 1번 전체 그래프 데모:
@@ -356,14 +417,14 @@ UV_CACHE_DIR=/tmp/folioo-uv uv run pytest -q \
   tests/test_features/test_experience_map/test_test_runtime.py
 ```
 
-실행 결과:
+최신 경험정리 전체 테스트 실행 결과:
 
 ```text
-73 passed in 1.08s
+392 passed, 51 skipped
 ```
 
 ## 남은 실연동 확인 항목
 
-이번 테스트에는 실제 OpenRouter 모델과 메인 백엔드가 포함되지 않았다. 배포 전에는
-실제 파일 업로드·파싱 결과, 메인 백엔드 commit/revert API, SSE 소비 UI를 연결한
-테스트가 별도로 필요하다.
+실제 OpenRouter 모델과 테스트 콘솔의 multipart/SSE 소비 경로까지 확인했다. 테스트
+콘솔의 커밋 대상은 메모리 맵이므로, 배포 전에는 메인 백엔드 commit/revert API와
+실제 GCS 임시 파일 저장소를 연결한 통합 테스트가 별도로 필요하다.

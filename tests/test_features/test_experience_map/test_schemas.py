@@ -13,6 +13,7 @@ from features.experience_map.schemas import (
     RefinedItem,
     RouterOutput,
     StructuredItem,
+    StructureLlmItem,
 )
 
 # ===== structured output =====
@@ -62,6 +63,19 @@ def test_structured_item_rejects_both_parent_refs():
             parent_ref="b_20",
             parent_item_id="it_0",
         )
+
+
+def test_structure_llm_item_prefers_new_parent_when_model_returns_both_refs():
+    """LLM이 기존·신규 부모를 함께 내면 더 구체적인 신규 item 참조를 사용한다."""
+    item = StructureLlmItem(
+        item_id="blk_2",
+        action="add",
+        parent_ref="exp_1",
+        parent_item_id="blk_1",
+    )
+
+    assert item.parent_ref is None
+    assert item.parent_item_id == "blk_1"
 
 
 def test_structured_item_add_requires_a_parent():

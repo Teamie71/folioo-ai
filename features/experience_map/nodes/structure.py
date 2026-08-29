@@ -4,7 +4,11 @@ import logging
 import re
 
 from common.llm import get_experience_map_llm
-from features.experience_map.config import MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH, get_settings
+from features.experience_map.config import (
+    MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH,
+    MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH,
+    get_settings,
+)
 from features.experience_map.errors import LlmError
 from features.experience_map.prompts.structure import (
     render_catalog,
@@ -21,6 +25,20 @@ from features.experience_map.state import ExperienceMapState
 from features.experience_map.templates import TemplateCatalog, get_template_catalog_client
 
 logger = logging.getLogger(__name__)
+
+# 구조화 모델이 카탈로그의 의미는 맞게 고르고 leaf 이름만 일반적인 표현으로
+# 바꿔 내는, 실환경에서 확인된 경우만 정규화한다. prefix까지 정확히 일치해야
+# 하므로 다른 템플릿의 동명 슬롯이나 완전히 지어낸 slot_id는 통과하지 않는다.
+_KNOWN_SLOT_ALIASES = {
+    "PROBLEM_SOLVING.TROUBLESHOOTING.RESULT": ("PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION"),
+}
+
+_BASIC_TO_TROUBLESHOOTING_SLOTS = {
+    "PROBLEM_SOLVING.BASIC.PROBLEM": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+    "PROBLEM_SOLVING.BASIC.CAUSE": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+    "PROBLEM_SOLVING.BASIC.SOLUTION": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+    "PROBLEM_SOLVING.BASIC.RESULT": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+}
 
 
 async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
@@ -68,10 +86,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         existing_categories: list[ExistingCategoryClassification] = []
         cumulative_source_text: dict[str, str] = {}
         call_index = 0
-        batches = [
-            source_items[index : index + MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH]
-            for index in range(0, len(source_items), MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH)
-        ]
+        batches = _source_batches(source_items)
         for batch_index, batch in enumerate(batches):
             batch_source_text = {item["item_id"]: item["text"] for item in batch}
             cumulative_source_text.update(batch_source_text)
@@ -123,11 +138,11 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                         exc_info=True,
                     )
                     instruction = base_instruction + (
-                        "**주의: 이전 시도에서 일부 item에 parent_ref와 parent_item_id가 "
-                        "둘 다 없었습니다.** 모든 item은 둘 중 하나를 반드시 가져야 "
-                        "합니다 — 새 카테고리 컨테이너는 parent_ref(활동 별칭)만, "
-                        "그 아래 앵커·하위 슬롯은 parent_item_id(방금 만든 item_id)만 "
-                        "씁니다.\n\n"
+                        "**주의: 이전 시도에서 일부 item의 부모 참조가 스키마 규칙을 "
+                        "어겼습니다.** 모든 add item은 parent_ref와 parent_item_id 중 "
+                        "정확히 하나만 가져야 합니다. 기존 블록 아래면 parent_ref만, "
+                        "이번 응답에서 만든 새 블록 아래면 parent_item_id만 쓰고 다른 "
+                        "필드는 null로 두세요.\n\n"
                     )
                     continue
                 # 이번 호출이 새로 만든 item_id가 이전 호출(다른 배치, 또는
@@ -205,6 +220,35 @@ def _source_items(state: ExperienceMapState) -> list[dict]:
     return items
 
 
+def _source_batches(source_items: list[dict]) -> list[list[dict]]:
+    """원문 item 수와 총 글자 수를 함께 제한해 구조화 배치를 만든다.
+
+    정상 경로에서는 content_filter가 item 하나를 먼저 제한한다. 이 글자 수 제한은
+    체크포인트 복구나 직접 노드 호출처럼 그 단계를 우회한 입력도 한 번의 LLM
+    호출에 과도하게 합쳐지지 않도록 하는 방어선이다.
+    """
+    batches: list[list[dict]] = []
+    current: list[dict] = []
+    current_chars = 0
+
+    for item in source_items:
+        item_chars = len(str(item.get("text") or ""))
+        exceeds_count = len(current) >= MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH
+        exceeds_chars = (
+            current and current_chars + item_chars > MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH
+        )
+        if exceeds_count or exceeds_chars:
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(item)
+        current_chars += item_chars
+
+    if current:
+        batches.append(current)
+    return batches
+
+
 def _gap_instruction(state: ExperienceMapState) -> str:
     """new_child gap 답변의 부모를 고정하는 프롬프트 지시문."""
     active_gap = state.get("active_gap") or {}
@@ -255,7 +299,9 @@ def _merge_duplicate_slot_items(items: list[StructureLlmItem]) -> list[Structure
         keep_id = group[0].item_id
         combined: list[str] = []
         for member in group:
-            combined.extend(member.source_item_ids)
+            for source_id in member.source_item_ids:
+                if source_id not in combined:
+                    combined.append(source_id)
             if member.item_id != keep_id:
                 drop.add(member.item_id)
         merge_into[keep_id] = combined
@@ -325,7 +371,8 @@ def _apply_structuring_fixups(
     같다 — 병합된 item의 `source_item_ids`가 재조립 단계에 그대로
     들어가야 최종 text가 원문을 빠짐없이 담는다.
     """
-    merged = _merge_duplicate_slot_items(raw_items)
+    normalized_slots = _normalize_known_slot_aliases(raw_items, catalog)
+    merged = _merge_duplicate_slot_items(normalized_slots)
     pruned_junk = _drop_empty_invalid_slot_items(merged, catalog)
     reconstructed = _reconstruct_verbatim_text(pruned_junk, source_text)
     rerefed = _fix_batch_local_parent_ref(reconstructed, state)
@@ -338,9 +385,68 @@ def _apply_structuring_fixups(
     # "앵커를 건너뛴 level 5"로 오해해 가짜 앵커를 또 만들어 버린다 —
     # `parent_ref`가 실제로 앵커를 가리키는지는 그 함수가 알 방법이 없다.
     reused = _reuse_existing_filled_anchor(reparented, catalog, state)
-    deduped = _dedupe_anchor_matching_child_source(reused, catalog)
+    collapsed = _collapse_basic_troubleshooting_templates(reused)
+    remerged = _merge_duplicate_slot_items(collapsed)
+    rebuilt = _reconstruct_verbatim_text(remerged, source_text)
+    deduped = _dedupe_anchor_matching_child_source(rebuilt, catalog)
     pruned = _prune_extra_templates(deduped)
     return _redirect_leaf_add_to_existing_empty_slot(pruned, catalog, state)
+
+
+def _normalize_known_slot_aliases(
+    items: list[StructureLlmItem], catalog: TemplateCatalog
+) -> list[StructureLlmItem]:
+    """관찰된 비공식 slot 별칭을 동일 템플릿의 공식 slot_id로 바꾼다."""
+    normalized: list[StructureLlmItem] = []
+    for item in items:
+        official = _KNOWN_SLOT_ALIASES.get(item.slot_id or "")
+        if official is not None and catalog.get_slot(official) is not None:
+            logger.warning(
+                "structure: 비공식 slot_id를 정규화합니다 (%s -> %s)",
+                item.slot_id,
+                official,
+            )
+            normalized.append(item.model_copy(update={"slot_id": official}))
+        else:
+            normalized.append(item)
+    return normalized
+
+
+def _collapse_basic_troubleshooting_templates(
+    items: list[StructureLlmItem],
+) -> list[StructureLlmItem]:
+    """같은 앵커의 BASIC+TROUBLESHOOTING을 더 구체적인 템플릿으로 합친다.
+
+    두 템플릿은 문제·원인·해결·결과(검증)가 일대일로 대응한다. 파일 원문을
+    여러 배치로 처리할 때 앞 배치가 BASIC을, 뒤 배치가 TROUBLESHOOTING을
+    선택해 같은 앵커에 둘 다 붙이는 실수가 확인됐다. 다른 템플릿 조합은 이런
+    안전한 대응 관계가 없으므로 건드리지 않고 기존 검증에서 거부한다.
+    """
+    prefixes_by_parent: dict[str, set[str]] = {}
+    for item in items:
+        if not item.slot_id or item.slot_id.count(".") != 2:
+            continue
+        parent = item.parent_ref or item.parent_item_id or ""
+        prefix = ".".join(item.slot_id.split(".")[:2])
+        prefixes_by_parent.setdefault(parent, set()).add(prefix)
+
+    collapsible_parents = {
+        parent
+        for parent, prefixes in prefixes_by_parent.items()
+        if prefixes == {"PROBLEM_SOLVING.BASIC", "PROBLEM_SOLVING.TROUBLESHOOTING"}
+    }
+    if not collapsible_parents:
+        return items
+
+    result: list[StructureLlmItem] = []
+    for item in items:
+        parent = item.parent_ref or item.parent_item_id or ""
+        official = _BASIC_TO_TROUBLESHOOTING_SLOTS.get(item.slot_id or "")
+        if parent in collapsible_parents and official is not None:
+            result.append(item.model_copy(update={"slot_id": official}))
+        else:
+            result.append(item)
+    return result
 
 
 def _missing_source_ids(items: list[StructureLlmItem], source_text: dict[str, str]) -> set[str]:
@@ -852,15 +958,19 @@ def _validate_category_reuse(
     없으므로, 활동 별칭을 가리키는 신고는 무시한다.
     """
     target_alias = state.get("target_experience_alias")
-    classified_sections = {
-        category.section_kind for category in existing_categories if category.alias != target_alias
-    }
+    known_aliases = state.get("alias_to_block_id", {})
+    reported_existing = [
+        category
+        for category in existing_categories
+        if category.alias in known_aliases and category.alias != target_alias
+    ]
+    classified_sections = {category.section_kind for category in reported_existing}
     for item in items:
         if item.section_kind is not None and item.section_kind in classified_sections:
             alias = next(
                 category.alias
-                for category in existing_categories
-                if category.section_kind == item.section_kind and category.alias != target_alias
+                for category in reported_existing
+                if category.section_kind == item.section_kind
             )
             raise ValueError(
                 f"[{item.section_kind}] section은 이미 활동 트리의 [{alias}]로 판단하고도 "
@@ -888,10 +998,13 @@ def _validate_anchor_reuse(
     수 없다.
     """
     target_alias = state.get("target_experience_alias")
+    known_aliases = state.get("alias_to_block_id", {})
     anchor_alias_by_container = {
         category.alias: category.existing_anchor_alias
         for category in existing_categories
-        if category.existing_anchor_alias and category.alias != target_alias
+        if category.alias in known_aliases
+        and category.existing_anchor_alias in known_aliases
+        and category.alias != target_alias
     }
     for item in items:
         if item.parent_ref is None or not _is_anchor_slot(item.slot_id, catalog):

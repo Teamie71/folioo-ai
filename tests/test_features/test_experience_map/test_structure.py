@@ -710,6 +710,24 @@ async def test_large_input_is_split_into_batches_that_reuse_earlier_anchors(
     )
 
 
+def test_source_batches_are_also_limited_by_total_text_length(monkeypatch):
+    """item 수가 적어도 긴 원문들이 한 구조화 호출에 함께 실리지 않는다."""
+    monkeypatch.setattr(structure_node, "MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 3)
+    monkeypatch.setattr(structure_node, "MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH", 10)
+    source_items = [
+        {"item_id": "it_1", "text": "가" * 6, "source": "file"},
+        {"item_id": "it_2", "text": "나" * 6, "source": "file"},
+        {"item_id": "it_3", "text": "다" * 3, "source": "file"},
+    ]
+
+    batches = structure_node._source_batches(source_items)
+
+    assert [[item["item_id"] for item in batch] for batch in batches] == [
+        ["it_1"],
+        ["it_2", "it_3"],
+    ]
+
+
 @pytest.mark.asyncio
 async def test_batches_reusing_the_same_item_id_are_namespaced_apart(
     fake_dependencies, monkeypatch
@@ -919,6 +937,36 @@ async def test_reporting_the_activity_alias_itself_as_existing_category_is_ignor
     fake_dependencies(
         StructureOutput(
             existing_categories=[{"alias": "exp_1", "section_kind": "TASK"}],
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="TASK"
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.SUMMARY"]["text"] == "결제 오류를 해결했다"
+
+
+@pytest.mark.asyncio
+async def test_reporting_previous_batch_item_as_existing_category_is_ignored(
+    fake_dependencies,
+):
+    """이전 배치 item_id는 실제 활동 트리 별칭이 아니므로 자기 신고에서 무시한다."""
+    fake_dependencies(
+        StructureOutput(
+            existing_categories=[{"alias": "batch1_blk_1", "section_kind": "TASK"}],
             items=[
                 StructureLlmItem(
                     item_id="category_1", action="add", parent_ref="exp_1", section_kind="TASK"
@@ -1347,6 +1395,75 @@ async def test_unknown_slot_id_is_rejected(fake_dependencies):
 
     with pytest.raises(LlmError):
         await structure_blocks(make_state())
+
+
+def test_known_problem_solving_result_alias_is_normalized():
+    """모델이 TROUBLESHOOTING 결과 슬롯을 RESULT로 부르면 공식 슬롯으로 고친다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "PROBLEM_SOLVING",
+            "label": "문제해결",
+            "slots": [],
+            "templates": [
+                {
+                    "template_id": "TROUBLESHOOTING",
+                    "label": "트러블슈팅",
+                    "slots": [
+                        {
+                            "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+                            "level": 5,
+                            "placeholder": "검증",
+                            "example": "재발 여부 확인",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.RESULT",
+        text="재시도 후 오류가 재발하지 않았다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._normalize_known_slot_aliases([raw], catalog)
+
+    assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION"
+    assert result[0].text == "재시도 후 오류가 재발하지 않았다"
+
+
+def test_basic_and_troubleshooting_under_same_anchor_are_collapsed():
+    """배치마다 다르게 고른 일반·트러블슈팅 템플릿을 한 템플릿으로 합친다."""
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_item_id="anchor_1",
+            slot_id="PROBLEM_SOLVING.BASIC.PROBLEM",
+            text="결제 응답이 지연됐다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="blk_2",
+            action="add",
+            parent_item_id="anchor_1",
+            slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+            text="중복 쿼리가 원인이었다",
+            source_item_ids=["it_2"],
+        ),
+    ]
+
+    result = structure_node._collapse_basic_troubleshooting_templates(items)
+
+    assert {item.slot_id for item in result} == {
+        "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+    }
 
 
 @pytest.mark.asyncio

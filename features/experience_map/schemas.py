@@ -171,12 +171,16 @@ class StructureLlmItem(BaseModel):
 
     @model_validator(mode="after")
     def _check_refs(self) -> "StructureLlmItem":
-        """부모 참조와 action별 필수 필드를 검증한다. `StructuredItem` 과 동일한 규칙."""
+        """부모 참조를 보정하고 action별 필수 필드를 검증한다.
+
+        구조화 모델이 새로 만든 부모의 ``parent_item_id``를 정확히 적고도 선택
+        활동의 ``parent_ref``를 함께 남기는 경우가 있다. 새 item 참조가 더
+        구체적이고 이후 구조 검증에서 실제 존재 여부도 확인하므로, LLM 전용
+        스키마에서만 ``parent_item_id``를 우선한다. 커밋에 쓰는
+        :class:`StructuredItem`은 둘을 여전히 엄격하게 거부한다.
+        """
         if self.parent_ref is not None and self.parent_item_id is not None:
-            raise ValueError(
-                "parent_ref와 parent_item_id를 동시에 지정할 수 없습니다. "
-                "기존 블록이면 parent_ref, 같은 요청의 신규 블록이면 parent_item_id를 씁니다."
-            )
+            self.parent_ref = None
 
         if self.action == "add":
             if self.parent_ref is None and self.parent_item_id is None:

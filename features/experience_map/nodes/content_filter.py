@@ -19,7 +19,7 @@ import logging
 import re
 
 from common.llm import get_experience_map_llm
-from features.experience_map.config import get_settings
+from features.experience_map.config import MAX_SOURCE_ITEM_CHARS, get_settings
 from features.experience_map.errors import LlmError
 from features.experience_map.prompts.content_filter import (
     build_existing_map_section,
@@ -34,6 +34,7 @@ from features.experience_map.state import ExperienceMapState
 logger = logging.getLogger(__name__)
 
 _WHITESPACE = re.compile(r"\s+")
+_SENTENCE_END = re.compile(r"[.!?。！？][\"'”’)}\]]*\s+")
 
 
 def _normalize(text: str) -> str:
@@ -45,6 +46,63 @@ def _traceable(item: FilteredItem, haystack: str) -> bool:
     """조각이 원문에 실제로 있는지 확인한다."""
     text = _normalize(item.text)
     return bool(text) and text in haystack
+
+
+def _split_long_item(item: FilteredItem) -> list[FilteredItem]:
+    """긴 원문 item을 수정 없이 구조화 가능한 크기로 나눈다.
+
+    PDF OCR은 한 페이지 전체를 한 문단으로 반환할 수 있다. item 개수만 제한하면
+    그 한 항목이 그대로 구조화 프롬프트와 JSON 응답을 비대하게 만든다. 문단,
+    줄바꿈, 문장, 공백 순서로 가까운 경계를 찾고, 경계가 전혀 없을 때만 글자 수로
+    자른다. 경계의 공백 외에는 원문 문자를 추가하거나 고치지 않는다.
+    """
+    text = item.text.strip()
+    if len(text) <= MAX_SOURCE_ITEM_CHARS:
+        return [item]
+
+    chunks: list[str] = []
+    start = 0
+    while len(text) - start > MAX_SOURCE_ITEM_CHARS:
+        window = text[start : start + MAX_SOURCE_ITEM_CHARS + 1]
+        cut = _preferred_split_position(window)
+        if cut <= 0:
+            cut = MAX_SOURCE_ITEM_CHARS
+
+        chunk = text[start : start + cut].strip()
+        if chunk:
+            chunks.append(chunk)
+        start += cut
+        while start < len(text) and text[start].isspace():
+            start += 1
+
+    tail = text[start:].strip()
+    if tail:
+        chunks.append(tail)
+
+    return [
+        item.model_copy(update={"item_id": f"{item.item_id}_{index}", "text": chunk})
+        for index, chunk in enumerate(chunks, start=1)
+    ]
+
+
+def _preferred_split_position(window: str) -> int:
+    """제한 안에서 의미가 가장 덜 끊기는 마지막 경계를 반환한다."""
+    limit = min(MAX_SOURCE_ITEM_CHARS, len(window))
+    candidate = window[: limit + 1]
+
+    for separator in ("\n\n", "\n"):
+        position = candidate.rfind(separator)
+        if position > 0:
+            return position + len(separator)
+
+    sentence_ends = list(_SENTENCE_END.finditer(candidate))
+    if sentence_ends:
+        return sentence_ends[-1].end()
+
+    for index in range(limit, 0, -1):
+        if candidate[index - 1].isspace():
+            return index
+    return limit
 
 
 async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
@@ -164,7 +222,7 @@ def _sanitize(
             dropped += 1
             return
         seen.add(key)
-        bucket.append(item)
+        bucket.extend(_split_long_item(item))
 
     has_gap = bool(active_gap and (active_gap.get("message") or "").strip())
 

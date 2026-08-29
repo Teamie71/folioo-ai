@@ -78,6 +78,17 @@ MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 3
 생성과 템플릿 전개를 동시에 시켜야 해서 실패율이 눈에 띄게 더 높았다 —
 배치를 작게 유지해 그 확률 자체를 줄인다."""
 
+MAX_SOURCE_ITEM_CHARS = MAX_CONTENT_LENGTH
+"""구조화에 넘기는 원문 item 하나의 최대 글자 수.
+
+PDF OCR 결과처럼 긴 문단 하나가 통째로 분류되면 item 개수 제한만으로는 구조화
+프롬프트와 structured output 크기를 제어할 수 없다. 최종 블록의 500자 제한과
+같은 크기로 원문을 나누되, 내용은 고치지 않고 문장·줄바꿈 경계만 사용한다.
+"""
+
+MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH = 1_200
+"""구조화 LLM 한 번에 전달하는 원문 text 총 글자 수 상한."""
+
 MAX_VALIDATION_REPAIRS = 2
 """validate → structure/refine 회귀 최대 횟수."""
 
