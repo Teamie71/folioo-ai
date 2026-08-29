@@ -976,15 +976,17 @@ async def test_new_anchor_contradicting_self_reported_existing_anchor_is_rejecte
 
 
 @pytest.mark.asyncio
-async def test_new_anchor_duplicating_undeclared_existing_slots_is_rejected(fake_dependencies):
-    """`existing_categories` 자기 신고를 아예 빠뜨려도, 트리의 빈 슬롯 가이드 문구로
-    코드가 독립적으로 앵커 중복을 잡는다.
+async def test_new_anchor_duplicating_existing_filled_anchor_is_redirected_to_its_empty_slot(
+    fake_dependencies,
+):
+    """이미 채워진 앵커 옆에 새 앵커를 또 만들면, 남은 빈 슬롯이 하나뿐일 때 그리로 되돌린다.
 
-    실제로 재현된 경우다. 모델이 `existing_categories`에 아무것도 신고하지
-    않은 채(신고 자체를 빠뜨림) 이미 TASK 템플릿이 붙어 있는 컨테이너에 새
-    앵커를 또 만들었다. 자기 신고에만 기대면 이 경우를 못 잡으므로, 활동
-    트리에 이미 커밋된 빈 슬롯의 가이드 문구(명세 3-7)를 코드가 직접 읽어
-    같은 section이 이미 있는지 확인한다.
+    실제로 재현된 경우다(gap 질문에 답하는 흐름). 컨테이너 안에 이미 실제
+    내용으로 채워진 앵커(`b_4`)가 있는데, `existing_categories` 자기 신고도
+    없이 그 옆에 새 앵커 + 빈 템플릿 전체를 또 만들었다. 이 서브트리에
+    남은 진짜 빈 슬롯("결과")이 정확히 하나뿐이므로, 새 앵커가 아니라 그
+    슬롯을 채우려던 의도가 명백하다 — 코드가 새 앵커를 그 슬롯으로 바꾸고
+    기존 앵커(`b_4`)에 직접 붙인다. 자기가 만든 빈 템플릿 나머지는 버린다.
     """
     fake_dependencies(
         StructureOutput(
@@ -1007,6 +1009,55 @@ async def test_new_anchor_duplicating_undeclared_existing_slots_is_rejected(fake
             "  [b_1] (빈 블록)\n"
             "    [b_4] 기존 담당업무 내용\n"
             "      [b_5] (빈 블록 — 가이드: 결과)"
+        ),
+        new_items=[{"item_id": "it_1", "text": "결제 시스템을 강화했다", "source": "message"}],
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "결제 시스템을 강화했다"
+    assert items_by_slot["TASK.BASIC.RESULT"]["parent_ref"] == "b_4"
+    # 새로 만든 가짜 앵커(TASK.SUMMARY)는 남아있지 않다.
+    assert "TASK.SUMMARY" not in items_by_slot
+
+
+@pytest.mark.asyncio
+async def test_new_anchor_duplicating_existing_slots_ambiguously_is_rejected(fake_dependencies):
+    """겹치는 빈 슬롯이 여러 개라 모호하면, 되돌리지 않고 그대로 거부한다.
+
+    `_reuse_existing_filled_anchor`는 남은 빈 슬롯이 정확히 하나일 때만
+    확신하고 고친다 — 여러 개면 어느 슬롯을 채우려던 것인지 코드가 판단할
+    수 없으므로, 이전처럼 재시도를 유도하는 에러로 남겨야 한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 시스템을 강화했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+    state = make_state(
+        alias_to_block_id={
+            "exp_1": "101",
+            "b_1": "305",
+            "b_4": "306",
+            "b_5": "307",
+            "b_6": "308",
+        },
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n"
+            "  [b_1] (빈 블록)\n"
+            "    [b_4] 기존 담당업무 내용\n"
+            "      [b_5] (빈 블록 — 가이드: 목적)\n"
+            "      [b_6] (빈 블록 — 가이드: 결과)"
         ),
     )
 

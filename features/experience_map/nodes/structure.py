@@ -299,7 +299,13 @@ def _apply_structuring_fixups(
     dereffed = _clear_invalid_after_ref(rerefed, state)
     rerooted = _fix_new_section_parent(dereffed, state)
     reparented = _reparent_orphan_level5_items(rerooted, catalog)
-    deduped = _dedupe_anchor_matching_child_source(reparented, catalog)
+    # `_reuse_existing_filled_anchor`는 반드시 `_reparent_orphan_level5_items`
+    # 뒤에 와야 한다. 앞서 두면, 이게 앵커를 level 5로 바꿔 기존 앵커에
+    # `parent_ref`로 직접 붙인 결과를 `_reparent_orphan_level5_items`가
+    # "앵커를 건너뛴 level 5"로 오해해 가짜 앵커를 또 만들어 버린다 —
+    # `parent_ref`가 실제로 앵커를 가리키는지는 그 함수가 알 방법이 없다.
+    reused = _reuse_existing_filled_anchor(reparented, catalog, state)
+    deduped = _dedupe_anchor_matching_child_source(reused, catalog)
     return _prune_extra_templates(deduped)
 
 
@@ -910,17 +916,106 @@ def _subtree_known_slot_ids(
     return slot_ids
 
 
+def _subtree_known_slots_with_parent(
+    tree_lines: list[tuple[int, str, str]], root_alias: str, placeholder_to_slot: dict[str, str]
+) -> list[tuple[str, str, str]]:
+    """`_subtree_known_slot_ids`와 같지만, 슬롯을 아는 블록의 별칭·부모 별칭도 같이 낸다.
+
+    빈 슬롯의 부모가 곧 그 템플릿의 진짜 앵커다 — 이 정보가 있어야 "이미 있는
+    앵커의 별칭이 무엇인지"까지 알아내 새 앵커를 그 별칭으로 되돌릴 수 있다.
+    """
+    depth_by_alias = {alias: depth for depth, alias, _ in tree_lines}
+    if root_alias not in depth_by_alias:
+        return []
+    root_depth = depth_by_alias[root_alias]
+
+    results: list[tuple[str, str, str]] = []
+    stack: list[tuple[int, str]] = [(root_depth, root_alias)]
+    in_subtree = False
+    for depth, alias, label in tree_lines:
+        if alias == root_alias:
+            in_subtree = True
+            continue
+        if not in_subtree:
+            continue
+        if depth <= root_depth:
+            break
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+        parent_alias = stack[-1][1] if stack else root_alias
+        stack.append((depth, alias))
+        match = _EMPTY_SLOT_GUIDE_RE.match(label)
+        if match:
+            slot_id = placeholder_to_slot.get(match.group(1))
+            if slot_id:
+                results.append((slot_id, alias, parent_alias))
+    return results
+
+
+def _reuse_existing_filled_anchor(
+    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
+) -> list[StructureLlmItem]:
+    """활동 트리에 이미 채워진 앵커가 있는데 새 앵커를 또 만들면, 가능하면 코드가 되돌린다.
+
+    `_validate_anchor_reuse`(자기 신고 대조)와 `existing_categories`
+    안내만으로는, 컨테이너 안의 앵커가 **이미 실제 내용으로 채워져 있는**
+    경우까지 모델이 놓치는 사고가 있었다 — 빈 슬롯 안내문(명세 3-7)이 없는
+    채워진 블록은 지금까지의 결정론적 검사(`_subtree_known_slot_ids`)로도
+    안 잡혔다. 실제로 재현된 경우다: 이미 채워진 앵커 옆에 새 앵커 +
+    빈 템플릿 전체를 또 만들었는데, 그 서브트리에 남은 진짜 빈 슬롯은 이번에
+    반영하려는 내용과 정확히 하나만 일치했다 — 그렇다면 새 앵커가 아니라
+    그 빈 슬롯을 채우려던 의도가 명백하므로, 코드가 새 앵커를 그 슬롯으로
+    바꾸고 그 앵커의 부모(컨테이너)를 원래 앵커로 되돌린다. 일치가 하나가
+    아니면(0개 또는 여러 개) 모호해서 그대로 두고 이후 검증이 에러로
+    보고하게 한다.
+    """
+    tree_lines = _parse_tree_lines(state.get("activity_tree_text") or "")
+    placeholder_to_slot = _placeholder_to_slot_map(catalog)
+    by_id = {item.item_id: item for item in items}
+    drop: set[str] = set()
+    changed = False
+
+    for item in items:
+        if item.parent_ref is None or not _is_anchor_slot(item.slot_id, catalog):
+            continue
+        section = item.slot_id.split(".")[0]
+        matches = [
+            (slot_id, alias, parent_alias)
+            for slot_id, alias, parent_alias in _subtree_known_slots_with_parent(
+                tree_lines, item.parent_ref, placeholder_to_slot
+            )
+            if slot_id.split(".")[0] == section
+        ]
+        if len(matches) != 1:
+            continue  # 0개(중복 아님) 또는 여러 개(모호함) — 여기선 안 건드린다.
+        target_slot_id, _, real_anchor_alias = matches[0]
+
+        # 이 가짜 앵커가 만든 빈 템플릿 나머지 슬롯(자기 자신을 부모로 둔
+        # 빈 item)은 실제 앵커 쪽에 이미 있으므로 버린다.
+        drop.update(other.item_id for other in items if other.parent_item_id == item.item_id)
+        by_id[item.item_id] = item.model_copy(
+            update={
+                "slot_id": target_slot_id,
+                "parent_ref": real_anchor_alias,
+                "parent_item_id": None,
+            }
+        )
+        changed = True
+
+    if not changed:
+        return items
+    return [by_id[item.item_id] for item in items if item.item_id not in drop]
+
+
 def _validate_anchor_reuse_deterministic(
     items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
 ) -> None:
     """활동 트리에 이미 있는 빈 슬롯 가이드 문구로, 자기 신고 없이도 앵커 중복을 잡는다.
 
-    `_validate_anchor_reuse`는 모델이 `existing_categories`에 스스로 신고한
-    것과만 대조한다 — 신고 자체를 빠뜨리면 못 잡는다. 실제로 그런 경우가
-    있었다: 컨테이너는 재사용하고도 그 안에 이미 있는 앵커를 신고하지 않은
-    채 새 앵커를 또 만들었다. 여기서는 신고를 아예 신뢰하지 않고, 새로
-    만드는 앵커가 붙는 부모(`parent_ref`)의 실제 서브트리를 코드가 직접 훑어
-    같은 section의 슬롯이 이미 있는지 확인한다.
+    `_reuse_existing_filled_anchor`가 확신할 수 있는 경우(겹치는 빈 슬롯이
+    정확히 하나)는 이미 고쳤다 — 여기는 그 마지막 방어선이다. 고칠 수
+    없을 만큼 모호했던 경우(겹치는 빈 슬롯이 0개 또는 여러 개)만 여기
+    걸려 재시도를 유도한다.
     """
     tree_lines = _parse_tree_lines(state.get("activity_tree_text") or "")
     placeholder_to_slot = _placeholder_to_slot_map(catalog)
