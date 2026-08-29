@@ -1,5 +1,8 @@
 """validate 노드와 보정 loop 테스트 (에이전트 문서 5-7)."""
 
+import pytest
+
+from features.experience_map.errors import ValidationFailedError
 from features.experience_map.nodes.validate import next_node, validate_operations
 from features.experience_map.state import start_turn
 
@@ -87,24 +90,24 @@ def test_item_set_mismatch_routes_back_to_structure():
     assert next_node(result) == "structure"
 
 
-def test_third_validation_drops_only_invalid_item():
-    result = validate_operations(
-        make_state(
-            repair_count=2,
-            structured_items=[
-                {"item_id": "good", "action": "add", "parent_ref": "b_1", "text": "원문"},
-                {"item_id": "bad", "action": "add", "parent_ref": "exp_999", "text": "원문"},
-            ],
-            refined_items=[
-                {"item_id": "good", "refined_text": "정상"},
-                {"item_id": "bad", "refined_text": "오류"},
-            ],
+def test_validation_repair_exhaustion_fails_without_partial_commit():
+    with pytest.raises(ValidationFailedError) as exc_info:
+        validate_operations(
+            make_state(
+                repair_count=2,
+                structured_items=[
+                    {"item_id": "good", "action": "add", "parent_ref": "b_1", "text": "원문"},
+                    {"item_id": "bad", "action": "add", "parent_ref": "exp_999", "text": "원문"},
+                ],
+                refined_items=[
+                    {"item_id": "good", "refined_text": "정상"},
+                    {"item_id": "bad", "refined_text": "오류"},
+                ],
+            )
         )
-    )
 
-    assert [item["item_id"] for item in result["commit_items"]] == ["good"]
-    assert result["dropped_items"] == [{"item_id": "bad", "reason": "validation_retry_exceeded"}]
-    assert next_node(result) == "coordinator"
+    assert exc_info.value.failed_node == "validate"
+    assert exc_info.value.retryable is True
 
 
 def test_gap_update_metadata_is_validated_with_structure_items():

@@ -7,6 +7,7 @@ from features.experience_map.config import (
     MAX_CONTENT_LENGTH,
     MAX_VALIDATION_REPAIRS,
 )
+from features.experience_map.errors import ValidationFailedError
 from features.experience_map.schemas import StructuredItem
 from features.experience_map.state import ExperienceMapState, ValidationError
 
@@ -14,8 +15,8 @@ from features.experience_map.state import ExperienceMapState, ValidationError
 def validate_operations(state: ExperienceMapState) -> ExperienceMapState:
     """정제 결과를 operation metadata와 합치고 위반을 분류한다.
 
-    보정은 최대 두 번만 허용한다. 세 번째 검증에도 남은 위반 item은 개별적으로
-    ``dropped_items``에 옮겨 정상 item의 커밋을 막지 않는다.
+    보정 한도를 넘겨도 잘못된 항목을 조용히 버리고 부분 커밋하지 않는다. 요청
+    전체를 검증 실패로 종료해 사용자가 실패한 validate 지점부터 재시도할 수 있게 한다.
     """
     updated = dict(state)
     updated["current_node"] = "validate"
@@ -28,19 +29,7 @@ def validate_operations(state: ExperienceMapState) -> ExperienceMapState:
         return updated  # type: ignore[return-value]
 
     if state.get("repair_count", 0) >= MAX_VALIDATION_REPAIRS:
-        invalid_ids = {error["item_id"] for error in errors}
-        updated["validation_errors"] = []
-        updated["commit_items"] = [
-            item for item in operations if item["item_id"] not in invalid_ids
-        ]
-        existing = list(state.get("dropped_items", []))
-        existing_ids = {item["item_id"] for item in existing}
-        existing.extend(
-            {"item_id": item_id, "reason": "validation_retry_exceeded"}
-            for item_id in sorted(invalid_ids - existing_ids)
-        )
-        updated["dropped_items"] = existing
-        return updated  # type: ignore[return-value]
+        raise ValidationFailedError(failed_node="validate")
 
     updated["validation_errors"] = errors
     updated["repair_count"] = state.get("repair_count", 0) + 1

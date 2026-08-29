@@ -27,6 +27,7 @@ SESSION_ID = "d9428888-122b-11e1-b85c-61cd3cbb3210"
 REQUEST_ID = "550e8400-e29b-41d4-a716-446655440000"
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 
 def reference(file_id: str, filename: str, content_type: str) -> dict:
@@ -316,6 +317,25 @@ async def test_docx_is_parsed():
     text = await extract(buffer.getvalue(), "이력서.docx", DOCX_MIME)
 
     assert "전환율 15% 개선" in text
+
+
+@pytest.mark.asyncio
+async def test_pptx_slides_are_parsed_in_numeric_order():
+    """PPTX 슬라이드는 파일명 문자열이 아니라 실제 슬라이드 번호 순으로 읽는다."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "ppt/slides/slide10.xml",
+            '<p:sld xmlns:p="p" xmlns:a="a"><a:p><a:r><a:t>열 번째</a:t></a:r></a:p></p:sld>',
+        )
+        archive.writestr(
+            "ppt/slides/slide2.xml",
+            '<p:sld xmlns:p="p" xmlns:a="a"><a:p><a:r><a:t>두 번째</a:t></a:r></a:p></p:sld>',
+        )
+
+    text = await extract(buffer.getvalue(), "발표자료.pptx", PPTX_MIME)
+
+    assert text.splitlines() == ["두 번째", "열 번째"]
 
 
 @pytest.mark.asyncio

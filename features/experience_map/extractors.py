@@ -22,7 +22,9 @@ import asyncio
 import base64
 import io
 import logging
+import re
 import zipfile
+from xml.etree import ElementTree
 
 from common.llm.client import get_file_processor_llm
 from features.experience_map.config import (
@@ -88,26 +90,66 @@ def _require_valid_zip(data: bytes) -> None:
         raise FileUnreadableError("문서가 손상되었습니다.") from exc
 
 
-def _extract_with_markitdown(data: bytes, filename: str) -> str:
-    """DOCX·PPTX 를 markitdown 으로 읽는다.
+def _extract_office_xml(data: bytes, filename: str) -> str:
+    """DOCX·PPTX의 표준 XML에서 텍스트를 문서 순서대로 읽는다.
 
-    라이브러리가 동기라 호출자가 스레드로 넘긴다.
+    Office 파일은 ZIP 안의 XML 문서다. 범용 변환기는 import 또는 변환 과정이
+    장시간 멈출 수 있어, 경험정리에 필요한 원문 텍스트만 직접 추출한다.
     """
-    from markitdown import MarkItDown
-
     _require_valid_zip(data)
-
     try:
-        result = MarkItDown().convert_stream(io.BytesIO(data), file_extension=_suffix(filename))
-    except Exception as exc:
-        # 지원하지 않는 내부 구조 등. 재시도해도 같은 결과다.
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            suffix = _suffix(filename)
+            if suffix == ".docx":
+                names = ["word/document.xml"]
+            elif suffix == ".pptx":
+                names = sorted(
+                    (
+                        name
+                        for name in archive.namelist()
+                        if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)
+                    ),
+                    key=_slide_number,
+                )
+            else:
+                raise FileUnreadableError("지원하지 않는 문서 형식입니다.")
+
+            if not names or any(name not in archive.namelist() for name in names):
+                raise FileUnreadableError("문서의 본문을 찾을 수 없습니다.")
+            parts = [_xml_text(archive.read(name)) for name in names]
+    except FileUnreadableError:
+        raise
+    except (KeyError, ElementTree.ParseError, zipfile.BadZipFile) as exc:
         raise FileUnreadableError("문서를 읽을 수 없습니다.") from exc
 
-    text = (result.text_content or "").strip()
+    text = "\n".join(part for part in parts if part).strip()
     if not text:
-        # 읽히긴 했는데 글자가 없다. 빈 문서이거나 이미지만 있는 문서다.
         raise FileUnreadableError("문서에서 텍스트를 찾지 못했습니다.")
     return text
+
+
+def _xml_text(data: bytes) -> str:
+    """WordprocessingML/DrawingML의 텍스트 노드를 원래 순서로 합친다."""
+    root = ElementTree.fromstring(data)
+    paragraphs: list[str] = []
+    for paragraph in root.iter():
+        if paragraph.tag.rsplit("}", maxsplit=1)[-1] != "p":
+            continue
+        fragments = [
+            node.text or ""
+            for node in paragraph.iter()
+            if node.tag.rsplit("}", maxsplit=1)[-1] == "t"
+        ]
+        text = "".join(fragments).strip()
+        if text:
+            paragraphs.append(text)
+    return "\n".join(paragraphs)
+
+
+def _slide_number(path: str) -> int:
+    """slide10이 slide2보다 먼저 오지 않도록 숫자로 정렬한다."""
+    match = re.search(r"slide(\d+)\.xml$", path)
+    return int(match.group(1)) if match else 0
 
 
 def _suffix(filename: str) -> str:
@@ -165,7 +207,9 @@ async def extract_with_parser(data: bytes, filename: str, content_type: str) -> 
             raise FileUnreadableError("빈 파일입니다.")
         return _truncate(text)
 
-    text = await asyncio.to_thread(_extract_with_markitdown, data, filename)
+    # ZIP/XML 파싱은 업로드 상한(10MB) 안에서 짧고 결정적인 CPU 작업이다.
+    # 별도 thread로 넘기면 제한된 런타임에서 worker 생성 자체가 멈출 수 있다.
+    text = _extract_office_xml(data, filename)
     return _truncate(text)
 
 
@@ -194,7 +238,7 @@ async def extract_with_ocr(data: bytes, filename: str, content_type: str) -> str
     from langchain_core.messages import HumanMessage
 
     if content_type == "application/pdf":
-        pages = await asyncio.to_thread(_render_pdf_pages, data)
+        pages = _render_pdf_pages(data)
         image_blocks = _image_blocks(pages, "image/png")
         instruction = OCR_INSTRUCTION
         if len(pages) > 1:

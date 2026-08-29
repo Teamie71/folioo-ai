@@ -136,6 +136,20 @@ async def test_message_selection_receives_only_outline_aliases(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_file_only_selection_uses_extracted_text(fake_llm):
+    """메시지 없이 파일만 올려도 추출문으로 대상 활동을 선택한다."""
+    prompts = fake_llm(TargetActivityOutput(activity_alias="exp_2", reason="추천 시스템 언급"))
+
+    result = await select_target_activity(
+        make_state(user_message=None, extracted_text="추천 모델의 정확도를 개선했다.")
+    )
+
+    assert result["target_experience_alias"] == "exp_2"
+    assert "[첨부 파일 추출문]" in prompts[0]
+    assert "추천 모델의 정확도" in prompts[0]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("alias", [None, "exp_999", "b_305"])
 async def test_ambiguous_or_unapproved_llm_result_falls_back(fake_llm, alias):
     """불명확하거나 허용 목록 밖인 결과는 커밋 경로로 보내지 않는다."""

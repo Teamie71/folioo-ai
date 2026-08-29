@@ -7,6 +7,7 @@ LLM 은 대역으로 바꿉니다. 실제 호출은 비용·비결정성 때문�
 import pytest
 from langchain_core.runnables import RunnableLambda
 
+from features.experience_map.errors import LlmError
 from features.experience_map.nodes import router as router_node
 from features.experience_map.nodes.fallback import (
     FALLBACK_MESSAGES,
@@ -122,16 +123,16 @@ async def test_router_records_current_node(fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_llm_failure_retries_once_then_falls_back(fake_llm):
-    """두 번 모두 분류하지 못하면 failed가 아니라 fallback으로 완료한다."""
+async def test_llm_failure_raises_retryable_node_error(fake_llm):
+    """그래프 공통 정책이 재시도할 수 있도록 시스템 실패를 fallback으로 숨기지 않는다."""
     prompts = fake_llm(RuntimeError("upstream 500"))
 
-    result = await route(make_state())
+    with pytest.raises(LlmError) as exc_info:
+        await route(make_state())
 
-    assert len(prompts) == 2
-    assert result["intent"] == "out_of_scope"
-    assert result["fallback_reason"] == "out_of_scope"
-    assert next_node(result) == "fallback"
+    assert len(prompts) == 1
+    assert exc_info.value.failed_node == "router"
+    assert exc_info.value.retryable is True
 
 
 @pytest.mark.asyncio
@@ -140,7 +141,8 @@ async def test_user_message_not_logged_on_failure(fake_llm, caplog):
     fake_llm(RuntimeError("boom"))
     secret = "주민등록번호 900101-1234567 로 가입했다"
 
-    await route(make_state(user_message=secret))
+    with pytest.raises(LlmError):
+        await route(make_state(user_message=secret))
 
     assert secret not in caplog.text
 

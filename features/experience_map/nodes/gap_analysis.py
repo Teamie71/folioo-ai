@@ -27,7 +27,7 @@ async def analyze_gap(state: ExperienceMapState) -> ExperienceMapState:
     updated = dict(state)
     updated["current_node"] = "gap_analysis"
     items = list(state.get("commit_items", []))
-    anchors = _anchor_aliases(items, state.get("alias_to_block_id", {}))
+    anchors = _anchor_refs(items)
     if not items or not anchors:
         updated["gap_candidate"] = None
         updated["gap_message"] = NO_GAP_MESSAGE
@@ -42,7 +42,6 @@ async def analyze_gap(state: ExperienceMapState) -> ExperienceMapState:
                 "anchor_aliases": render_anchor_aliases(anchors),
             }
         )
-        result = _reuse_committed_item_anchor(result, items, anchors)
         _validate_output(result, anchors)
     except LlmError:
         raise
@@ -59,42 +58,25 @@ async def analyze_gap(state: ExperienceMapState) -> ExperienceMapState:
     return updated  # type: ignore[return-value]
 
 
-def _reuse_committed_item_anchor(
-    result: GapOutput, items: list[dict], anchors: list[str]
-) -> GapOutput:
-    """`anchor_ref`가 이번 커밋 item 자신의 item_id면, 그 item이 실제로 붙은 별칭으로 바꾼다.
+def _anchor_refs(items: list[dict]) -> list[str]:
+    """이번에 실제 내용이 커밋되는 operation의 item_id만 anchor 후보로 남긴다.
 
-    실제로 재현된 경우다. 이번 턴에 기존 앵커의 빈 슬롯을 막 채운 item을
-    gap 질문 기준으로 삼고 싶어 하면서, 그 item의 `item_id`(예: `blk_1`)를
-    `anchor_ref`에 썼다 — `anchor_ref`는 활동 트리의 기존 블록 별칭만
-    가리킬 수 있는데, 방금 만든 item은 그런 별칭이 없다. 그 item이 실제로
-    `parent_ref`/`target_ref`로 가리키는 기존 블록이 있으면, 물어보려던
-    맥락은 명백하므로 코드가 그 별칭으로 바꿔 재시도 없이 통과시킨다.
+    add와 update 모두 메인 서버의 ``applied`` 결과에서 실제 block_id로 바뀐다.
+    부모 별칭을 대신 쓰면 새 블록의 부족한 정보를 부모 블록에 덧붙이는 잘못된
+    gap이 생기므로, 방금 반영된 내용 자체를 기준으로 제한한다.
     """
-    if result.gap is None or result.gap.anchor_ref in anchors:
-        return result
-
-    by_item_id = {item.get("item_id"): item for item in items}
-    committed = by_item_id.get(result.gap.anchor_ref)
-    if committed is None:
-        return result
-    for field in ("parent_ref", "target_ref"):
-        alias = committed.get(field)
-        if isinstance(alias, str) and alias in anchors:
-            return result.model_copy(
-                update={"gap": result.gap.model_copy(update={"anchor_ref": alias})}
-            )
-    return result
-
-
-def _anchor_aliases(items: list[dict], aliases: dict[str, str]) -> list[str]:
-    """이번 operation이 직접 참조한 기존 블록만 질문 기준 후보로 남긴다."""
     candidates: list[str] = []
     for item in items:
-        for field in ("parent_ref", "target_ref", "after_ref"):
-            alias = item.get(field)
-            if isinstance(alias, str) and alias in aliases and alias not in candidates:
-                candidates.append(alias)
+        item_id = item.get("item_id")
+        text = item.get("text")
+        if (
+            isinstance(item_id, str)
+            and item_id
+            and isinstance(text, str)
+            and text.strip()
+            and item_id not in candidates
+        ):
+            candidates.append(item_id)
     return candidates
 
 
@@ -103,7 +85,7 @@ def _validate_output(result: GapOutput, anchors: list[str]) -> None:
     if result.gap is None:
         return
     if result.gap.anchor_ref not in anchors:
-        raise ValueError("이번 커밋과 직접 연결되지 않은 gap 기준 블록입니다.")
+        raise ValueError("이번에 내용이 커밋된 블록이 아닌 gap 기준입니다.")
     message = result.message.strip()
     if not message or "\n" in message or message.count("?") != 1 or not message.endswith("?"):
         raise ValueError("gap 제안은 물음표로 끝나는 한 문장이어야 합니다.")

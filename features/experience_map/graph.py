@@ -31,14 +31,14 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     ``END``로 끝내고 호출자가 `commit_items`를 소비한다.
     """
     graph = StateGraph(ExperienceMapState)
-    # Router는 재시도 소진 뒤 fallback으로 끝내야 하므로 노드 내부에서 정확히 두 번
-    # 시도한다. 여기에 RetryPolicy까지 붙이면 최대 네 번 호출된다.
-    graph.add_node("router", route)
+    graph.add_node("router", route, retry_policy=RETRY_POLICY)
     graph.add_node("file_processor", process_files, retry_policy=RETRY_POLICY)
     graph.add_node("file_cleanup", cleanup_extracted_files)
     graph.add_node("content_filter", filter_content, retry_policy=RETRY_POLICY)
     graph.add_node("target_activity", select_target_activity, retry_policy=RETRY_POLICY)
-    graph.add_node("structure", structure_blocks, retry_policy=RETRY_POLICY)
+    # structure는 누락 원문만 좁혀서 내부에서 한 번 보정한다. 그래프 재시도까지
+    # 겹치면 같은 배치가 최대 네 번 호출되므로 공통 RetryPolicy를 중복 적용하지 않는다.
+    graph.add_node("structure", structure_blocks)
     graph.add_node("refine", refine_text, retry_policy=RETRY_POLICY)
     graph.add_node("validate", _validate_async)
     graph.add_node("fallback", fallback)
@@ -91,7 +91,7 @@ def build_commit_recovery_graph(entry_node: str):
         raise ValueError(f"지원하지 않는 커밋 복구 진입점입니다: {entry_node}")
 
     graph = StateGraph(ExperienceMapState)
-    graph.add_node("structure", structure_blocks, retry_policy=RETRY_POLICY)
+    graph.add_node("structure", structure_blocks)
     graph.add_node("refine", refine_text, retry_policy=RETRY_POLICY)
     graph.add_node("validate", _validate_async)
     graph.add_node("fallback", fallback)

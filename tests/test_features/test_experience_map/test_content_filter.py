@@ -256,6 +256,34 @@ async def test_prompt_carries_gap_and_inputs(fake_llm):
     assert "첨부 내용입니다" in prompts[0]
 
 
+@pytest.mark.asyncio
+async def test_prompt_carries_existing_activity_when_comparison_is_requested(fake_llm):
+    """기존 내용 제외 요청에는 현재 활동 블록을 비교 근거로 제공한다."""
+    prompts = fake_llm(ContentFilterOutput(new_items=[]))
+
+    await filter_content(
+        make_state(
+            user_message="이미 정리한 내용은 제외하고 새 내용만 반영해줘",
+            activity_tree_text="[exp_1] 커머스 개선\n  [b_1] 결제 오류 분석",
+        )
+    )
+
+    assert "현재 활동에 이미 저장된 경험정리 블록" in prompts[0]
+    assert "결제 오류 분석" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_regular_input_does_not_include_existing_map(fake_llm):
+    """일반 입력에는 큰 기존 맵을 불필요하게 싣지 않는다."""
+    prompts = fake_llm(ContentFilterOutput(new_items=[]))
+
+    await filter_content(
+        make_state(activity_tree_text="[exp_1] 커머스 개선\n  [b_1] 기존 비밀 내용")
+    )
+
+    assert "기존 비밀 내용" not in prompts[0]
+
+
 def test_gap_section_without_gap():
     assert "활성 gap이 없습니다" in build_gap_section(None)
     assert "활성 gap이 없습니다" in build_gap_section({})

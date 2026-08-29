@@ -162,21 +162,34 @@ async def test_commit_result_is_emitted_before_slow_gap_suggestion():
 
 
 @pytest.mark.asyncio
-async def test_gap_failure_does_not_fail_committed_result():
+async def test_gap_failure_uses_fixed_suggestion_and_clears_previous_gap():
+    saved: list[tuple[str, dict | None]] = []
+
     async def run_commit(input_state):
         return committed_state()
 
     async def run_gap(input_state):
         raise LlmError(failed_node="gap_analysis")
 
-    events = await collect(commit_runner=run_commit, gap_runner=run_gap)
+    async def save_gap(user_id: str, gap: dict | None):
+        saved.append((user_id, gap))
+
+    events = await collect(
+        commit_runner=run_commit,
+        gap_runner=run_gap,
+        save_active_gap=save_gap,
+    )
 
     assert [event.type for event in events] == [
         "node_status",
         "node_status",
         "commit_result",
         "message_complete",
+        "suggestion_ready",
+        "message_complete",
     ]
+    assert events[-1].message.ai_response == "더 정리하고 싶으신 내용이 있나요?"
+    assert saved == [("123", None)]
 
 
 @pytest.mark.asyncio
@@ -223,6 +236,40 @@ async def test_successful_gap_is_persisted_after_commit():
         "message_complete",
     ]
     assert saved == [("123", suggestion_state()["active_gap"])]
+
+
+@pytest.mark.asyncio
+async def test_new_commit_item_anchor_is_resolved_after_parallel_gap_analysis():
+    """gap 분석과 commit은 병렬이어도 새 블록 ID 변환은 commit 결과를 기다린다."""
+    saved: list[dict | None] = []
+
+    async def run_commit(input_state):
+        return committed_state()
+
+    async def run_gap(input_state):
+        return input_state | {
+            "gap_candidate": {
+                "gap_type": "extend_block",
+                "anchor_ref": "add_1",
+                "reason": "판단 기준 부족",
+            },
+            "gap_message": "개선안을 선택한 기준은 무엇이었나요?",
+        }
+
+    async def save_gap(user_id: str, gap: dict | None):
+        saved.append(gap)
+
+    events = await collect(
+        commit_runner=run_commit,
+        gap_runner=run_gap,
+        save_active_gap=save_gap,
+    )
+
+    suggestion = events[-2].gap
+    assert suggestion is not None
+    assert suggestion.anchor_block_id == "401"
+    assert suggestion.path == "커머스 리뉴얼 > 담당업무"
+    assert saved[0]["anchor_block_id"] == "401"
 
 
 @pytest.mark.asyncio

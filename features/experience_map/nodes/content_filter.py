@@ -22,6 +22,7 @@ from common.llm import get_experience_map_llm
 from features.experience_map.config import get_settings
 from features.experience_map.errors import LlmError
 from features.experience_map.prompts.content_filter import (
+    build_existing_map_section,
     build_file_section,
     build_gap_section,
     build_message_section,
@@ -67,6 +68,9 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
                 "gap_section": build_gap_section(active_gap),
                 "message_section": build_message_section(user_message),
                 "file_section": build_file_section(extracted_text),
+                "existing_map_section": build_existing_map_section(
+                    _comparison_tree(state, user_message, extracted_text)
+                ),
             }
         )
     except Exception as exc:
@@ -93,6 +97,38 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
         dropped,
     )
     return updated  # type: ignore[return-value]
+
+
+def _comparison_tree(
+    state: ExperienceMapState,
+    user_message: str | None,
+    extracted_text: str | None,
+) -> str | None:
+    """기존 맵 비교가 필요한 요청에 한해 관련 활동 트리를 반환한다.
+
+    화면 context가 있으면 준비 단계에서 이미 해당 활동의 tree가 적용돼 있다.
+    context가 없지만 기존 내용 제외를 명시한 요청은 모든 활동을 비교 대상으로
+    제공한다. 평범한 입력에는 큰 맵 전체를 프롬프트에 싣지 않는다.
+    """
+    request_text = f"{user_message or ''}\n{extracted_text or ''}"
+    comparison_requested = any(
+        marker in request_text
+        for marker in ("이미", "기존", "중복", "현재 활동", "해당 활동", "제외")
+    )
+    if not comparison_requested:
+        return None
+
+    current_tree = (state.get("activity_tree_text") or "").strip()
+    if current_tree:
+        return current_tree
+
+    contexts = state.get("activity_contexts", {})
+    trees = [
+        str(context.get("tree_text") or "").strip()
+        for context in contexts.values()
+        if isinstance(context, dict) and str(context.get("tree_text") or "").strip()
+    ]
+    return "\n\n".join(trees) or None
 
 
 def _sanitize(

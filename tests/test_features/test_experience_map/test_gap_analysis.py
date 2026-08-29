@@ -62,11 +62,11 @@ def fake_llm(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_analyzes_only_committed_items_and_direct_anchor_candidates(fake_llm):
-    """현재 맵 전체 대신 방금 커밋될 text와 연결된 별칭만 LLM에 준다."""
+    """현재 맵 전체 대신 방금 내용이 커밋될 item_id만 LLM에 준다."""
     prompts = fake_llm(
         GapOutput(
             gap=GapCandidate(
-                gap_type="extend_block", anchor_ref="b_1", reason="판단 기준이 부족함"
+                gap_type="extend_block", anchor_ref="it_1", reason="판단 기준이 부족함"
             ),
             message="개선안을 선택한 판단 기준은 무엇이었나요?",
         )
@@ -76,12 +76,12 @@ async def test_analyzes_only_committed_items_and_direct_anchor_candidates(fake_l
 
     assert result["gap_candidate"] == {
         "gap_type": "extend_block",
-        "anchor_ref": "b_1",
+        "anchor_ref": "it_1",
         "reason": "판단 기준이 부족함",
     }
     assert result["gap_message"] == "개선안을 선택한 판단 기준은 무엇이었나요?"
     assert "결제 오류 원인을 분석해 개선안을 적용했다." in prompts[0]
-    assert "[b_1]" in prompts[0]
+    assert "[it_1]" in prompts[0]
     assert "[b_2]" not in prompts[0]
     assert "교내 커머스 리뉴얼" not in prompts[0]
 
@@ -116,16 +116,8 @@ async def test_invalid_indirect_anchor_is_gap_analysis_failure(fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_anchor_ref_pointing_at_own_commit_item_is_resolved_to_its_real_alias(fake_llm):
-    """`anchor_ref`가 이번 커밋 item 자신의 item_id면, 그 item이 붙은 실제 별칭으로 바꾼다.
-
-    실제로 재현된 경우다. 이번 턴에 기존 앵커(b_1)의 빈 슬롯을 채운
-    item(`it_1`)을 gap 기준으로 삼으려 하면서, `anchor_ref`에 활동 트리
-    별칭이 아니라 그 item 자신의 `item_id`를 썼다 — 방금 만든 item은
-    별칭이 없으므로 그대로면 "직접 연결되지 않은 블록"으로 거부된다.
-    `it_1`이 실제로 `parent_ref="b_1"`을 가리키므로, 물어보려던 맥락은
-    명백해 코드가 `anchor_ref`를 `b_1`로 바꿔 재시도 없이 통과시킨다.
-    """
+async def test_anchor_ref_keeps_committed_item_id_until_commit_result(fake_llm):
+    """병렬 gap 분석 중에는 item_id를 유지하고 커밋 성공 뒤 실제 ID로 바꾼다."""
     fake_llm(
         GapOutput(
             gap=GapCandidate(gap_type="extend_block", anchor_ref="it_1"),
@@ -135,7 +127,7 @@ async def test_anchor_ref_pointing_at_own_commit_item_is_resolved_to_its_real_al
 
     result = await analyze_gap(make_state())
 
-    assert result["gap_candidate"]["anchor_ref"] == "b_1"
+    assert result["gap_candidate"]["anchor_ref"] == "it_1"
 
 
 @pytest.mark.asyncio
@@ -148,9 +140,14 @@ async def test_gap_analysis_failure_is_distinct_from_no_gap(fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_no_existing_anchor_skips_llm_and_returns_no_gap(fake_llm):
-    """새 블록끼리만 연결된 커밋은 근거 없는 질문을 만들지 않는다."""
-    prompts = fake_llm(GapOutput(gap=None, message="unused"))
+async def test_new_blocks_are_valid_gap_anchors(fake_llm):
+    """새 블록끼리 연결돼도 내용이 있는 커밋 블록 자체를 gap 기준으로 쓴다."""
+    prompts = fake_llm(
+        GapOutput(
+            gap=GapCandidate(gap_type="extend_block", anchor_ref="section_1"),
+            message="이 일을 선택한 이유는 무엇이었나요?",
+        )
+    )
     state = make_state(
         commit_items=[
             {
@@ -164,9 +161,8 @@ async def test_no_existing_anchor_skips_llm_and_returns_no_gap(fake_llm):
 
     result = await analyze_gap(state)
 
-    assert prompts == []
-    assert result["gap_candidate"] is None
-    assert result["gap_message"] == NO_GAP_MESSAGE
+    assert "[section_1]" in prompts[0]
+    assert result["gap_candidate"]["anchor_ref"] == "section_1"
 
 
 def test_suggestion_converts_alias_to_active_gap_and_path():
@@ -182,3 +178,25 @@ def test_suggestion_converts_alias_to_active_gap_and_path():
     assert result["active_gap"]["gap_type"] == "new_child_block"
     assert result["active_gap"]["created_request_id"] == REQUEST_ID
     assert result["suggestion"]["gap"]["path"] == "교내 커머스 리뉴얼 > 담당업무 > 결제 개선"
+
+
+def test_suggestion_converts_new_commit_item_to_active_gap():
+    """방금 생성된 블록은 commit applied 결과로 실제 ID와 경로를 얻는다."""
+    result = build_suggestion(
+        make_state(
+            gap_candidate={"gap_type": "extend_block", "anchor_ref": "it_1"},
+            gap_message="개선안을 선택한 기준은 무엇이었나요?",
+            commit_result={
+                "applied": [
+                    {
+                        "item_id": "it_1",
+                        "block_id": "401",
+                        "path": "교내 커머스 리뉴얼 > 담당업무 > 결제 개선",
+                    }
+                ]
+            },
+        )
+    )
+
+    assert result["active_gap"]["anchor_block_id"] == "401"
+    assert result["suggestion"]["gap"]["path"].endswith("결제 개선")

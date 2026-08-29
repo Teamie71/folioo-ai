@@ -1,6 +1,6 @@
 """대상 활동 선택 노드 (에이전트 문서 5-4).
 
-선택 우선순위는 화면 context, 활성 gap의 anchor, 사용자 메시지다. context와
+선택 우선순위는 화면 context, 활성 gap의 anchor, 사용자 메시지·파일 추출문이다. context와
 anchor는 LLM 판단이 아닌 서버가 보유한 별칭 소유권 매핑으로 검증한다. 그 어느
 경우에도 한 활동으로 특정할 수 없으면 커밋 경로로 보내지 않는다.
 """
@@ -85,7 +85,8 @@ async def select_target_activity(state: ExperienceMapState) -> ExperienceMapStat
     """이번 요청이 수정할 하나의 활동을 선택한다.
 
     유효한 화면 context가 가장 우선이다. 활성 gap 답변은 anchor가 속한 활동으로
-    고정한다. 나머지는 LLM이 전체 outline의 활동 별칭 중 하나를 고르게 하되,
+    고정한다. 나머지는 LLM이 메시지와 파일 추출문을 함께 보고 전체 outline의
+    활동 별칭 화이트리스트 중 하나를 고르게 하되,
     화이트리스트 밖 결과와 불명확한 결과는 fallback 처리한다.
 
     Raises:
@@ -114,8 +115,8 @@ async def select_target_activity(state: ExperienceMapState) -> ExperienceMapStat
         logger.warning("target_activity: gap anchor의 활동 소유권을 확인하지 못했습니다")
         return _fallback(updated, "ambiguous_target")
 
-    user_message = (state.get("user_message") or "").strip()
-    if not user_message or not candidates:
+    input_text = _selection_input(state)
+    if not input_text or not candidates:
         return _fallback(updated, "ambiguous_target")
 
     try:
@@ -124,7 +125,7 @@ async def select_target_activity(state: ExperienceMapState) -> ExperienceMapStat
         result: TargetActivityOutput = await chain.ainvoke(
             {
                 "outline": render_activity_outline(candidates.items()),
-                "user_message": user_message,
+                "user_message": input_text,
             }
         )
     except Exception as exc:
@@ -138,6 +139,22 @@ async def select_target_activity(state: ExperienceMapState) -> ExperienceMapStat
     _select_with_context(updated, result.activity_alias)
     logger.info("target_activity: 메시지와 outline으로 선택 (%s)", result.reason)
     return updated  # type: ignore[return-value]
+
+
+def _selection_input(state: ExperienceMapState) -> str:
+    """채팅과 첨부 파일 추출문을 함께 대상 활동 선택 근거로 만든다.
+
+    파일만 업로드한 요청에서도 문서 내용으로 활동을 고를 수 있어야 한다. 출처
+    표시는 서로 다른 입력을 한 문장처럼 잘못 이어 읽지 않게 한다.
+    """
+    sections: list[str] = []
+    user_message = (state.get("user_message") or "").strip()
+    extracted_text = (state.get("extracted_text") or "").strip()
+    if user_message:
+        sections.append(f"[사용자 메시지]\n{user_message}")
+    if extracted_text:
+        sections.append(f"[첨부 파일 추출문]\n{extracted_text}")
+    return "\n\n".join(sections)
 
 
 def _select_with_context(updated: dict, activity_alias: str) -> None:

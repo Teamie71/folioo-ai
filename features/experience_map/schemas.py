@@ -267,10 +267,10 @@ class RefinementOutput(BaseModel):
 
 
 class GapCandidate(BaseModel):
-    """gap 분석 노드가 고른 gap. 별칭 기준이며 실제 ID 변환 전이다."""
+    """gap 분석 노드가 고른 gap. commit item_id 기준이며 실제 ID 변환 전이다."""
 
     gap_type: GapType = Field(..., description="후속 노드를 결정한다")
-    anchor_ref: str = Field(..., description="기준 블록 별칭")
+    anchor_ref: str = Field(..., description="기준 commit item_id")
     reason: str | None = Field(None, description="선정 근거")
 
 

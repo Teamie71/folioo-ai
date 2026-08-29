@@ -44,7 +44,7 @@ CONTENT_FILTER_SYSTEM = """\
 """
 
 CONTENT_FILTER_USER = """\
-{gap_section}{message_section}{file_section}"""
+{gap_section}{message_section}{file_section}{existing_map_section}"""
 
 content_filter_prompt = ChatPromptTemplate.from_messages(
     [("system", CONTENT_FILTER_SYSTEM), ("user", CONTENT_FILTER_USER)]
@@ -79,3 +79,17 @@ def build_file_section(extracted_text: str | None) -> str:
     if not text:
         return ""
     return f'첨부 파일에서 추출한 텍스트 (source: file):\n"""\n{text}\n"""\n'
+
+
+def build_existing_map_section(activity_tree_text: str | None) -> str:
+    """필요할 때만 현재 활동의 기존 내용을 비교 컨텍스트로 제공한다."""
+    text = (activity_tree_text or "").strip()
+    if not text:
+        return ""
+    return (
+        "\n현재 활동에 이미 저장된 경험정리 블록:\n"
+        f'"""\n{text}\n"""\n'
+        "사용자가 기존 내용 제외 또는 현재 활동 범위 선별을 요청했다면 위 블록과 "
+        "비교하여 중복·범위 밖 내용을 제외하세요. 빈 블록의 가이드 문구는 작성된 "
+        "내용으로 간주하지 마세요.\n"
+    )
