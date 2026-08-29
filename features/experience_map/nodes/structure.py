@@ -33,12 +33,10 @@ logger = logging.getLogger(__name__)
 # 하므로 다른 템플릿의 동명 슬롯이나 완전히 지어낸 slot_id는 통과하지 않는다.
 _KNOWN_SLOT_ALIASES = {
     "PROBLEM_SOLVING.TROUBLESHOOTING.RESULT": ("PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION"),
-    # TASK 기본 템플릿의 RESULT 안내문은 결과와 배운 점을 함께 받는다. 모델이
-    # 문서의 명시적인 "배운 점" 제목을 보고 별도 LEARNING 슬롯을 만드는
-    # 경우가 실제 PDF에서 재현됐다. 별도 슬롯은 카탈로그에 없으므로 공식
-    # RESULT로 합친다.
-    "TASK.BASIC.LEARNING": "TASK.BASIC.RESULT",
 }
+
+_LEARNING_SLOT_SUFFIXES = frozenset({"LEARNING", "LESSON", "LESSONS"})
+_LEARNING_DESTINATION_SLOT = "TASK.BASIC.RESULT"
 
 _BASIC_TO_TROUBLESHOOTING_SLOTS = {
     "PROBLEM_SOLVING.BASIC.PROBLEM": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
@@ -210,9 +208,10 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         non_empty_items = _drop_empty_new_section_subtrees(items)
         section_filled_items = _fill_missing_section_slots(non_empty_items, catalog)
         filled_items = _fill_missing_template_slots(section_filled_items, catalog, state)
+        ordered_items = _order_parents_before_children(filled_items)
         try:
             validated = _validate_output(
-                filled_items,
+                ordered_items,
                 source_items=source_items,
                 catalog=catalog,
                 state=state,
@@ -231,7 +230,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                         "has_text": item.text is not None,
                         "source_count": len(item.source_item_ids),
                     }
-                    for item in filled_items
+                    for item in ordered_items
                 ],
             )
             raise
@@ -495,10 +494,24 @@ def _apply_structuring_fixups(
 def _normalize_known_slot_aliases(
     items: list[StructureLlmItem], catalog: TemplateCatalog
 ) -> list[StructureLlmItem]:
-    """관찰된 비공식 slot 별칭을 동일 템플릿의 공식 slot_id로 바꾼다."""
+    """관찰된 비공식 slot 별칭을 의미가 확정된 공식 slot_id로 바꾼다."""
     normalized: list[StructureLlmItem] = []
     for item in items:
         official = _KNOWN_SLOT_ALIASES.get(item.slot_id or "")
+        # TASK 기본 템플릿의 RESULT 안내문은 결과와 배운 점을 함께 받는다.
+        # 모델은 PDF의 명시적인 "배운 점" 제목을 보고 TASK.BASIC.LEARNING뿐
+        # 아니라 PROBLEM_SOLVING.RECOVERY.LEARNING처럼 section까지 임의로
+        # 바꾼 슬롯을 반복해서 만들었다. 카탈로그에 실제 LEARNING 계열 슬롯이
+        # 없을 때만 의미가 확정된 공식 RESULT로 귀속한다. 이후 계층 보정이
+        # 부모 카테고리와 앵커도 TASK 쪽으로 함께 옮긴다.
+        if (
+            official is None
+            and item.slot_id is not None
+            and catalog.get_slot(item.slot_id) is None
+            and item.slot_id.rsplit(".", maxsplit=1)[-1] in _LEARNING_SLOT_SUFFIXES
+            and catalog.get_slot(_LEARNING_DESTINATION_SLOT) is not None
+        ):
+            official = _LEARNING_DESTINATION_SLOT
         if official is not None and catalog.get_slot(official) is not None:
             logger.warning(
                 "structure: 비공식 slot_id를 정규화합니다 (%s -> %s)",
@@ -1259,6 +1272,45 @@ def _drop_empty_new_section_subtrees(
     if not drop:
         return items
     return [item for item in items if item.item_id not in drop]
+
+
+def _order_parents_before_children(
+    items: list[StructureLlmItem],
+) -> list[StructureLlmItem]:
+    """신규 add 부모가 자식보다 먼저 오도록 안정적으로 위상 정렬한다.
+
+    구조 보정은 카테고리·앵커를 필요해진 시점에 목록 끝에 추가한다. 그러면
+    앞에 있던 level 5 자식이 뒤에서 생성된 부모를 가리킬 수 있다. 구조 자체는
+    유효하지만 commit operation 계약은 ``parent_item_id``가 앞선 item만
+    가리키도록 요구하므로 validate가 구조화를 불필요하게 다시 실행했다.
+
+    원래 순서를 가능한 한 유지하며 부모 의존성이 충족된 item부터 내보낸다.
+    순환이나 존재하지 않는 부모는 임의로 고치지 않고 마지막에 원래 순서로
+    남겨 이후 검증이 정확한 계약 위반으로 처리하게 한다.
+    """
+    pending = list(items)
+    ordered: list[StructureLlmItem] = []
+    emitted: set[str] = set()
+    all_item_ids = {item.item_id for item in items}
+
+    while pending:
+        ready = [
+            item
+            for item in pending
+            if item.action != "add"
+            or item.parent_item_id is None
+            or item.parent_item_id in emitted
+            or item.parent_item_id not in all_item_ids
+        ]
+        if not ready:
+            ordered.extend(pending)
+            break
+        ready_ids = {item.item_id for item in ready}
+        ordered.extend(ready)
+        emitted.update(ready_ids)
+        pending = [item for item in pending if item.item_id not in ready_ids]
+
+    return ordered
 
 
 def _validate_output(

@@ -488,6 +488,40 @@ router → file_processor(전 페이지 OCR) → file_cleanup → content_filter
 판정: 텍스트 레이어가 있는 PDF도 OCR 모델만 사용했고, OCR 결과의 구조화 보정과
 블록 커밋 및 후속 질문 생성까지 테스트 콘솔에서 완료했다.
 
+### 파일 전용 요청의 구조 검증 재호출 제거
+
+동일 PDF를 사용자 메시지 없이 파일만 첨부했을 때, 모델이 카탈로그에 없는
+`PROBLEM_SOLVING.RECOVERY.LEARNING` 슬롯을 만들고 자동 보정으로 생성된 부모가
+자식 뒤에 놓여 validate가 구조화를 반복하는 문제를 재현했다.
+
+- 카탈로그에 없는 `LEARNING`·`LESSON` 계열 슬롯은 실제로 배운 점을 받는
+  `TASK.BASIC.RESULT`로 귀속
+- 자동 생성한 operation은 카테고리 → 앵커 → 자식 순으로 안정적 위상 정렬
+- 순환·없는 부모는 임의 수정하지 않고 기존 검증에서 거부
+
+최종 실제 요청:
+
+```text
+request_id: eed549e6-caf9-462b-8940-e7f63f0a6c1f
+입력: user_message 없음, sample_experience copy.pdf 1개
+router → file_processor(전 페이지 OCR) → file_cleanup → content_filter
+→ target_activity → structure → refine → validate → commit
+```
+
+```json
+{
+  "previous_version": 1,
+  "map_version": 2,
+  "applied_count": 12,
+  "dropped": [],
+  "status": "completed"
+}
+```
+
+판정: validate 이후 structure 재호출 없이 첫 검증에서 바로 커밋됐다. 담당업무와
+문제해결 카테고리 및 하위 블록이 부모 우선 순서로 생성됐고 후속 질문도 정상
+반환됐다.
+
 ## 재현 명령과 회귀 테스트
 
 1번 전체 그래프 데모:
@@ -515,7 +549,7 @@ UV_CACHE_DIR=/tmp/folioo-uv uv run pytest -q \
 최신 경험정리 전체 테스트 실행 결과:
 
 ```text
-401 passed, 51 skipped
+404 passed, 51 skipped
 ```
 
 ## 남은 실연동 확인 항목

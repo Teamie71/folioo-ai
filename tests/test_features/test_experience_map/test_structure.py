@@ -188,7 +188,8 @@ async def test_template_expands_empty_slots(fake_dependencies):
 
     result = await structure_blocks(make_state())
 
-    assert result["structured_items"][1]["text"] is None
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] is None
 
 
 @pytest.mark.asyncio
@@ -227,7 +228,8 @@ async def test_multiple_source_items_can_merge_into_one_slot(fake_dependencies):
 
     result = await structure_blocks(state)
 
-    assert result["structured_items"][0]["text"] == "원인을 조사했다 해결책을 적용했다"
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "원인을 조사했다 해결책을 적용했다"
 
 
 @pytest.mark.asyncio
@@ -265,7 +267,8 @@ async def test_merge_ignores_llm_typed_separator(fake_dependencies):
 
     result = await structure_blocks(state)
 
-    assert result["structured_items"][0]["text"] == "원인을 조사했다. 해결책을 적용했다"
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "원인을 조사했다. 해결책을 적용했다"
 
 
 @pytest.mark.asyncio
@@ -302,7 +305,8 @@ async def test_merged_text_ignores_llm_summary(fake_dependencies):
 
     result = await structure_blocks(state)
 
-    assert result["structured_items"][0]["text"] == "원인을 조사했다 해결책을 적용했다"
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "원인을 조사했다 해결책을 적용했다"
 
 
 @pytest.mark.asyncio
@@ -1493,14 +1497,22 @@ def test_known_problem_solving_result_alias_is_normalized():
     assert result[0].text == "재시도 후 오류가 재발하지 않았다"
 
 
-def test_known_task_learning_alias_is_merged_into_result_slot():
-    """PDF의 '배운 점'을 위해 지어낸 LEARNING 슬롯은 공식 RESULT로 고친다."""
+@pytest.mark.parametrize(
+    "invented_slot",
+    [
+        "TASK.BASIC.LEARNING",
+        "PROBLEM_SOLVING.RECOVERY.LEARNING",
+        "PROBLEM_SOLVING.TROUBLESHOOTING.LESSONS",
+    ],
+)
+def test_invented_learning_slot_is_merged_into_task_result(invented_slot):
+    """PDF의 '배운 점'을 위해 지어낸 슬롯은 section과 무관하게 공식 RESULT로 고친다."""
     catalog = TemplateCatalog.model_validate(catalog_payload())
     raw = StructureLlmItem(
         item_id="blk_1",
         action="add",
         parent_ref="b_1",
-        slot_id="TASK.BASIC.LEARNING",
+        slot_id=invented_slot,
         text="원인을 구조적으로 분리하는 방식을 배웠다",
         source_item_ids=["it_1"],
     )
@@ -1977,6 +1989,36 @@ def test_normalize_new_hierarchy_separates_level5_from_other_section_anchor():
     assert problem_category.parent_ref == "exp_1"
     assert problem_anchor.parent_item_id == problem_category.item_id
     assert by_id["solution_1"].parent_item_id == problem_anchor.item_id
+
+
+def test_generated_parents_are_ordered_before_children():
+    """보정 중 뒤에 추가된 카테고리·앵커도 commit 배열에서는 자식보다 앞선다."""
+    items = [
+        StructureLlmItem(
+            item_id="leaf_1",
+            action="add",
+            parent_item_id="anchor_1",
+            slot_id="TASK.BASIC.RESULT",
+            text="응답 시간을 개선했다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="category_1",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="TASK",
+        ),
+        StructureLlmItem(
+            item_id="anchor_1",
+            action="add",
+            parent_item_id="category_1",
+            slot_id="TASK.SUMMARY",
+        ),
+    ]
+
+    result = structure_node._order_parents_before_children(items)
+
+    assert [item.item_id for item in result] == ["category_1", "anchor_1", "leaf_1"]
 
 
 @pytest.mark.asyncio
