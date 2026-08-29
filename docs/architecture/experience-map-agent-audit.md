@@ -54,7 +54,7 @@ Router 최종 실패 정책, async 테스트 종료 문제를 발견해 **부분
 | 3 템플릿·빈 슬롯 전개 | 충족 | `templates.py`, `structure.py`의 슬롯 보완·검증 | 담당업무 1종과 문제해결 6종 테스트가 존재 |
 | 4 파이프라인 | 충족 | `graph.py` | 커밋·gap은 문서대로 graph 밖 coordinator에서 실행 |
 | 5-1 Router | 충족 | 파일 유무 코드 판정, LLM intent 분류, 2회 실패 Fallback | 그래프 RetryPolicy와 중복되지 않게 노드 내부에서 재시도 |
-| 5-2 파일처리 | 충족 | 입력 순서 유지, PDF 텍스트 우선·스캔 페이지만 OCR, 오류 유형 분리, `file_cleanup` | 페이지별 OCR, sync checkpoint 뒤 원본 삭제 |
+| 5-2 파일처리 | 충족 | 입력 순서 유지, PDF 전 페이지 OCR, 오류 유형 분리, `file_cleanup` | 페이지별 OCR, sync checkpoint 뒤 원본 삭제 |
 | 5-3 반영 내용 필터링 | 충족 | 세 분류, 원문 역추적, active gap 방어 | 기존 내용 조건부 조회 Tool은 별도 확인 필요 |
 | 5-4 대상 활동 선택 | 충족 | 화면 context, gap anchor, outline 순 선택 | 대상 불명확 시 `ambiguous_target` Fallback |
 | 5-5 블록 단위 구조화 | 충족 | 원문 보존, alias 제한, 템플릿 선택·전개 검증 | 모델 오류를 결정적 코드 보정과 검증으로 방어 |

@@ -359,7 +359,7 @@ def test_extractor_kind(content_type, expected):
     assert extractor_kind(content_type) == expected
 
 
-# ===== PDF: 텍스트 레이어 우선, 스캔 페이지만 OCR =====
+# ===== PDF: 텍스트 레이어와 관계없이 모든 페이지 OCR =====
 
 
 def minimal_pdf() -> bytes:
@@ -402,15 +402,18 @@ class _CaptureVisionLlm:
 
 
 @pytest.mark.asyncio
-async def test_text_pdf_uses_embedded_text_without_llm(monkeypatch):
-    """쓸 수 있는 텍스트 레이어가 있으면 LLM을 호출하지 않는다."""
-    fake_llm = _CaptureVisionLlm("호출되면 안 됨")
+async def test_text_pdf_is_always_rendered_and_sent_to_ocr(monkeypatch):
+    """텍스트 레이어가 있는 PDF도 직접 추출하지 않고 이미지 OCR한다."""
+    fake_llm = _CaptureVisionLlm("OCR Hello PDF")
     monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: fake_llm)
 
     text = await extractors.extract_with_ocr(minimal_pdf(), "이력서.pdf", "application/pdf")
 
-    assert text == "Hello PDF"
-    assert fake_llm.invocations == []
+    assert text == "OCR Hello PDF"
+    assert len(fake_llm.invocations) == 1
+    [message] = fake_llm.invocations[0]
+    image_blocks = [block for block in message.content if block["type"] == "image_url"]
+    assert image_blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 @pytest.mark.asyncio
@@ -452,11 +455,10 @@ async def test_pdf_ocr_runs_per_page_and_preserves_page_order(monkeypatch):
 
     fake_llm = PageAwareLlm()
     monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: fake_llm)
-    monkeypatch.setattr(extractors, "_extract_pdf_page_texts", lambda _: [None, None, None])
     monkeypatch.setattr(
         extractors,
         "_render_pdf_pages",
-        lambda _, indexes: [f"page-{index + 1}".encode() for index in indexes],
+        lambda _: [f"page-{index + 1}".encode() for index in range(3)],
     )
 
     text = await extractors.extract_with_ocr(b"pdf", "스캔.pdf", "application/pdf")
@@ -486,11 +488,10 @@ async def test_pdf_ocr_limits_concurrent_page_requests(monkeypatch):
 
     fake_llm = ConcurrencyLlm()
     monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: fake_llm)
-    monkeypatch.setattr(extractors, "_extract_pdf_page_texts", lambda _: [None] * 7)
     monkeypatch.setattr(
         extractors,
         "_render_pdf_pages",
-        lambda _, indexes: [f"page-{index + 1}".encode() for index in indexes],
+        lambda _: [f"page-{index + 1}".encode() for index in range(7)],
     )
 
     text = await extractors.extract_with_ocr(b"pdf", "스캔.pdf", "application/pdf")
@@ -500,29 +501,26 @@ async def test_pdf_ocr_limits_concurrent_page_requests(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mixed_pdf_only_ocrs_pages_without_usable_text(monkeypatch):
-    """텍스트 PDF와 스캔 페이지가 섞여도 필요한 페이지만 OCR한다."""
-    fake_llm = _CaptureVisionLlm("OCR 둘째 페이지")
-    rendered_indexes: list[int] = []
+async def test_mixed_pdf_ocrs_every_page(monkeypatch):
+    """텍스트·스캔 혼합 PDF도 예외 없이 모든 렌더링 페이지를 OCR한다."""
 
-    monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: fake_llm)
+    class PageAwareLlm:
+        async def ainvoke(self, messages):
+            image_url = messages[0].content[1]["image_url"]["url"]
+            encoded = image_url.removeprefix("data:image/png;base64,")
+            page = base64.b64decode(encoded).decode("utf-8")
+            return AIMessage(content=f"OCR {page}")
+
+    monkeypatch.setattr(extractors, "get_file_processor_llm", PageAwareLlm)
     monkeypatch.setattr(
         extractors,
-        "_extract_pdf_page_texts",
-        lambda _: ["로컬 첫째 페이지", None, "로컬 셋째 페이지"],
+        "_render_pdf_pages",
+        lambda _: [b"page-1", b"page-2", b"page-3"],
     )
-
-    def render_missing_pages(_, indexes):
-        rendered_indexes.extend(indexes)
-        return [b"page-2"]
-
-    monkeypatch.setattr(extractors, "_render_pdf_pages", render_missing_pages)
 
     text = await extractors.extract_with_ocr(b"pdf", "혼합.pdf", "application/pdf")
 
-    assert text.split("\n\n") == ["로컬 첫째 페이지", "OCR 둘째 페이지", "로컬 셋째 페이지"]
-    assert rendered_indexes == [1]
-    assert len(fake_llm.invocations) == 1
+    assert text.split("\n\n") == ["OCR page-1", "OCR page-2", "OCR page-3"]
 
 
 @pytest.mark.asyncio

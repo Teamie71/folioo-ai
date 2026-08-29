@@ -651,17 +651,17 @@ Accept: text/event-stream
 | 처리 방식 | MIME | 확장자 |
 | --- | --- | --- |
 | 파일 파서 | `text/plain`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`, `application/vnd.openxmlformats-officedocument.presentationml.presentation` | `.txt`, `.docx`, `.pptx` |
-| PDF 하이브리드 | `application/pdf` | `.pdf` |
+| PDF 전 페이지 OCR | `application/pdf` | `.pdf` |
 | OCR 모델 | `image/png`, `image/jpeg` | `.png`, `.jpg`, `.jpeg` |
 
 개수 최대 3개, 파일당 최대 10MB.
 
 MIME·확장자·실제 파일 signature를 모두 검사합니다. `.txt`는 signature가 없으므로
 UTF-8 디코딩 성공 여부로 판정합니다. 메시지와 파일 중 하나 이상이 있어야 합니다.
-PDF는 최대 10페이지까지 페이지별 텍스트 레이어를 먼저 추출하고, 텍스트가 없거나
-유효하지 않은 페이지만 PNG로 렌더링해 페이지별 OCR을 수행합니다. 여러 스캔 페이지를
-한 모델 요청에 몰아넣지 않으며 최대 3개 요청만 동시에 실행합니다. 한 요청에 파서
-형식과 OCR 형식이 섞여 있으면 각각 처리한 뒤 입력 순서대로 이어 붙입니다.
+PDF는 최대 10페이지까지 텍스트 레이어 유무와 관계없이 모든 페이지를 PNG로
+렌더링해 페이지별 OCR을 수행합니다. 여러 페이지를 한 모델 요청에 몰아넣지 않으며
+최대 3개 요청만 동시에 실행합니다. 한 요청에 파서 형식과 OCR 형식이 섞여 있으면
+각각 처리한 뒤 입력 순서대로 이어 붙입니다.
 
 동일 request가 이미 완료됐다면 새 graph를 실행하지 않고 저장한 `commit_result`,
 결과 메시지, 제안, `processing_complete`를 같은 순서로 재전송합니다.

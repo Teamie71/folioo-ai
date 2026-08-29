@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 # 하므로 다른 템플릿의 동명 슬롯이나 완전히 지어낸 slot_id는 통과하지 않는다.
 _KNOWN_SLOT_ALIASES = {
     "PROBLEM_SOLVING.TROUBLESHOOTING.RESULT": ("PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION"),
+    # TASK 기본 템플릿의 RESULT 안내문은 결과와 배운 점을 함께 받는다. 모델이
+    # 문서의 명시적인 "배운 점" 제목을 보고 별도 LEARNING 슬롯을 만드는
+    # 경우가 실제 PDF에서 재현됐다. 별도 슬롯은 카탈로그에 없으므로 공식
+    # RESULT로 합친다.
+    "TASK.BASIC.LEARNING": "TASK.BASIC.RESULT",
 }
 
 _BASIC_TO_TROUBLESHOOTING_SLOTS = {
@@ -468,7 +473,8 @@ def _apply_structuring_fixups(
     pruned_junk = _drop_empty_invalid_slot_items(merged, catalog)
     reconstructed = _reconstruct_verbatim_text(pruned_junk, source_text)
     rerefed = _fix_batch_local_parent_ref(reconstructed, state)
-    dereffed = _clear_invalid_after_ref(rerefed, state)
+    repaired_refs = _repair_unknown_slot_parent_refs(rerefed, state)
+    dereffed = _clear_invalid_after_ref(repaired_refs, state)
     rerooted = _fix_new_section_parent(dereffed, state)
     normalized_hierarchy = _normalize_new_hierarchy(rerooted, catalog, state)
     reparented = _reparent_orphan_level5_items(normalized_hierarchy, catalog)
@@ -681,6 +687,32 @@ def _fix_batch_local_parent_ref(
         if item.parent_ref is not None
         and item.parent_ref not in known_aliases
         and item.parent_ref in item_ids
+        else item
+        for item in items
+    ]
+
+
+def _repair_unknown_slot_parent_refs(
+    items: list[StructureLlmItem], state: ExperienceMapState
+) -> list[StructureLlmItem]:
+    """신규 슬롯이 지어낸 기존 별칭을 가리키면 선택 활동부터 계층을 다시 만든다.
+
+    validate 보정 뒤 구조화를 다시 할 때 모델이 아직 커밋되지 않은 신규
+    카테고리를 활동 트리의 기존 별칭(`b_1` 등)으로 착각하는 경우가 있다.
+    `alias_to_block_id`에 없는 값은 기존 블록일 수 없고, slot_id가 있으면
+    section과 앵커를 카탈로그로 결정할 수 있다. 우선 선택 활동 바로 아래로
+    되돌리면 `_normalize_new_hierarchy`가 올바른 카테고리·앵커를 끼워 넣는다.
+    """
+    target_alias = state.get("target_experience_alias")
+    known_aliases = state.get("alias_to_block_id", {})
+    if not target_alias:
+        return items
+    return [
+        item.model_copy(update={"parent_ref": target_alias})
+        if item.action == "add"
+        and item.slot_id is not None
+        and item.parent_ref is not None
+        and item.parent_ref not in known_aliases
         else item
         for item in items
     ]

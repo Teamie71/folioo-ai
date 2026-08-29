@@ -446,6 +446,48 @@ router → file_processor → file_cleanup → content_filter → target_activit
 최종 맵은 신규 카테고리와 앵커를 포함해 명세의 부모 계층을 지켰고, 중간
 level 5 슬롯 중첩이나 다른 section 앵커 연결은 남지 않았다.
 
+### PDF 전 페이지 OCR 정책 검증
+
+사용자 결정에 따라 PDF 텍스트 레이어 직접 추출을 제거하고, 모든 PDF 페이지를
+PNG로 렌더링한 뒤 OCR 모델로 읽도록 변경했다. 텍스트 레이어가 포함된 실제 파일
+`sample_experience copy.pdf`로 테스트 콘솔 전체 경로를 실행했다.
+
+```text
+PDF 전체 페이지 OCR 준비 완료 (pages=1)
+PDF 1페이지 OCR 시작 (image_bytes=332152)
+PDF 1페이지 OCR 완료 (text_chars=912)
+content_filter: 새 내용 16개
+```
+
+첫 재현에서는 모델이 카탈로그에 없는 `TASK.BASIC.LEARNING` 슬롯을 만들었고,
+검증 보정 단계에서는 아직 커밋되지 않은 `b_1`을 기존 블록 별칭으로 오인했다.
+TASK 기본 템플릿의 배운 점은 공식 `TASK.BASIC.RESULT`로 병합하고, 현재 맵에 없는
+부모 별칭은 선택 활동 아래의 올바른 section·anchor로 재배치하도록 보정했다.
+
+최종 요청:
+
+```text
+request_id: 77d549e6-caf9-462b-8940-e7f63f0a6c1f
+router → file_processor(전 페이지 OCR) → file_cleanup → content_filter
+→ target_activity → structure → refine → validate → structure → refine
+→ validate → commit → processing_complete
+```
+
+최종 결과:
+
+```json
+{
+  "previous_version": 1,
+  "map_version": 2,
+  "applied_count": 6,
+  "dropped": [],
+  "status": "completed"
+}
+```
+
+판정: 텍스트 레이어가 있는 PDF도 OCR 모델만 사용했고, OCR 결과의 구조화 보정과
+블록 커밋 및 후속 질문 생성까지 테스트 콘솔에서 완료했다.
+
 ## 재현 명령과 회귀 테스트
 
 1번 전체 그래프 데모:
@@ -473,7 +515,7 @@ UV_CACHE_DIR=/tmp/folioo-uv uv run pytest -q \
 최신 경험정리 전체 테스트 실행 결과:
 
 ```text
-399 passed, 51 skipped
+401 passed, 51 skipped
 ```
 
 ## 남은 실연동 확인 항목

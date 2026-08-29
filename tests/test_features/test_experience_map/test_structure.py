@@ -482,6 +482,22 @@ async def test_level5_using_parent_ref_for_batch_local_anchor_is_reinterpreted(
     assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_item_id"] == anchor_id
 
 
+def test_unknown_slot_parent_ref_is_rerooted_to_selected_activity():
+    """커밋되지 않은 가짜 기존 별칭은 선택 활동 별칭으로 되돌린다."""
+    item = StructureLlmItem(
+        item_id="anchor_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="PROBLEM_SOLVING.SUMMARY",
+    )
+    state = make_state(alias_to_block_id={"exp_1": "200"})
+
+    [result] = structure_node._repair_unknown_slot_parent_refs([item], state)
+
+    assert result.parent_ref == "exp_1"
+    assert result.parent_item_id is None
+
+
 @pytest.mark.asyncio
 async def test_anchor_reusing_same_source_as_its_level5_child_is_emptied(
     fake_dependencies, monkeypatch
@@ -1475,6 +1491,24 @@ def test_known_problem_solving_result_alias_is_normalized():
 
     assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION"
     assert result[0].text == "재시도 후 오류가 재발하지 않았다"
+
+
+def test_known_task_learning_alias_is_merged_into_result_slot():
+    """PDF의 '배운 점'을 위해 지어낸 LEARNING 슬롯은 공식 RESULT로 고친다."""
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="TASK.BASIC.LEARNING",
+        text="원인을 구조적으로 분리하는 방식을 배웠다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._normalize_known_slot_aliases([raw], catalog)
+
+    assert result[0].slot_id == "TASK.BASIC.RESULT"
+    assert result[0].text == "원인을 구조적으로 분리하는 방식을 배웠다"
 
 
 def test_missing_new_section_level4_slots_are_auto_filled():
