@@ -116,6 +116,29 @@ async def test_invalid_indirect_anchor_is_gap_analysis_failure(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_anchor_ref_pointing_at_own_commit_item_is_resolved_to_its_real_alias(fake_llm):
+    """`anchor_ref`가 이번 커밋 item 자신의 item_id면, 그 item이 붙은 실제 별칭으로 바꾼다.
+
+    실제로 재현된 경우다. 이번 턴에 기존 앵커(b_1)의 빈 슬롯을 채운
+    item(`it_1`)을 gap 기준으로 삼으려 하면서, `anchor_ref`에 활동 트리
+    별칭이 아니라 그 item 자신의 `item_id`를 썼다 — 방금 만든 item은
+    별칭이 없으므로 그대로면 "직접 연결되지 않은 블록"으로 거부된다.
+    `it_1`이 실제로 `parent_ref="b_1"`을 가리키므로, 물어보려던 맥락은
+    명백해 코드가 `anchor_ref`를 `b_1`로 바꿔 재시도 없이 통과시킨다.
+    """
+    fake_llm(
+        GapOutput(
+            gap=GapCandidate(gap_type="extend_block", anchor_ref="it_1"),
+            message="이 목적을 위해 구체적으로 무엇을 조사했나요?",
+        )
+    )
+
+    result = await analyze_gap(make_state())
+
+    assert result["gap_candidate"]["anchor_ref"] == "b_1"
+
+
+@pytest.mark.asyncio
 async def test_gap_analysis_failure_is_distinct_from_no_gap(fake_llm):
     """LLM 실패는 no-gap suggestion을 만들지 않고 coordinator로 전파한다."""
     fake_llm(RuntimeError("upstream failure"))

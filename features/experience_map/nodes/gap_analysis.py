@@ -42,6 +42,7 @@ async def analyze_gap(state: ExperienceMapState) -> ExperienceMapState:
                 "anchor_aliases": render_anchor_aliases(anchors),
             }
         )
+        result = _reuse_committed_item_anchor(result, items, anchors)
         _validate_output(result, anchors)
     except LlmError:
         raise
@@ -56,6 +57,34 @@ async def analyze_gap(state: ExperienceMapState) -> ExperienceMapState:
         updated["gap_candidate"] = result.gap.model_dump()
         updated["gap_message"] = result.message.strip()
     return updated  # type: ignore[return-value]
+
+
+def _reuse_committed_item_anchor(
+    result: GapOutput, items: list[dict], anchors: list[str]
+) -> GapOutput:
+    """`anchor_ref`가 이번 커밋 item 자신의 item_id면, 그 item이 실제로 붙은 별칭으로 바꾼다.
+
+    실제로 재현된 경우다. 이번 턴에 기존 앵커의 빈 슬롯을 막 채운 item을
+    gap 질문 기준으로 삼고 싶어 하면서, 그 item의 `item_id`(예: `blk_1`)를
+    `anchor_ref`에 썼다 — `anchor_ref`는 활동 트리의 기존 블록 별칭만
+    가리킬 수 있는데, 방금 만든 item은 그런 별칭이 없다. 그 item이 실제로
+    `parent_ref`/`target_ref`로 가리키는 기존 블록이 있으면, 물어보려던
+    맥락은 명백하므로 코드가 그 별칭으로 바꿔 재시도 없이 통과시킨다.
+    """
+    if result.gap is None or result.gap.anchor_ref in anchors:
+        return result
+
+    by_item_id = {item.get("item_id"): item for item in items}
+    committed = by_item_id.get(result.gap.anchor_ref)
+    if committed is None:
+        return result
+    for field in ("parent_ref", "target_ref"):
+        alias = committed.get(field)
+        if isinstance(alias, str) and alias in anchors:
+            return result.model_copy(
+                update={"gap": result.gap.model_copy(update={"anchor_ref": alias})}
+            )
+    return result
 
 
 def _anchor_aliases(items: list[dict], aliases: dict[str, str]) -> list[str]:
