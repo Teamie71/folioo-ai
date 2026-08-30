@@ -138,7 +138,7 @@ def test_llm_retry_is_zero():
 
 
 def test_upload_limits_match_spec():
-    assert config.MAX_UPLOAD_FILES == 3
+    assert config.MAX_UPLOAD_FILES == 1
     assert config.MAX_UPLOAD_FILE_BYTES == 10 * 1024 * 1024
     assert set(config.PARSER_MIME_TYPES) | set(config.OCR_MIME_TYPES) == set(
         config.ALLOWED_MIME_TYPES

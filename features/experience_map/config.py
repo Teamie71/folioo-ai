@@ -28,7 +28,7 @@ from features.experience_map.rate_limit import DEFAULT_MAX_REQUESTS
 logger = logging.getLogger(__name__)
 
 # ===== 첨부 파일 제한 (API 명세 5절) =====
-MAX_UPLOAD_FILES = 3
+MAX_UPLOAD_FILES = 1
 MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024
 
 PARSER_MIME_TYPES: dict[str, tuple[str, ...]] = {

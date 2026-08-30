@@ -123,7 +123,7 @@ body를 읽기 전에 검증하는 이유는 파일 업로드가 프론트 → A
 
 - **CORS**: `ALLOWED_ORIGINS`에 웹 오리진 추가, `Authorization` 헤더 preflight 허용
 - **rate limit**: 티켓 `sub`(사용자) 단위. 티켓 발급 자체의 제한은 메인 서버 책임
-- **요청 크기 제한**: 파일 3개 × 10MB (5절)
+- **요청 크기 제한**: 파일 1개 × 10MB (5절)
 
 ### 2-2. 식별자
 
@@ -666,7 +666,7 @@ Accept: text/event-stream
 | PDF 전 페이지 OCR | `application/pdf` | `.pdf` |
 | OCR 모델 | `image/png`, `image/jpeg` | `.png`, `.jpg`, `.jpeg` |
 
-개수 최대 3개, 파일당 최대 10MB.
+개수 최대 1개, 파일당 최대 10MB.
 
 MIME·확장자·실제 파일 signature를 모두 검사합니다. `.txt`는 signature가 없으므로
 UTF-8 디코딩 성공 여부로 판정합니다. 메시지와 파일 중 하나 이상이 있어야 합니다.

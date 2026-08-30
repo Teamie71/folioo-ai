@@ -149,7 +149,7 @@ TEST_PAGE_HTML = r"""<!doctype html>
         <label>연결할 블록<select id="block" disabled><option>세션을 시작하면 빈 맵을 불러옵니다.</option></select></label>
         <label>경험 사실<textarea id="message" placeholder="정리할 경험의 사실을 처음부터 입력하세요."></textarea></label>
         <p class="note">경험의 사실을 입력하세요 · Enter로 전송 · Shift+Enter로 줄바꿈</p>
-        <label>첨부 파일 (선택, 최대 3개)<input id="files" type="file" multiple></label>
+        <label>첨부 파일 (선택, 최대 1개)<input id="files" type="file"></label>
         <button id="send" disabled>보내기</button><button id="retry" class="secondary" disabled>재시도</button><button id="state" class="secondary" disabled>상태</button>
       </div>
       <details><summary>디버그 SSE 이벤트 보기</summary><pre id="events">대기 중</pre></details>
