@@ -568,8 +568,7 @@ async def test_missing_source_item_triggers_one_targeted_retry(fake_dependencies
     일부 원문 item을 어느 블록에도 배정하지 않고 빠뜨렸다 — 그래프 수준
     RetryPolicy가 같은 프롬프트를 그대로 재시도해도 결과가 매번 달라
     운에 맡기는 것보다, 빠진 item을 명시해 다시 요청하는 편이 낫다. 이
-    재시도는 이 노드 실행 한 번 안에서 끝나므로 "노드마다 1회"라는
-    문서(3절)의 자동 재시도 정책과 별개다.
+    보정은 이 노드 실행 안에서 누락된 원문만 대상으로 한 번 수행한다.
     """
     first_attempt = StructureOutput(
         items=[
@@ -679,6 +678,67 @@ async def test_duplicate_source_across_sibling_slots_triggers_one_targeted_retry
     assert len(prompts) == 2
     retry_source_section = prompts[1].split("반영할 원문 item:")[1]
     assert "it_1" in retry_source_section
+
+
+@pytest.mark.asyncio
+async def test_duplicate_repair_keeps_collateral_merged_source(fake_dependencies):
+    """중복 source와 한 블록에 병합된 정상 source도 함께 다시 배정한다.
+
+    실제 다문장 입력에서 첫 블록이 it_1·it_2를 함께 담고 다른 블록이 it_1을
+    중복 사용했다. 예전 로직은 it_1이 든 블록을 통째로 제거하면서 it_2까지
+    잃었지만, 재시도에는 it_1만 보내 최종 coverage 검증에서 it_2가 누락됐다.
+    """
+    first_attempt = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="알림 시간을 단축했다 가입자 목표를 초과했다",
+                source_item_ids=["it_1", "it_2"],
+            ),
+            StructureLlmItem(
+                item_id="blk_2",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="알림 시간을 단축했다",
+                source_item_ids=["it_1"],
+            ),
+        ]
+    )
+    second_attempt = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_3",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="알림 시간을 단축했다 가입자 목표를 초과했다",
+                source_item_ids=["it_1", "it_2"],
+            )
+        ]
+    )
+    prompts = fake_dependencies([first_attempt, second_attempt])
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "알림 시간을 단축했다", "source": "message"},
+            {"item_id": "it_2", "text": "가입자 목표를 초과했다", "source": "message"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {
+        item["slot_id"]: item for item in result["structured_items"] if item["slot_id"]
+    }
+    assert (
+        items_by_slot["TASK.BASIC.RESULT"]["text"] == "알림 시간을 단축했다 가입자 목표를 초과했다"
+    )
+    retry_source_section = prompts[1].split("반영할 원문 item:")[1]
+    assert "it_1" in retry_source_section
+    assert "it_2" in retry_source_section
 
 
 @pytest.mark.asyncio

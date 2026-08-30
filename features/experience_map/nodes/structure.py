@@ -92,7 +92,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         chain = structure_prompt | llm.with_structured_output(StructureOutput)
         # 재시도 전용 체인은 temperature를 살짝 올린다. temperature 0에서는
         # 같은 프롬프트에 같은 실수를 그대로 반복하는 게 실제로 재현됐다 —
-        # 지시문을 더 붙여도(`_missing_items_repair_instruction` 등) 모델이
+        # 지시문을 더 붙여도(`_coverage_repair_instruction` 등) 모델이
         # 같은 패턴을 고수했다. 재시도는 애초에 "1차와는 다른 결과"를
         # 바라는 것이므로, 결정론을 깨는 편이 목적에 맞는다.
         retry_llm = get_experience_map_llm(timeout=get_settings().timeouts.llm, temperature=0.4)
@@ -220,39 +220,34 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                 if not missing and not duplicated:
                     break
                 if attempt == 0:
-                    if missing:
-                        logger.warning(
-                            "structure: 배치 %d/%d 원문 item 누락 감지, 빠진 것만 좁혀서 재시도 (누락 %d개)",
-                            batch_index + 1,
-                            len(batches),
-                            len(missing),
-                        )
-                        round_note_items = candidate
-                        round_source_items = [item for item in batch if item["item_id"] in missing]
-                        instruction = base_instruction + _missing_items_repair_instruction(
-                            missing, batch
-                        )
-                    else:
-                        logger.warning(
-                            "structure: 배치 %d/%d 원문 item 중복 배정 감지, "
-                            "그 원문만 좁혀서 재시도 (중복 %d개)",
-                            batch_index + 1,
-                            len(batches),
-                            len(duplicated),
-                        )
-                        # 중복 배정한 item은 "이미 잘 만든 것" 취급하면 안 된다 —
-                        # previous_batch_note에서 빼서 모델이 다시 판단하게 한다.
-                        round_note_items = [
-                            item
-                            for item in candidate
-                            if not (set(item.source_item_ids) & duplicated)
-                        ]
-                        round_source_items = [
-                            item for item in batch if item["item_id"] in duplicated
-                        ]
-                        instruction = base_instruction + _duplicate_source_repair_instruction(
-                            duplicated, batch
-                        )
+                    repair_ids = _coverage_repair_source_ids(
+                        candidate,
+                        batch_source_ids=set(batch_source_text),
+                        missing=missing,
+                        duplicated=duplicated,
+                    )
+                    logger.warning(
+                        "structure: 배치 %d/%d 원문 coverage 오류 감지, "
+                        "관련 원문만 좁혀서 재시도 (누락 %d개 · 중복 %d개 · 복구 %d개)",
+                        batch_index + 1,
+                        len(batches),
+                        len(missing),
+                        len(duplicated),
+                        len(repair_ids),
+                    )
+                    # 중복 source가 들어간 블록을 통째로 버리면, 같은 블록에 함께
+                    # 병합돼 있던 정상 source까지 사라진다. 실제로 it_1 중복을
+                    # 복구하다가 함께 있던 it_2가 최종 검증에서 누락된 사례가
+                    # 있었다. 관련 source만 비우고 구조·다른 배치 source는 보존한
+                    # 뒤, 영향받은 현재 배치 source를 모두 다시 맡긴다.
+                    round_note_items = _clear_repair_sources(candidate, repair_ids)
+                    round_source_items = [item for item in batch if item["item_id"] in repair_ids]
+                    instruction = base_instruction + _coverage_repair_instruction(
+                        missing=missing,
+                        duplicated=duplicated,
+                        repair_ids=repair_ids,
+                        source_items=batch,
+                    )
             items = batch_items
 
         # 배치를 다 처리한 뒤 딱 한 번만 빈 슬롯을 채운다 — 배치마다 채우면
@@ -803,36 +798,83 @@ def _duplicate_source_ids(items: list[StructureLlmItem]) -> set[str]:
     return duplicated
 
 
-def _duplicate_source_repair_instruction(duplicated: set[str], source_items: list[dict]) -> str:
-    """같은 원문을 여러 슬롯에 나눠 붙이지 말라는 지시문을 만든다."""
+def _coverage_repair_source_ids(
+    items: list[StructureLlmItem],
+    *,
+    batch_source_ids: set[str],
+    missing: set[str],
+    duplicated: set[str],
+) -> set[str]:
+    """coverage 오류와 같은 블록에 묶인 현재 배치 source를 모두 복구 대상으로 잡는다.
+
+    중복된 source 하나만 재시도하려고 그 source가 들어간 블록을 제거하면, 그
+    블록에 함께 병합된 정상 source도 사라진다. source들이 여러 블록을 통해
+    연쇄적으로 묶였을 수 있으므로 고정점에 도달할 때까지 같은 블록의 현재 배치
+    source를 확장한다. 이전 배치 source는 성공 결과이므로 포함하지 않는다.
+    """
+    repair_ids = (missing | duplicated) & batch_source_ids
+    changed = True
+    while changed:
+        changed = False
+        for item in items:
+            item_source_ids = set(item.source_item_ids) & batch_source_ids
+            if not (item_source_ids & repair_ids):
+                continue
+            expanded = item_source_ids - repair_ids
+            if expanded:
+                repair_ids.update(expanded)
+                changed = True
+    return repair_ids
+
+
+def _clear_repair_sources(
+    items: list[StructureLlmItem], repair_ids: set[str]
+) -> list[StructureLlmItem]:
+    """재시도할 source만 기존 배정에서 비우고 블록 위계와 나머지 source는 보존한다."""
+    cleared: list[StructureLlmItem] = []
+    for item in items:
+        remaining = [source_id for source_id in item.source_item_ids if source_id not in repair_ids]
+        if len(remaining) == len(item.source_item_ids):
+            cleared.append(item)
+            continue
+        cleared.append(
+            item.model_copy(
+                update={
+                    "source_item_ids": remaining,
+                    "text": item.text if remaining else None,
+                }
+            )
+        )
+    return cleared
+
+
+def _coverage_repair_instruction(
+    *,
+    missing: set[str],
+    duplicated: set[str],
+    repair_ids: set[str],
+    source_items: list[dict],
+) -> str:
+    """누락·중복과 그 영향 범위를 한 번의 재시도에서 함께 복구하도록 안내한다."""
     lines = "\n".join(
         f"- [{item['item_id']}] {item['text']}"
         for item in source_items
-        if item["item_id"] in duplicated
+        if item["item_id"] in repair_ids
     )
+    reasons: list[str] = []
+    if missing:
+        reasons.append(f"누락 {sorted(missing)}")
+    if duplicated:
+        reasons.append(f"중복 {sorted(duplicated)}")
+    reason_text = " · ".join(reasons)
     return (
-        "**주의: 이전 시도에서 다음 원문 item을 서로 다른 블록 여러 개에 "
-        "나눠 붙였습니다.** 한 원문 item은 정확히 하나의 블록에만 배정해야 "
-        "합니다. 그 원문이 여러 슬롯의 내용을 한 문장에 담고 있어도, 가장 "
-        "핵심적인 슬롯 **하나에만** 배정하세요.\n"
-        "**이번 응답에는 그 원문을 배정할 블록 하나만 출력하세요.** 같은 "
-        "템플릿의 나머지 형제 슬롯(빈 슬롯 포함)은 이미 앞서 만들어졌거나 "
-        "시스템이 자동으로 채우므로, 이번에 다시 만들지 마세요 — 또 나눠서 "
-        "붙이면 같은 오류가 반복됩니다:\n"
+        f"**주의: 이전 시도의 원문 coverage가 잘못되었습니다({reason_text}).**\n"
+        "아래 원문은 오류가 난 블록에 함께 묶여 영향을 받은 항목까지 포함한 "
+        "전체 복구 대상입니다. 이번 응답에서 각 item을 정확히 한 번씩만 "
+        "source_item_ids에 사용하세요. 하나도 빠뜨리지 말고, 같은 item을 서로 "
+        "다른 블록에 중복 배정하지 마세요. 이미 만든 카테고리·앵커·빈 슬롯은 "
+        "앞선 결과에 있으므로 필요한 내용 블록만 출력하세요:\n"
         f"{lines}\n\n"
-    )
-
-
-def _missing_items_repair_instruction(missing: set[str], source_items: list[dict]) -> str:
-    """빠뜨린 원문 item을 다시 배정하라는 지시문을 만든다."""
-    lines = "\n".join(
-        f"- [{item['item_id']}] {item['text']}"
-        for item in source_items
-        if item["item_id"] in missing
-    )
-    return (
-        "**주의: 이전 시도에서 다음 원문 item을 어느 블록에도 배정하지 않고 "
-        f"빠뜨렸습니다. 이번에는 반드시 포함해 배정하세요:**\n{lines}\n\n"
     )
 
 
