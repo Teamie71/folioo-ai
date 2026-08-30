@@ -1,8 +1,17 @@
 """대상 활동 선택 노드 (에이전트 문서 5-4).
 
-선택 우선순위는 화면 context, 활성 gap의 anchor, 사용자 메시지·파일 추출문이다. context와
-anchor는 LLM 판단이 아닌 서버가 보유한 별칭 소유권 매핑으로 검증한다. 그 어느
-경우에도 한 활동으로 특정할 수 없으면 커밋 경로로 보내지 않는다.
+선택 우선순위는 활성 gap의 anchor, 화면 context, 사용자 메시지·파일 추출문
+순이다. anchor와 context는 LLM 판단이 아닌 서버가 보유한 별칭 소유권 매핑으로
+검증한다. 그 어느 경우에도 한 활동으로 특정할 수 없으면 커밋 경로로 보내지
+않는다.
+
+**gap anchor가 화면 context보다 먼저다.** 실제로 재현된 경우다 — 사용자가
+gap 질문에 답할 때 화면은 이미 다른 활동으로 넘어가 있을 수 있는데(예:
+질문을 받은 뒤 다른 활동을 둘러보다가 답변), 화면 context를 먼저 적용하면
+gap 답변이 엉뚱한 활동으로 배정된다. `extend_block`이면 그 활동의
+`alias_to_block_id`에 gap anchor의 실제 block_id가 없어 이후 `refine`이
+"gap 기준 블록의 기존 내용을 확인하지 못했습니다"로 실패하고, `new_child_block`
+이면 조용히 다른 활동 아래 새 블록이 생긴다.
 """
 
 import logging
@@ -84,10 +93,11 @@ def _fallback(updated: dict, reason: str) -> ExperienceMapState:
 async def select_target_activity(state: ExperienceMapState) -> ExperienceMapState:
     """이번 요청이 수정할 하나의 활동을 선택한다.
 
-    유효한 화면 context가 가장 우선이다. 활성 gap 답변은 anchor가 속한 활동으로
-    고정한다. 나머지는 LLM이 메시지와 파일 추출문을 함께 보고 전체 outline의
-    활동 별칭 화이트리스트 중 하나를 고르게 하되,
-    화이트리스트 밖 결과와 불명확한 결과는 fallback 처리한다.
+    활성 gap 답변이 있으면 anchor가 속한 활동으로 고정한다 — 화면 context보다
+    우선이다(모듈 docstring 참고). 그다음이 유효한 화면 context다. 나머지는
+    LLM이 메시지와 파일 추출문을 함께 보고 전체 outline의 활동 별칭
+    화이트리스트 중 하나를 고르게 하되, 화이트리스트 밖 결과와 불명확한
+    결과는 fallback 처리한다.
 
     Raises:
         LlmError: 메시지 기반 선택을 위한 LLM 호출에 실패한 경우
@@ -95,6 +105,15 @@ async def select_target_activity(state: ExperienceMapState) -> ExperienceMapStat
     updated = dict(state)
     updated["current_node"] = "target_activity"
     candidates = _activity_candidates(state.get("outline", []))
+
+    if _has_gap_answer(state):
+        anchor_alias = _gap_anchor_alias(state, candidates=candidates)
+        if anchor_alias:
+            _select_with_context(updated, anchor_alias)
+            logger.info("target_activity: gap anchor로 선택")
+            return updated  # type: ignore[return-value]
+        logger.warning("target_activity: gap anchor의 활동 소유권을 확인하지 못했습니다")
+        return _fallback(updated, "ambiguous_target")
 
     context_alias = _context_alias(
         state.get("context_experience_id"),
@@ -105,15 +124,6 @@ async def select_target_activity(state: ExperienceMapState) -> ExperienceMapStat
         _select_with_context(updated, context_alias)
         logger.info("target_activity: 화면 context로 선택")
         return updated  # type: ignore[return-value]
-
-    if _has_gap_answer(state):
-        anchor_alias = _gap_anchor_alias(state, candidates=candidates)
-        if anchor_alias:
-            _select_with_context(updated, anchor_alias)
-            logger.info("target_activity: gap anchor로 선택")
-            return updated  # type: ignore[return-value]
-        logger.warning("target_activity: gap anchor의 활동 소유권을 확인하지 못했습니다")
-        return _fallback(updated, "ambiguous_target")
 
     input_text = _selection_input(state)
     if not input_text or not candidates:

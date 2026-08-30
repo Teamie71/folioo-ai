@@ -105,6 +105,31 @@ async def test_gap_answer_uses_owner_of_anchor_and_skips_llm(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_gap_anchor_wins_over_conflicting_screen_context(fake_llm):
+    """gap anchor가 화면 context와 다른 활동을 가리키면 anchor가 이긴다.
+
+    실제로 재현된 경우다 — 사용자가 gap 질문에 답하는 사이 화면은 이미 다른
+    활동으로 넘어가 있을 수 있다. context를 먼저 적용하면 gap 답변이 엉뚱한
+    활동으로 배정되고, extend_block이면 그 활동의 alias_to_block_id에 gap
+    anchor의 실제 block_id가 없어 이후 refine이 실패한다.
+    """
+    prompts = fake_llm(TargetActivityOutput(activity_alias="exp_2", reason="틀린 선택"))
+    result = await select_target_activity(
+        make_state(
+            context_experience_id="102",  # 화면은 exp_2를 보고 있다.
+            active_gap={
+                "anchor_block_id": "305",
+                "message": "어떻게 해결했나요?",
+            },  # anchor는 exp_1 소속.
+            gap_answer_items=[{"item_id": "g_1", "text": "재시도 로직", "source": "message"}],
+        )
+    )
+
+    assert result["target_experience_alias"] == "exp_1"
+    assert prompts == []
+
+
+@pytest.mark.asyncio
 async def test_unverified_gap_anchor_falls_back_without_llm(fake_llm):
     """gap anchor의 소유 활동을 모르면 임의 배정하지 않는다."""
     prompts = fake_llm(TargetActivityOutput(activity_alias="exp_1", reason="추측"))
