@@ -619,6 +619,69 @@ async def test_missing_source_item_triggers_one_targeted_retry(fake_dependencies
 
 
 @pytest.mark.asyncio
+async def test_duplicate_source_across_sibling_slots_triggers_one_targeted_retry(
+    fake_dependencies,
+):
+    """원문 하나가 서로 다른 슬롯 여럿에 나눠 붙으면, 그 원문만 콕 집어 한 번 더 시도한다.
+
+    실제로 재현된 경우다. 원문이 한 문장뿐이라 content_filter가 나누지 않고
+    하나의 item으로 넘겼는데, 모델이 그 문장을 담당업무 템플릿의 서로 다른
+    level 5 슬롯 2개(PURPOSE·RESULT)에 전부 같은 출처로 붙였다. 기존
+    "빠뜨린 원문" 재시도는 이 경우를 못 잡았다 — `_missing_source_ids`는
+    "한 번도 안 쓰인 원문"만 찾으므로, 여러 번 쓰인 이 원문은 "빠지지 않은
+    것"으로 보여 곧장 최종 검증까지 흘러가 재시도 기회 없이 실패했다.
+    """
+    first_attempt = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="결제 오류를 해결했다",
+                source_item_ids=["it_1"],
+            ),
+            StructureLlmItem(
+                item_id="blk_2",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="결제 오류를 해결했다",
+                source_item_ids=["it_1"],
+            ),
+        ]
+    )
+    second_attempt = StructureOutput(
+        items=[
+            # 재시도는 중복 배정한 it_1만 다시 맡는다 — 이번엔 슬롯 하나에만 붙인다.
+            StructureLlmItem(
+                item_id="blk_3",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="결제 오류를 해결했다",
+                source_item_ids=["it_1"],
+            ),
+        ]
+    )
+    prompts = fake_dependencies([first_attempt, second_attempt])
+    state = make_state()
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {
+        item["slot_id"]: item for item in result["structured_items"] if item["slot_id"]
+    }
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "결제 오류를 해결했다"
+    # RESULT는 원문이 없는 빈 슬롯으로만 채워진다 — 새 앵커라 템플릿 전체를
+    # 전개하지만(기존 규칙), it_1을 다시 붙이지는 않는다.
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] is None
+    assert len(prompts) == 2
+    retry_source_section = prompts[1].split("반영할 원문 item:")[1]
+    assert "it_1" in retry_source_section
+
+
+@pytest.mark.asyncio
 async def test_schema_violating_response_retries_the_same_batch(fake_dependencies):
     """모델 응답이 스키마 자체를 어겨 파싱이 실패해도, 같은 배치를 한 번 더 시도한다.
 

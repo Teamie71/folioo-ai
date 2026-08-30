@@ -211,21 +211,44 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                 )
                 existing_categories = result.existing_categories
                 missing = _missing_source_ids(candidate, batch_source_text)
+                duplicated = _duplicate_source_ids(candidate) & set(batch_source_text)
                 batch_items = candidate
-                if not missing:
+                if not missing and not duplicated:
                     break
                 if attempt == 0:
-                    logger.warning(
-                        "structure: 배치 %d/%d 원문 item 누락 감지, 빠진 것만 좁혀서 재시도 (누락 %d개)",
-                        batch_index + 1,
-                        len(batches),
-                        len(missing),
-                    )
-                    round_note_items = candidate
-                    round_source_items = [item for item in batch if item["item_id"] in missing]
-                    instruction = base_instruction + _missing_items_repair_instruction(
-                        missing, batch
-                    )
+                    if missing:
+                        logger.warning(
+                            "structure: 배치 %d/%d 원문 item 누락 감지, 빠진 것만 좁혀서 재시도 (누락 %d개)",
+                            batch_index + 1,
+                            len(batches),
+                            len(missing),
+                        )
+                        round_note_items = candidate
+                        round_source_items = [item for item in batch if item["item_id"] in missing]
+                        instruction = base_instruction + _missing_items_repair_instruction(
+                            missing, batch
+                        )
+                    else:
+                        logger.warning(
+                            "structure: 배치 %d/%d 원문 item 중복 배정 감지, "
+                            "그 원문만 좁혀서 재시도 (중복 %d개)",
+                            batch_index + 1,
+                            len(batches),
+                            len(duplicated),
+                        )
+                        # 중복 배정한 item은 "이미 잘 만든 것" 취급하면 안 된다 —
+                        # previous_batch_note에서 빼서 모델이 다시 판단하게 한다.
+                        round_note_items = [
+                            item
+                            for item in candidate
+                            if not (set(item.source_item_ids) & duplicated)
+                        ]
+                        round_source_items = [
+                            item for item in batch if item["item_id"] in duplicated
+                        ]
+                        instruction = base_instruction + _duplicate_source_repair_instruction(
+                            duplicated, batch
+                        )
             items = batch_items
 
         # 배치를 다 처리한 뒤 딱 한 번만 빈 슬롯을 채운다 — 배치마다 채우면
@@ -737,11 +760,55 @@ def _missing_source_ids(items: list[StructureLlmItem], source_text: dict[str, st
     """어느 블록에도 배정되지 않은 원문 item_id를 찾는다.
 
     `_validate_source_coverage`와 달리 중복 배정은 신경 쓰지 않는다 — 중복은
-    이미 결정론적 보정으로 처리되므로, 여기서는 재시도로 이어질 "완전히
-    빠뜨린" 경우만 미리 알아내 재시도 프롬프트에 콕 집어 넣는다.
+    대부분 결정론적 보정(`_merge_duplicate_slot_items`, 앵커-자식 동일
+    source 비우기)으로 처리된다. 그걸로 못 잡는 "서로 다른 slot 여럿이
+    같은 source를 나눠 가진" 경우는 `_duplicate_source_ids`가 별도로 잡는다.
     """
     used = {sid for item in items for sid in item.source_item_ids}
     return set(source_text) - used
+
+
+def _duplicate_source_ids(items: list[StructureLlmItem]) -> set[str]:
+    """서로 다른 item에 두 번 이상 배정된(보정으로도 안 풀린) source_item_id를 찾는다.
+
+    실제로 재현된 경우다. 원문이 한 문장(예: 대인관계 갈등 상황을 서술한
+    한 단락)뿐이라 content_filter가 이를 나누지 않고 하나의 원문 item으로
+    넘겼는데, 모델이 그 문장을 대인관계 템플릿의 서로 다른 level 5 슬롯
+    2~3개(SITUATION/ACTION/OUTCOME)에 전부 같은 출처로 붙였다. 기존
+    결정론적 보정은 "같은 (부모, slot_id) 중복"이나 "앵커와 그 자식이 완전히
+    같은 source" 만 다루므로, 서로 다른 형제 슬롯끼리 같은 source를 나눠
+    가지는 이 경우는 못 잡고 그대로 최종 검증까지 흘러가 재시도 기회 없이
+    바로 실패했다. 배치 완료 시점에 이를 미리 감지해, "빠뜨린 원문"과
+    같은 방식으로 한 번 더 재시도할 기회를 준다.
+    """
+    seen: set[str] = set()
+    duplicated: set[str] = set()
+    for item in items:
+        for source_id in item.source_item_ids:
+            if source_id in seen:
+                duplicated.add(source_id)
+            seen.add(source_id)
+    return duplicated
+
+
+def _duplicate_source_repair_instruction(duplicated: set[str], source_items: list[dict]) -> str:
+    """같은 원문을 여러 슬롯에 나눠 붙이지 말라는 지시문을 만든다."""
+    lines = "\n".join(
+        f"- [{item['item_id']}] {item['text']}"
+        for item in source_items
+        if item["item_id"] in duplicated
+    )
+    return (
+        "**주의: 이전 시도에서 다음 원문 item을 서로 다른 블록 여러 개에 "
+        "나눠 붙였습니다.** 한 원문 item은 정확히 하나의 블록에만 배정해야 "
+        "합니다. 그 원문이 여러 슬롯의 내용을 한 문장에 담고 있어도, 가장 "
+        "핵심적인 슬롯 **하나에만** 배정하세요.\n"
+        "**이번 응답에는 그 원문을 배정할 블록 하나만 출력하세요.** 같은 "
+        "템플릿의 나머지 형제 슬롯(빈 슬롯 포함)은 이미 앞서 만들어졌거나 "
+        "시스템이 자동으로 채우므로, 이번에 다시 만들지 마세요 — 또 나눠서 "
+        "붙이면 같은 오류가 반복됩니다:\n"
+        f"{lines}\n\n"
+    )
 
 
 def _missing_items_repair_instruction(missing: set[str], source_items: list[dict]) -> str:
