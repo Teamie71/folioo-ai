@@ -97,6 +97,7 @@ async def test_gap_answer_is_kept_when_gap_active(fake_llm):
         ContentFilterOutput(
             gap_answer_items=[item("it_1", "APM 으로 병목을 찾아 쿼리 캐싱을 넣었다.")],
             new_items=[],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
         )
     )
 
@@ -116,6 +117,7 @@ async def test_gap_answer_moves_to_new_when_no_active_gap(fake_llm):
         ContentFilterOutput(
             gap_answer_items=[item("it_1", "APM 으로 병목을 찾아 쿼리 캐싱을 넣었다.")],
             new_items=[],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
         )
     )
 
@@ -131,6 +133,7 @@ async def test_empty_gap_message_counts_as_no_gap(fake_llm):
         ContentFilterOutput(
             gap_answer_items=[item("it_1", "APM 으로 병목을 찾아 쿼리 캐싱을 넣었다.")],
             new_items=[],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
         )
     )
 
@@ -151,7 +154,8 @@ async def test_untraceable_item_is_dropped(fake_llm):
             new_items=[
                 item("it_1", "결제 모듈 타임아웃으로 주문 실패율이 12%까지 올랐다."),
                 item("it_2", "전환율을 45% 개선했고 팀을 이끌었다."),  # 입력에 없음
-            ]
+            ],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
         )
     )
 
@@ -167,7 +171,8 @@ async def test_whitespace_differences_are_tolerated(fake_llm):
     """줄바꿈·들여쓰기 차이로 멀쩡한 조각을 버리면 안 된다."""
     fake_llm(
         ContentFilterOutput(
-            new_items=[item("it_1", "결제 모듈  타임아웃으로\n주문 실패율이 12%까지 올랐다.")]
+            new_items=[item("it_1", "결제 모듈  타임아웃으로\n주문 실패율이 12%까지 올랐다.")],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
         )
     )
 
@@ -301,6 +306,7 @@ async def test_duplicate_item_is_dropped(fake_llm):
         ContentFilterOutput(
             gap_answer_items=[item("it_1", text)],
             new_items=[item("it_2", text)],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
         )
     )
 
@@ -312,7 +318,12 @@ async def test_duplicate_item_is_dropped(fake_llm):
 
 @pytest.mark.asyncio
 async def test_empty_text_is_dropped(fake_llm):
-    fake_llm(ContentFilterOutput(new_items=[item("it_1", "   ")]))
+    fake_llm(
+        ContentFilterOutput(
+            new_items=[item("it_1", "   ")],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
+        )
+    )
 
     result = await filter_content(make_state())
 
@@ -332,13 +343,57 @@ async def test_all_excluded_sets_fallback_reason(fake_llm):
     assert next_node(result) == "fallback"
 
 
+# ===== 원문 전체 coverage 검증 =====
+
+
+@pytest.mark.asyncio
+async def test_dropped_sentence_with_no_excluded_reason_is_rejected(fake_llm):
+    """LLM이 문장 하나를 통째로 빠뜨리고 제외 사유도 안 남기면 실패로 처리한다.
+
+    실제로 재현된 경우다. "첫 문장입니다. 둘째 문장입니다."를 입력했는데
+    LLM이 첫 문장만 반환하고 `excluded_reasons`도 비웠다 — `_traceable`은
+    반환된 조각이 원문에 있는지만 보고 원문 전체가 빠짐없이 분류됐는지는
+    보지 않아서, 둘째 문장이 흔적도 없이 사라진 채 `dropped=0`으로 정상
+    통과했다.
+    """
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", "첫 문장입니다.")]))
+
+    with pytest.raises(LlmError) as exc_info:
+        await filter_content(make_state(user_message="첫 문장입니다. 둘째 문장입니다."))
+
+    assert exc_info.value.failed_node == "content_filter"
+
+
+@pytest.mark.asyncio
+async def test_excluded_reason_present_skips_coverage_check(fake_llm):
+    """LLM이 제외를 신고했으면 나머지 원문을 못 찾아도 통과시킨다(오탐 방지).
+
+    `excluded_reasons`가 비어 있지 않다는 건 LLM이 "이건 의도적으로
+    뺐다"고 스스로 밝힌 것이므로, 그 사유를 문장 단위로 대조할 방법이
+    없는 이상 신뢰한다 — 그렇지 않으면 정상적인 제외(일반 지식, 무관한
+    내용 등)까지 전부 실패로 막힌다.
+    """
+    fake_llm(
+        ContentFilterOutput(
+            new_items=[item("it_1", "첫 문장입니다.")],
+            excluded_reasons=["둘째 문장은 일반 지식이라 제외"],
+        )
+    )
+
+    result = await filter_content(make_state(user_message="첫 문장입니다. 둘째 문장입니다."))
+
+    assert [entry["text"] for entry in result["new_items"]] == ["첫 문장입니다."]
+
+
 # ===== 프롬프트 구성 =====
 
 
 @pytest.mark.asyncio
 async def test_prompt_states_when_gap_is_absent(fake_llm):
     """gap 이 없으면 없다고 명시한다. 없는데 있는 척하면 아무 문장이나 분류된다."""
-    prompts = fake_llm(ContentFilterOutput(new_items=[]))
+    prompts = fake_llm(
+        ContentFilterOutput(new_items=[], excluded_reasons=["프롬프트 렌더링 테스트, 분류 무관"])
+    )
 
     await filter_content(make_state())
 
@@ -347,7 +402,9 @@ async def test_prompt_states_when_gap_is_absent(fake_llm):
 
 @pytest.mark.asyncio
 async def test_prompt_carries_gap_and_inputs(fake_llm):
-    prompts = fake_llm(ContentFilterOutput(new_items=[]))
+    prompts = fake_llm(
+        ContentFilterOutput(new_items=[], excluded_reasons=["프롬프트 렌더링 테스트, 분류 무관"])
+    )
 
     await filter_content(make_state(active_gap=ACTIVE_GAP, extracted_text="첨부 내용입니다"))
 
@@ -359,7 +416,9 @@ async def test_prompt_carries_gap_and_inputs(fake_llm):
 @pytest.mark.asyncio
 async def test_prompt_carries_existing_activity_when_comparison_is_requested(fake_llm):
     """기존 내용 제외 요청에는 현재 활동 블록을 비교 근거로 제공한다."""
-    prompts = fake_llm(ContentFilterOutput(new_items=[]))
+    prompts = fake_llm(
+        ContentFilterOutput(new_items=[], excluded_reasons=["프롬프트 렌더링 테스트, 분류 무관"])
+    )
 
     await filter_content(
         make_state(
@@ -375,7 +434,9 @@ async def test_prompt_carries_existing_activity_when_comparison_is_requested(fak
 @pytest.mark.asyncio
 async def test_regular_input_does_not_include_existing_map(fake_llm):
     """일반 입력에는 큰 기존 맵을 불필요하게 싣지 않는다."""
-    prompts = fake_llm(ContentFilterOutput(new_items=[]))
+    prompts = fake_llm(
+        ContentFilterOutput(new_items=[], excluded_reasons=["프롬프트 렌더링 테스트, 분류 무관"])
+    )
 
     await filter_content(
         make_state(activity_tree_text="[exp_1] 커머스 개선\n  [b_1] 기존 비밀 내용")

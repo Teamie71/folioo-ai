@@ -62,6 +62,55 @@ def _traceable(item: FilteredItem, haystack: str) -> bool:
     return bool(text) and text in haystack
 
 
+_MIN_MEANINGFUL_SENTENCE_CHARS = 8
+
+
+def _split_into_sentences(text: str) -> list[str]:
+    """문장·불릿 경계로 원문을 나눈다. 누락 감지 전용이라 내용은 안 건드린다."""
+    sentences: list[str] = []
+    start = 0
+    for match in _SENTENCE_END.finditer(text):
+        # "1. 담당 업무" 같은 번호 목록의 점은 문장 끝이 아니다 — 여기서 자르면
+        # "1."·"2."처럼 번호만 남은 무의미한 조각이 생겨 오탐을 낸다.
+        if text[match.start()] == "." and re.search(r"(?:^|\s)\d+$", text[: match.start()]):
+            continue
+        chunk = text[start : match.end()].strip()
+        if chunk:
+            sentences.append(chunk)
+        start = match.end()
+    tail = text[start:].strip()
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
+def _uncovered_sentences(raw_input: str, accepted: list[FilteredItem]) -> list[str]:
+    """분류된 어느 item에도 안 담긴, 의미 있는 길이의 원문 문장을 찾는다.
+
+    LLM이 반환한 조각이 원문에 있는지(`_traceable`)만 봐서는, 원문 일부를
+    통째로 빠뜨려도 걸리지 않는다 — 실제로 재현된 경우다: "첫 문장입니다.
+    둘째 문장입니다."를 입력했는데 LLM이 첫 문장만 반환하고
+    `excluded_reasons`도 비운 채 `dropped=0`으로 정상 통과했다. 이 함수는
+    원문을 문장 단위로 쪼개, 분류된 item(제목 등 이후 단계에서 걸러질 것
+    포함) 어디에도 없는 문장을 찾는다. 너무 짧은 조각(공백·단독 기호 등)은
+    노이즈로 보고 무시한다.
+    """
+    accepted_texts = [_normalize(item.text) for item in accepted if item.text.strip()]
+    missing: list[str] = []
+    for sentence in _split_into_sentences(raw_input):
+        normalized = _normalize(sentence)
+        if len(normalized) < _MIN_MEANINGFUL_SENTENCE_CHARS:
+            continue
+        if any(
+            normalized in candidate or candidate in normalized
+            for candidate in accepted_texts
+            if candidate
+        ):
+            continue
+        missing.append(sentence)
+    return missing
+
+
 def _is_structural_heading(item: FilteredItem) -> bool:
     """문서 구조를 알리는 제목만 있는 item인지 판별한다.
 
@@ -237,6 +286,24 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
     gap_items, new_items, dropped = _sanitize(
         result, active_gap=active_gap, user_message=user_message, extracted_text=extracted_text
     )
+
+    if not result.excluded_reasons:
+        # LLM이 "제외한 게 없다"고 자체 신고했는데도 원문에 분류되지 않은
+        # 의미 있는 문장이 남아 있으면, 그건 제외가 아니라 누락이다 —
+        # `_traceable`은 반환된 조각이 원문에 있는지만 보고 원문 전체가
+        # 빠짐없이 분류됐는지는 보지 않아서 여태 못 잡았다. 헤딩 제거
+        # 전(아직 원문 그대로인 상태) item 기준으로 검사해야 나중에
+        # 코드가 걸러낼 문서 제목까지 오탐으로 잡지 않는다.
+        missing = _uncovered_sentences(
+            f"{user_message or ''}\n{extracted_text or ''}", gap_items + new_items
+        )
+        if missing:
+            logger.warning(
+                "content_filter: 원문 일부가 분류되지 않았습니다 (%d개 문장, 예: %r)",
+                len(missing),
+                missing[0][:80],
+            )
+            raise LlmError("입력 내용 일부를 분류하지 못했습니다.", failed_node="content_filter")
 
     gap_items, dropped_gap_headings = _drop_structural_headings(gap_items)
     new_items, dropped_new_headings = _drop_structural_headings(new_items)
