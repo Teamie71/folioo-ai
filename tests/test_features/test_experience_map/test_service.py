@@ -10,7 +10,12 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from app.schemas.experience_map import ExperienceMapEvent, NodeStatusEvent
+from app.schemas.experience_map import (
+    CompletedMessage,
+    ExperienceMapEvent,
+    MessageCompleteEvent,
+    NodeStatusEvent,
+)
 from features.experience_map.errors import (
     RequestNotFoundError,
     RetryExpiredError,
@@ -305,3 +310,64 @@ async def test_no_active_gap_gives_empty_context(service, repo, user_id):
 
     assert state["active_gap"] is None
     assert build_gap_context(state["active_gap"]) == ""
+
+
+# ===== fallback 응답의 재연결·멱등 재생 =====
+
+
+class _FallbackOnlyRunner:
+    """fallback message_complete만 내는 대역 실행기."""
+
+    async def run(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
+        yield MessageCompleteEvent(
+            message=CompletedMessage(
+                request_id=state["request_id"],
+                session_id=state["session_id"],
+                response_kind="fallback",
+                ai_response="지금은 도와드릴 수 없어요.",
+                committed=False,
+            )
+        )
+
+    async def resume(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
+        async for event in self.run(state):
+            yield event
+
+
+@pytest.mark.asyncio
+async def test_fallback_message_survives_idempotent_replay(repo, user_id):
+    """fallback 완료 요청을 같은 request_id로 다시 부르면 안내 문구가 그대로 온다.
+
+    실제로 지적된 문제다 — fallback은 result·suggestion을 남기지 않으므로,
+    이 값을 별도로 저장하지 않으면 멱등 재생·SSE 재연결 시
+    `processing_started → processing_complete`만 오고 안내 문구가 사라진다.
+    """
+    fallback_service = ExperienceMapService(repository=repo, runner=_FallbackOnlyRunner())
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+
+    async def run_once():
+        prepared = await fallback_service.prepare_chat(
+            user_id=user_id,
+            session_id=session.session_id,
+            request_id=request_id,
+            user_message="자기소개서 항목도 대신 써줘",
+            context_experience_id=None,
+            view=None,
+            stored_files=[],
+        )
+        return [event async for event in fallback_service.stream(prepared)]
+
+    first_run = await run_once()
+    first_fallback = next(
+        e
+        for e in first_run
+        if getattr(e, "message", None) and e.message.response_kind == "fallback"
+    )
+    assert first_fallback.message.ai_response == "지금은 도와드릴 수 없어요."
+
+    replayed = await run_once()
+    replayed_fallback = next(
+        e for e in replayed if getattr(e, "message", None) and e.message.response_kind == "fallback"
+    )
+    assert replayed_fallback.message.ai_response == "지금은 도와드릴 수 없어요."

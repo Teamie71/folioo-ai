@@ -175,6 +175,27 @@ async def test_same_request_same_hash_completed_replays(repo, user_id):
 
 
 @pytest.mark.asyncio
+async def test_fallback_completed_request_replays_its_message(repo, user_id):
+    """result·suggestion이 없는 fallback 완료 요청도 안내 문구를 재전송한다.
+
+    실제로 지적된 문제다 — fallback 응답은 result·suggestion을 남기지 않아,
+    이 컬럼이 없던 시절에는 재연결·멱등 재생 시 안내 문구 없이
+    `processing_started → processing_complete`만 갔다.
+    """
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+    await complete(repo, user_id, request_id, fallback_message="지금은 도와드릴 수 없어요.")
+
+    result = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
+
+    assert result.outcome is ClaimOutcome.REPLAY
+    assert result.request.result is None
+    assert result.request.suggestion is None
+    assert result.request.fallback_message == "지금은 도와드릴 수 없어요."
+
+
+@pytest.mark.asyncio
 async def test_same_request_different_hash_conflicts(repo, user_id):
     """같은 request_id 에 다른 입력은 idempotency_key_reused 다."""
     session = await repo.get_or_create_session(user_id)

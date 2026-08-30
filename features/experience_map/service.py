@@ -368,6 +368,20 @@ class ExperienceMapService:
                 )
             )
 
+        if not row.result and not row.suggestion and row.fallback_message:
+            # fallback으로 끝난 요청은 result·suggestion이 둘 다 없다. 이걸
+            # 저장해 두지 않으면 재연결·멱등 재생 시 안내 문구 없이
+            # processing_started → processing_complete만 남는다.
+            yield MessageCompleteEvent(
+                message=CompletedMessage(
+                    request_id=row.request_id,
+                    session_id=row.session_id,
+                    response_kind="fallback",
+                    ai_response=row.fallback_message,
+                    committed=False,
+                )
+            )
+
         yield ProcessingCompleteEvent(request_id=row.request_id, status="completed")
 
     async def _execute(self, prepared: PreparedRequest) -> AsyncIterator[ExperienceMapEvent]:
@@ -375,6 +389,7 @@ class ExperienceMapService:
         state = await _build_state(prepared, self.repository)
         result_payload: dict[str, Any] | None = None
         suggestion_payload: dict[str, Any] | None = None
+        fallback_message: str | None = None
 
         try:
             async with LeaseRenewer(
@@ -398,6 +413,8 @@ class ExperienceMapService:
                                 **(suggestion_payload or {}),
                                 "message": event.message.ai_response,
                             }
+                        elif event.message.response_kind == "fallback":
+                            fallback_message = event.message.ai_response
 
                     yield event
 
@@ -423,6 +440,7 @@ class ExperienceMapService:
             result=result_payload,
             suggestion=suggestion_payload,
             committed_version=(result_payload or {}).get("map_version"),
+            fallback_message=fallback_message,
             owner_token=prepared.owner_token,
         )
         if completed is None:

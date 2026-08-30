@@ -41,7 +41,8 @@ logger = logging.getLogger(__name__)
 REQUEST_COLUMNS = """
     user_id, session_id, request_id, request_hash, status, failed_node,
     retryable, retry_expires_at, lease_expires_at, owner_token, base_map_version,
-    committed_version, input_meta, result, suggestion, error, created_at, updated_at
+    committed_version, input_meta, result, suggestion, error, fallback_message,
+    created_at, updated_at
 """
 
 
@@ -104,6 +105,9 @@ class RequestRow:
     result: dict[str, Any] | None = None
     suggestion: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
+    fallback_message: str | None = None
+    """fallback으로 끝난 요청의 안내 문구. result·suggestion이 둘 다 없을 때만
+    쓴다 — 그래야 재연결·멱등 재생 시에도 fallback 안내가 사라지지 않는다."""
 
     @classmethod
     def from_record(cls, record: asyncpg.Record) -> "RequestRow":
@@ -124,6 +128,7 @@ class RequestRow:
             result=_as_dict(record["result"]),
             suggestion=_as_dict(record["suggestion"]),
             error=_as_dict(record["error"]),
+            fallback_message=record["fallback_message"],
         )
 
 
@@ -442,6 +447,7 @@ class ExperienceMapRepository:
         result: dict[str, Any] | None = None,
         suggestion: dict[str, Any] | None = None,
         committed_version: int | None = None,
+        fallback_message: str | None = None,
         owner_token: str,
     ) -> RequestRow | None:
         """요청을 완료로 저장한다. lease를 비워 정리 대상에서 제외한다.
@@ -449,6 +455,10 @@ class ExperienceMapRepository:
         **실행권을 가진 worker 만 쓸 수 있다.** `owner_token` 이 맞지 않으면
         `None` 을 돌려주고 아무것도 바꾸지 않는다. lease 를 잃은 worker 가 뒤늦게
         끝나서 다른 worker 의 결과를 덮는 것을 막는다.
+
+        `fallback_message`는 result·suggestion이 모두 없는 fallback 완료 요청의
+        안내 문구다. 이걸 안 남기면 재연결·멱등 재생 시 fallback 안내가 사라지고
+        `processing_started → processing_complete`만 남는다.
 
         Raises:
             ValueError: `owner_token` 이 비어 있음
@@ -460,6 +470,7 @@ class ExperienceMapRepository:
                    result = COALESCE($3::jsonb, result),
                    suggestion = COALESCE($4::jsonb, suggestion),
                    committed_version = COALESCE($5, committed_version),
+                   fallback_message = COALESCE($7, fallback_message),
                    retryable = false,
                    lease_expires_at = NULL,
                    owner_token = NULL,
@@ -475,6 +486,7 @@ class ExperienceMapRepository:
             json.dumps(suggestion, ensure_ascii=False) if suggestion is not None else None,
             committed_version,
             _require_token(owner_token),
+            fallback_message,
         )
         if record is None:
             logger.warning("완료 처리를 건너뜁니다 — 실행권이 없습니다 (request_id=%s)", request_id)

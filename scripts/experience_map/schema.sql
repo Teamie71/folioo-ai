@@ -9,6 +9,11 @@
 -- 운영 migration 과의 차이:
 --   ai_experience_request.owner_token — 명세 3-3 에 없다. AGENT_HANDOFF.md 참고.
 --   메인 서버 migration 에 이 컬럼이 없으면 운영에서 UndefinedColumnError 가 난다.
+--   ai_experience_request.fallback_message — 명세 3-3 에 없다. fallback 완료
+--   요청은 지금까지 result·suggestion 이 둘 다 비어 재연결·멱등 재생 시 안내
+--   문구가 사라졌다(SSE 재생은 `processing_started → processing_complete`만
+--   보낸다) — 이 컬럼이 그 문구를 보존한다. 운영 migration 에 반드시 함께
+--   넣어야 한다.
 --
 -- 포함하지 않는 것: block, block_kind
 --   명세에 DDL 이 없고 조회 쿼리(4-1)와 제약(3-5)만 있다. 추측해서 만들면
@@ -62,6 +67,7 @@ CREATE TABLE IF NOT EXISTS ai_experience_request (
   result              jsonb,
   suggestion          jsonb,
   error               jsonb,
+  fallback_message    text,
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, request_id),
@@ -74,6 +80,11 @@ CREATE TABLE IF NOT EXISTS ai_experience_request (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_experience_request_running
   ON ai_experience_request(session_id)
   WHERE status = 'running';
+
+-- CREATE TABLE IF NOT EXISTS는 테이블이 이미 있으면(로컬 개발 DB가 이전
+-- 스키마로 이미 만들어져 있으면) 새 컬럼을 반영하지 않는다. fallback_message는
+-- 이 파일에 나중에 추가됐으므로 별도로 보강한다.
+ALTER TABLE ai_experience_request ADD COLUMN IF NOT EXISTS fallback_message text;
 
 -- ===== 3-4. ai_commit_log =====
 -- 되돌리기용 역연산 기록. **메인 서버 단독 소유**이며 AI 서버 계정은 권한이 없다.
