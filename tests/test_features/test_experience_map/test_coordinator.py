@@ -100,6 +100,19 @@ def test_result_response_lists_each_category_as_its_own_bullet():
     )
 
 
+def test_result_response_notes_truncated_file_content():
+    """파일 페이지·글자 수 상한으로 일부를 버렸으면 결과 문구에 알린다.
+
+    실제로 지적된 문제다 — `MAX_PDF_PAGES`나 `MAX_FILE_TEXT_CHARS`로 파일
+    내용 일부가 조용히 버려져도 사용자 응답에는 아무 표시가 없었다.
+    """
+    truncated_state = state() | {"file_content_truncated": True}
+
+    message = build_result_response(truncated_state, result())
+
+    assert "일부만 반영됐어요" in message
+
+
 def test_result_response_uses_update_only_template():
     commit_result = result(
         applied=[AppliedItem(item_id="update_1", block_id="402", path="커머스 리뉴얼 > 주요성과")]
@@ -162,7 +175,17 @@ async def test_commit_result_is_emitted_before_slow_gap_suggestion():
 
 
 @pytest.mark.asyncio
-async def test_gap_failure_uses_fixed_suggestion_and_clears_previous_gap():
+async def test_gap_failure_omits_suggestion_and_clears_previous_gap():
+    """gap 분석 실패는 결과 응답에 영향을 주지 않지만 suggestion 이벤트는 생략한다.
+
+    에이전트 문서 3절 공통 규칙("gap 분석 노드는 실패 시에도 재시도하지 않고,
+    화면에 표시하지 않음")과 API 명세 6절("분석 실패했을 때만 suggestion_ready와
+    suggestion 메시지를 생략")대로다. 이전에는 실패를 고정 문구
+    ("더 정리하고 싶으신 내용이 있나요?")로 덮어써 매번 제안 이벤트를
+    보냈는데, 이는 "화면에 표시하지 않음"과 정면으로 어긋났다. 다만 이번
+    턴이 이전 active_gap에 답하는 것이었다면 그 gap은 이미 소비된
+    것이므로, 분석 성공 여부와 무관하게 지워야 한다.
+    """
     saved: list[tuple[str, dict | None]] = []
 
     async def run_commit(input_state):
@@ -185,10 +208,8 @@ async def test_gap_failure_uses_fixed_suggestion_and_clears_previous_gap():
         "node_status",
         "commit_result",
         "message_complete",
-        "suggestion_ready",
-        "message_complete",
     ]
-    assert events[-1].message.ai_response == "더 정리하고 싶으신 내용이 있나요?"
+    assert events[-1].message.response_kind == "result"
     assert saved == [("123", None)]
 
 

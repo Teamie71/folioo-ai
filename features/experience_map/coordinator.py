@@ -17,7 +17,7 @@ from app.schemas.experience_map import (
 )
 from features.experience_map.graph_runner import NODE_STREAMING_PHRASES
 from features.experience_map.nodes.commit import commit_changes
-from features.experience_map.nodes.gap_analysis import NO_GAP_MESSAGE, analyze_gap
+from features.experience_map.nodes.gap_analysis import analyze_gap
 from features.experience_map.nodes.result_response import build_result_response
 from features.experience_map.nodes.suggestion_response import build_suggestion
 from features.experience_map.schemas import CommitResult
@@ -43,8 +43,10 @@ async def coordinate(
     """커밋 결과를 우선 보내고, 늦은 gap 분석은 뒤이어 보낸다.
 
     commit 실패는 gap task를 취소하고 그대로 전파한다. gap 실패는 완료된 커밋을
-    실패로 바꾸지 않고 고정 제안 문구를 보낸다. 두 task에는 별도 state 복사본을
-    넘겨 서로의 중간 필드를 덮어쓰지 못하게 한다.
+    실패로 바꾸지 않지만, 문서(에이전트 문서 3절 공통 규칙·API 명세 6절)대로
+    `suggestion_ready`와 suggestion `message_complete`를 아예 생략한다 —
+    고정 문구로 대체해 보내지 않는다. 두 task에는 별도 state 복사본을 넘겨
+    서로의 중간 필드를 덮어쓰지 못하게 한다.
     """
     run_gap = gap_runner or _run_gap
     yield NodeStatusEvent(
@@ -96,14 +98,14 @@ async def coordinate(
         if not isinstance(gap_state.get("suggestion"), dict):
             gap_state = build_suggestion(gap_state)
     except Exception:
-        logger.exception("coordinator: gap 분석 실패 - 고정 제안 문구로 대체")
-        gap_state = build_suggestion(
-            {
-                **committed_state,
-                "gap_candidate": None,
-                "gap_message": NO_GAP_MESSAGE,
-            }
-        )
+        # 문서대로 실패 시 suggestion 이벤트 자체를 생략한다(위 docstring).
+        # 다만 이번 턴이 이전 active_gap에 답하는 것이었다면 그 gap은 이미
+        # 소비됐으므로, 분석 성공 여부와 무관하게 지운다 — 안 지우면 다음
+        # 턴에도 같은 gap이 활성 상태로 남아 새 입력을 그 답변으로 오인한다.
+        logger.exception("coordinator: gap 분석 실패 - suggestion 이벤트 생략")
+        if save_active_gap is not None:
+            await save_active_gap(_required_string(state, "user_id"), None)
+        return
 
     suggestion = gap_state.get("suggestion")
     if not isinstance(suggestion, dict):
