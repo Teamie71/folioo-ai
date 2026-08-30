@@ -61,6 +61,38 @@ def fake_llm(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_uses_dedicated_gap_timeout_not_general_llm_timeout(monkeypatch):
+    """gap 분석은 일반 LLM 60초가 아니라 전용 30초 제한(2-4, 3-9)을 쓴다.
+
+    실제로 재현된 경우다 — `get_experience_map_llm(timeout=...)` 호출에
+    `get_settings().timeouts.llm`(60초)을 그대로 썼는데, 별도로 존재하는
+    `timeouts.gap`(기본 30초, `EXPMAP_GAP_TIMEOUT_SECONDS`)은 어디서도
+    쓰이지 않았다. 커밋 결과가 먼저 나가고 gap 제안이 뒤이어 나가는 구조상,
+    gap 분석이 일반 LLM만큼 오래 걸리면 제안 완료가 불필요하게 늦어진다.
+    """
+    captured_timeouts: list[int] = []
+
+    class _FakeLlm:
+        def with_structured_output(self, schema):
+            async def _handle(prompt_value) -> GapOutput:
+                return GapOutput(gap=None, message="")
+
+            return RunnableLambda(_handle)
+
+    def _fake_get_llm(**kwargs):
+        captured_timeouts.append(kwargs.get("timeout"))
+        return _FakeLlm()
+
+    monkeypatch.setattr(gap_node, "get_experience_map_llm", _fake_get_llm)
+
+    await analyze_gap(make_state())
+
+    settings = gap_node.get_settings()
+    assert captured_timeouts == [settings.timeouts.gap]
+    assert settings.timeouts.gap != settings.timeouts.llm
+
+
+@pytest.mark.asyncio
 async def test_analyzes_only_committed_items_and_direct_anchor_candidates(fake_llm):
     """현재 맵 전체 대신 방금 내용이 커밋될 item_id만 LLM에 준다."""
     prompts = fake_llm(

@@ -34,7 +34,10 @@ async def analyze_gap(state: ExperienceMapState) -> ExperienceMapState:
         return updated  # type: ignore[return-value]
 
     try:
-        llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
+        # gap 분석은 결과 응답과 병렬로 돌지만 결과 응답을 먼저 내보내야
+        # 하므로, 일반 LLM 노드(60초)가 아니라 전용 30초 제한(3-9, 2-4)을
+        # 써야 한다 — 그래야 늦어도 제안이 결과보다 너무 오래 안 늦어진다.
+        llm = get_experience_map_llm(timeout=get_settings().timeouts.gap)
         chain = gap_analysis_prompt | llm.with_structured_output(GapOutput)
         result: GapOutput = await chain.ainvoke(
             {
