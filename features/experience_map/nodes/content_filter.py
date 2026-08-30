@@ -83,6 +83,41 @@ def _drop_structural_headings(items: list[FilteredItem]) -> tuple[list[FilteredI
     return kept, len(items) - len(kept)
 
 
+def _restore_meaningful_heading_summaries(
+    items: list[FilteredItem], extracted_text: str | None
+) -> list[FilteredItem]:
+    """문서 제목에 포함된 구체적인 에피소드 요약을 복구한다.
+
+    content filter LLM이 "문제 해결 경험 — 결제 승인 API 응답 지연"
+    전체를 제목이라고 제외하면 문제해결 SUMMARY가 빈다. 구분자 뒤의
+    요약은 원문에 실제로 있는 부분 문자열이므로 추가 생성 없이 복구할
+    수 있다.
+    """
+    if not extracted_text:
+        return items
+    existing = [_normalize(item.text) for item in items]
+    restored = list(items)
+    counter = 0
+    used_ids = {item.item_id for item in items}
+    for raw_line in extracted_text.splitlines():
+        line = _HEADING_PREFIX.sub("", _normalize(raw_line)).strip(" *_`:：")
+        match = re.match(r"^문제\s*해결\s*경험\s*[—:\-]\s*(.+)$", line)
+        if match is None:
+            continue
+        summary = match.group(1).strip()
+        if not summary or any(summary in text for text in existing):
+            continue
+        counter += 1
+        item_id = f"it_heading_{counter}"
+        while item_id in used_ids:
+            counter += 1
+            item_id = f"it_heading_{counter}"
+        used_ids.add(item_id)
+        restored.append(FilteredItem(item_id=item_id, text=summary, source="file"))
+        existing.append(_normalize(summary))
+    return restored
+
+
 def _split_long_item(item: FilteredItem) -> list[FilteredItem]:
     """긴 원문 item을 수정 없이 구조화 가능한 크기로 나눈다.
 
@@ -176,6 +211,7 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
 
     gap_items, dropped_gap_headings = _drop_structural_headings(gap_items)
     new_items, dropped_new_headings = _drop_structural_headings(new_items)
+    new_items = _restore_meaningful_heading_summaries(new_items, extracted_text)
     dropped_headings = dropped_gap_headings + dropped_new_headings
     excluded_reasons = list(result.excluded_reasons)
     if dropped_headings:

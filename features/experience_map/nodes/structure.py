@@ -232,7 +232,8 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         # 뒤 배치가 실제로 채우려는 slot을 앞 배치가 먼저 빈 슬롯으로 선점해
         # 같은 slot이 두 번 생긴다.
         non_empty_items = _drop_empty_new_section_subtrees(items)
-        section_filled_items = _fill_missing_section_slots(non_empty_items, catalog)
+        meaningful_template_items = _drop_empty_template_groups(non_empty_items)
+        section_filled_items = _fill_missing_section_slots(meaningful_template_items, catalog)
         filled_items = _fill_missing_template_slots(section_filled_items, catalog, state)
         ordered_items = _order_parents_before_children(filled_items)
         try:
@@ -1293,6 +1294,35 @@ def _prune_extra_templates(items: list[StructureLlmItem]) -> list[StructureLlmIt
     if not drop:
         return items
     return [item for item in items if item.item_id not in drop]
+
+
+def _drop_empty_template_groups(items: list[StructureLlmItem]) -> list[StructureLlmItem]:
+    """원문이 하나도 배정되지 않은 level 5 템플릿 전체를 제외한다.
+
+    파일의 담당업무 불릿이 모두 `TASK.SUMMARY`로 보정된 뒤에도
+    모델이 미리 만든 `TASK.BASIC.*` 빈 슬롯이 남았다. 하위 템플릿은
+    실제 내용을 하나라도 배정했을 때만 전체 슬롯을 펼치므로, 그룹
+    전체가 비었으면 생성하지 않는다.
+    """
+    groups: dict[tuple[str, str], list[StructureLlmItem]] = {}
+    for item in items:
+        if not item.slot_id or item.slot_id.count(".") != 2:
+            continue
+        parent = item.parent_ref or item.parent_item_id or ""
+        prefix = ".".join(item.slot_id.split(".")[:2])
+        groups.setdefault((parent, prefix), []).append(item)
+
+    referenced = {item.parent_item_id for item in items if item.parent_item_id}
+    drop_ids = {
+        item.item_id
+        for group in groups.values()
+        if all(member.text is None and not member.source_item_ids for member in group)
+        for item in group
+        if item.item_id not in referenced
+    }
+    if drop_ids:
+        logger.info("내용 없는 하위 템플릿 블록 %d개를 제외합니다", len(drop_ids))
+    return [item for item in items if item.item_id not in drop_ids]
 
 
 def _fill_missing_template_slots(

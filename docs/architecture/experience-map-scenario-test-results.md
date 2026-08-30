@@ -554,6 +554,32 @@ dropped: 0개
 
 실제 OpenRouter 재실행은 동일 PDF의 추가 외부 전송 승인 후 확인한다.
 
+사용자가 수정된 Tailscale 테스트 콘솔에서 동일 PDF를 직접 재실행했다.
+
+```text
+request_id: 6ba676de-30f2-420a-b38d-0a71ce69b634
+status: completed
+OCR: 912자
+원문 item: 15개
+생성 블록: 17개
+dropped: 0개
+```
+
+핵심 보정은 실제로 적용됐다.
+
+- Kafka 비동기 전환·커넥션 풀 재산정·서킷 브레이커가 문제해결 `SOLUTION`으로 배정
+- P99 320ms·92% 개선·3개월 미재발이 `VERIFICATION`으로 배정
+- 45분→12분, 58%→82%가 `ACHIEVEMENT.QUANTITATIVE`로 배정
+- 구조적 원인 분리에 대한 학습이 `LEARNING.GROWTH`로 배정
+
+다만 문제해결 제목 전체를 content filter 모델이 제외해 SUMMARY가
+비었고, 담당업무 내용이 모두 SUMMARY로 옮겨진 뒤에도 빈 `TASK.BASIC.*`
+템플릿 4개가 남았다. 후속 보정으로 다음을 추가했다.
+
+- `문제 해결 경험 — <구체 요약>` 형식의 제목을 모델이 제외해도
+  구분자 뒤의 원문 부분을 SUMMARY item으로 복구
+- 하위 템플릿의 모든 슬롯이 비었으면 템플릿 전체를 생성 대상에서 제외
+
 ## 재현 명령과 회귀 테스트
 
 1번 전체 그래프 데모:

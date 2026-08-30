@@ -229,6 +229,25 @@ async def test_file_structural_headings_are_dropped_but_episode_summary_is_kept(
 
 
 @pytest.mark.asyncio
+async def test_specific_episode_summary_is_restored_when_llm_drops_heading(fake_llm):
+    """분류 모델이 제목 전체를 빼도 구분자 뒤의 구체적 요약은 복구한다."""
+    text = "2. 문제 해결 경험 — 결제 승인 API 응답 지연\n상황\n결제 승인 API가 4초 이상 지연됐다."
+    fake_llm(
+        ContentFilterOutput(
+            new_items=[item("it_1", "결제 승인 API가 4초 이상 지연됐다.", source="file")],
+            excluded_reasons=["문서 제목"],
+        )
+    )
+
+    result = await filter_content(make_state(user_message=None, extracted_text=text))
+
+    assert [entry["text"] for entry in result["new_items"]] == [
+        "결제 승인 API가 4초 이상 지연됐다.",
+        "결제 승인 API 응답 지연",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_long_file_item_is_split_without_rewriting(fake_llm, monkeypatch):
     """PDF 한 페이지가 한 item으로 와도 구조화에는 작은 원문 조각으로 넘긴다."""
     monkeypatch.setattr(filter_node, "MAX_SOURCE_ITEM_CHARS", 30)

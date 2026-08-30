@@ -1723,6 +1723,60 @@ def test_empty_extra_new_section_subtree_is_dropped_after_all_batches():
     assert {item.item_id for item in result} == {"filled_category", "filled_anchor"}
 
 
+def test_empty_template_group_is_dropped_when_anchor_has_summary_only():
+    """앵커 요약만 있으면 원문 없는 level 5 템플릿을 생성하지 않는다."""
+    items = [
+        StructureLlmItem(
+            item_id="anchor",
+            action="add",
+            parent_item_id="category",
+            slot_id="TASK.SUMMARY",
+            text="백엔드 개발을 담당했다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="purpose",
+            action="add",
+            parent_item_id="anchor",
+            slot_id="TASK.BASIC.PURPOSE",
+        ),
+        StructureLlmItem(
+            item_id="result",
+            action="add",
+            parent_item_id="anchor",
+            slot_id="TASK.BASIC.RESULT",
+        ),
+    ]
+
+    result = structure_node._drop_empty_template_groups(items)
+
+    assert [item.item_id for item in result] == ["anchor"]
+
+
+def test_template_group_is_kept_when_any_slot_has_source_content():
+    """템플릿의 한 슬롯이라도 원문을 담았으면 빈 형제 슬롯도 보존한다."""
+    items = [
+        StructureLlmItem(
+            item_id="purpose",
+            action="add",
+            parent_item_id="anchor",
+            slot_id="TASK.BASIC.PURPOSE",
+            text="결제 안정성을 높이는 것이 목표였다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="result",
+            action="add",
+            parent_item_id="anchor",
+            slot_id="TASK.BASIC.RESULT",
+        ),
+    ]
+
+    result = structure_node._drop_empty_template_groups(items)
+
+    assert [item.item_id for item in result] == ["purpose", "result"]
+
+
 def test_basic_and_troubleshooting_under_same_anchor_are_collapsed():
     """배치마다 다르게 고른 일반·트러블슈팅 템플릿을 한 템플릿으로 합친다."""
     items = [
