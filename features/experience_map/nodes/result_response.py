@@ -39,6 +39,13 @@ def build_result_response(state: ExperienceMapState, result: CommitResult) -> st
     message = "\n".join(lines)
     if context.dropped_count:
         message = f"{message}\n\n{context.dropped_count}개는 글자 수 제한(500자)을 넘어 넣지 못했어요. 나눠서 입력해 주세요."
+    if state.get("file_content_truncated"):
+        # 페이지 수(MAX_PDF_PAGES)나 전체 글자 수 상한으로 파일 내용 일부를
+        # 조용히 버렸을 수 있다 — 로그에만 남기지 않고 사용자에게도 알린다.
+        message = (
+            f"{message}\n\n첨부 파일 내용이 많아 일부만 반영됐어요. "
+            "나머지가 중요하다면 나눠서 다시 올려 주세요."
+        )
     return message
 
 

@@ -98,6 +98,7 @@ class ExperienceMapState(TypedDict, total=False):
     file_references: list[FileReference]
     extracted_files: list[ExtractedFile]
     extracted_text: str | None  # 입력 순서대로 이어 붙인 전체 텍스트
+    file_content_truncated: bool  # 페이지 수·글자 수 상한으로 일부를 버렸는지
 
     # ===== 라우팅 =====
     intent: Intent | None
@@ -153,6 +154,7 @@ TURN_FIELD_DEFAULTS: dict[str, Any] = {
     "file_references": [],
     "extracted_files": [],
     "extracted_text": None,
+    "file_content_truncated": False,
     "intent": None,
     "current_node": None,
     "fallback_reason": None,

@@ -40,6 +40,11 @@ from features.experience_map.config import (
 logger = logging.getLogger(__name__)
 
 TRUNCATION_NOTE = "\n\n[내용이 길어 앞부분만 사용했습니다.]"
+# 페이지 수 상한으로 뒤쪽을 버렸을 때 붙이는 안내문. 접두사(PAGE_TRUNCATION_NOTE_MARKER)를
+# 따로 두는 이유는 file_processor가 최종 텍스트에 이 안내가 있는지 부분 문자열로
+# 감지해야 하는데, `{limit}`·`{total}` 값은 파일마다 달라 통째로는 못 찾기 때문이다.
+PAGE_TRUNCATION_NOTE_MARKER = "[페이지가 많아"
+PAGE_TRUNCATION_NOTE = f"\n\n{PAGE_TRUNCATION_NOTE_MARKER} 앞 {{limit}}페이지만 사용했습니다. 전체 {{total}}페이지 중 일부입니다.]"
 
 OCR_INSTRUCTION = """\
 첨부한 문서나 이미지에 있는 **텍스트를 그대로 옮겨** 주세요.
@@ -176,6 +181,21 @@ def _pdf_page_count(pdf) -> int:
     return page_count
 
 
+def _pdf_total_page_count(data: bytes) -> int:
+    """상한을 적용하지 않은 실제 PDF 전체 페이지 수를 반환한다.
+
+    `MAX_PDF_PAGES`를 넘겨 뒤 페이지를 조용히 버리는 경우, 그 사실 자체를
+    사용자에게 알려야 한다(명세 5-2, 3-2 "모든 페이지 OCR"과 실제 처리
+    범위가 다르기 때문) — 이 값과 `_pdf_page_count`를 비교해 잘렸는지
+    판단한다.
+    """
+    pdf = _open_pdf(data)
+    try:
+        return len(pdf)
+    finally:
+        pdf.close()
+
+
 def _render_pdf_pages(data: bytes, page_indexes: list[int] | None = None) -> list[bytes]:
     """PDF 페이지를 PNG 이미지로 직접 렌더링한다.
 
@@ -272,6 +292,19 @@ async def _ocr_image(llm, image: bytes, mime_type: str, instruction: str) -> str
 async def _extract_pdf_with_ocr(data: bytes) -> str:
     """PDF의 텍스트 레이어를 사용하지 않고 모든 페이지를 이미지 OCR한다."""
     images = _render_pdf_pages(data)
+    # 실제 전체 페이지 수는 안내 문구에만 쓰는 부가 정보다 — 이미 렌더링에
+    # 성공한 뒤이므로 여기서 다시 못 열더라도(예: 테스트가 렌더링만
+    # 대역으로 바꾼 경우) 안내를 생략할 뿐 추출 자체를 실패시키지 않는다.
+    try:
+        total_pages = _pdf_total_page_count(data)
+    except FileUnreadableError:
+        total_pages = len(images)
+    if total_pages > len(images):
+        logger.info(
+            "PDF 페이지 상한 초과, 앞 %d페이지만 처리합니다 (전체 %d페이지)",
+            len(images),
+            total_pages,
+        )
     logger.info("PDF 전체 페이지 OCR 준비 완료 (pages=%d)", len(images))
     llm = get_file_processor_llm()
     semaphore = asyncio.Semaphore(PDF_OCR_CONCURRENCY)
@@ -312,6 +345,8 @@ async def _extract_pdf_with_ocr(data: bytes) -> str:
     text = "\n\n".join(text for _, text in results if text.strip()).strip()
     if not text:
         raise FileUnreadableError("파일에서 텍스트를 찾지 못했습니다.")
+    if total_pages > len(images):
+        text += PAGE_TRUNCATION_NOTE.format(limit=len(images), total=total_pages)
     return _truncate(text)
 
 

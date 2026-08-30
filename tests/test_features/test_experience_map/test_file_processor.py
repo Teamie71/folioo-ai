@@ -12,6 +12,8 @@ from PIL import Image
 from features.experience_map import extractors
 from features.experience_map.errors import LlmError
 from features.experience_map.extractors import (
+    PAGE_TRUNCATION_NOTE_MARKER,
+    TRUNCATION_NOTE,
     FileUnreadableError,
     extract,
     extractor_kind,
@@ -131,6 +133,48 @@ async def test_mixed_formats_keep_input_order(store, fake_extract):
     assert result["extracted_text"].index("첫째") < result["extracted_text"].index("둘째")
     assert result["extracted_text"].index("둘째") < result["extracted_text"].index("셋째")
     assert [item["file_id"] for item in result["extracted_files"]] == ["f_1", "f_2", "f_3"]
+
+
+@pytest.mark.asyncio
+async def test_page_truncation_note_sets_file_content_truncated_flag(store, fake_extract):
+    """추출기가 남긴 페이지 상한 안내를 file_processor가 상태 플래그로 받는다.
+
+    실제로 지적된 문제다 — PDF 페이지 상한(MAX_PDF_PAGES)에 걸려 뒤쪽이
+    잘려도 사용자 응답에는 아무 표시가 없었다. extractors가 결과 텍스트에
+    남기는 안내 문구를 이 노드가 감지해 `file_content_truncated`를 세워야
+    이후 result_response가 최종 응답에 반영할 수 있다.
+    """
+    ref = reference("f_1", "긴문서.pdf", "application/pdf")
+    store.objects[ref["gcs_object"]] = b"x"
+    fake_extract({"긴문서.pdf": f"내용{PAGE_TRUNCATION_NOTE_MARKER} 앞 10페이지만 사용했습니다.]"})
+
+    result = await process_files(make_state(file_references=[ref]))
+
+    assert result["file_content_truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_char_truncation_note_sets_file_content_truncated_flag(store, fake_extract):
+    """글자 수 상한 안내(TRUNCATION_NOTE)도 같은 플래그를 세운다."""
+    ref = reference("f_1", "긴문서.pdf", "application/pdf")
+    store.objects[ref["gcs_object"]] = b"x"
+    fake_extract({"긴문서.pdf": f"내용{TRUNCATION_NOTE}"})
+
+    result = await process_files(make_state(file_references=[ref]))
+
+    assert result["file_content_truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_untruncated_content_leaves_flag_false(store, fake_extract):
+    """상한에 안 걸리면 플래그가 안 세워진다."""
+    ref = reference("f_1", "짧은문서.pdf", "application/pdf")
+    store.objects[ref["gcs_object"]] = b"x"
+    fake_extract({"짧은문서.pdf": "내용"})
+
+    result = await process_files(make_state(file_references=[ref]))
+
+    assert result["file_content_truncated"] is False
 
 
 @pytest.mark.asyncio
@@ -466,6 +510,39 @@ async def test_pdf_ocr_runs_per_page_and_preserves_page_order(monkeypatch):
     assert text.split("\n\n") == ["OCR page-1", "OCR page-2", "OCR page-3"]
     assert len(fake_llm.invocations) == 3
     assert all(len(invocation[0].content) == 2 for invocation in fake_llm.invocations)
+
+
+@pytest.mark.asyncio
+async def test_pdf_ocr_notes_when_page_limit_truncates_document(monkeypatch):
+    """실제 페이지 수가 처리 상한보다 많으면 결과 텍스트에 그 사실을 남긴다.
+
+    실제로 지적된 문제다 — `MAX_PDF_PAGES`를 넘는 PDF는 뒤 페이지가 조용히
+    버려지고 사용자는 몰랐다. `_pdf_total_page_count`(실제 전체 페이지 수)가
+    렌더링된 페이지 수보다 크면, 그 차이를 결과 텍스트에 안내 문구로 남겨야
+    이후 file_processor가 `file_content_truncated`를 세우고 최종 응답에도
+    반영할 수 있다.
+    """
+
+    class PageAwareLlm:
+        async def ainvoke(self, messages):
+            image_url = messages[0].content[1]["image_url"]["url"]
+            encoded = image_url.removeprefix("data:image/png;base64,")
+            page = base64.b64decode(encoded).decode("utf-8")
+            return AIMessage(content=f"OCR {page}")
+
+    monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: PageAwareLlm())
+    monkeypatch.setattr(
+        extractors,
+        "_render_pdf_pages",
+        lambda _: [f"page-{index + 1}".encode() for index in range(3)],
+    )
+    # 실제 PDF는 20페이지지만 렌더링은 상한에 걸려 3페이지만 됐다고 가정한다.
+    monkeypatch.setattr(extractors, "_pdf_total_page_count", lambda _: 20)
+
+    text = await extractors.extract_with_ocr(b"pdf", "스캔.pdf", "application/pdf")
+
+    assert extractors.PAGE_TRUNCATION_NOTE_MARKER in text
+    assert "3페이지" in text and "20페이지" in text
 
 
 @pytest.mark.asyncio

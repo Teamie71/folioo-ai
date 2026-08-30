@@ -19,7 +19,13 @@ import logging
 
 from features.experience_map.config import MAX_TOTAL_TEXT_CHARS
 from features.experience_map.errors import LlmError
-from features.experience_map.extractors import FileUnreadableError, extract, extractor_kind
+from features.experience_map.extractors import (
+    PAGE_TRUNCATION_NOTE_MARKER,
+    TRUNCATION_NOTE,
+    FileUnreadableError,
+    extract,
+    extractor_kind,
+)
 from features.experience_map.state import ExperienceMapState, ExtractedFile
 from features.experience_map.upload_store import get_upload_store
 
@@ -80,7 +86,14 @@ async def process_files(state: ExperienceMapState) -> ExperienceMapState:
             )
         )
     updated["extracted_files"] = extracted
-    updated["extracted_text"] = _join(extracted, references)
+    extracted_text = _join(extracted, references)
+    updated["extracted_text"] = extracted_text
+    # 페이지 수(명세 3-2 "모든 페이지"와 달리 실제로는 상한이 있다) 또는
+    # 글자 수 상한으로 원문 일부를 버렸으면, 결과 응답에서 사용자에게
+    # 알려야 한다 — 지금까지는 로그에만 남고 조용히 사라졌다.
+    updated["file_content_truncated"] = bool(extracted_text) and (
+        PAGE_TRUNCATION_NOTE_MARKER in extracted_text or TRUNCATION_NOTE.strip() in extracted_text
+    )
 
     if not extracted:
         # 올린 파일을 하나도 못 읽었다.
