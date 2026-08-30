@@ -903,10 +903,13 @@ Fallback은 `committed: false`이며 고정 문구 “아직 지원하지 않는
 | `commit_conflict` | 가능 |
 | `llm_error` | 가능 |
 | `node_timeout` | 가능 |
+| `stream_error` | 가능 |
 | `db_constraint_violation` | 불가 |
 
 `retryable: true`일 때만 프론트가 재시도 버튼을 노출합니다. 재시도 요청에
 `failed_node`를 되돌려 보낼 필요는 없습니다. 서버 checkpoint가 원본입니다.
+`stream_error`는 graph 밖의 SSE 전달·직렬화 계층에서 예기치 못한 오류가 발생한
+경우이며 `failed_node`는 `null`입니다.
 
 ---
 

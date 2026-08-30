@@ -7,6 +7,7 @@
 동작이라 mock 으로는 검증되지 않습니다. DB 가 없으면 skip 합니다.
 """
 
+import asyncio
 import json
 import time
 import uuid
@@ -17,7 +18,9 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 
+from app.api.v1 import experience_map as api_module
 from app.middleware.experience_map_ticket import ExperienceMapTicketMiddleware
+from app.schemas.experience_map import ProcessingStartedEvent
 from features.experience_map import service as service_module
 from features.experience_map.graph_runner import MockGraphRunner
 from features.experience_map.repository import ExperienceMapRepository
@@ -96,6 +99,46 @@ def read_events(response) -> list[dict]:
 
 def chat_form(request_id: str, message: str = "결제 실패 문제를 해결한 내용을 정리해줘") -> dict:
     return {"request": json.dumps({"request_id": request_id, "user_message": message})}
+
+
+@pytest.mark.asyncio
+async def test_sse_adapter_emits_retryable_error_when_upstream_crashes():
+    """서비스 밖 예외도 조용히 연결을 닫지 않고 error 이벤트로 전달한다."""
+
+    async def broken_events():
+        yield ProcessingStartedEvent(request_id=str(uuid.uuid4()))
+        raise RuntimeError("unexpected stream failure")
+
+    events = [event async for event in api_module._with_heartbeat(broken_events())]
+    payload = json.loads(events[-1].data)
+
+    assert events[-1].event == "error"
+    assert payload == {
+        "type": "error",
+        "error": {
+            "code": "stream_error",
+            "failed_node": None,
+            "retryable": True,
+            "message": "응답 스트림 처리 중 오류가 발생했습니다. 다시 시도해 주세요.",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_sse_adapter_emits_heartbeat_while_waiting(monkeypatch):
+    """조용한 처리 구간에는 ping heartbeat를 보낸다."""
+
+    async def delayed_events():
+        await asyncio.sleep(0.05)
+        yield ProcessingStartedEvent(request_id=str(uuid.uuid4()))
+
+    monkeypatch.setattr(api_module, "SSE_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+    stream = api_module._with_heartbeat(delayed_events())
+    first = await anext(stream)
+    await stream.aclose()
+
+    assert first.event == "ping"
+    assert json.loads(first.data) == {"type": "ping"}
 
 
 # ===== 세션 =====

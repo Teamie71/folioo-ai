@@ -26,6 +26,7 @@ from app.schemas.experience_map import (
     ChatStreamRequest,
     CreateSessionRequest,
     CreateSessionResponse,
+    ErrorEvent,
     ExperienceMapEvent,
     PingEvent,
     RequestStateResponse,
@@ -37,6 +38,7 @@ from features.experience_map.errors import (
     ExperienceMapError,
     InvalidRequestError,
     SessionForbiddenError,
+    StreamError,
     TicketInvalidError,
 )
 from features.experience_map.service import ExperienceMapService, PreparedRequest, get_service
@@ -85,6 +87,11 @@ def _sse(event: ExperienceMapEvent) -> ServerSentEvent:
     return ServerSentEvent(event=payload["type"], data=json.dumps(payload, ensure_ascii=False))
 
 
+def _stream_error_event() -> ServerSentEvent:
+    """SSE 어댑터 자체의 예기치 못한 실패를 프론트에 알린다."""
+    return _sse(ErrorEvent(error=StreamError().to_sse_error().model_dump()))
+
+
 async def _with_heartbeat(
     events: AsyncIterator[ExperienceMapEvent],
 ) -> AsyncIterator[ServerSentEvent]:
@@ -109,12 +116,19 @@ async def _with_heartbeat(
                 raise
             except Exception:
                 logger.exception("경험정리 SSE 스트림 처리 중 예외")
+                yield _stream_error_event()
                 break
 
             if event is _STREAM_END:
                 break
 
-            yield _sse(event)
+            try:
+                serialized = _sse(event)
+            except Exception:
+                logger.exception("경험정리 SSE 이벤트 직렬화 중 예외")
+                yield _stream_error_event()
+                break
+            yield serialized
             pending = asyncio.create_task(anext(iterator, _STREAM_END))
     finally:
         pending.cancel()

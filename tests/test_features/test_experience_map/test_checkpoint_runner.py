@@ -69,6 +69,15 @@ class RepeatedNodeGraphStub:
         yield "values", {"request_id": "request"}
 
 
+class FailedNodeGraphStub:
+    """노드 실행 실패 task 이벤트를 내는 그래프 대역."""
+
+    async def astream(self, value, config, **kwargs):
+        yield "tasks", {"name": "refine"}
+        yield "tasks", {"name": "refine", "error": RuntimeError("refine failed")}
+        raise RuntimeError("refine failed")
+
+
 @pytest.mark.asyncio
 async def test_streaming_phrase_is_sent_only_on_a_nodes_first_run():
     """에이전트 문서 4절: Validation이 structure를 되돌려도 화면 문구가 유지된다.
@@ -95,6 +104,22 @@ async def test_streaming_phrase_is_sent_only_on_a_nodes_first_run():
         NODE_STREAMING_PHRASES["validate"],
         None,
         None,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_graph_node_emits_failed_status_before_raising():
+    """프론트가 진행 중인 노드를 실패 상태로 닫을 수 있어야 한다."""
+    runner = CheckpointGraphRunner(FailedNodeGraphStub(), state_events=events)
+    received = []
+
+    with pytest.raises(RuntimeError, match="refine failed"):
+        async for event in runner.run({"session_id": "session-1", "request_id": "request"}):
+            received.append(event)
+
+    assert [(event.node, event.status) for event in received] == [
+        ("refine", "running"),
+        ("refine", "failed"),
     ]
 
 

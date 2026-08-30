@@ -150,6 +150,8 @@ class CheckpointGraphRunner:
                     yield NodeStatusEvent(node=name, status="running", phrase=phrase)
                 elif data.get("error") is None:
                     yield NodeStatusEvent(node=name, status="completed")
+                else:
+                    yield NodeStatusEvent(node=name, status="failed")
         finally:
             await stream.aclose()
 

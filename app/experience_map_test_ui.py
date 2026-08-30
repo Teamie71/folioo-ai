@@ -210,7 +210,7 @@ async function checkHealth() {
 
 async function readSse(response) {
   if (!response.ok) throw new Error(await response.text());
-  const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
+  const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let terminalEvent = null;
   while (true) {
     const { value, done } = await reader.read(); if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -219,10 +219,20 @@ async function readSse(response) {
       const event = block.match(/^event:\s*(.+)$/m)?.[1] || 'message';
       const data = block.match(/^data:\s*(.+)$/m)?.[1];
       if (!data) continue;
-      try { const payload = JSON.parse(data); log(`[${event}] ${JSON.stringify(payload, null, 2)}`); if (event === 'message_complete') addMessage('assistant', payload.message.ai_response); if (event === 'error') addMessage('error', `요청 실패: ${payload.error.message}`); if (event === 'node_status') setChatStatus(`${payload.node} ${payload.status}`); }
-      catch { log(`[${event}] ${data}`); }
+      let payload;
+      try { payload = JSON.parse(data); }
+      catch { log(`[${event}] ${data}`); continue; }
+      log(`[${event}] ${JSON.stringify(payload, null, 2)}`);
+      if (event === 'message_complete') addMessage('assistant', payload.message.ai_response);
+      if (event === 'node_status') setChatStatus(`${payload.node} ${payload.status}`);
+      if (event === 'processing_complete') terminalEvent = 'processing_complete';
+      if (event === 'error') {
+        terminalEvent = 'error'; addMessage('error', `요청 실패: ${payload.error.message}`);
+        await reader.cancel(); throw new Error(payload.error.message);
+      }
     }
   }
+  if (terminalEvent !== 'processing_complete') throw new Error('SSE 스트림이 완료 이벤트 없이 종료되었습니다.');
 }
 
 document.querySelector('#createSession').onclick = async () => {

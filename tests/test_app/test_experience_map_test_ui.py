@@ -23,3 +23,9 @@ def test_test_ui_places_large_map_before_agent_and_has_no_prefilled_story():
         '<textarea id="message" placeholder="정리할 경험의 사실을 처음부터 입력하세요."></textarea>'
         in TEST_PAGE_HTML
     )
+
+
+def test_test_ui_treats_sse_error_and_incomplete_eof_as_failure():
+    """오류 이벤트나 완료 이벤트 없는 종료를 성공으로 표시하지 않는다."""
+    assert "await reader.cancel(); throw new Error(payload.error.message);" in TEST_PAGE_HTML
+    assert "terminalEvent !== 'processing_complete'" in TEST_PAGE_HTML
