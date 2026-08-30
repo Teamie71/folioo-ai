@@ -1635,6 +1635,63 @@ def test_invented_learning_slot_is_merged_into_task_result(invented_slot):
     assert result[0].text == "원인을 구조적으로 분리하는 방식을 배웠다"
 
 
+@pytest.mark.parametrize(
+    ("invented_slot", "official_slot"),
+    [
+        ("TASK.BASIC.PROBLEM", "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM"),
+        ("TASK.BASIC.CAUSE", "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE"),
+        ("TASK.BASIC.SOLUTION", "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION"),
+        ("TASK.BASIC.VERIFICATION", "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION"),
+    ],
+)
+def test_problem_solving_slots_invented_under_task_are_normalized(invented_slot, official_slot):
+    """자연어 시나리오에서 TASK 아래로 잘못 만든 문제해결 슬롯을 복구한다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "PROBLEM_SOLVING",
+            "label": "문제해결",
+            "slots": [
+                {
+                    "slot_id": "PROBLEM_SOLVING.SUMMARY",
+                    "level": 4,
+                    "placeholder": "문제해결 요약",
+                    "example": "알림 지연 문제 해결",
+                    "is_anchor": True,
+                }
+            ],
+            "templates": [
+                {
+                    "template_id": "TROUBLESHOOTING",
+                    "label": "기술 트러블슈팅",
+                    "slots": [
+                        {
+                            "slot_id": f"PROBLEM_SOLVING.TROUBLESHOOTING.{suffix}",
+                            "level": 5,
+                            "placeholder": suffix,
+                            "example": suffix,
+                        }
+                        for suffix in ("PROBLEM", "CAUSE", "SOLUTION", "VERIFICATION")
+                    ],
+                }
+            ],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="exp_1",
+        slot_id=invented_slot,
+        text="알림 지연 문제를 해결했다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._normalize_known_slot_aliases([raw], catalog)
+
+    assert result[0].slot_id == official_slot
+
+
 def test_invented_learning_slot_uses_learning_section_when_catalog_has_it():
     """현재 에이전트 카탈로그의 배운 점은 LEARNING.GROWTH에 배정한다."""
     payload = catalog_payload()

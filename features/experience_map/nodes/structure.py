@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 # 하므로 다른 템플릿의 동명 슬롯이나 완전히 지어낸 slot_id는 통과하지 않는다.
 _KNOWN_SLOT_ALIASES = {
     "PROBLEM_SOLVING.TROUBLESHOOTING.RESULT": ("PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION"),
+    "TASK.BASIC.PROBLEM": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+    "TASK.BASIC.CAUSE": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+    "TASK.BASIC.SOLUTION": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+    "TASK.BASIC.VERIFICATION": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
 }
 
 _LEARNING_SLOT_SUFFIXES = frozenset({"LEARNING", "LESSON", "LESSONS"})
@@ -258,7 +262,15 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         meaningful_template_items = _drop_empty_template_groups(non_empty_items)
         section_filled_items = _fill_missing_section_slots(meaningful_template_items, catalog)
         filled_items = _fill_missing_template_slots(section_filled_items, catalog, state)
-        ordered_items = _order_parents_before_children(filled_items)
+        # 배치 중간 보정 시점에는 아직 비어 있던 하위 슬롯이 최종 채우기에서
+        # 추가된다. 모델이 기존 section 아래 새 앵커를 또 만든 경우, 최종 슬롯
+        # 전개까지 끝난 상태에서 한 번 더 재사용을 시도해야 정확한 기존 빈 슬롯을
+        # target_ref로 확정할 수 있다.
+        reused_existing = _reuse_existing_filled_anchor(filled_items, catalog, state)
+        redirected_existing = _redirect_leaf_add_to_existing_empty_slot(
+            reused_existing, catalog, state
+        )
+        ordered_items = _order_parents_before_children(redirected_existing)
         try:
             validated = _validate_output(
                 ordered_items,
