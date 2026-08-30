@@ -36,7 +36,25 @@ _KNOWN_SLOT_ALIASES = {
 }
 
 _LEARNING_SLOT_SUFFIXES = frozenset({"LEARNING", "LESSON", "LESSONS"})
-_LEARNING_DESTINATION_SLOT = "TASK.BASIC.RESULT"
+_LEARNING_DESTINATION_SLOT = "LEARNING.GROWTH"
+_LEARNING_FALLBACK_SLOT = "TASK.BASIC.RESULT"
+
+_DOCUMENT_HEADING_PREFIX = re.compile(r"^(?:[#>*_`-]+\s*)?(?:\d+[.)]\s*)?")
+_QUANTITATIVE_MARKER = re.compile(
+    r"(?:\d|%|퍼센트|\b\d+(?:\.\d+)?\s*(?:배|건|명|회|분|초|ms)\b)",
+    re.IGNORECASE,
+)
+_DOCUMENT_SLOT_LABELS = {
+    "TASK.SUMMARY": "담당 업무 > 업무·역할 요약",
+    "PROBLEM_SOLVING.SUMMARY": "문제해결 > 에피소드 요약",
+    "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM": "문제해결 > 상황",
+    "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE": "문제해결 > 원인 분석",
+    "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION": "문제해결 > 해결 과정",
+    "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION": "문제해결 > 결과·검증",
+    "ACHIEVEMENT.QUANTITATIVE": "주요성과 > 정량 성과",
+    "ACHIEVEMENT.QUALITATIVE": "주요성과 > 정성 성과",
+    "LEARNING.GROWTH": "배운 점 > 성장·활용",
+}
 
 _BASIC_TO_TROUBLESHOOTING_SLOTS = {
     "PROBLEM_SOLVING.BASIC.PROBLEM": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
@@ -81,6 +99,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
             "activity_tree": state["activity_tree_text"],
             "catalog": render_catalog(catalog),
         }
+        document_slot_hints = _document_slot_hints(source_items, state.get("extracted_text"))
 
         # 원문이 많으면(실제로 파일 업로드에서 15개 넘는 경우가 흔하다) 한
         # 번에 다 맡길수록 모델이 일부를 빠뜨리거나 잘못 연결하는 사고가
@@ -117,6 +136,9 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                     **base_prompt_vars,
                     "previous_batch_note": render_previous_batch_note(
                         _render_previous_batch_lines(round_note_items, catalog)
+                    ),
+                    "document_context": _render_document_context(
+                        round_source_items, document_slot_hints
                     ),
                     "source_items": render_source_items(round_source_items),
                 }
@@ -181,7 +203,11 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                 )
                 call_index += 1
                 candidate = _apply_structuring_fixups(
-                    round_note_items + namespaced, cumulative_source_text, state, catalog
+                    round_note_items + namespaced,
+                    cumulative_source_text,
+                    state,
+                    catalog,
+                    document_slot_hints,
                 )
                 existing_categories = result.existing_categories
                 missing = _missing_source_ids(candidate, batch_source_text)
@@ -322,6 +348,111 @@ def _source_batches(source_items: list[dict]) -> list[list[dict]]:
     return batches
 
 
+def _document_heading_slot(line: str, current_section: str | None) -> tuple[str, str] | None:
+    """문서 제목을 section·slot 문맥으로 변환한다.
+
+    제목 뒤 본문이 이어지는 문서의 원래 계층을 사용하므로, 일반
+    문장 내의 "결과"나 "상황"은 제목으로 오인하지 않는다.
+    """
+    heading = _DOCUMENT_HEADING_PREFIX.sub("", line).strip(" *_`:：")
+    compact = re.sub(r"\s+", " ", heading)
+
+    if compact == "담당 업무":
+        return "TASK", "TASK.SUMMARY"
+    if compact == "주요 성과":
+        return "ACHIEVEMENT", "ACHIEVEMENT.QUANTITATIVE"
+    if compact == "배운 점":
+        return "LEARNING", "LEARNING.GROWTH"
+    if compact == "문제 해결 경험" or re.match(r"^문제\s*해결\s*경험\s*[—:\-]", compact):
+        return "PROBLEM_SOLVING", "PROBLEM_SOLVING.SUMMARY"
+
+    if current_section != "PROBLEM_SOLVING":
+        return None
+    problem_slots = {
+        "상황": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "상황 설명": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "원인 분석": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+        "해결 과정": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        "결과": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+    }
+    slot_id = problem_slots.get(compact)
+    return (current_section, slot_id) if slot_id else None
+
+
+def _document_slot_hints(source_items: list[dict], extracted_text: str | None) -> dict[str, str]:
+    """파일 item에 가장 가까운 앞쪽 문서 제목의 슬롯을 연결한다.
+
+    content_filter가 제목을 내용 item에서 제외해도 원본 전체는
+    `extracted_text`에 남아 있다. 구조화 배치가 한 item씩 나뉘는 파일이어도
+    이 위치 정보로 상황·원인·해결·결과 문맥을 잃지 않는다.
+    """
+    if not extracted_text or not any(item.get("source") == "file" for item in source_items):
+        return {}
+
+    document_parts: list[str] = []
+    markers: list[tuple[int, str, str]] = []
+    offset = 0
+    current_section: str | None = None
+    for raw_line in extracted_text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+        if document_parts:
+            offset += 1
+        start = offset
+        document_parts.append(line)
+        offset += len(line)
+
+        marker = _document_heading_slot(line, current_section)
+        if marker is not None:
+            current_section, slot_id = marker
+            markers.append((start, current_section, slot_id))
+
+    if not markers:
+        return {}
+
+    document = " ".join(document_parts)
+    hints: dict[str, str] = {}
+    search_from = 0
+    for item in source_items:
+        if item.get("source") != "file":
+            continue
+        text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
+        if not text:
+            continue
+        position = document.find(text, search_from)
+        if position < 0:
+            position = document.find(text)
+        if position < 0:
+            continue
+        search_from = position + len(text)
+        preceding = [marker for marker in markers if marker[0] <= position]
+        if not preceding:
+            continue
+        _, section, slot_id = preceding[-1]
+        if section == "ACHIEVEMENT":
+            slot_id = (
+                "ACHIEVEMENT.QUANTITATIVE"
+                if _QUANTITATIVE_MARKER.search(text)
+                else "ACHIEVEMENT.QUALITATIVE"
+            )
+        hints[str(item["item_id"])] = slot_id
+    return hints
+
+
+def _render_document_context(source_items: list[dict], hints: dict[str, str]) -> str:
+    """구조화 LLM이 배치 밖 문서 제목을 잃지 않게 힌트를 렌더링한다."""
+    lines = [
+        f"- [{item['item_id']}] {_DOCUMENT_SLOT_LABELS[hints[item['item_id']]]} "
+        f"(slot_id={hints[item['item_id']]})"
+        for item in source_items
+        if item.get("item_id") in hints
+    ]
+    if not lines:
+        return ""
+    return "문서 내 위치 힌트(배정 판단에만 사용, text에 복사 금지):\n" + "\n".join(lines) + "\n\n"
+
+
 def _gap_instruction(state: ExperienceMapState) -> str:
     """new_child gap 답변의 부모를 고정하는 프롬프트 지시문."""
     active_gap = state.get("active_gap") or {}
@@ -445,6 +576,7 @@ def _apply_structuring_fixups(
     source_text: dict[str, str],
     state: ExperienceMapState,
     catalog: TemplateCatalog,
+    document_slot_hints: dict[str, str] | None = None,
 ) -> list[StructureLlmItem]:
     """LLM 원시 출력에 결정론적 보정을 순서대로 적용한다.
 
@@ -467,7 +599,10 @@ def _apply_structuring_fixups(
     들어가야 최종 text가 원문을 빠짐없이 담는다.
     """
     normalized_slots = _normalize_known_slot_aliases(raw_items, catalog)
-    merged_sections = _merge_duplicate_section_items(normalized_slots)
+    context_aligned = _apply_document_slot_hints(
+        normalized_slots, catalog, document_slot_hints or {}
+    )
+    merged_sections = _merge_duplicate_section_items(context_aligned)
     merged = _merge_duplicate_slot_items(merged_sections)
     pruned_junk = _drop_empty_invalid_slot_items(merged, catalog)
     reconstructed = _reconstruct_verbatim_text(pruned_junk, source_text)
@@ -498,20 +633,23 @@ def _normalize_known_slot_aliases(
     normalized: list[StructureLlmItem] = []
     for item in items:
         official = _KNOWN_SLOT_ALIASES.get(item.slot_id or "")
-        # TASK 기본 템플릿의 RESULT 안내문은 결과와 배운 점을 함께 받는다.
-        # 모델은 PDF의 명시적인 "배운 점" 제목을 보고 TASK.BASIC.LEARNING뿐
-        # 아니라 PROBLEM_SOLVING.RECOVERY.LEARNING처럼 section까지 임의로
-        # 바꾼 슬롯을 반복해서 만들었다. 카탈로그에 실제 LEARNING 계열 슬롯이
-        # 없을 때만 의미가 확정된 공식 RESULT로 귀속한다. 이후 계층 보정이
-        # 부모 카테고리와 앵커도 TASK 쪽으로 함께 옮긴다.
+        # 모델은 PDF의 명시적인 "배운 점" 제목을 보고
+        # TASK.BASIC.LEARNING이나 PROBLEM_SOLVING.RECOVERY.LEARNING처럼
+        # 비공식 슬롯을 만들었다. 에이전트 카탈로그에는 배운 점 전용
+        # `LEARNING.GROWTH`가 있으므로 그 공식 슬롯으로 귀속한다.
+        learning_destination = (
+            _LEARNING_DESTINATION_SLOT
+            if catalog.get_slot(_LEARNING_DESTINATION_SLOT) is not None
+            else _LEARNING_FALLBACK_SLOT
+        )
         if (
             official is None
             and item.slot_id is not None
             and catalog.get_slot(item.slot_id) is None
             and item.slot_id.rsplit(".", maxsplit=1)[-1] in _LEARNING_SLOT_SUFFIXES
-            and catalog.get_slot(_LEARNING_DESTINATION_SLOT) is not None
+            and catalog.get_slot(learning_destination) is not None
         ):
-            official = _LEARNING_DESTINATION_SLOT
+            official = learning_destination
         if official is not None and catalog.get_slot(official) is not None:
             logger.warning(
                 "structure: 비공식 slot_id를 정규화합니다 (%s -> %s)",
@@ -522,6 +660,39 @@ def _normalize_known_slot_aliases(
         else:
             normalized.append(item)
     return normalized
+
+
+def _apply_document_slot_hints(
+    items: list[StructureLlmItem],
+    catalog: TemplateCatalog,
+    hints: dict[str, str],
+) -> list[StructureLlmItem]:
+    """문서 제목으로 확정된 item의 슬롯을 LLM 출력에 강제한다.
+
+    한 블록에 합쳐진 원문이 모두 같은 문서 구획에 속할 때만 바꾼다.
+    서로 다른 구획 item이 한 블록에 섞였다면 의미가 모호하므로 기존
+    검증에 맡긴다.
+    """
+    aligned: list[StructureLlmItem] = []
+    for item in items:
+        hinted_slots = {
+            hints[source_id] for source_id in item.source_item_ids if source_id in hints
+        }
+        if len(hinted_slots) != 1:
+            aligned.append(item)
+            continue
+        hinted_slot = next(iter(hinted_slots))
+        if catalog.get_slot(hinted_slot) is None:
+            aligned.append(item)
+            continue
+        if item.slot_id != hinted_slot:
+            logger.info(
+                "structure: 문서 구획에 맞게 slot_id를 보정합니다 (%s -> %s)",
+                item.slot_id,
+                hinted_slot,
+            )
+        aligned.append(item.model_copy(update={"slot_id": hinted_slot}))
+    return aligned
 
 
 def _collapse_basic_troubleshooting_templates(
@@ -778,7 +949,10 @@ def _normalize_new_hierarchy(
         for slot in section.slots
         if slot.is_anchor
     }
-    if not anchor_slot_by_section:
+    direct_section_by_slot = {
+        slot.slot_id: section.section_id for section in catalog.sections for slot in section.slots
+    }
+    if not direct_section_by_slot:
         return items
 
     result = list(items)
@@ -845,12 +1019,15 @@ def _normalize_new_hierarchy(
         result.append(category)
         return category
 
-    # 먼저 앵커를 올바른 카테고리 바로 아래로 옮긴다. 그래야 이어지는
-    # level 5 보정이 안정된 부모 체인을 기준으로 판단할 수 있다.
+    # 먼저 level 4 슬롯(앵커 포함)을 올바른 카테고리 바로 아래로
+    # 옮긴다. 문서 구획 보정으로 TASK 자식이 LEARNING.GROWTH나
+    # ACHIEVEMENT.QUANTITATIVE로 바뀌어도 부모까지 같이 바뀌어야 한다.
+    # 그래야 이어지는 level 5 보정도 안정된 부모 체인을 기준으로
+    # 판단할 수 있다.
     for index, item in enumerate(list(result)):
-        if not _is_anchor_slot(item.slot_id, catalog):
+        section_id = direct_section_by_slot.get(item.slot_id or "")
+        if section_id is None:
             continue
-        section_id = (item.slot_id or "").split(".")[0]
         direct_parent = by_id().get(item.parent_item_id or "")
         if direct_parent is not None and direct_parent.section_kind == section_id:
             continue

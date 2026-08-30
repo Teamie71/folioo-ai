@@ -35,6 +35,20 @@ logger = logging.getLogger(__name__)
 
 _WHITESPACE = re.compile(r"\s+")
 _SENTENCE_END = re.compile(r"[.!?。！？][\"'”’)}\]]*\s+")
+_HEADING_PREFIX = re.compile(r"^(?:[#>*_`-]+\s*)?(?:\d+[.)]\s*)?")
+_STRUCTURAL_HEADINGS = frozenset(
+    {
+        "담당 업무",
+        "문제 해결 경험",
+        "상황",
+        "상황 설명",
+        "원인 분석",
+        "해결 과정",
+        "결과",
+        "주요 성과",
+        "배운 점",
+    }
+)
 
 
 def _normalize(text: str) -> str:
@@ -46,6 +60,27 @@ def _traceable(item: FilteredItem, haystack: str) -> bool:
     """조각이 원문에 실제로 있는지 확인한다."""
     text = _normalize(item.text)
     return bool(text) and text in haystack
+
+
+def _is_structural_heading(item: FilteredItem) -> bool:
+    """문서 구조를 알리는 제목만 있는 item인지 판별한다.
+
+    제목은 뒤 내용의 슬롯을 판단하는 문맥이지, 사용자 경험 내용은
+    아니다. 다만 "문제 해결 경험 — 결제 승인 API 응답 지연"처럼 제목 뒤에
+    실제 에피소드 요약이 있으면 요약 블록으로 쓸 수 있으므로 남겨 둔다.
+    """
+    if item.source != "file":
+        return False
+    heading = _HEADING_PREFIX.sub("", _normalize(item.text)).strip(" *_`:：")
+    if heading in _STRUCTURAL_HEADINGS:
+        return True
+    return bool(re.fullmatch(r"경력\s*정리\s*메모(?:\s*[—:\-]\s*.+)?", heading))
+
+
+def _drop_structural_headings(items: list[FilteredItem]) -> tuple[list[FilteredItem], int]:
+    """내용으로 오인된 PDF·문서의 단독 제목을 제외한다."""
+    kept = [item for item in items if not _is_structural_heading(item)]
+    return kept, len(items) - len(kept)
 
 
 def _split_long_item(item: FilteredItem) -> list[FilteredItem]:
@@ -139,9 +174,16 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
         result, active_gap=active_gap, user_message=user_message, extracted_text=extracted_text
     )
 
+    gap_items, dropped_gap_headings = _drop_structural_headings(gap_items)
+    new_items, dropped_new_headings = _drop_structural_headings(new_items)
+    dropped_headings = dropped_gap_headings + dropped_new_headings
+    excluded_reasons = list(result.excluded_reasons)
+    if dropped_headings:
+        excluded_reasons.append("문서 제목·구획 제목")
+
     updated["gap_answer_items"] = [item.model_dump() for item in gap_items]
     updated["new_items"] = [item.model_dump() for item in new_items]
-    updated["excluded_reasons"] = list(result.excluded_reasons)
+    updated["excluded_reasons"] = excluded_reasons
 
     if not gap_items and not new_items:
         # 반영할 것이 없다. fallback 으로 간다 (5-3).
@@ -152,7 +194,7 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
         len(gap_items),
         len(new_items),
         len(result.excluded_reasons),
-        dropped,
+        dropped + dropped_headings,
     )
     return updated  # type: ignore[return-value]
 

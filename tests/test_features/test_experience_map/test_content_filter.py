@@ -194,6 +194,41 @@ async def test_file_text_is_traceable(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_file_structural_headings_are_dropped_but_episode_summary_is_kept(fake_llm):
+    """PDF 구획 제목은 블록이 아니지만 구체적인 에피소드 제목은 요약으로 남긴다."""
+    text = (
+        "경력 정리 메모 — 백엔드 개발자\n"
+        "1. 담당 업무\n"
+        "2. 문제 해결 경험 — 결제 승인 API 응답 지연\n"
+        "상황\n"
+        "결제 승인 API가 4초 이상 지연됐다.\n"
+        "원인 분석\n"
+        "해결 과정\n"
+        "결과\n"
+        "3. 주요 성과\n"
+        "4. 배운 점"
+    )
+    candidates = [
+        item("it_1", "경력 정리 메모 — 백엔드 개발자", source="file"),
+        item("it_2", "1. 담당 업무", source="file"),
+        item("it_3", "2. 문제 해결 경험 — 결제 승인 API 응답 지연", source="file"),
+        item("it_4", "상황", source="file"),
+        item("it_5", "결제 승인 API가 4초 이상 지연됐다.", source="file"),
+        item("it_6", "원인 분석", source="file"),
+        item("it_7", "해결 과정", source="file"),
+        item("it_8", "결과", source="file"),
+        item("it_9", "3. 주요 성과", source="file"),
+        item("it_10", "4. 배운 점", source="file"),
+    ]
+    fake_llm(ContentFilterOutput(new_items=candidates))
+
+    result = await filter_content(make_state(user_message=None, extracted_text=text))
+
+    assert [entry["item_id"] for entry in result["new_items"]] == ["it_3", "it_5"]
+    assert "문서 제목·구획 제목" in result["excluded_reasons"]
+
+
+@pytest.mark.asyncio
 async def test_long_file_item_is_split_without_rewriting(fake_llm, monkeypatch):
     """PDF 한 페이지가 한 item으로 와도 구조화에는 작은 원문 조각으로 넘긴다."""
     monkeypatch.setattr(filter_node, "MAX_SOURCE_ITEM_CHARS", 30)

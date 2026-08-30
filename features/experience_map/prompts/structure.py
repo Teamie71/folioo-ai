@@ -38,6 +38,11 @@ STRUCTURE_SYSTEM = """\
   기존 블록 내용은 이미 반영돼 있는 것입니다 — "반영할 원문 item" 목록에 있는
   `it_N` 텍스트만 새 text에 씁니다. 문맥 이해에만 참고하고 베끼지 않습니다.
 
+`document_context`에 문서 구획과 추천 slot이 있으면 해당 item이 원본
+문서의 어느 제목 아래에 있었는지를 보존한 결정적 힌트입니다. 배치가
+한 item씩 나뉘어도 이 구획을 우선해 slot을 고릅니다. 힌트는 배정 판단에만
+쓰고 `text`나 `source_item_ids`에 복사하지 않습니다.
+
 # slot_id는 카탈로그에 나열된 것만
 
 **카탈로그에 있는 slot_id만 정확히 그대로 씁니다.** 목록에 없는 slot_id를
@@ -220,7 +225,7 @@ STRUCTURE_USER = """\
 템플릿 카탈로그:
 {catalog}
 
-{previous_batch_note}{gap_instruction}반영할 원문 item:
+{previous_batch_note}{document_context}{gap_instruction}반영할 원문 item:
 {source_items}
 """
 

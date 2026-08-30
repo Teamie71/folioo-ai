@@ -782,6 +782,55 @@ def test_file_source_batches_use_one_item_even_when_text_is_short(monkeypatch):
     ]
 
 
+def test_pdf_document_headings_provide_deterministic_slot_hints():
+    """PDF item을 한 개씩 보내도 원본 제목의 슬롯 문맥을 잃지 않는다."""
+    extracted_text = """
+경력 정리 메모 — 백엔드 개발자
+1. 담당 업무
+- 결제 승인 API를 담당했다.
+2. 문제 해결 경험 — 결제 승인 API 응답 지연
+상황
+응답 시간이 4초까지 치솟았다.
+원인 분석
+외부 API의 응답 지연이 원인이었다.
+해결 과정
+Kafka로 비동기 전환했다.
+결과
+P99를 320ms로 낮춰 검증했다.
+3. 주요 성과
+배치를 45분에서 12분으로 단축했다.
+4. 배운 점
+원인을 구조적으로 분리해야 함을 배웠다.
+""".strip()
+    source_items = [
+        {"item_id": "it_1", "text": "결제 승인 API를 담당했다.", "source": "file"},
+        {
+            "item_id": "it_2",
+            "text": "2. 문제 해결 경험 — 결제 승인 API 응답 지연",
+            "source": "file",
+        },
+        {"item_id": "it_3", "text": "응답 시간이 4초까지 치솟았다.", "source": "file"},
+        {"item_id": "it_4", "text": "외부 API의 응답 지연이 원인이었다.", "source": "file"},
+        {"item_id": "it_5", "text": "Kafka로 비동기 전환했다.", "source": "file"},
+        {"item_id": "it_6", "text": "P99를 320ms로 낮춰 검증했다.", "source": "file"},
+        {"item_id": "it_7", "text": "배치를 45분에서 12분으로 단축했다.", "source": "file"},
+        {"item_id": "it_8", "text": "원인을 구조적으로 분리해야 함을 배웠다.", "source": "file"},
+    ]
+
+    hints = structure_node._document_slot_hints(source_items, extracted_text)
+
+    assert hints == {
+        "it_1": "TASK.SUMMARY",
+        "it_2": "PROBLEM_SOLVING.SUMMARY",
+        "it_3": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "it_4": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+        "it_5": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        "it_6": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+        "it_7": "ACHIEVEMENT.QUANTITATIVE",
+        "it_8": "LEARNING.GROWTH",
+    }
+
+
 @pytest.mark.asyncio
 async def test_batches_reusing_the_same_item_id_are_namespaced_apart(
     fake_dependencies, monkeypatch
@@ -1506,7 +1555,7 @@ def test_known_problem_solving_result_alias_is_normalized():
     ],
 )
 def test_invented_learning_slot_is_merged_into_task_result(invented_slot):
-    """PDF의 '배운 점'을 위해 지어낸 슬롯은 section과 무관하게 공식 RESULT로 고친다."""
+    """배운 점 전용 슬롯이 없는 예전 카탈로그에서는 TASK RESULT로 보정한다."""
     catalog = TemplateCatalog.model_validate(catalog_payload())
     raw = StructureLlmItem(
         item_id="blk_1",
@@ -1521,6 +1570,84 @@ def test_invented_learning_slot_is_merged_into_task_result(invented_slot):
 
     assert result[0].slot_id == "TASK.BASIC.RESULT"
     assert result[0].text == "원인을 구조적으로 분리하는 방식을 배웠다"
+
+
+def test_invented_learning_slot_uses_learning_section_when_catalog_has_it():
+    """현재 에이전트 카탈로그의 배운 점은 LEARNING.GROWTH에 배정한다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "LEARNING",
+            "label": "배운 점",
+            "slots": [
+                {
+                    "slot_id": "LEARNING.GROWTH",
+                    "level": 4,
+                    "placeholder": "배운 점",
+                    "example": "원인을 구조적으로 분리해야 한다.",
+                }
+            ],
+            "templates": [],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="TASK.BASIC.LEARNING",
+        text="원인을 구조적으로 분리하는 방식을 배웠다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._normalize_known_slot_aliases([raw], catalog)
+
+    assert result[0].slot_id == "LEARNING.GROWTH"
+
+
+def test_document_hint_rehomes_direct_slot_under_matching_section():
+    """문서 구획으로 슬롯이 바뀌면 level 4의 카테고리도 함께 바뀌어야 한다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "LEARNING",
+            "label": "배운 점",
+            "slots": [
+                {
+                    "slot_id": "LEARNING.GROWTH",
+                    "level": 4,
+                    "placeholder": "배운 점",
+                    "example": "원인을 구조적으로 분리해야 한다.",
+                }
+            ],
+            "templates": [],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    category = StructureLlmItem(
+        item_id="category_task",
+        action="add",
+        parent_ref="exp_1",
+        section_kind="TASK",
+    )
+    learning = StructureLlmItem(
+        item_id="learning",
+        action="add",
+        parent_item_id="category_task",
+        slot_id="TASK.BASIC.RESULT",
+        text="원인을 구조적으로 분리하는 방식을 배웠다",
+        source_item_ids=["it_1"],
+    )
+
+    aligned = structure_node._apply_document_slot_hints(
+        [category, learning], catalog, {"it_1": "LEARNING.GROWTH"}
+    )
+    normalized = _normalize_new_hierarchy(aligned, catalog, make_state())
+
+    learning_item = next(item for item in normalized if item.item_id == "learning")
+    learning_category = next(item for item in normalized if item.section_kind == "LEARNING")
+    assert learning_item.slot_id == "LEARNING.GROWTH"
+    assert learning_item.parent_item_id == learning_category.item_id
 
 
 def test_missing_new_section_level4_slots_are_auto_filled():
