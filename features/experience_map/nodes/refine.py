@@ -28,7 +28,8 @@ async def refine_text(state: ExperienceMapState) -> ExperienceMapState:
     updated = dict(state)
     updated["current_node"] = "refine"
     candidates, gap_update = _build_candidates(state)
-    if not candidates:
+    refinable = [item for item in candidates if item.get("text") is not None]
+    if not refinable:
         updated["fallback_reason"] = "nothing_to_apply"
         return updated  # type: ignore[return-value]
     if not (state.get("activity_tree_text") or "").strip():
@@ -40,10 +41,19 @@ async def refine_text(state: ExperienceMapState) -> ExperienceMapState:
         result: RefinementOutput = await chain.ainvoke(
             {
                 "activity_tree": state["activity_tree_text"],
-                "items": render_refinement_items(candidates),
+                "items": render_refinement_items(refinable),
             }
         )
-        refined_items = _validate_output(result.items, candidates)
+        refined_content = {item.item_id: item for item in _validate_output(result.items, refinable)}
+        # 빈 템플릿 슬롯은 LLM에 보내지 않는다. 모델이 null 자리를 임의로
+        # 채우는 실패를 원천 차단하면서 validate 단계가 요구하는 전체 item
+        # 집합은 코드가 결정론적으로 복원한다.
+        refined_items = [
+            refined_content[item["item_id"]]
+            if item.get("text") is not None
+            else RefinedItem(item_id=item["item_id"], refined_text=None)
+            for item in candidates
+        ]
     except LlmError:
         raise
     except Exception as exc:
@@ -102,29 +112,38 @@ def _build_gap_update(state: ExperienceMapState) -> dict | None:
 
 
 def _validate_output(output: list[RefinedItem], candidates: list[dict]) -> list[RefinedItem]:
-    """item 집합·빈 슬롯·새 수치를 검증해 hallucination을 차단한다."""
+    """정제 결과를 원문에 대조하고 잘못된 item은 원문으로 안전하게 복구한다."""
     expected = {item["item_id"]: item["text"] for item in candidates}
-    actual = {item.item_id: item for item in output}
-    if len(actual) != len(output) or set(actual) != set(expected):
-        raise ValueError("정제 전후 item_id 집합이 일치하지 않습니다.")
+    grouped: dict[str, list[RefinedItem]] = {}
+    for item in output:
+        if item.item_id in expected:
+            grouped.setdefault(item.item_id, []).append(item)
 
+    validated: list[RefinedItem] = []
     for item_id, source_text in expected.items():
-        refined = actual[item_id].refined_text
-        if source_text is None:
-            if refined is not None:
-                raise ValueError("템플릿 빈 슬롯은 정제할 수 없습니다.")
+        matches = grouped.get(item_id, [])
+        refined = matches[0].refined_text if len(matches) == 1 else None
+        fallback_reason: str | None = None
+        if not isinstance(source_text, str):
+            validated.append(RefinedItem(item_id=item_id, refined_text=None))
             continue
         if not refined or not refined.strip():
-            raise ValueError("내용이 있는 항목의 정제 결과는 비어 있을 수 없습니다.")
-        if len(refined.strip()) > MAX_CONTENT_LENGTH:
-            raise ValueError("정제 결과가 최대 글자 수를 넘었습니다.")
-        if not set(_NUMBER.findall(refined)).issubset(_NUMBER.findall(source_text)):
-            raise ValueError("원문에 없는 수치가 정제 결과에 포함됐습니다.")
+            fallback_reason = "정제 결과 누락·중복 또는 빈 문자열"
+        elif len(refined.strip()) > MAX_CONTENT_LENGTH:
+            fallback_reason = "최대 글자 수 초과"
+        elif not set(_NUMBER.findall(refined)).issubset(_NUMBER.findall(source_text)):
+            fallback_reason = "원문에 없는 수치 추가"
         source_english_tokens = {token.casefold() for token in _ENGLISH_TOKEN.findall(source_text)}
-        refined_english_tokens = {token.casefold() for token in _ENGLISH_TOKEN.findall(refined)}
-        if not refined_english_tokens.issubset(source_english_tokens):
-            raise ValueError("원문에 없는 영문 고유명사가 정제 결과에 포함됐습니다.")
-    return output
+        refined_english_tokens = {
+            token.casefold() for token in _ENGLISH_TOKEN.findall(refined or "")
+        }
+        if fallback_reason is None and not refined_english_tokens.issubset(source_english_tokens):
+            fallback_reason = "원문에 없는 영문 고유명사 추가"
+        if fallback_reason is not None:
+            logger.warning("refine: %s은 원문을 유지합니다 (%s)", item_id, fallback_reason)
+            refined = source_text
+        validated.append(RefinedItem(item_id=item_id, refined_text=refined))
+    return validated
 
 
 def next_node(state: ExperienceMapState) -> str:

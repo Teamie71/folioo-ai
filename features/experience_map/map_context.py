@@ -102,6 +102,7 @@ class ExperienceMapSnapshot:
                 "parent_alias": parent_alias,
                 "level": node.row.level,
                 "kind": node.row.kind,
+                "placeholder": node.row.placeholder,
                 "is_text_editable": node.row.is_text_editable,
             }
             lines = [f"{'  ' * depth}[{alias}] {_label(node)}"]

@@ -37,6 +37,7 @@ _KNOWN_SLOT_ALIASES = {
     "TASK.BASIC.CAUSE": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
     "TASK.BASIC.SOLUTION": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
     "TASK.BASIC.VERIFICATION": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+    "TASK.BASIC.PROCESS": "TASK.BASIC.EXECUTION",
 }
 
 _LEARNING_SLOT_SUFFIXES = frozenset({"LEARNING", "LESSON", "LESSONS"})
@@ -630,10 +631,23 @@ def _apply_structuring_fixups(
     들어가야 최종 text가 원문을 빠짐없이 담는다.
     """
     normalized_slots = _normalize_known_slot_aliases(raw_items, catalog)
+    source_sanitized = _remove_unknown_source_references(normalized_slots, source_text)
     context_aligned = _apply_document_slot_hints(
-        normalized_slots, catalog, document_slot_hints or {}
+        source_sanitized, catalog, document_slot_hints or {}
     )
-    merged_sections = _merge_duplicate_section_items(context_aligned)
+    meaning_aligned = _align_explicit_troubleshooting_slots(
+        context_aligned,
+        source_text,
+        protected_source_ids=set(document_slot_hints or {}),
+    )
+    learning_aligned = _align_explicit_learning_slots(
+        meaning_aligned,
+        source_text,
+        catalog,
+        state,
+        protected_source_ids=set(document_slot_hints or {}),
+    )
+    merged_sections = _merge_duplicate_section_items(learning_aligned)
     merged = _merge_duplicate_slot_items(merged_sections)
     pruned_junk = _drop_empty_invalid_slot_items(merged, catalog)
     reconstructed = _reconstruct_verbatim_text(pruned_junk, source_text)
@@ -643,12 +657,13 @@ def _apply_structuring_fixups(
     rerooted = _fix_new_section_parent(dereffed, state)
     normalized_hierarchy = _normalize_new_hierarchy(rerooted, catalog, state)
     reparented = _reparent_orphan_level5_items(normalized_hierarchy, catalog)
+    metadata_reused = _reuse_existing_anchor_from_metadata(reparented, catalog, state)
     # `_reuse_existing_filled_anchor`는 반드시 `_reparent_orphan_level5_items`
     # 뒤에 와야 한다. 앞서 두면, 이게 앵커를 level 5로 바꿔 기존 앵커에
     # `parent_ref`로 직접 붙인 결과를 `_reparent_orphan_level5_items`가
     # "앵커를 건너뛴 level 5"로 오해해 가짜 앵커를 또 만들어 버린다 —
     # `parent_ref`가 실제로 앵커를 가리키는지는 그 함수가 알 방법이 없다.
-    reused = _reuse_existing_filled_anchor(reparented, catalog, state)
+    reused = _reuse_existing_filled_anchor(metadata_reused, catalog, state)
     collapsed = _collapse_basic_troubleshooting_templates(reused)
     remerged = _merge_duplicate_slot_items(collapsed)
     rebuilt = _reconstruct_verbatim_text(remerged, source_text)
@@ -693,6 +708,44 @@ def _normalize_known_slot_aliases(
     return normalized
 
 
+def _remove_unknown_source_references(
+    items: list[StructureLlmItem], source_text: dict[str, str]
+) -> list[StructureLlmItem]:
+    """기존 블록 별칭 등 새 원문이 아닌 source 참조를 제거한다.
+
+    모델이 활동 트리의 `b_N`을 `source_item_ids`에 넣고 기존 내용을 새 블록으로
+    복사하는 경우가 있다. 실제 새 원문 id만 남기며, 합법적인 source가 하나도
+    없는 내용 전용 item은 버린다. 부모로 참조되는 구조 item은 위계를 위해
+    내용만 비운 채 유지한다.
+    """
+    known_ids = set(source_text)
+    referenced_as_parent = {item.parent_item_id for item in items if item.parent_item_id}
+    sanitized: list[StructureLlmItem] = []
+    for item in items:
+        unknown = [source_id for source_id in item.source_item_ids if source_id not in known_ids]
+        if not unknown:
+            sanitized.append(item)
+            continue
+        known = [source_id for source_id in item.source_item_ids if source_id in known_ids]
+        if known:
+            sanitized.append(item.model_copy(update={"source_item_ids": known}))
+            continue
+        is_structural = (
+            item.item_id in referenced_as_parent
+            or item.slot_id is not None
+            or item.section_kind is not None
+        )
+        if is_structural:
+            sanitized.append(item.model_copy(update={"text": None, "source_item_ids": []}))
+        else:
+            logger.warning(
+                "structure: 새 원문이 아닌 source 참조만 가진 item을 버립니다 (%s: %s)",
+                item.item_id,
+                unknown,
+            )
+    return sanitized
+
+
 def _apply_document_slot_hints(
     items: list[StructureLlmItem],
     catalog: TemplateCatalog,
@@ -723,6 +776,127 @@ def _apply_document_slot_hints(
                 hinted_slot,
             )
         aligned.append(item.model_copy(update={"slot_id": hinted_slot}))
+    return aligned
+
+
+_TROUBLESHOOTING_SLOT_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+        ("검증", "부하 테스트", "재발 방지", "개선 후", "적용 후"),
+    ),
+    (
+        "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+        ("원인이", "원인은", "원인으로", "원인임", "때문", "분석 결과", "확인 결과"),
+    ),
+    (
+        "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        ("분리하", "적용하", "도입하", "설정하", "구현하", "변경하", "재시도"),
+    ),
+    (
+        "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        ("문제가 발생", "오류가 발생", "실패가 발생", "지연되는 문제"),
+    ),
+)
+
+
+def _align_explicit_troubleshooting_slots(
+    items: list[StructureLlmItem],
+    source_text: dict[str, str],
+    *,
+    protected_source_ids: set[str],
+) -> list[StructureLlmItem]:
+    """명시적인 문제·원인·해결·검증 표현으로 기술 트러블슈팅 슬롯을 보정한다.
+
+    문서 구획 제목에서 얻은 slot hint가 더 강한 근거이므로 해당 source는 건드리지
+    않는다. 채팅 문장 중에서도 "분석 결과 … 원인이었다"처럼 의미가 명백한
+    경우만 보정하며, 다른 문제해결 템플릿에는 적용하지 않는다.
+    """
+    aligned: list[StructureLlmItem] = []
+    prefix = "PROBLEM_SOLVING.TROUBLESHOOTING."
+    for item in items:
+        is_troubleshooting = (item.slot_id or "").startswith(prefix)
+        is_task_basic = (item.slot_id or "").startswith("TASK.BASIC.")
+        if not is_troubleshooting and not is_task_basic:
+            aligned.append(item)
+            continue
+        source_ids = [source_id for source_id in item.source_item_ids if source_id in source_text]
+        if not source_ids or any(source_id in protected_source_ids for source_id in source_ids):
+            aligned.append(item)
+            continue
+        text = " ".join(source_text[source_id] for source_id in source_ids)
+        destination = next(
+            (
+                slot_id
+                for slot_id, markers in _TROUBLESHOOTING_SLOT_MARKERS
+                if any(marker in text for marker in markers)
+            ),
+            None,
+        )
+        if destination is None or destination == item.slot_id:
+            aligned.append(item)
+            continue
+        logger.info(
+            "structure: 명시적 의미에 맞게 기술 트러블슈팅 slot_id를 보정합니다 (%s -> %s)",
+            item.slot_id,
+            destination,
+        )
+        aligned.append(item.model_copy(update={"slot_id": destination}))
+    return aligned
+
+
+def _align_explicit_learning_slots(
+    items: list[StructureLlmItem],
+    source_text: dict[str, str],
+    catalog: TemplateCatalog,
+    state: ExperienceMapState,
+    *,
+    protected_source_ids: set[str],
+) -> list[StructureLlmItem]:
+    """학습 표현이 명시된 채팅 원문을 배운 점 카테고리로 보정한다."""
+    destination = "LEARNING.GROWTH"
+    if catalog.get_slot(destination) is None:
+        return items
+
+    placeholder_to_slot = _placeholder_to_slot_map(catalog)
+    existing_parents = {
+        str(block.get("parent_alias"))
+        for block in state.get("alias_metadata", {}).values()
+        if placeholder_to_slot.get(str(block.get("placeholder") or "").strip()) == destination
+        and isinstance(block.get("parent_alias"), str)
+    }
+    existing_parent = next(iter(existing_parents)) if len(existing_parents) == 1 else None
+    target_alias = state.get("target_experience_alias")
+    learning_markers = ("배웠", "깨달", "교훈", "학습했", "중요성을 체감")
+
+    aligned: list[StructureLlmItem] = []
+    for item in items:
+        source_ids = [source_id for source_id in item.source_item_ids if source_id in source_text]
+        if not source_ids or any(source_id in protected_source_ids for source_id in source_ids):
+            aligned.append(item)
+            continue
+        text = " ".join(source_text[source_id] for source_id in source_ids)
+        if not any(marker in text for marker in learning_markers):
+            aligned.append(item)
+            continue
+        parent_ref = existing_parent or target_alias
+        if parent_ref is None:
+            aligned.append(item.model_copy(update={"slot_id": destination}))
+            continue
+        logger.info(
+            "structure: 명시적 학습 표현을 배운 점 slot으로 보정합니다 (%s -> %s)",
+            item.slot_id,
+            destination,
+        )
+        aligned.append(
+            item.model_copy(
+                update={
+                    "parent_ref": parent_ref,
+                    "parent_item_id": None,
+                    "section_kind": None,
+                    "slot_id": destination,
+                }
+            )
+        )
     return aligned
 
 
@@ -1888,6 +2062,65 @@ def _subtree_known_slots_with_parent(
             if slot_id:
                 results.append((slot_id, alias, parent_alias))
     return results
+
+
+def _reuse_existing_anchor_from_metadata(
+    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
+) -> list[StructureLlmItem]:
+    """placeholder 메타데이터로 확인한 기존 앵커를 재사용한다.
+
+    채워진 블록은 tree text에서 placeholder가 보이지 않아 기존 코드는 앵커인지
+    판별할 수 없었다. map context에는 원래 블록의 placeholder가 남아 있으므로,
+    같은 컨테이너의 직속 자식 중 새 앵커와 slot_id가 같은 블록이 정확히 하나면
+    새 앵커를 없애고 그 자식들을 기존 앵커 아래로 옮긴다.
+    """
+    placeholder_to_slot = _placeholder_to_slot_map(catalog)
+    metadata = state.get("alias_metadata", {})
+    existing_by_parent_and_slot: dict[tuple[str, str], list[str]] = {}
+    for alias, block in metadata.items():
+        placeholder = str(block.get("placeholder") or "").strip()
+        slot_id = placeholder_to_slot.get(placeholder)
+        parent_alias = block.get("parent_alias")
+        if not slot_id or not isinstance(parent_alias, str):
+            continue
+        existing_by_parent_and_slot.setdefault((parent_alias, slot_id), []).append(alias)
+
+    anchor_redirects: dict[str, str] = {}
+    for item in items:
+        if item.parent_ref is None or not _is_anchor_slot(item.slot_id, catalog):
+            continue
+        candidates = existing_by_parent_and_slot.get((item.parent_ref, item.slot_id or ""), [])
+        if len(candidates) == 1:
+            anchor_redirects[item.item_id] = candidates[0]
+    if not anchor_redirects:
+        return items
+
+    result: list[StructureLlmItem] = []
+    for item in items:
+        existing_anchor = anchor_redirects.get(item.item_id)
+        if existing_anchor is not None:
+            if item.text is None and not item.source_item_ids:
+                continue
+            # 기존 앵커 자체는 수정하지 않는다. 새 요약 원문이 함께 있었다면
+            # 기존 앵커 아래의 일반 세부 블록으로 보존한다.
+            result.append(
+                item.model_copy(
+                    update={
+                        "parent_ref": existing_anchor,
+                        "parent_item_id": None,
+                        "slot_id": None,
+                    }
+                )
+            )
+            continue
+        redirected_parent = anchor_redirects.get(item.parent_item_id or "")
+        if redirected_parent is not None:
+            result.append(
+                item.model_copy(update={"parent_ref": redirected_parent, "parent_item_id": None})
+            )
+            continue
+        result.append(item)
+    return result
 
 
 def _reuse_existing_filled_anchor(

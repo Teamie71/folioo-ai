@@ -127,6 +127,35 @@ def _split_long_item(item: FilteredItem) -> list[FilteredItem]:
     자른다. 경계의 공백 외에는 원문 문자를 추가하거나 고치지 않는다.
     """
     text = item.text.strip()
+    sentence_ends = [
+        match
+        for match in _SENTENCE_END.finditer(text)
+        # "1. 담당 업무" 같은 번호 목록의 점은 문장 끝이 아니다.
+        if not (
+            text[match.start()] == "."
+            and re.search(r"(?:^|\s)\d+$", text[: match.start()]) is not None
+        )
+    ]
+    if sentence_ends:
+        sentence_chunks: list[str] = []
+        start = 0
+        for match in sentence_ends:
+            chunk = text[start : match.end()].strip()
+            if chunk:
+                sentence_chunks.append(chunk)
+            start = match.end()
+        tail = text[start:].strip()
+        if tail:
+            sentence_chunks.append(tail)
+        if len(sentence_chunks) > 1:
+            split: list[FilteredItem] = []
+            for index, chunk in enumerate(sentence_chunks, start=1):
+                child = item.model_copy(
+                    update={"item_id": f"{item.item_id}_{index}", "text": chunk}
+                )
+                split.extend(_split_long_item(child))
+            return split
+
     if len(text) <= MAX_SOURCE_ITEM_CHARS:
         return [item]
 

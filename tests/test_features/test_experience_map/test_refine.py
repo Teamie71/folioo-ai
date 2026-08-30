@@ -69,8 +69,8 @@ def fake_llm(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refines_whole_activity_and_keeps_empty_slot(fake_llm):
-    """한 번의 호출로 모든 구조화 item을 받고 빈 슬롯은 그대로 둔다."""
+async def test_refines_content_only_and_restores_empty_slot(fake_llm):
+    """빈 슬롯은 LLM에 보내지 않고 코드가 null 결과를 복원한다."""
     prompts = fake_llm(
         RefinementOutput(
             items=[
@@ -87,7 +87,7 @@ async def test_refines_whole_activity_and_keeps_empty_slot(fake_llm):
         {"item_id": "empty_1", "refined_text": None},
     ]
     assert "[it_1]" in prompts[0]
-    assert "[empty_1] null" in prompts[0]
+    assert "[empty_1]" not in prompts[0]
     assert "[exp_1] 교내 커머스 리뉴얼" in prompts[0]
 
 
@@ -126,17 +126,19 @@ async def test_extend_gap_combines_existing_content_and_answer(fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_rejects_added_or_missing_item_ids(fake_llm):
-    fake_llm(RefinementOutput(items=[RefinedItem(item_id="it_1", refined_text="정제됨")]))
+async def test_missing_or_extra_item_ids_fall_back_to_source(fake_llm):
+    fake_llm(RefinementOutput(items=[RefinedItem(item_id="invented", refined_text="임의 결과")]))
 
-    with pytest.raises(LlmError) as exc_info:
-        await refine_text(make_state())
+    result = await refine_text(make_state())
 
-    assert exc_info.value.failed_node == "refine"
+    assert result["refined_items"][0] == {
+        "item_id": "it_1",
+        "refined_text": "APM으로 병목을 확인해 결제 오류를 해결했다.",
+    }
 
 
 @pytest.mark.asyncio
-async def test_rejects_number_not_grounded_in_source(fake_llm):
+async def test_number_not_grounded_in_source_falls_back_to_source(fake_llm):
     fake_llm(
         RefinementOutput(
             items=[
@@ -146,12 +148,15 @@ async def test_rejects_number_not_grounded_in_source(fake_llm):
         )
     )
 
-    with pytest.raises(LlmError):
-        await refine_text(make_state())
+    result = await refine_text(make_state())
+
+    assert result["refined_items"][0]["refined_text"] == (
+        "APM으로 병목을 확인해 결제 오류를 해결했다."
+    )
 
 
 @pytest.mark.asyncio
-async def test_rejects_new_proper_noun_not_grounded_in_source(fake_llm):
+async def test_new_proper_noun_not_grounded_in_source_falls_back_to_source(fake_llm):
     fake_llm(
         RefinementOutput(
             items=[
@@ -161,8 +166,11 @@ async def test_rejects_new_proper_noun_not_grounded_in_source(fake_llm):
         )
     )
 
-    with pytest.raises(LlmError):
-        await refine_text(make_state())
+    result = await refine_text(make_state())
+
+    assert result["refined_items"][0]["refined_text"] == (
+        "APM으로 병목을 확인해 결제 오류를 해결했다."
+    )
 
 
 @pytest.mark.asyncio

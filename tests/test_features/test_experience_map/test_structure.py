@@ -1669,6 +1669,174 @@ def test_known_problem_solving_result_alias_is_normalized():
     assert result[0].text == "재시도 후 오류가 재발하지 않았다"
 
 
+def test_explicit_cause_text_is_reassigned_to_troubleshooting_cause():
+    """원인임이 명시된 채팅 문장은 모델이 PROBLEM으로 골라도 CAUSE로 보정한다."""
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_2",
+        slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        text="모델 출력은 이후 원문으로 재조립된다",
+        source_item_ids=["it_1"],
+    )
+    source_text = {
+        "it_1": "로그 분석 결과 이미지 처리와 알림이 같은 큐를 사용한 것이 원인이었습니다."
+    }
+
+    result = structure_node._align_explicit_troubleshooting_slots(
+        [raw], source_text, protected_source_ids=set()
+    )
+
+    assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE"
+
+
+def test_explicit_problem_text_is_moved_out_of_task_template():
+    """TASK로 잘못 분류된 명시적 장애 상황도 문제해결 문제 슬롯으로 보정한다."""
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_item_id="task_anchor",
+        slot_id="TASK.BASIC.EXECUTION",
+        text="모델 출력은 이후 원문으로 재조립된다",
+        source_item_ids=["it_1"],
+    )
+    source_text = {"it_1": "요청이 몰리면서 알림이 지연되는 문제가 발생했습니다."}
+
+    result = structure_node._align_explicit_troubleshooting_slots(
+        [raw], source_text, protected_source_ids=set()
+    )
+
+    assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM"
+
+
+def test_task_basic_process_alias_is_normalized_to_execution():
+    """모델이 만든 PROCESS 별칭은 카탈로그의 EXECUTION 슬롯으로 정규화한다."""
+    payload = catalog_payload()
+    payload["sections"][1]["templates"][0]["slots"].append(
+        {
+            "slot_id": "TASK.BASIC.EXECUTION",
+            "level": 5,
+            "placeholder": "실행",
+            "example": "알림 처리 구현",
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="TASK.BASIC.PROCESS",
+        text="알림 처리 과정을 구현했다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._normalize_known_slot_aliases([raw], catalog)
+
+    assert result[0].slot_id == "TASK.BASIC.EXECUTION"
+
+
+def test_existing_block_alias_is_removed_from_source_item_ids():
+    """기존 b_N 별칭은 새 원문 source가 아니므로 복사 항목에서 제거한다."""
+    copied = StructureLlmItem(
+        item_id="copied",
+        action="add",
+        parent_ref="b_2",
+        text="기존 블록 내용을 복사함",
+        source_item_ids=["b_5"],
+    )
+    mixed = StructureLlmItem(
+        item_id="mixed",
+        action="add",
+        parent_ref="b_2",
+        slot_id="TASK.BASIC.RESULT",
+        text="기존 내용과 새 내용을 섞음",
+        source_item_ids=["b_5", "it_1"],
+    )
+
+    result = structure_node._remove_unknown_source_references([copied, mixed], {"it_1": "새 원문"})
+
+    assert [item.item_id for item in result] == ["mixed"]
+    assert result[0].source_item_ids == ["it_1"]
+
+
+def test_existing_filled_anchor_is_reused_from_placeholder_metadata():
+    """내용이 채워져 tree에서 가이드가 안 보여도 placeholder로 기존 앵커를 재사용한다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "PROBLEM_SOLVING",
+            "label": "문제해결",
+            "slots": [
+                {
+                    "slot_id": "PROBLEM_SOLVING.SUMMARY",
+                    "level": 4,
+                    "placeholder": "문제해결 요약",
+                    "example": "알림 지연 문제 해결",
+                    "is_anchor": True,
+                }
+            ],
+            "templates": [
+                {
+                    "template_id": "TROUBLESHOOTING",
+                    "label": "기술 트러블슈팅",
+                    "slots": [
+                        {
+                            "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+                            "level": 5,
+                            "placeholder": "원인",
+                            "example": "큐 경합",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    items = [
+        StructureLlmItem(
+            item_id="new_anchor",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.SUMMARY",
+        ),
+        StructureLlmItem(
+            item_id="cause",
+            action="add",
+            parent_item_id="new_anchor",
+            slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+            text="큐 경합이 원인이었다",
+            source_item_ids=["it_1"],
+        ),
+    ]
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306"},
+        alias_metadata={
+            "b_1": {
+                "block_id": "305",
+                "parent_alias": "exp_1",
+                "level": 3,
+                "kind": "CONTENT",
+                "placeholder": None,
+                "is_text_editable": True,
+            },
+            "b_2": {
+                "block_id": "306",
+                "parent_alias": "b_1",
+                "level": 4,
+                "kind": "CONTENT",
+                "placeholder": "문제해결 요약",
+                "is_text_editable": True,
+            },
+        },
+    )
+
+    result = structure_node._reuse_existing_anchor_from_metadata(items, catalog, state)
+
+    assert [item.item_id for item in result] == ["cause"]
+    assert result[0].parent_ref == "b_2"
+    assert result[0].parent_item_id is None
+
+
 @pytest.mark.parametrize(
     "invented_slot",
     [
@@ -1783,6 +1951,52 @@ def test_invented_learning_slot_uses_learning_section_when_catalog_has_it():
     result = structure_node._normalize_known_slot_aliases([raw], catalog)
 
     assert result[0].slot_id == "LEARNING.GROWTH"
+
+
+def test_explicit_learning_text_is_rehomed_from_existing_task_anchor():
+    """배웠다는 원문은 기존 담당업무 앵커 아래가 아니라 배운 점 카테고리로 옮긴다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "LEARNING",
+            "label": "배운 점",
+            "slots": [
+                {
+                    "slot_id": "LEARNING.GROWTH",
+                    "level": 4,
+                    "placeholder": "배운 점",
+                    "example": "장애 복구의 중요성을 배웠다.",
+                }
+            ],
+            "templates": [],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    raw = StructureLlmItem(
+        item_id="learning",
+        action="add",
+        parent_ref="b_2",
+        section_kind="PROBLEM_SOLVING",
+        slot_id="TASK.BASIC.RESULT",
+        text="장애 복구 방식도 고려해야 한다는 점을 배웠습니다.",
+        source_item_ids=["it_1"],
+    )
+    state = make_state(alias_metadata={})
+
+    aligned = structure_node._align_explicit_learning_slots(
+        [raw],
+        {"it_1": "장애 복구 방식도 고려해야 한다는 점을 배웠습니다."},
+        catalog,
+        state,
+        protected_source_ids=set(),
+    )
+    normalized = _normalize_new_hierarchy(aligned, catalog, state)
+
+    learning = next(item for item in normalized if item.item_id == "learning")
+    category = next(item for item in normalized if item.section_kind == "LEARNING")
+    assert learning.slot_id == "LEARNING.GROWTH"
+    assert learning.section_kind is None
+    assert learning.parent_item_id == category.item_id
 
 
 def test_document_hint_rehomes_direct_slot_under_matching_section():

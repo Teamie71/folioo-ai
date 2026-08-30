@@ -72,6 +72,7 @@ class AliasBlockMetadata(TypedDict):
     parent_alias: str | None
     level: int
     kind: str
+    placeholder: str | None
     is_text_editable: bool
 
 

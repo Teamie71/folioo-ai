@@ -177,6 +177,21 @@ async def test_whitespace_differences_are_tolerated(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_short_multi_sentence_item_is_split_at_sentence_boundaries(fake_llm):
+    """LLM이 원인·해결 문장을 한 item으로 합쳐도 구조화 전에 다시 나눈다."""
+    text = "같은 큐를 사용한 것이 원인이었습니다. 알림 전용 큐를 분리했습니다."
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", text)]))
+
+    result = await filter_content(make_state(user_message=text))
+
+    assert [entry["text"] for entry in result["new_items"]] == [
+        "같은 큐를 사용한 것이 원인이었습니다.",
+        "알림 전용 큐를 분리했습니다.",
+    ]
+    assert [entry["item_id"] for entry in result["new_items"]] == ["it_1_1", "it_1_2"]
+
+
+@pytest.mark.asyncio
 async def test_file_text_is_traceable(fake_llm):
     """파일에서 추출한 텍스트도 원문으로 인정한다."""
     fake_llm(
