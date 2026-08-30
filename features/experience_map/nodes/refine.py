@@ -14,6 +14,39 @@ logger = logging.getLogger(__name__)
 
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?(?:%|년|개월|명|회|건|개)?")
 _ENGLISH_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9._+-]*")
+_WHITESPACE = re.compile(r"\s+")
+
+# 정제 결과가 원문과 다른 사실을 담고 있는지(한국어 단어 치환·삭제)는 숫자·영문
+# 검사로는 못 잡는다 — 실제로 재현된 경우다: "로그 분석을 통해 결제 오류를
+# 해결했다" → "고객 인터뷰를 통해 결제 오류 해결"처럼 원문에 없는 한국어
+# 방법을 지어내도 통과했다. 완벽한 의미 대조는 LLM 판단 없이는 불가능하지만,
+# 정제는 "명사종결·화살표 활용" 정도의 표현 변화만 허용하고 핵심 단어 자체는
+# 살려야 한다(문서 5-6 정제 기준: "사실과 의미를 유지"). 공백을 뗀 문자
+# bigram의 겹침 비율로 원문 핵심 단어가 얼마나 살아남았는지를 결정론적으로
+# 어림한다 — 조사가 붙어 정확히 같은 단어로는 안 잡히는 한국어 특성에서도,
+# 핵심 명사·어간의 bigram은 대체로 겹친다.
+_MIN_BIGRAM_OVERLAP = 0.45
+_MIN_BIGRAM_CHECK_LENGTH = 6
+
+
+def _char_bigrams(text: str) -> list[str]:
+    """공백을 뗀 문자열의 2글자 슬라이딩 윈도우를 만든다.
+
+    영문은 대소문자를 구분하지 않는다 — "ui" → "UI" 같은 표기 정규화는
+    새 사실이 아니다(영문 토큰 검사와 같은 원칙).
+    """
+    compact = _WHITESPACE.sub("", text).casefold()
+    return [compact[i : i + 2] for i in range(len(compact) - 1)]
+
+
+def _bigram_overlap_ratio(source: str, refined: str) -> float:
+    """정제 결과에 원문 bigram이 얼마나 남아 있는지(0~1)를 계산한다."""
+    source_bigrams = _char_bigrams(source)
+    if len(source_bigrams) < _MIN_BIGRAM_CHECK_LENGTH:
+        return 1.0  # 너무 짧으면 노이즈만 크므로 검사하지 않는다.
+    refined_bigrams = set(_char_bigrams(refined))
+    matched = sum(1 for bigram in source_bigrams if bigram in refined_bigrams)
+    return matched / len(source_bigrams)
 
 
 async def refine_text(state: ExperienceMapState) -> ExperienceMapState:
@@ -131,14 +164,34 @@ def _validate_output(output: list[RefinedItem], candidates: list[dict]) -> list[
             fallback_reason = "정제 결과 누락·중복 또는 빈 문자열"
         elif len(refined.strip()) > MAX_CONTENT_LENGTH:
             fallback_reason = "최대 글자 수 초과"
-        elif not set(_NUMBER.findall(refined)).issubset(_NUMBER.findall(source_text)):
-            fallback_reason = "원문에 없는 수치 추가"
+        else:
+            source_numbers = _NUMBER.findall(source_text)
+            refined_numbers = _NUMBER.findall(refined)
+            if not set(refined_numbers).issubset(source_numbers):
+                fallback_reason = "원문에 없는 수치 추가"
+            elif not set(source_numbers).issubset(refined_numbers):
+                # 리뷰로 재현된 경우다 — "8분→3초로 단축, 2,400건 처리"의
+                # 수치를 전부 지우고 "성능 개선"으로만 뭉뚱그려도 이전
+                # 검사(추가 여부만 확인)로는 안 걸렸다. 정제는 없는 수치를
+                # 만들면 안 되는 것만큼, 있는 수치를 지워서도 안 된다.
+                fallback_reason = "원문 수치를 정제 결과에서 삭제"
         source_english_tokens = {token.casefold() for token in _ENGLISH_TOKEN.findall(source_text)}
         refined_english_tokens = {
             token.casefold() for token in _ENGLISH_TOKEN.findall(refined or "")
         }
         if fallback_reason is None and not refined_english_tokens.issubset(source_english_tokens):
             fallback_reason = "원문에 없는 영문 고유명사 추가"
+        if (
+            fallback_reason is None
+            and refined
+            and _bigram_overlap_ratio(source_text, refined) < _MIN_BIGRAM_OVERLAP
+        ):
+            # 숫자·영문 검사를 통과해도 한국어 핵심 단어 자체가 다른 내용으로
+            # 바뀌었을 수 있다 — 리뷰로 재현된 경우다: "로그 분석을 통해
+            # 결제 오류를 해결했다" → "고객 인터뷰를 통해 결제 오류 해결"
+            # 처럼 원문에 없는 방법을 지어내도 숫자·영문 검사만으로는 못
+            # 잡았다.
+            fallback_reason = "원문과 핵심 단어가 다른 정제 결과"
         if fallback_reason is not None:
             logger.warning("refine: %s은 원문을 유지합니다 (%s)", item_id, fallback_reason)
             refined = source_text

@@ -156,6 +156,88 @@ async def test_number_not_grounded_in_source_falls_back_to_source(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_source_number_deleted_by_refine_falls_back_to_source(fake_llm):
+    """정제가 원문 수치를 통째로 지워도 원문으로 되돌린다.
+
+    실제로 재현된 경우다. "알림 시간을 8분에서 3초로 단축하고 2,400건을
+    처리했다"를 "알림 처리 성능 개선"으로 뭉뚱그리면 수치가 전부 사라지는데,
+    기존 검사는 "정제 결과에 없던 수치가 새로 생겼는지"만 봐서
+    (refined ⊆ source) 수치를 지우는 방향은 잡지 못했다.
+    """
+    fake_llm(
+        RefinementOutput(
+            items=[
+                RefinedItem(item_id="it_1", refined_text="알림 처리 성능 개선"),
+                RefinedItem(item_id="empty_1", refined_text=None),
+            ]
+        )
+    )
+    state = make_state(
+        structured_items=[
+            {
+                "item_id": "it_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "알림 시간을 8분에서 3초로 단축하고 2,400건을 처리했다.",
+            },
+            {
+                "item_id": "empty_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "slot_id": "TASK.BASIC.RESULT",
+                "text": None,
+            },
+        ]
+    )
+
+    result = await refine_text(state)
+
+    assert result["refined_items"][0]["refined_text"] == (
+        "알림 시간을 8분에서 3초로 단축하고 2,400건을 처리했다."
+    )
+
+
+@pytest.mark.asyncio
+async def test_fabricated_korean_method_falls_back_to_source(fake_llm):
+    """정제가 원문에 없는 한국어 방법·수단을 지어내도 원문으로 되돌린다.
+
+    실제로 재현된 경우다. "로그 분석을 통해 결제 오류를 해결했다"를
+    "고객 인터뷰를 통해 결제 오류 해결"로 바꾸면 방법 자체가 지어낸
+    내용인데, 숫자·영문 토큰 검사만으로는 못 잡았다 — 둘 다 새 숫자나
+    영문 고유명사를 담고 있지 않기 때문이다.
+    """
+    fake_llm(
+        RefinementOutput(
+            items=[
+                RefinedItem(item_id="it_1", refined_text="고객 인터뷰를 통해 결제 오류 해결"),
+                RefinedItem(item_id="empty_1", refined_text=None),
+            ]
+        )
+    )
+    state = make_state(
+        structured_items=[
+            {
+                "item_id": "it_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "로그 분석을 통해 결제 오류를 해결했다.",
+            },
+            {
+                "item_id": "empty_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "slot_id": "TASK.BASIC.RESULT",
+                "text": None,
+            },
+        ]
+    )
+
+    result = await refine_text(state)
+
+    assert result["refined_items"][0]["refined_text"] == "로그 분석을 통해 결제 오류를 해결했다."
+
+
+@pytest.mark.asyncio
 async def test_new_proper_noun_not_grounded_in_source_falls_back_to_source(fake_llm):
     fake_llm(
         RefinementOutput(
