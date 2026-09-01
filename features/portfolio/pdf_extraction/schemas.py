@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field
 
+from .config import get_pdf_extraction_limits
+
 
 class PdfProblemSolvingItem(BaseModel):
     """문제 해결 항목 스키마"""
@@ -25,9 +27,13 @@ class PdfActivity(BaseModel):
 class PdfExtractionResult(BaseModel):
     """LLM Structured Output용 PDF 추출 결과"""
 
+    # max_length 는 config.py/pdf_extraction.yaml 의 max_activity_count 와 같은 값을
+    # 써야 한다 (다르면 배치 경로의 structured output 검증과 스트리밍 경로의 상한
+    # 판단이 어긋난다). Pydantic Field 제약은 클래스 정의 시점에 고정되므로 모듈
+    # import 시점의 설정값을 그대로 읽어 쓴다.
     activities: list[PdfActivity] = Field(
         ...,
         min_length=1,
-        max_length=4,
+        max_length=get_pdf_extraction_limits().max_activity_count,
         description="PDF에서 추출한 활동 목록",
     )

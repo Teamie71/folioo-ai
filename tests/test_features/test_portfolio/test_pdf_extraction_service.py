@@ -435,6 +435,48 @@ def test_validate_result_problem_solving_matches_main_server_rendering(
     assert _rendered_problem_solving_length(activities[0].problem_solving) <= limit
 
 
+def test_validate_result_problem_solving_field_truncation_does_not_double_count_separator(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """필드별 잘라내기가 오버헤드에 이미 포함된 구분자를 또 빼지 않는다.
+
+    오버헤드(17, no 한 자리)는 라벨과 situation·strategy·reason 사이 개행을 이미
+    포함한다. 필드 예산을 계산한 뒤 또 필드 사이 구분자를 빼면, 실제로 담을 수
+    있는 것보다 적게 담아 필요 이상으로 잘라내게 된다.
+    """
+    # remaining = 32, field_budget = 32 - 17 = 15.
+    # situation(5) + strategy(5) 를 그대로 담으면 reason 에는 5자가 남아야 한다.
+    monkeypatch.setattr(
+        pdf_extraction_service_module,
+        "get_pdf_extraction_limits",
+        lambda: _limits(problem_solving_max_length=32),
+    )
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    result = _single_activity_result(
+        problem_solving=[
+            PdfProblemSolvingItem(
+                no=1,
+                situation="가나다라마",
+                strategy="바사아자차",
+                reason="카타파하거너더러머버서",
+            )
+        ]
+    )
+
+    activities = service._validate_result(result)
+
+    kept = activities[0].problem_solving
+    assert len(kept) == 1
+    assert kept[0].situation == "가나다라마"
+    assert kept[0].strategy == "바사아자차"
+    # 구분자를 이중으로 빼는 예전 로직이면 "카타파"(3자)까지만 남았다.
+    assert kept[0].reason == "카타파하거"
+    assert _rendered_problem_solving_length(kept) <= 32
+
+
 def test_validate_result_respects_configured_activity_count(monkeypatch: pytest.MonkeyPatch):
     """활동 개수 상한도 설정값을 따른다."""
     monkeypatch.setattr(
@@ -667,6 +709,7 @@ class DummyStreamGenerator:
         self.exc = exc
         self.raise_after = raise_after
         self.yielded = 0
+        self.closed = False
 
     def extract(self, _file_bytes: bytes, _filename: str) -> PdfExtractionResult:
         raise AssertionError("스트리밍 경로에서는 extract 를 호출하지 않는다")
@@ -675,11 +718,15 @@ class DummyStreamGenerator:
         if self.exc is not None and self.raise_after is None:
             raise self.exc
 
-        for activity in self.activities:
-            if self.raise_after is not None and self.yielded >= self.raise_after:
-                raise self.exc or RuntimeError("스트림 실패")
-            self.yielded += 1
-            yield activity
+        try:
+            for activity in self.activities:
+                if self.raise_after is not None and self.yielded >= self.raise_after:
+                    raise self.exc or RuntimeError("스트림 실패")
+                self.yielded += 1
+                yield activity
+        finally:
+            # 정상 소진이 아니라 aclose() 로 명시적으로 닫힌 경우를 구분하기 위한 표시.
+            self.closed = True
 
 
 def _stream_activity(name: str) -> PdfActivity:
@@ -818,6 +865,34 @@ async def test_stream_extraction_stops_at_activity_count_limit(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+async def test_stream_extraction_closes_generator_when_activity_limit_reached(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """활동 상한 도달로 break 해도 하위 LLM 스트림 제너레이터를 명시적으로 닫는다."""
+    monkeypatch.setattr(
+        pdf_extraction_service_module,
+        "get_pdf_extraction_limits",
+        lambda: _limits(max_activity_count=2),
+    )
+    client = DummyCorrectionClient()
+    generator = DummyStreamGenerator(
+        [_stream_activity("Alpha"), _stream_activity("Beta"), _stream_activity("Gamma")]
+    )
+    service = PdfExtractionService(correction_client=client, generator=generator)
+
+    await _collect(
+        service.stream_extraction(
+            correction_id=123,
+            file_bytes=b"%PDF-1.4",
+            filename="portfolio.pdf",
+            content_type="application/pdf",
+        )
+    )
+
+    assert generator.closed is True
+
+
+@pytest.mark.asyncio
 async def test_stream_extraction_skips_duplicate_activity_names():
     """중복 활동명은 이벤트를 내보내지 않는다."""
     client = DummyCorrectionClient()
@@ -892,7 +967,7 @@ async def test_stream_extraction_reports_empty_result_as_failure():
 
 @pytest.mark.asyncio
 async def test_stream_extraction_rejects_invalid_file_before_calling_llm():
-    """파일 검증 실패는 LLM 호출 없이 실패 이벤트로 끝낸다."""
+    """파일 검증 실패는 LLM 호출 없이 실패 이벤트와 실패 콜백으로 끝낸다."""
     client = DummyCorrectionClient()
     generator = DummyStreamGenerator([_stream_activity("Alpha")])
     service = PdfExtractionService(correction_client=client, generator=generator)
@@ -909,4 +984,5 @@ async def test_stream_extraction_rejects_invalid_file_before_calling_llm():
     assert [event["event"] for event in events] == ["extraction_failed"]
     assert events[0]["data"]["error"]["code"] == "extraction_invalid_file"
     assert generator.yielded == 0
-    assert client.failed_calls == []
+    assert client.failed_calls == [(123, "빈 PDF 파일은 업로드할 수 없습니다.")]
+    assert client.completed_calls == []

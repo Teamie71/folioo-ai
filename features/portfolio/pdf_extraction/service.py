@@ -4,12 +4,18 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Protocol
 
 from fastapi import BackgroundTasks
 
-from common.clients.correction_client import CorrectionClient, get_correction_client
+from common.clients.correction_client import (
+    CorrectionClient,
+    build_pdf_activity_payload,
+    get_correction_client,
+)
 from common.sse import SSEErrorCode, SSEEventType
+from common.utils.text import is_within_char_limit, truncate_to_char_limit
 
 from .config import get_pdf_extraction_limits
 from .schemas import PdfActivity, PdfExtractionResult, PdfProblemSolvingItem
@@ -135,6 +141,7 @@ class PdfExtractionService:
         try:
             self._validate_file(file_bytes=file_bytes, filename=filename, content_type=content_type)
         except ValueError as exc:
+            await self._send_failure_callback(correction_id, str(exc))
             yield _sse_event(
                 SSEEventType.EXTRACTION_FAILED,
                 {"error": {"code": SSEErrorCode.EXTRACTION_INVALID_FILE, "message": str(exc)}},
@@ -148,23 +155,27 @@ class PdfExtractionService:
         yield _sse_event(SSEEventType.EXTRACTION_STARTED, {})
 
         try:
-            async for raw_activity in self._generator.extract_stream(file_bytes, filename):
-                normalized = self._normalize_activity(raw_activity, seen_names)
-                if normalized is None:
-                    continue
+            # aclosing: 상한 도달로 break 하거나 예외로 빠져나가도 하위 LLM 스트림
+            # (extract_stream 이 감싸는 llm.astream)이 확실히 닫히도록 한다. async for
+            # 를 break 하는 것만으로는 비동기 제너레이터가 즉시 닫히지 않는다.
+            async with aclosing(self._generator.extract_stream(file_bytes, filename)) as stream:
+                async for raw_activity in stream:
+                    normalized = self._normalize_activity(raw_activity, seen_names)
+                    if normalized is None:
+                        continue
 
-                activities.append(normalized)
-                formatted = self._format_activities_for_callback([normalized])[0]
-                yield _sse_event(
-                    SSEEventType.ACTIVITY_COMPLETED,
-                    {
-                        "index": len(activities) - 1,
-                        "activity": _build_activity_payload(formatted),
-                    },
-                )
+                    activities.append(normalized)
+                    formatted = self._format_activities_for_callback([normalized])[0]
+                    yield _sse_event(
+                        SSEEventType.ACTIVITY_COMPLETED,
+                        {
+                            "index": len(activities) - 1,
+                            "activity": build_pdf_activity_payload(formatted),
+                        },
+                    )
 
-                if len(activities) >= limits.max_activity_count:
-                    break
+                    if len(activities) >= limits.max_activity_count:
+                        break
         except Exception as exc:
             logger.exception("PDF 추출 스트리밍 실패 (correction_id: %s): %s", correction_id, exc)
             await self._send_failure_callback(correction_id, str(exc))
@@ -297,17 +308,51 @@ class PdfExtractionService:
             if remaining <= 0:
                 break
 
-            if len(line) <= remaining:
+            if is_within_char_limit(line, remaining):
                 kept.append(line)
                 used += separator + len(line)
                 continue
 
-            truncated = line[:remaining]
+            truncated = truncate_to_char_limit(line, remaining)
             if truncated:
                 kept.append(truncated)
             break
 
         return kept
+
+    @staticmethod
+    def _fit_fields_to_budget(fields: list[str], budget: int) -> list[str]:
+        """필드들을 순서대로 채우되, 예산을 넘는 필드에서 잘라내고 이후 필드는 비운다.
+
+        `_fit_lines_to_limit` 과 달리 필드 사이에 구분자를 더하지 않는다. 문제해결
+        항목의 situation·strategy·reason 사이 개행은 `_PROBLEM_SOLVING_ITEM_OVERHEAD`
+        가 라벨과 함께 이미 계산해 뒀기 때문에, 여기서 또 더하면 예산을 이중으로
+        깎아 필요 이상으로 잘라내게 된다.
+
+        Args:
+            fields: 순서대로 채울 필드 목록
+            budget: 필드 전체에 쓸 수 있는 글자수 예산 (구분자 제외)
+
+        Returns:
+            list[str]: `fields` 와 같은 길이로, 예산 내로 정리된 필드 목록
+        """
+        fitted: list[str] = []
+        used = 0
+
+        for field in fields:
+            remaining = budget - used
+            if remaining <= 0:
+                fitted.append("")
+                continue
+
+            if is_within_char_limit(field, remaining):
+                fitted.append(field)
+                used += len(field)
+            else:
+                fitted.append(truncate_to_char_limit(field, remaining))
+                used = budget
+
+        return fitted
 
     @classmethod
     def _fit_problem_solving_to_limit(
@@ -348,8 +393,7 @@ class PdfExtractionService:
             if field_budget <= 0:
                 break
 
-            fitted = cls._fit_lines_to_limit(fields, field_budget)
-            fitted += [""] * (len(fields) - len(fitted))
+            fitted = cls._fit_fields_to_budget(fields, field_budget)
             if any(fitted):
                 kept.append(
                     item.model_copy(
@@ -446,29 +490,6 @@ class PdfExtractionService:
         # 중복 제거 후에 자른다. 먼저 자르면 중복 활동이 상한 슬롯을 차지해
         # 실제 활동이 max_activity_count개보다 적게 남는다.
         return normalized_activities[: limits.max_activity_count]
-
-
-def _build_activity_payload(activity: PdfActivity) -> dict:
-    """SSE 로 내보낼 활동 payload 를 만든다.
-
-    메인 서버 콜백의 `activities[]` 원소와 같은 camelCase 구조를 쓴다.
-    프론트가 두 경로에서 같은 모양을 받도록 하기 위함이다.
-    """
-    return {
-        "activityName": activity.activity_name,
-        "detail": activity.detail,
-        "responsibility": activity.responsibility,
-        "problemSolving": [
-            {
-                "no": item.no,
-                "situation": item.situation,
-                "strategy": item.strategy,
-                "reason": item.reason,
-            }
-            for item in activity.problem_solving
-        ],
-        "learning": activity.learning,
-    }
 
 
 def _create_default_generator() -> "PdfExtractionGenerator":

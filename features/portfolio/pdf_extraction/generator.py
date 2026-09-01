@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -57,7 +58,12 @@ class PdfExtractionGenerator:
         Raises:
             PdfExtractionGenerationError: LLM 호출이 실패한 경우
         """
-        messages = build_pdf_extraction_messages(file_bytes=file_bytes, filename=filename)
+        # extract() 의 asyncio.to_thread(self._generator.extract, ...) 호출부와 동일하게,
+        # 파일 읽기 + 최대 10MB PDF base64 인코딩을 스레드로 넘겨 이벤트 루프를
+        # 블로킹하지 않는다.
+        messages = await asyncio.to_thread(
+            build_pdf_extraction_messages, file_bytes=file_bytes, filename=filename
+        )
         parser = ActivityJsonStreamParser()
 
         try:
