@@ -762,6 +762,34 @@ async def test_stream_extraction_sends_batch_callback_once_at_the_end():
 
 
 @pytest.mark.asyncio
+async def test_stream_extraction_reports_completion_callback_failure():
+    """완료 콜백(메인 서버 저장)이 실패하면 완료가 아니라 실패로 보고하고 실패 콜백도 보낸다."""
+    client = DummyCorrectionClient()
+    client.complete_exception = RuntimeError("메인 서버 500")
+    generator = DummyStreamGenerator([_stream_activity("Alpha"), _stream_activity("Beta")])
+    service = PdfExtractionService(correction_client=client, generator=generator)
+
+    events = await _collect(
+        service.stream_extraction(
+            correction_id=123,
+            file_bytes=b"%PDF-1.4",
+            filename="portfolio.pdf",
+            content_type="application/pdf",
+        )
+    )
+
+    assert [event["event"] for event in events] == [
+        "extraction_started",
+        "activity_completed",
+        "activity_completed",
+        "extraction_failed",
+    ]
+    assert events[-1]["data"]["error"]["code"] == "extraction_failed"
+    assert client.completed_calls == []
+    assert client.failed_calls == [(123, "PDF 추출 결과 저장에 실패했습니다.")]
+
+
+@pytest.mark.asyncio
 async def test_stream_extraction_stops_at_activity_count_limit(monkeypatch: pytest.MonkeyPatch):
     """활동 개수 상한에 도달하면 더 받지 않고 멈춘다."""
     monkeypatch.setattr(

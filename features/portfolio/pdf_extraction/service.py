@@ -184,7 +184,25 @@ class PdfExtractionService:
             )
             return
 
-        await self._send_completion_callback(correction_id, activities)
+        completion_task = asyncio.create_task(
+            self._send_completion_callback(correction_id, activities)
+        )
+        # asyncio.shield: 소비 측(클라이언트 연결 끊김 등)에서 이 지점의 await가
+        # 취소돼도 completion_task 자체는 취소되지 않고 백그라운드에서 계속 실행된다.
+        # (common/sse/ping.py 의 finally 블록이 next_event_task 를 취소하면 그 취소가
+        # 이 await 체인까지 전파되는데, shield 없이는 completion_task 까지 함께
+        # 취소되어 저장이 중간에 끊긴다.)
+        completed = await asyncio.shield(completion_task)
+
+        if not completed:
+            message = "PDF 추출 결과 저장에 실패했습니다."
+            await self._send_failure_callback(correction_id, message)
+            yield _sse_event(
+                SSEEventType.EXTRACTION_FAILED,
+                {"error": {"code": SSEErrorCode.EXTRACTION_FAILED, "message": message}},
+            )
+            return
+
         yield _sse_event(
             SSEEventType.EXTRACTION_COMPLETED,
             {"activityCount": len(activities)},
@@ -194,8 +212,8 @@ class PdfExtractionService:
         self,
         correction_id: int,
         activities: list[PdfActivity],
-    ) -> None:
-        """추출 완료 콜백을 전송하고 실패는 로깅만 한다."""
+    ) -> bool:
+        """추출 완료 콜백을 전송한다. 실패는 로깅하고 성공 여부를 반환한다."""
         try:
             await self._correction_client.complete_pdf_extraction(
                 correction_id,
@@ -205,8 +223,10 @@ class PdfExtractionService:
                 ],
                 source_type="EXTERNAL",
             )
+            return True
         except Exception:
             logger.exception("PDF 추출 완료 콜백 전송 실패 (correction_id: %s)", correction_id)
+            return False
 
     async def _send_failure_callback(self, correction_id: int, error_message: str) -> None:
         """추출 실패 콜백을 전송하고 실패는 로깅만 한다."""
