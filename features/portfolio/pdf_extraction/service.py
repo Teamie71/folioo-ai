@@ -364,7 +364,8 @@ class PdfExtractionService:
 
         메인 서버가 라벨(`#N`·`상황: ` 등)을 붙여 저장하므로 항목마다 고정 오버헤드를
         함께 센다. 항목 하나가 남은 예산을 넘으면 situation·strategy·reason 순으로
-        채우고, 예산이 바닥난 필드는 빈 문자열로 남긴다.
+        채우되, 셋 중 하나라도 빈 문자열이 되면 그 항목은 통째로 버린다 (메인 서버
+        DTO 가 세 필드 모두 비어있지 않기를 요구한다).
 
         Args:
             items: 문제해결 항목 목록
@@ -394,7 +395,10 @@ class PdfExtractionService:
                 break
 
             fitted = cls._fit_fields_to_budget(fields, field_budget)
-            if any(fitted):
+            # 메인 서버 DTO(PdfExtractionProblemSolvingReqDTO)는 situation·strategy·reason
+            # 모두 @IsNotEmpty() 다. 셋 중 하나라도 예산이 바닥나 빈 문자열이 되면 이 항목은
+            # 아예 버린다 — 빈 문자열로 보내면 활동 배열 전체가 콜백에서 400으로 거부된다.
+            if all(fitted):
                 kept.append(
                     item.model_copy(
                         update={
@@ -434,16 +438,29 @@ class PdfExtractionService:
         seen_names.add(dedupe_key)
         limits = get_pdf_extraction_limits()
 
-        problem_solving = [
+        normalized_problem_solving = [
             item.model_copy(
                 update={
-                    "no": index,
-                    "situation": cls._normalize_structured_text(item.situation),
-                    "strategy": cls._normalize_structured_text(item.strategy),
-                    "reason": cls._normalize_structured_text(item.reason),
+                    "situation": cls._normalize_structured_text(item.situation).strip(),
+                    "strategy": cls._normalize_structured_text(item.strategy).strip(),
+                    "reason": cls._normalize_structured_text(item.reason).strip(),
                 }
             )
-            for index, item in enumerate(activity.problem_solving, start=1)
+            for item in activity.problem_solving
+        ]
+        # 메인 서버 DTO 는 situation·strategy·reason 모두 @IsNotEmpty() 다. LLM 이
+        # 원본에서부터 한 필드를 비워 뱉었다면(스키마상 빈 문자열도 유효한 str) 여기서
+        # 걸러내지 않으면 콜백 전송 시 활동 배열 전체가 400 으로 거부된다.
+        problem_solving = [
+            item.model_copy(update={"no": index})
+            for index, item in enumerate(
+                (
+                    item
+                    for item in normalized_problem_solving
+                    if item.situation and item.strategy and item.reason
+                ),
+                start=1,
+            )
         ]
 
         return activity.model_copy(

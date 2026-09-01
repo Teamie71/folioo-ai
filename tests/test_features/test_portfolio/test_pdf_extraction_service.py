@@ -477,6 +477,65 @@ def test_validate_result_problem_solving_field_truncation_does_not_double_count_
     assert _rendered_problem_solving_length(kept) <= 32
 
 
+def test_validate_result_drops_problem_solving_item_when_truncation_would_empty_a_field(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """예산이 부족해 situation·strategy·reason 중 하나라도 빈 문자열이 되면 항목을 통째로 버린다.
+
+    메인 서버 DTO(PdfExtractionProblemSolvingReqDTO)는 세 필드 모두 @IsNotEmpty() 다.
+    빈 문자열로 보내면 활동 배열 전체가 콜백에서 400으로 거부되므로, 절반만
+    담느니 아예 버리는 편이 안전하다.
+    """
+    # remaining = 20, field_budget = 20 - 17 = 3.
+    # situation 만 3자로 잘려 담기고 strategy·reason 예산은 0이 된다.
+    monkeypatch.setattr(
+        pdf_extraction_service_module,
+        "get_pdf_extraction_limits",
+        lambda: _limits(problem_solving_max_length=20),
+    )
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    result = _single_activity_result(
+        problem_solving=[
+            PdfProblemSolvingItem(
+                no=1,
+                situation="가나다라마",
+                strategy="바사아자차",
+                reason="카타파하거너더러머버서",
+            )
+        ]
+    )
+
+    activities = service._validate_result(result)
+
+    assert activities[0].problem_solving == []
+
+
+def test_validate_result_drops_problem_solving_item_with_empty_field_from_source():
+    """LLM 원본 출력에 애초에 빈 필드가 있으면 담기 전에 걸러내고 남은 항목을 다시 번호 매긴다."""
+    service = PdfExtractionService(
+        correction_client=DummyCorrectionClient(),
+        generator=DummyGenerator(),
+    )
+    result = _single_activity_result(
+        problem_solving=[
+            PdfProblemSolvingItem(no=1, situation="", strategy="전략1", reason="이유1"),
+            PdfProblemSolvingItem(no=2, situation="상황2", strategy="전략2", reason="이유2"),
+        ]
+    )
+
+    activities = service._validate_result(result)
+
+    kept = activities[0].problem_solving
+    assert len(kept) == 1
+    assert kept[0].no == 1  # 걸러낸 뒤 남은 항목을 다시 1번부터 번호 매긴다
+    assert kept[0].situation == "상황2"
+    assert kept[0].strategy == "전략2"
+    assert kept[0].reason == "이유2"
+
+
 def test_validate_result_respects_configured_activity_count(monkeypatch: pytest.MonkeyPatch):
     """활동 개수 상한도 설정값을 따른다."""
     monkeypatch.setattr(
