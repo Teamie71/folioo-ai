@@ -214,6 +214,26 @@ async def test_file_text_is_traceable(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_short_fragment_of_long_unpunctuated_sentence_is_still_flagged_missing(fake_llm):
+    """구두점 없는 긴 문장의 일부만 담겨도 부분 문자열이라는 이유만으로
+    문장 전체가 커버됐다고 오판하지 않는다.
+
+    문장부호가 없으면 `_split_into_sentences`가 전체를 하나의 '문장'으로
+    묶는다. 그중 짧은 조각 하나가 우연히 부분 문자열이라는 이유만으로 문장
+    전체(뒤에 이어지는 다른 내용까지)가 커버됐다고 보면, `_uncovered_sentences`가
+    원래 잡으려던 "LLM이 원문 일부를 통째로 빠뜨리는" 사고를 놓친다.
+    """
+    text = (
+        "저는 백엔드 개발자로 결제 시스템을 담당했고 트래픽이 급증했을 때 발생한 "
+        "성능 저하 문제를 캐싱 도입으로 해결했습니다"
+    )
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", "결제 시스템을 담당했고")]))
+
+    with pytest.raises(LlmError):
+        await filter_content(make_state(user_message=text, extracted_text=None))
+
+
+@pytest.mark.asyncio
 async def test_file_structural_headings_are_dropped_but_episode_summary_is_kept(fake_llm):
     """PDF 구획 제목은 블록이 아니지만 구체적인 에피소드 제목은 요약으로 남긴다."""
     text = (

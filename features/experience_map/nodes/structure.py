@@ -112,7 +112,12 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         # 크게 낮아진다 — 뒤 배치는 앞 배치가 이미 만든 카테고리·앵커를
         # `previous_batch_note`로 안내받아 재사용할 수 있다.
         items: list[StructureLlmItem] = []
-        existing_categories: list[ExistingCategoryClassification] = []
+        # alias로 병합한다 — 배치마다 독립적으로 호출되는 LLM이 같은 활동
+        # 트리를 보고도 매번 자기 신고 내용을 조금씩 다르게 낼 수 있다. 마지막
+        # 배치 결과로 덮어쓰면 앞선 배치가 옳게 신고한 카테고리·앵커가
+        # 사라져, 그 배치의 item들이 최종 _validate_output 에서 자기모순으로
+        # 잘못 거부되거나(신고 유실) 중복 카테고리 생성을 놓칠 수 있다.
+        existing_categories_by_alias: dict[str, ExistingCategoryClassification] = {}
         cumulative_source_text: dict[str, str] = {}
         call_index = 0
         batches = _source_batches(source_items)
@@ -214,7 +219,8 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                     catalog,
                     document_slot_hints,
                 )
-                existing_categories = result.existing_categories
+                for category in result.existing_categories:
+                    existing_categories_by_alias[category.alias] = category
                 missing = _missing_source_ids(candidate, batch_source_text)
                 duplicated = _duplicate_source_ids(candidate) & set(batch_source_text)
                 batch_items = candidate
@@ -273,7 +279,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                 source_items=source_items,
                 catalog=catalog,
                 state=state,
-                existing_categories=existing_categories,
+                existing_categories=list(existing_categories_by_alias.values()),
             )
         except Exception:
             logger.error(
@@ -632,8 +638,9 @@ def _apply_structuring_fixups(
     """
     normalized_slots = _normalize_known_slot_aliases(raw_items, catalog)
     source_sanitized = _remove_unknown_source_references(normalized_slots, source_text)
+    ungrounded_cleared = _clear_ungrounded_text(source_sanitized)
     context_aligned = _apply_document_slot_hints(
-        source_sanitized, catalog, document_slot_hints or {}
+        ungrounded_cleared, catalog, document_slot_hints or {}
     )
     meaning_aligned = _align_explicit_troubleshooting_slots(
         context_aligned,
@@ -651,7 +658,8 @@ def _apply_structuring_fixups(
     merged = _merge_duplicate_slot_items(merged_sections)
     pruned_junk = _drop_empty_invalid_slot_items(merged, catalog)
     reconstructed = _reconstruct_verbatim_text(pruned_junk, source_text)
-    rerefed = _fix_batch_local_parent_ref(reconstructed, state)
+    deredundanted = _resolve_redundant_target_activity_parent_ref(reconstructed, state)
+    rerefed = _fix_batch_local_parent_ref(deredundanted, state)
     repaired_refs = _repair_unknown_slot_parent_refs(rerefed, state)
     dereffed = _clear_invalid_after_ref(repaired_refs, state)
     rerooted = _fix_new_section_parent(dereffed, state)
@@ -744,6 +752,31 @@ def _remove_unknown_source_references(
                 unknown,
             )
     return sanitized
+
+
+def _clear_ungrounded_text(items: list[StructureLlmItem]) -> list[StructureLlmItem]:
+    """`source_item_ids` 없이 만들어진 `text`를 비운다.
+
+    프롬프트는 SUMMARY 앵커 등에서 "요약할 별도 원문이 없으면 비워 둔다"고
+    지시하지만(`prompts/structure.py`), 모델이 그 지시를 어기고
+    `source_item_ids`를 하나도 안 단 채 `text`를 채우는 사고가 실제로
+    있었다 — 근거 문장 없이 요약을 스스로 지어낸 것으로 보인다.
+    `_validate_output`이 이걸 무조건 거부해 배치 전체가 재시도로 넘어가는데,
+    같은 배치를 다시 시켜도 모델이 같은 실수를 반복해 재시도가 무의미했다.
+
+    이 파일의 원칙(원문 역추적 — "LLM 출력을 그대로 믿지 않는다")과 정확히
+    같은 이유로 거부되는 내용이므로, 재시도를 기다리는 대신 여기서
+    결정론적으로 비운다. 프롬프트가 이미 "비워 둔다"를 기본값으로 요구하고
+    있으니 코드가 그 기본값을 대신 강제하는 것뿐이다 — 앵커는 흔히 있는
+    "아직 안 채워진 슬롯" 형태(`text=None`)로 남고, 그 아래 세부 슬롯의
+    내용은 각자 자기 `source_item_ids`를 그대로 유지하므로 영향받지 않는다.
+    """
+    return [
+        item.model_copy(update={"text": None})
+        if item.text is not None and not item.source_item_ids
+        else item
+        for item in items
+    ]
 
 
 def _apply_document_slot_hints(
@@ -1145,6 +1178,39 @@ def _reconstruct_verbatim_text(
         text = " ".join(source_text[sid].strip() for sid in item.source_item_ids)
         rebuilt.append(item.model_copy(update={"text": text}))
     return rebuilt
+
+
+def _resolve_redundant_target_activity_parent_ref(
+    items: list[StructureLlmItem], state: ExperienceMapState
+) -> list[StructureLlmItem]:
+    """`parent_ref`가 선택 활동 자신이면서 `parent_item_id`도 있으면 후자를 우선한다.
+
+    구조화 모델이 새로 만든 부모의 `parent_item_id`를 정확히 적고도 선택
+    활동의 `parent_ref`를 redundant하게 남기는 경우가 실제로 있었다.
+    `StructureLlmItem` 스키마는 어떤 활동을 선택했는지 몰라 이 redundant
+    여부를 판단할 수 없어 여기서 state로 판단한다.
+
+    `parent_ref`가 선택 활동이 **아닌** 다른 값인데 `parent_item_id`도 있으면
+    거부한다 — 그건 redundant가 아니라 모델이 서로 다른 두 부모를 낸 진짜
+    모순이다. 뒤에 오는 `_reparent_orphan_level5_items` 등 여러 보정 함수가
+    "parent_ref와 parent_item_id 중 하나만 있다"는 전제로 부모 체인을
+    타고 올라가며(`parent_ref`가 있으면 `parent_item_id`는 보지도 않고
+    그걸 바로 최종 부모로 취급한다), 둘 다 남겨두면 그 함수들이 어느 게
+    모델의 진짜 의도인지 짐작해 조용히 하나를 버려 버린다. 그래서 여기서
+    가능한 한 일찍(다른 보정이 손대기 전에) 걸러 재시도를 유도해야 한다.
+    """
+    target_alias = state.get("target_experience_alias")
+    resolved: list[StructureLlmItem] = []
+    for item in items:
+        if item.parent_ref is not None and item.parent_item_id is not None:
+            if item.parent_ref == target_alias:
+                item = item.model_copy(update={"parent_ref": None})
+            else:
+                raise ValueError(
+                    f"[{item.item_id}] parent_ref와 parent_item_id를 동시에 가질 수 없습니다."
+                )
+        resolved.append(item)
+    return resolved
 
 
 def _fix_batch_local_parent_ref(
@@ -1859,6 +1925,16 @@ def _validate_output(
             raise ValueError(f"카탈로그에 없는 slot_id입니다: [{item.item_id}] {item.slot_id}")
         if item.text is None and item.slot_id is None and item.section_kind is None:
             raise ValueError("내용 없는 블록에는 slot_id 또는 section_kind가 필요합니다.")
+        if item.parent_ref is not None and item.parent_item_id is not None:
+            # `_resolve_redundant_target_activity_parent_ref`가 "선택 활동
+            # 자신을 redundant하게 같이 낸" 경우만 해소한다. 여기까지 둘 다
+            # 남아 있으면 모델이 서로 다른 두 부모를 낸 진짜 모순이다 —
+            # 하나를 짐작해 버리지 않고 검증 실패로 재시도를 유도한다.
+            # (그대로 두면 `to_structured_item()` 변환에서 잡히지 않은
+            # 원시 ValidationError 로 새 버린다.)
+            raise ValueError(
+                f"[{item.item_id}] parent_ref와 parent_item_id를 동시에 가질 수 없습니다."
+            )
         if item.parent_ref is not None and item.parent_ref not in state.get(
             "alias_to_block_id", {}
         ):

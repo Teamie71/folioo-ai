@@ -63,6 +63,11 @@ def _traceable(item: FilteredItem, haystack: str) -> bool:
 
 
 _MIN_MEANINGFUL_SENTENCE_CHARS = 8
+# 여러 item을 합쳐도 문장 길이 대비 이 비율 이상을 담아야 "커버됐다"고
+# 본다. "성과: " 같은 짧은 라벨을 떼고 알맹이만 남기는 정상적인 경우도
+# 있어 1.0에 가깝게 두지는 않는다 — 그래도 문장 대부분이 실제로 빠진
+# 경우(원래 이 함수가 잡으려던 사고)는 이 문턱보다 한참 낮게 나온다.
+_MIN_SENTENCE_COVERAGE_RATIO = 0.6
 
 
 def _split_into_sentences(text: str) -> list[str]:
@@ -101,14 +106,50 @@ def _uncovered_sentences(raw_input: str, accepted: list[FilteredItem]) -> list[s
         normalized = _normalize(sentence)
         if len(normalized) < _MIN_MEANINGFUL_SENTENCE_CHARS:
             continue
-        if any(
-            normalized in candidate or candidate in normalized
-            for candidate in accepted_texts
-            if candidate
-        ):
+        if _is_sentence_covered(normalized, accepted_texts):
             continue
         missing.append(sentence)
     return missing
+
+
+def _is_sentence_covered(normalized: str, accepted_texts: list[str]) -> bool:
+    """문장이 분류된 item들로 충분히 커버됐는지 판단한다.
+
+    문장 전체가 item 하나에 포함되면 완전 커버다. 그렇지 않으면, 문장 안에서
+    발견되는 모든 item(fragment)의 위치를 표시해 합쳐서 커버 비율을 잰다 —
+    글자수 상한(`_split_long_item`)이나 제목별로 쪼개진 여러 item이 한 문장을
+    나눠 담는 게 정상 경로이기 때문이다(구두점 없는 긴 원문 한 덩어리를
+    `_split_into_sentences`가 하나의 "문장"으로 묶어 낸다).
+
+    이렇게 여러 item을 합쳐도, 아주 짧은 조각 하나가 우연히 부분 문자열이란
+    이유만으로 훨씬 긴 문장 전체가 커버됐다고 오판하지는 않는다 — 합친 커버
+    비율이 `_MIN_SENTENCE_COVERAGE_RATIO`를 넘어야 한다.
+    """
+    if not normalized:
+        return True
+
+    covered = bytearray(len(normalized))
+    for candidate in accepted_texts:
+        if not candidate:
+            continue
+        if normalized in candidate:
+            return True
+        position = normalized.find(candidate)
+        while position != -1:
+            for index in range(position, position + len(candidate)):
+                covered[index] = 1
+            position = normalized.find(candidate, position + 1)
+
+    # 공백은 분모·분자 모두에서 뺀다. 여러 item을 이어 붙이면 item 사이
+    # 경계였던 공백(원래는 줄바꿈)은 어느 item 텍스트에도 안 담겨 있어
+    # 항상 커버 실패로 잡히는데, 이건 진짜 누락이 아니라 이어붙이기의
+    # 부산물이다.
+    content_positions = [index for index, char in enumerate(normalized) if not char.isspace()]
+    if not content_positions:
+        return True
+    covered_content = sum(covered[index] for index in content_positions)
+    coverage_ratio = covered_content / len(content_positions)
+    return coverage_ratio >= _MIN_SENTENCE_COVERAGE_RATIO
 
 
 def _is_structural_heading(item: FilteredItem) -> bool:
@@ -211,7 +252,7 @@ def _split_long_item(item: FilteredItem) -> list[FilteredItem]:
     chunks: list[str] = []
     start = 0
     while len(text) - start > MAX_SOURCE_ITEM_CHARS:
-        window = text[start : start + MAX_SOURCE_ITEM_CHARS + 1]
+        window = text[start : start + MAX_SOURCE_ITEM_CHARS]
         cut = _preferred_split_position(window)
         if cut <= 0:
             cut = MAX_SOURCE_ITEM_CHARS
@@ -234,9 +275,14 @@ def _split_long_item(item: FilteredItem) -> list[FilteredItem]:
 
 
 def _preferred_split_position(window: str) -> int:
-    """제한 안에서 의미가 가장 덜 끊기는 마지막 경계를 반환한다."""
+    """제한 안에서 의미가 가장 덜 끊기는 마지막 경계를 반환한다.
+
+    반환값은 항상 `limit` 이하여야 한다. `candidate`를 `limit`보다 길게 잡으면
+    구분자·문장 경계가 그 여유분 끝에 걸렸을 때 `limit`을 넘는 위치를 돌려주게
+    된다 — 실제로 있었던 버그다.
+    """
     limit = min(MAX_SOURCE_ITEM_CHARS, len(window))
-    candidate = window[: limit + 1]
+    candidate = window[:limit]
 
     for separator in ("\n\n", "\n"):
         position = candidate.rfind(separator)

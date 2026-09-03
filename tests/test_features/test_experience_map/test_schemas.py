@@ -65,8 +65,14 @@ def test_structured_item_rejects_both_parent_refs():
         )
 
 
-def test_structure_llm_item_prefers_new_parent_when_model_returns_both_refs():
-    """LLM이 기존·신규 부모를 함께 내면 더 구체적인 신규 item 참조를 사용한다."""
+def test_structure_llm_item_allows_both_refs_for_node_level_resolution():
+    """스키마는 둘 다 있는 것 자체는 거부하지 않는다.
+
+    선택 활동 별칭을 redundant하게 함께 낸 것인지, 진짜 모순인지는 이
+    스키마가 판단할 수 없다(어떤 활동을 선택했는지는 state에만 있다) — 그
+    판단은 구조화 노드의
+    `_resolve_redundant_target_activity_parent_ref`가 한다.
+    """
     item = StructureLlmItem(
         item_id="blk_2",
         action="add",
@@ -74,7 +80,7 @@ def test_structure_llm_item_prefers_new_parent_when_model_returns_both_refs():
         parent_item_id="blk_1",
     )
 
-    assert item.parent_ref is None
+    assert item.parent_ref == "exp_1"
     assert item.parent_item_id == "blk_1"
 
 

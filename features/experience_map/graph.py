@@ -36,9 +36,17 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node("file_cleanup", cleanup_extracted_files)
     graph.add_node("content_filter", filter_content, retry_policy=RETRY_POLICY)
     graph.add_node("target_activity", select_target_activity, retry_policy=RETRY_POLICY)
-    # structure는 누락 원문만 좁혀서 내부에서 한 번 보정한다. 그래프 재시도까지
-    # 겹치면 같은 배치가 최대 네 번 호출되므로 공통 RetryPolicy를 중복 적용하지 않는다.
-    graph.add_node("structure", structure_blocks)
+    # structure는 누락 원문만 좁혀서 배치별로 내부에서 한 번 보정하지만, 그 보정은
+    # 배치 루프 안에서만 동작한다 — 모든 배치가 끝난 뒤의 카탈로그 슬롯 채우기·
+    # 앵커 재사용·최종 _validate_output 은 이 노드 안에서 재시도되지 않는다.
+    # 공통 RetryPolicy를 완전히 빼면 그 마지막 단계의 일시적 실패(카탈로그 조회
+    # 순단, 드물게 나쁜 배치 조합으로 인한 검증 실패 등)가 재시도 없이 바로
+    # 사용자 하드 실패로 이어진다 — 다른 모든 노드는 여전히 1회 자동 재시도를
+    # 받는데 structure만 못 받는 비대칭이 생긴다. 최악의 경우 배치당 LLM 호출이
+    # 최대 네 번(배치 내부 2회 × 그래프 재시도 2회)까지 늘 수 있지만, 그건 배치
+    # 내부 재시도와 마지막 단계 실패가 동시에 겹치는 드문 경우에만 일어나므로
+    # 감수한다.
+    graph.add_node("structure", structure_blocks, retry_policy=RETRY_POLICY)
     graph.add_node("refine", refine_text, retry_policy=RETRY_POLICY)
     graph.add_node("validate", _validate_async)
     graph.add_node("fallback", fallback)
@@ -91,7 +99,7 @@ def build_commit_recovery_graph(entry_node: str):
         raise ValueError(f"지원하지 않는 커밋 복구 진입점입니다: {entry_node}")
 
     graph = StateGraph(ExperienceMapState)
-    graph.add_node("structure", structure_blocks)
+    graph.add_node("structure", structure_blocks, retry_policy=RETRY_POLICY)
     graph.add_node("refine", refine_text, retry_policy=RETRY_POLICY)
     graph.add_node("validate", _validate_async)
     graph.add_node("fallback", fallback)

@@ -92,6 +92,121 @@ async def test_refines_content_only_and_restores_empty_slot(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_validate_refine_only_retry_reuses_unflagged_items(fake_llm):
+    """validate가 refine만 지목한 재시도는 지목된 item만 다시 LLM에 보낸다.
+
+    지목되지 않은 item(it_1)은 지난 회차 정제 결과를 그대로 재사용해야
+    한다 — structure는 이번 루프에서 실행되지 않았으므로 structured_items가
+    바뀌지 않았다.
+    """
+    prompts = fake_llm(
+        RefinementOutput(
+            items=[RefinedItem(item_id="it_2", refined_text="캐싱 도입으로 페이지 로딩 속도 개선")]
+        )
+    )
+
+    state = make_state(
+        structured_items=[
+            {
+                "item_id": "it_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "APM으로 병목을 확인해 결제 오류를 해결했다.",
+            },
+            {
+                "item_id": "it_2",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "캐싱을 도입해 페이지 로딩 속도를 개선했다.",
+            },
+        ],
+        refined_items=[
+            {"item_id": "it_1", "refined_text": "APM으로 병목 확인 → 결제 오류 해결"},
+            {
+                "item_id": "it_2",
+                "refined_text": "캐싱을 도입해 페이지 로딩 속도를 개선했다 (지난 회차, 반려됨)",
+            },
+        ],
+        validation_errors=[
+            {
+                "item_id": "it_2",
+                "code": "content_too_long",
+                "message": "내용이 최대 글자 수를 넘었습니다.",
+                "repair_target": "refine",
+            }
+        ],
+        repair_count=1,
+    )
+
+    result = await refine_text(state)
+
+    # it_2만 LLM에 보내고, it_1은 프롬프트에 아예 없어야 한다.
+    assert "[it_2]" in prompts[0]
+    assert "[it_1]" not in prompts[0]
+    assert result["refined_items"] == [
+        # it_1은 재시도 대상이 아니므로 지난 회차 결과를 그대로 재사용한다.
+        {"item_id": "it_1", "refined_text": "APM으로 병목 확인 → 결제 오류 해결"},
+        # it_2만 새로 정제된다.
+        {"item_id": "it_2", "refined_text": "캐싱 도입으로 페이지 로딩 속도 개선"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_validate_structure_and_refine_retry_reprocesses_everything(fake_llm):
+    """validate가 structure까지 지목한 회귀는 refine도 전체를 다시 정제한다.
+
+    structured_items 자체가 바뀌었을 수 있으므로, 지난 회차 정제 결과를
+    재사용하면 새로 생기거나 없어진 블록을 놓칠 수 있다.
+    """
+    prompts = fake_llm(
+        RefinementOutput(
+            items=[
+                RefinedItem(item_id="it_1", refined_text="APM으로 병목 확인 → 결제 오류 해결"),
+                RefinedItem(item_id="it_2", refined_text="새로 만들어진 블록"),
+            ]
+        )
+    )
+
+    state = make_state(
+        structured_items=[
+            {
+                "item_id": "it_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "APM으로 병목을 확인해 결제 오류를 해결했다.",
+            },
+            {
+                "item_id": "it_2",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "새로 만들어진 블록이다.",
+            },
+        ],
+        refined_items=[
+            {"item_id": "it_1", "refined_text": "지난 회차 it_1 (다른 블록 집합 기준)"},
+        ],
+        validation_errors=[
+            {
+                "item_id": "__operations__",
+                "code": "item_set_mismatch",
+                "message": "정제 전후 item 집합이 다릅니다.",
+                "repair_target": "structure",
+            }
+        ],
+        repair_count=1,
+    )
+
+    result = await refine_text(state)
+
+    assert "[it_1]" in prompts[0]
+    assert "[it_2]" in prompts[0]
+    assert result["refined_items"] == [
+        {"item_id": "it_1", "refined_text": "APM으로 병목 확인 → 결제 오류 해결"},
+        {"item_id": "it_2", "refined_text": "새로 만들어진 블록"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_extend_gap_combines_existing_content_and_answer(fake_llm):
     """extend gap은 기존 anchor 문장을 잃지 않고 update metadata를 남긴다."""
     fake_llm(

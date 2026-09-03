@@ -171,17 +171,18 @@ class StructureLlmItem(BaseModel):
 
     @model_validator(mode="after")
     def _check_refs(self) -> "StructureLlmItem":
-        """부모 참조를 보정하고 action별 필수 필드를 검증한다.
+        """action별 필수 필드를 검증한다.
 
         구조화 모델이 새로 만든 부모의 ``parent_item_id``를 정확히 적고도 선택
-        활동의 ``parent_ref``를 함께 남기는 경우가 있다. 새 item 참조가 더
-        구체적이고 이후 구조 검증에서 실제 존재 여부도 확인하므로, LLM 전용
-        스키마에서만 ``parent_item_id``를 우선한다. 커밋에 쓰는
-        :class:`StructuredItem`은 둘을 여전히 엄격하게 거부한다.
+        활동의 ``parent_ref``를 함께 redundant하게 남기는 경우가 있다. 그
+        redundant 여부(``parent_ref``가 선택 활동 별칭과 같은지)는 이 스키마가
+        판단할 수 없다 — 어떤 활동을 선택했는지는 그래프 state에만 있다. 그래서
+        여기서는 둘 다 그대로 두고, 구조화 노드가 state를 갖고
+        (``_resolve_redundant_target_activity_parent_ref``) 해소한다. 이
+        스키마는 최소한의 것만 본다: ``add``는 부모 참조가 최소 하나는
+        있어야 한다. 커밋에 쓰는 :class:`StructuredItem`은 둘 다 남아 있으면
+        여전히 엄격하게 거부한다.
         """
-        if self.parent_ref is not None and self.parent_item_id is not None:
-            self.parent_ref = None
-
         if self.action == "add":
             if self.parent_ref is None and self.parent_item_id is None:
                 raise ValueError("add는 parent_ref 또는 parent_item_id가 필요합니다.")

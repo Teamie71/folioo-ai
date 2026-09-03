@@ -486,6 +486,108 @@ async def test_level5_using_parent_ref_for_batch_local_anchor_is_reinterpreted(
     assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_item_id"] == anchor_id
 
 
+@pytest.mark.asyncio
+async def test_redundant_target_activity_parent_ref_is_resolved_to_new_parent_item_id(
+    fake_dependencies, monkeypatch
+):
+    """`parent_ref`가 선택 활동 자신이면서 `parent_item_id`도 있으면 후자를 우선한다.
+
+    모델이 방금 만든 앵커의 `parent_item_id`를 정확히 적고도 선택 활동
+    자신을 `parent_ref`로 redundant하게 함께 낸 경우다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 3)
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="사내 결제 시스템 백엔드 개발을 담당했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_ref="exp_1",  # redundant — 선택 활동 자신
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_2"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {
+                "item_id": "it_1",
+                "text": "사내 결제 시스템 백엔드 개발을 담당했다",
+                "source": "file",
+            },
+            {"item_id": "it_2", "text": "전환율 개선을 목표로 했다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    anchor_id = items_by_slot["TASK.SUMMARY"]["item_id"]
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_ref"] is None
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_item_id"] == anchor_id
+
+
+@pytest.mark.asyncio
+async def test_genuinely_conflicting_parent_refs_are_rejected_not_guessed(
+    fake_dependencies, monkeypatch
+):
+    """`parent_ref`가 선택 활동이 아닌 다른 기존 별칭이면서 `parent_item_id`도
+    있으면 거부한다.
+
+    이건 redundant가 아니라 모델이 서로 다른 두 부모를 낸 진짜 모순이다.
+    하나를 짐작해 버리면 잘못된 부모 아래 블록이 조용히 만들어질 수 있어,
+    검증 실패로 재시도를 유도해야 한다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 3)
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="사내 결제 시스템 백엔드 개발을 담당했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_ref="b_1",  # 다른 기존 블록 — 선택 활동이 아니다
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_2"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {
+                "item_id": "it_1",
+                "text": "사내 결제 시스템 백엔드 개발을 담당했다",
+                "source": "file",
+            },
+            {"item_id": "it_2", "text": "전환율 개선을 목표로 했다", "source": "file"},
+        ]
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(state)
+
+
 def test_unknown_slot_parent_ref_is_rerooted_to_selected_activity():
     """커밋되지 않은 가짜 기존 별칭은 선택 활동 별칭으로 되돌린다."""
     item = StructureLlmItem(
@@ -551,6 +653,52 @@ async def test_anchor_reusing_same_source_as_its_level5_child_is_emptied(
             {"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"},
             {"item_id": "it_2", "text": "전환율이 올랐다", "source": "file"},
         ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.SUMMARY"]["text"] is None
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+
+
+@pytest.mark.asyncio
+async def test_anchor_text_without_any_source_is_cleared(fake_dependencies, monkeypatch):
+    """앵커가 `source_item_ids` 없이 text만 채우면, 그 text를 비우고 통과시킨다.
+
+    실제 LLM 호출로 재현된 경우다(로컬에서 직접 실행해 확인). 프롬프트는
+    "요약할 별도 원문이 없으면 SUMMARY를 비워 둔다"고 명시하는데도, 모델이
+    `source_item_ids`를 하나도 안 단 채 요약을 스스로 지어내 앵커 text를
+    채웠다. `_validate_output`이 "source_item_ids 없이 text를 만들 수
+    없습니다"로 거부해 재시도해도 같은 실수를 반복해 매번 구조화가
+    실패했다 — 이웃 테스트(중복 원문 사고)와 같은 이유로, 코드가 결정론적으로
+    비운다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 2)
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="사내 결제 시스템 백엔드 개발을 담당한 경험",  # source_item_ids 없이 모델이 지어낸 요약
+                    source_item_ids=[],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_1"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[{"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "message"}]
     )
 
     result = await structure_blocks(state)

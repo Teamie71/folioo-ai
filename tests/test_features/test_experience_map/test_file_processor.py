@@ -578,6 +578,43 @@ async def test_pdf_ocr_limits_concurrent_page_requests(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pdf_ocr_timeout_scales_with_concurrency_rounds(monkeypatch):
+    """페이지가 동시성 상한보다 많아 여러 라운드로 나뉘어도, 개별 페이지가 제
+    시간 안에 끝나면 전체가 타임아웃되지 않는다.
+
+    페이지별 예산(timeouts.file)을 라운드 수만큼 늘리지 않으면, 페이지가 전부
+    정상 처리돼도 라운드가 여러 번 돈다는 이유만으로 asyncio.TimeoutError 가
+    난다.
+    """
+    page_count = extractors.PDF_OCR_CONCURRENCY * 3  # 3라운드가 필요하도록
+
+    class SlowLlm:
+        async def ainvoke(self, messages):
+            await asyncio.sleep(0.05)
+            return AIMessage(content="페이지 내용")
+
+    class FakeTimeouts:
+        file = (
+            0.12  # 한 라운드(~0.05초)는 통과하지만, 스케일 안 하면 3라운드 합(~0.15초)엔 못 미친다
+        )
+
+    class FakeSettings:
+        timeouts = FakeTimeouts()
+
+    monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: SlowLlm())
+    monkeypatch.setattr(extractors, "get_settings", lambda: FakeSettings())
+    monkeypatch.setattr(
+        extractors,
+        "_render_pdf_pages",
+        lambda _: [f"page-{index + 1}".encode() for index in range(page_count)],
+    )
+
+    text = await extractors.extract_with_ocr(b"pdf", "스캔.pdf", "application/pdf")
+
+    assert text.split("\n\n") == ["페이지 내용"] * page_count
+
+
+@pytest.mark.asyncio
 async def test_mixed_pdf_ocrs_every_page(monkeypatch):
     """텍스트·스캔 혼합 PDF도 예외 없이 모든 렌더링 페이지를 OCR한다."""
 

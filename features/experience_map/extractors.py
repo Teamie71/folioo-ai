@@ -22,6 +22,7 @@ import asyncio
 import base64
 import io
 import logging
+import math
 import re
 import zipfile
 from xml.etree import ElementTree
@@ -317,11 +318,21 @@ async def _extract_pdf_with_ocr(data: bytes) -> str:
                 len(image),
             )
             try:
-                text = await _ocr_image(
-                    llm,
-                    image,
-                    "image/png",
-                    f"{OCR_INSTRUCTION}\n- PDF의 {index + 1}페이지입니다. 이 페이지만 옮겨 적습니다.\n",
+                # 페이지 하나당 예산은 timeouts.file 그대로 유지한다 — 이 값이
+                # 원래 "OCR 호출 하나"를 기준으로 정해졌기 때문이다. 아래
+                # _run_all 전체를 감싸는 wait_for가 이 값을 그대로 다시 쓰면
+                # 페이지 수·동시성에 따라 여러 라운드가 걸리는 지금 구조에서는
+                # 페이지가 전부 정상 처리돼도 총 시간이 그 예산을 넘겨 통째로
+                # 실패할 수 있다.
+                text = await asyncio.wait_for(
+                    _ocr_image(
+                        llm,
+                        image,
+                        "image/png",
+                        f"{OCR_INSTRUCTION}\n- PDF의 {index + 1}페이지입니다. "
+                        "이 페이지만 옮겨 적습니다.\n",
+                    ),
+                    timeout=get_settings().timeouts.file,
                 )
             except Exception:
                 logger.exception(
@@ -340,7 +351,13 @@ async def _extract_pdf_with_ocr(data: bytes) -> str:
                 tasks.append(group.create_task(_run(index, image)))
         return [task.result() for task in tasks]
 
-    results = await asyncio.wait_for(_run_all(), timeout=get_settings().timeouts.file)
+    # 페이지별 타임아웃은 위 _run 안에서 이미 강제한다. 여기서는 동시성
+    # 라운드 수에 비례해 전체 예산을 늘려서, 개별 페이지는 모두 제 시간 안에
+    # 끝났는데도 라운드가 여러 번 돌았다는 이유만으로 전체가 타임아웃되는
+    # 것을 막는다 — 그래도 바깥쪽 wait_for를 두는 건 TaskGroup 자체가 어떤
+    # 이유로든 끝나지 않는 극단적인 경우를 막는 안전망이다.
+    rounds = math.ceil(len(images) / PDF_OCR_CONCURRENCY) if images else 1
+    results = await asyncio.wait_for(_run_all(), timeout=get_settings().timeouts.file * rounds)
     results.sort(key=lambda result: result[0])
     text = "\n\n".join(text for _, text in results if text.strip()).strip()
     if not text:

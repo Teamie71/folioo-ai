@@ -52,6 +52,12 @@ def _bigram_overlap_ratio(source: str, refined: str) -> float:
 async def refine_text(state: ExperienceMapState) -> ExperienceMapState:
     """한 활동의 구조화 문장과 extend gap 답변을 한 번에 정제한다.
 
+    validate가 refine만 지목한 재시도(`repair_target`이 전부 "refine")라면
+    `structured_items`는 이번 루프에서 바뀌지 않았으므로, 지목되지 않은
+    item은 지난 회차 결과를 그대로 재사용하고 지목된 item만 다시 LLM에
+    보낸다(`_reusable_refined_item_ids`). validate가 structure까지 지목한
+    회귀는 `structured_items` 자체가 바뀌었을 수 있어 전체를 다시 정제한다.
+
     Returns:
         `refined_items`와 필요 시 `gap_update_item`을 채운 state.
 
@@ -68,23 +74,32 @@ async def refine_text(state: ExperienceMapState) -> ExperienceMapState:
     if not (state.get("activity_tree_text") or "").strip():
         raise LlmError("선택한 활동의 상세 구조를 불러오지 못했습니다.", failed_node="refine")
 
+    previous_refined = {
+        item["item_id"]: item for item in state.get("refined_items", []) if item.get("item_id")
+    }
+    reusable_ids = _reusable_refined_item_ids(state, candidates, previous_refined)
+    to_refine = [item for item in refinable if item["item_id"] not in reusable_ids]
+
     try:
-        llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
-        chain = refine_prompt | llm.with_structured_output(RefinementOutput)
-        result: RefinementOutput = await chain.ainvoke(
-            {
-                "activity_tree": state["activity_tree_text"],
-                "items": render_refinement_items(refinable),
+        refined_content: dict[str, RefinedItem] = {}
+        if to_refine:
+            llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
+            chain = refine_prompt | llm.with_structured_output(RefinementOutput)
+            result: RefinementOutput = await chain.ainvoke(
+                {
+                    "activity_tree": state["activity_tree_text"],
+                    "items": render_refinement_items(to_refine),
+                }
+            )
+            refined_content = {
+                item.item_id: item for item in _validate_output(result.items, to_refine)
             }
-        )
-        refined_content = {item.item_id: item for item in _validate_output(result.items, refinable)}
         # 빈 템플릿 슬롯은 LLM에 보내지 않는다. 모델이 null 자리를 임의로
         # 채우는 실패를 원천 차단하면서 validate 단계가 요구하는 전체 item
-        # 집합은 코드가 결정론적으로 복원한다.
+        # 집합은 코드가 결정론적으로 복원한다. 재사용 가능한 item은 지난
+        # 회차의 검증된 결과를 그대로 쓴다.
         refined_items = [
-            refined_content[item["item_id"]]
-            if item.get("text") is not None
-            else RefinedItem(item_id=item["item_id"], refined_text=None)
+            _refined_result_for(item, refined_content, previous_refined, reusable_ids)
             for item in candidates
         ]
     except LlmError:
@@ -95,8 +110,53 @@ async def refine_text(state: ExperienceMapState) -> ExperienceMapState:
 
     updated["refined_items"] = [item.model_dump() for item in refined_items]
     updated["gap_update_item"] = gap_update
-    logger.info("refine: 활동 단위 %d개 문장 정제", len(candidates))
+    logger.info(
+        "refine: 활동 단위 %d개 문장 정제 (재사용 %d개)",
+        len(to_refine),
+        len(reusable_ids),
+    )
     return updated  # type: ignore[return-value]
+
+
+def _reusable_refined_item_ids(
+    state: ExperienceMapState,
+    candidates: list[dict],
+    previous_refined: dict[str, dict],
+) -> set[str]:
+    """지난 회차 정제 결과를 그대로 재사용할 수 있는 item_id 집합을 돌려준다.
+
+    validate → refine 회귀에서만, 그리고 이번 회귀가 정확히 refine만
+    지목했을 때만(즉 structure는 이번 루프에서 실행되지 않아
+    `structured_items`가 안 바뀌었을 때만) 재사용한다. 그 외(첫 정제,
+    structure까지 지목된 회귀)는 빈 집합을 돌려줘 항상 전체를 다시
+    정제하게 한다 — `structured_items`가 바뀌었을 수 있는데 지난 회차
+    item_id를 기준으로 재사용하면 새로 생긴·없어진 블록을 놓친다.
+    """
+    errors = state.get("validation_errors") or []
+    if not errors or any(error["repair_target"] != "refine" for error in errors):
+        return set()
+    flagged_ids = {error["item_id"] for error in errors}
+    candidate_ids = {item["item_id"] for item in candidates}
+    return {
+        item_id
+        for item_id in candidate_ids
+        if item_id not in flagged_ids and item_id in previous_refined
+    }
+
+
+def _refined_result_for(
+    item: dict,
+    refined_content: dict[str, RefinedItem],
+    previous_refined: dict[str, dict],
+    reusable_ids: set[str],
+) -> RefinedItem:
+    """candidate 하나의 최종 정제 결과를 고른다: 새로 정제 > 재사용 > 빈 슬롯."""
+    item_id = item["item_id"]
+    if item_id in refined_content:
+        return refined_content[item_id]
+    if item_id in reusable_ids:
+        return RefinedItem.model_validate(previous_refined[item_id])
+    return RefinedItem(item_id=item_id, refined_text=None)
 
 
 def _build_candidates(state: ExperienceMapState) -> tuple[list[dict], dict | None]:
