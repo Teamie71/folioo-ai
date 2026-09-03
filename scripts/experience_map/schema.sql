@@ -19,6 +19,11 @@
 --   명세에 DDL 이 없고 조회 쿼리(4-1)와 제약(3-5)만 있다. 추측해서 만들면
 --   실제 스키마와 어긋나므로 넣지 않는다. 3.05(경험 맵 Repository) 착수 전에
 --   메인 서버에서 두 테이블 DDL 을 받아야 한다.
+--
+-- ai_experience_message 는 예외다 — 메인 서버 migration 과 대조할 대상이
+-- 아니라 AI 가 직접 소유하는 테이블이다(2026-09-03 결정). 운영 DB에 이
+-- 테이블을 실제로 반영하는 절차(누가 언제 이 DDL 을 돌릴지)는 아직 정해져
+-- 있지 않다 — 이 저장소에는 자동 migration 러너가 없다.
 
 BEGIN;
 
@@ -98,5 +103,26 @@ CREATE TABLE IF NOT EXISTS ai_commit_log (
   updated_blocks    jsonb NOT NULL,
   created_at        timestamptz NOT NULL DEFAULT now()
 );
+
+-- ===== 3-5. ai_experience_message =====
+-- 대화 히스토리. 다른 테이블과 달리 메인 서버 migration 과 대조할 필요가
+-- 없다 — AI 가 처음부터 끝까지 소유하는 테이블이다(2026-09-03 결정, 대화
+-- 원문을 실제로 다루는 유일한 쪽이 AI 라서). `id` 는 세션 안에서의 커서
+-- 페이징 전용이며, 이 파일의 다른 테이블과 달리 자연키가 없다.
+CREATE TABLE IF NOT EXISTS ai_experience_message (
+  id            bigserial PRIMARY KEY,
+  user_id       bigint NOT NULL,
+  session_id    uuid NOT NULL,
+  request_id    uuid NOT NULL,
+  user_message  text,
+  ai_responses  jsonb NOT NULL DEFAULT '[]'::jsonb,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (user_id, session_id)
+    REFERENCES ai_experience_session(user_id, session_id)
+);
+
+-- 세션 안에서 id 순으로 훑는 조회(커서 페이징)의 인덱스.
+CREATE INDEX IF NOT EXISTS idx_ai_experience_message_session
+  ON ai_experience_message(session_id, id);
 
 COMMIT;

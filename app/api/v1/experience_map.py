@@ -17,7 +17,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import suppress
 
-from fastapi import APIRouter, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
@@ -28,6 +28,7 @@ from app.schemas.experience_map import (
     CreateSessionResponse,
     ErrorEvent,
     ExperienceMapEvent,
+    MessagesResponse,
     PingEvent,
     RequestStateResponse,
     RetryStreamRequest,
@@ -218,6 +219,26 @@ async def get_request_state(request: Request, session_id: str, request_id: str):
         user_id = _ticket_user_id(request)
         _require_session_owner(request, session_id)
         return await get_service().get_request_state(user_id, request_id)
+    except ExperienceMapError as exc:
+        return _error_response(exc)
+
+
+@router.get(
+    "/sessions/{session_id}/messages",
+    response_model=MessagesResponse,
+    summary="대화 히스토리 조회",
+    description="재접속 시 지난 대화 내용을 이어서 보여줄 때 호출합니다.",
+)
+async def get_messages(
+    request: Request,
+    session_id: str,
+    cursor: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    try:
+        user_id = _ticket_user_id(request)
+        _require_session_owner(request, session_id)
+        return await get_service().get_messages(user_id, session_id, cursor=cursor, limit=limit)
     except ExperienceMapError as exc:
         return _error_response(exc)
 

@@ -371,3 +371,119 @@ async def test_fallback_message_survives_idempotent_replay(repo, user_id):
         e for e in replayed if getattr(e, "message", None) and e.message.response_kind == "fallback"
     )
     assert replayed_fallback.message.ai_response == "지금은 도와드릴 수 없어요."
+
+
+# ===== 대화 히스토리 저장 =====
+
+
+@pytest.mark.asyncio
+async def test_successful_turn_saves_message(service, repo, user_id):
+    """정상 완료된 턴은 user_message와 모든 ai_response를 순서대로 남긴다."""
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    prepared = await service.prepare_chat(
+        user_id=user_id,
+        session_id=session.session_id,
+        request_id=request_id,
+        user_message="결제 오류를 해결했다.",
+        context_experience_id=None,
+        view=None,
+        stored_files=[],
+    )
+
+    async for _ in service.stream(prepared):
+        pass
+
+    rows, _ = await repo.list_messages(user_id, session.session_id, cursor=None, limit=50)
+
+    assert len(rows) == 1
+    assert rows[0].request_id == request_id
+    assert rows[0].user_message == "결제 오류를 해결했다."
+    assert rows[0].ai_responses == [
+        "교내 커머스 리뉴얼 > 문제해결에 1개를 정리했어요.",
+        "그 해결 방법을 고른 기준이 무엇이었나요?",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fallback_turn_saves_message(user_id, repo):
+    """fallback으로 끝난 턴도 대화 히스토리에 남는다."""
+    fallback_service = ExperienceMapService(repository=repo, runner=_FallbackOnlyRunner())
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    prepared = await fallback_service.prepare_chat(
+        user_id=user_id,
+        session_id=session.session_id,
+        request_id=request_id,
+        user_message="자기소개서 항목도 대신 써줘",
+        context_experience_id=None,
+        view=None,
+        stored_files=[],
+    )
+
+    async for _ in fallback_service.stream(prepared):
+        pass
+
+    rows, _ = await repo.list_messages(user_id, session.session_id, cursor=None, limit=50)
+
+    assert len(rows) == 1
+    assert rows[0].user_message == "자기소개서 항목도 대신 써줘"
+    assert rows[0].ai_responses == ["지금은 도와드릴 수 없어요."]
+
+
+@pytest.mark.asyncio
+async def test_replaying_completed_request_does_not_duplicate_message(service, repo, user_id):
+    """같은 request_id를 멱등 재생해도 대화 메시지는 한 번만 남는다."""
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+
+    async def run_once():
+        prepared = await service.prepare_chat(
+            user_id=user_id,
+            session_id=session.session_id,
+            request_id=request_id,
+            user_message="결제 오류를 해결했다.",
+            context_experience_id=None,
+            view=None,
+            stored_files=[],
+        )
+        async for _ in service.stream(prepared):
+            pass
+
+    await run_once()
+    await run_once()  # 같은 request_id — 저장된 결과를 재생할 뿐, 다시 실행하지 않는다.
+
+    rows, _ = await repo.list_messages(user_id, session.session_id, cursor=None, limit=50)
+
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_lost_lease_does_not_save_message(service, repo, user_id):
+    """실행권을 잃으면 대화 메시지도 남기지 않는다 (DB를 건드리지 않는다는 규칙과 동일).
+
+    `test_lost_lease_does_not_overwrite_other_worker`와 같은 방식으로 재현한다 —
+    스트림을 시작하기 전에 다른 경로가 이미 이 요청을 가져가서, 들고 있던
+    `prepared`의 실행권이 못 쓰게 된 상태로 만든다.
+    """
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    prepared = await service.prepare_chat(
+        user_id,
+        session.session_id,
+        request_id,
+        user_message="결제 오류를 해결했다.",
+        context_experience_id=None,
+        view=None,
+        stored_files=[],
+    )
+
+    # 다른 경로가 이 요청을 가져간다 (만료 정리 → 재시도) — prepared 의 실행권이 stale해진다.
+    await fail_current(repo, user_id, request_id, error={"code": "lease_expired"})
+    await repo.retry_request(user_id, request_id)
+
+    types = await run_stream(service, prepared)
+
+    assert types[-1] == "error"
+    rows, _ = await repo.list_messages(user_id, session.session_id, cursor=None, limit=50)
+    assert rows == []

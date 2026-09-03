@@ -749,3 +749,91 @@ async def test_retry_reason_is_consistent_under_lock(repo, user_id):
     assert outcomes.count(ClaimOutcome.CLAIMED) == 1
     # 나머지는 "이미 실행 중" 이다. "만료" 나 "대상 아님" 이 섞이면 안 된다.
     assert set(outcomes) - {ClaimOutcome.CLAIMED} == {ClaimOutcome.SESSION_BUSY}
+
+
+# ===== 대화 히스토리 =====
+
+
+@pytest.mark.asyncio
+async def test_save_and_list_messages_round_trip(repo, user_id):
+    """저장한 메시지를 id 오름차순으로 그대로 돌려받는다."""
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+
+    await repo.save_message(
+        user_id,
+        session.session_id,
+        request_id,
+        user_message="결제 오류를 해결했다.",
+        ai_responses=["내용을 정리했어요.", "더 구체적으로 알려주실 수 있나요?"],
+    )
+
+    rows, next_cursor = await repo.list_messages(user_id, session.session_id, cursor=None, limit=50)
+
+    assert next_cursor is None
+    assert len(rows) == 1
+    assert rows[0].request_id == request_id
+    assert rows[0].user_message == "결제 오류를 해결했다."
+    assert rows[0].ai_responses == ["내용을 정리했어요.", "더 구체적으로 알려주실 수 있나요?"]
+
+
+@pytest.mark.asyncio
+async def test_list_messages_paginates_with_cursor(repo, user_id):
+    """limit 만큼 꽉 채워 왔을 때만 다음 커서를 주고, 커서 이후부터 이어서 준다."""
+    session = await repo.get_or_create_session(user_id)
+    for index in range(3):
+        await repo.save_message(
+            user_id,
+            session.session_id,
+            new_request_id(),
+            user_message=f"메시지 {index}",
+            ai_responses=[f"응답 {index}"],
+        )
+
+    first_page, cursor = await repo.list_messages(user_id, session.session_id, cursor=None, limit=2)
+    assert [row.user_message for row in first_page] == ["메시지 0", "메시지 1"]
+    assert cursor == first_page[-1].id
+
+    second_page, next_cursor = await repo.list_messages(
+        user_id, session.session_id, cursor=cursor, limit=2
+    )
+    assert [row.user_message for row in second_page] == ["메시지 2"]
+    # 마지막 페이지는 limit 을 못 채웠으므로 다음 커서가 없다.
+    assert next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_list_messages_is_scoped_to_session(repo, user_id):
+    """다른 세션의 메시지는 안 섞인다."""
+    session_a = await repo.get_or_create_session(user_id)
+    other_user = str(int(user_id) + 1)
+    session_b = await repo.get_or_create_session(other_user)
+
+    await repo.save_message(
+        user_id, session_a.session_id, new_request_id(), user_message="A", ai_responses=["a"]
+    )
+    await repo.save_message(
+        other_user, session_b.session_id, new_request_id(), user_message="B", ai_responses=["b"]
+    )
+
+    rows, _ = await repo.list_messages(user_id, session_a.session_id, cursor=None, limit=50)
+
+    assert [row.user_message for row in rows] == ["A"]
+
+
+@pytest.mark.asyncio
+async def test_save_message_allows_no_user_message(repo, user_id):
+    """파일만 첨부된 턴은 user_message 없이 저장된다."""
+    session = await repo.get_or_create_session(user_id)
+
+    await repo.save_message(
+        user_id,
+        session.session_id,
+        new_request_id(),
+        user_message=None,
+        ai_responses=["파일을 분석했어요."],
+    )
+
+    rows, _ = await repo.list_messages(user_id, session.session_id, cursor=None, limit=50)
+
+    assert rows[0].user_message is None

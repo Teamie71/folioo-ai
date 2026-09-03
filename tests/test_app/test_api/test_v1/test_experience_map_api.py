@@ -438,6 +438,96 @@ async def test_unknown_request_is_404(client, session):
     assert response.json()["code"] == "request_not_found"
 
 
+@pytest.mark.asyncio
+async def test_get_messages_after_completion(client, session):
+    """완료된 턴이 user_message·ai_responses와 함께 조회된다."""
+    session_id, auth = session
+    request_id = str(uuid.uuid4())
+    await client.post(
+        f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
+        data=chat_form(request_id, "결제 오류를 해결했다."),
+        headers={"Authorization": auth},
+    )
+
+    response = await client.get(
+        f"/api/v1/experience-map/sessions/{session_id}/messages", headers={"Authorization": auth}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["next_cursor"] is None
+    assert len(body["messages"]) == 1
+    message = body["messages"][0]
+    assert message["request_id"] == request_id
+    assert message["user_message"] == "결제 오류를 해결했다."
+    assert message["ai_responses"] == [
+        "교내 커머스 리뉴얼 > 문제해결에 1개를 정리했어요.",
+        "그 해결 방법을 고른 기준이 무엇이었나요?",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_messages_paginates_with_cursor(client, session):
+    """limit보다 메시지가 많으면 next_cursor로 이어서 조회한다."""
+    session_id, auth = session
+    for text in ("첫 번째 내용", "두 번째 내용"):
+        await client.post(
+            f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
+            data=chat_form(str(uuid.uuid4()), text),
+            headers={"Authorization": auth},
+        )
+
+    first_page = await client.get(
+        f"/api/v1/experience-map/sessions/{session_id}/messages",
+        params={"limit": 1},
+        headers={"Authorization": auth},
+    )
+    assert first_page.status_code == 200
+    first_body = first_page.json()
+    assert len(first_body["messages"]) == 1
+    assert first_body["messages"][0]["user_message"] == "첫 번째 내용"
+    assert first_body["next_cursor"] is not None
+
+    second_page = await client.get(
+        f"/api/v1/experience-map/sessions/{session_id}/messages",
+        params={"limit": 1, "cursor": first_body["next_cursor"]},
+        headers={"Authorization": auth},
+    )
+    assert second_page.status_code == 200
+    second_body = second_page.json()
+    assert len(second_body["messages"]) == 1
+    assert second_body["messages"][0]["user_message"] == "두 번째 내용"
+    assert second_body["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_messages_rejects_other_session_ticket(client, session, api_user_id):
+    """서명이 유효해도 다른 세션 경로에는 쓸 수 없다."""
+    session_id, _ = session
+    other_ticket = f"Bearer {make_ticket(api_user_id, str(uuid.uuid4()))}"
+
+    response = await client.get(
+        f"/api/v1/experience-map/sessions/{session_id}/messages",
+        headers={"Authorization": other_ticket},
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_messages_rejects_invalid_cursor(client, session):
+    session_id, auth = session
+
+    response = await client.get(
+        f"/api/v1/experience-map/sessions/{session_id}/messages",
+        params={"cursor": "not-a-number"},
+        headers={"Authorization": auth},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "invalid_request"
+
+
 # ===== 재시도 =====
 
 

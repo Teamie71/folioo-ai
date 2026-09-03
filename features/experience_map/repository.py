@@ -66,6 +66,15 @@ def _as_dict(value: Any) -> dict[str, Any] | None:
     return value
 
 
+def _as_list(value: Any) -> list[Any]:
+    """asyncpg가 jsonb 배열을 문자열로 돌려주는 경우를 흡수한다."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
 @dataclass(frozen=True)
 class SessionRow:
     """`ai_experience_session` 한 행"""
@@ -129,6 +138,29 @@ class RequestRow:
             suggestion=_as_dict(record["suggestion"]),
             error=_as_dict(record["error"]),
             fallback_message=record["fallback_message"],
+        )
+
+
+@dataclass(frozen=True)
+class MessageRow:
+    """`ai_experience_message` 한 행"""
+
+    id: int
+    """세션 안에서의 커서 페이징 전용 값. 다른 테이블과 달리 자연키가 없다."""
+
+    request_id: str
+    user_message: str | None
+    ai_responses: list[str]
+    created_at: datetime
+
+    @classmethod
+    def from_record(cls, record: asyncpg.Record) -> "MessageRow":
+        return cls(
+            id=record["id"],
+            request_id=str(record["request_id"]),
+            user_message=record["user_message"],
+            ai_responses=_as_list(record["ai_responses"]),
+            created_at=record["created_at"],
         )
 
 
@@ -543,6 +575,70 @@ class ExperienceMapRepository:
             logger.warning("실패 처리를 건너뜁니다 — 실행권이 없습니다 (request_id=%s)", request_id)
             return None
         return RequestRow.from_record(record)
+
+    # ===== 대화 히스토리 =====
+
+    async def save_message(
+        self,
+        user_id: str,
+        session_id: str,
+        request_id: str,
+        *,
+        user_message: str | None,
+        ai_responses: list[str],
+    ) -> None:
+        """대화 메시지 한 턴을 남긴다.
+
+        `ai_experience_message` 는 다른 테이블과 달리 메인 서버 migration 과
+        대조할 필요가 없는, AI 가 직접 소유하는 테이블이다. 요청 하나가
+        `ai_response` 를 여러 개 낼 수 있어(예: 커밋 결과 + gap 제안) 배열로
+        받는다.
+        """
+        await self._pool.execute(
+            """
+            INSERT INTO ai_experience_message
+                (user_id, session_id, request_id, user_message, ai_responses)
+            VALUES ($1, $2, $3, $4, $5::jsonb)
+            """,
+            int(user_id),
+            uuid.UUID(session_id),
+            uuid.UUID(request_id),
+            user_message,
+            json.dumps(ai_responses, ensure_ascii=False),
+        )
+
+    async def list_messages(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        cursor: int | None,
+        limit: int,
+    ) -> tuple[list[MessageRow], int | None]:
+        """세션의 대화 메시지를 `id` 오름차순으로 커서 페이징해 반환한다.
+
+        Returns:
+            (조회된 행, 다음 커서). `limit` 만큼 꽉 채워 왔을 때만 다음 커서를
+            돌려준다 — 그래야 마지막 페이지에서 빈 페이지를 한 번 더 부르지
+            않는다.
+        """
+        records = await self._pool.fetch(
+            """
+            SELECT id, request_id, user_message, ai_responses, created_at
+              FROM ai_experience_message
+             WHERE user_id = $1 AND session_id = $2
+               AND ($3::bigint IS NULL OR id > $3)
+             ORDER BY id ASC
+             LIMIT $4
+            """,
+            int(user_id),
+            uuid.UUID(session_id),
+            cursor,
+            limit,
+        )
+        rows = [MessageRow.from_record(record) for record in records]
+        next_cursor = rows[-1].id if len(rows) == limit else None
+        return rows, next_cursor
 
     # ===== 정리 =====
 
