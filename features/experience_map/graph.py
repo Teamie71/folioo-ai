@@ -46,6 +46,15 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     # 최대 네 번(배치 내부 2회 × 그래프 재시도 2회)까지 늘 수 있지만, 그건 배치
     # 내부 재시도와 마지막 단계 실패가 동시에 겹치는 드문 경우에만 일어나므로
     # 감수한다.
+    #
+    # 예외: 최종 검증이 모델의 자기모순(existing_categories 자기 신고와 실제
+    # 출력이 어긋남)으로 실패하면, structure 노드는 이 그래프 레벨 재시도를
+    # 기다리지 않고 노드 실행 안에서 온도를 올려 배치 루프 전체를 한 번 더
+    # 돈다(`nodes/structure.py`의 `_SelfContradictionError` 처리) — 같은
+    # temperature=0 프롬프트를 그대로 반복하면 이 실패는 결정론적으로 재발해
+    # 그래프 레벨 재시도가 무의미하기 때문이다. 이 경로가 걸리면 배치당 LLM
+    # 호출이 최대 여덟 번(배치 루프 전체 2회 × 배치 내부 2회 × 그래프 재시도
+    # 2회)까지 늘 수 있다.
     graph.add_node("structure", structure_blocks, retry_policy=RETRY_POLICY)
     graph.add_node("refine", refine_text, retry_policy=RETRY_POLICY)
     graph.add_node("validate", _validate_async)

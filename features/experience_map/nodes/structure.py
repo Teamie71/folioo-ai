@@ -28,6 +28,20 @@ from features.experience_map.templates import TemplateCatalog, get_template_cata
 
 logger = logging.getLogger(__name__)
 
+
+class _SelfContradictionError(ValueError):
+    """모델이 `existing_categories`로 스스로 신고한 내용과 실제 출력이 모순될 때만 쓴다.
+
+    `_validate_anchor_reuse_deterministic`도 "이미 있으니 재사용하라"는 같은
+    취지의 `ValueError`를 던지지만, 그건 모델의 자기 신고와 무관하게 활동
+    트리(빈 슬롯 가이드 문구)만 보고 결정론적으로 판정한 것이다. 두 실패를
+    메시지 문자열로 구분하면(예: 끝 문구 대조) 문구가 우연히 겹치거나 나중에
+    바뀌면 조용히 틀린 쪽으로 분류된다 — 자기모순 전용 재시도(구조화 노드의
+    온도 상향 + 정정 지시문)를 그 신고 자체가 없었던 실패에도 잘못 적용하지
+    않도록, 그 두 검증만 이 타입으로 던진다.
+    """
+
+
 # 구조화 모델이 카탈로그의 의미는 맞게 고르고 leaf 이름만 일반적인 표현으로
 # 바꿔 내는, 실환경에서 확인된 경우만 정규화한다. prefix까지 정확히 일치해야
 # 하므로 다른 템플릿의 동명 슬롯이나 완전히 지어낸 slot_id는 통과하지 않는다.
@@ -111,7 +125,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         ) -> list[StructureLlmItem]:
             """배치 루프 전체를 한 번 돌리고 교차-배치 최종 검증까지 마친다.
 
-            자기모순 재시도(아래 `_run_structuring_batches` 호출부)가 이 함수
+            자기모순 재시도(아래 `structure_blocks`의 호출부)가 이 함수
             전체를 다시 부를 수 있으므로, 배치 루프에 필요한 가변 상태
             (`items`, `existing_categories_by_alias` 등)는 전부 이 함수
             안에서 새로 초기화한다 — 실패한 시도의 상태가 재시도로 새지
@@ -315,20 +329,24 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
 
         try:
             validated = await _run_batches_and_validate(base_instruction, chain)
-        except ValueError as exc:
+        except _SelfContradictionError as exc:
             # `_validate_category_reuse`/`_validate_anchor_reuse`는 모델이 스스로
             # "이미 있다"고 신고해 놓고도 그것과 모순되게 새 카테고리·앵커를 또
-            # 만들면 이 메시지로 거부한다(자기모순). 다른 배치 내부 재시도(파싱
-            # 실패·coverage 오류·timeout)는 온도를 올리고 지시문을 보강해 다시
-            # 시도하는데, 이 교차-배치 최종 검증 실패만은 그런 다양성 없이 그래프
-            # 레벨의 1회 자동 재시도(완전히 같은 프롬프트, 같은 temperature=0)에만
-            # 맡겨져 있었다 — 실제로 재현된 경우다: 활동에 템플릿 이전에 만들어진
-            # 자유 형식 블록만 있으면(메인 서버 GET 응답에는 slot_id가 없어
-            # AI에게는 흔한 모양이다) 모델이 "기존 앵커가 있다"고 신고하면서도
-            # 동시에 새 템플릿 앵커를 만드는 자기모순을 결정론적으로 반복해,
-            # 재시도해도 매번 똑같이 실패했다.
-            if not str(exc).endswith("재사용하세요."):
-                raise
+            # 만들면 이 타입으로 거부한다(자기모순). `_validate_anchor_reuse_deterministic`
+            # 도 비슷한 취지의 평범한 `ValueError`를 던지지만, 그건 모델의 자기
+            # 신고와 무관하게 활동 트리만 보고 결정론적으로 판정한 것이라 아래
+            # 정정 지시문("신고한 기존 카테고리·앵커와...")이 안 맞는다 — 그래서
+            # 이 재시도는 `_SelfContradictionError`에만 반응한다.
+            #
+            # 다른 배치 내부 재시도(파싱 실패·coverage 오류·timeout)는 온도를
+            # 올리고 지시문을 보강해 다시 시도하는데, 이 교차-배치 최종 검증
+            # 실패만은 그런 다양성 없이 그래프 레벨의 1회 자동 재시도(완전히
+            # 같은 프롬프트, 같은 temperature=0)에만 맡겨져 있었다 — 실제로
+            # 재현된 경우다: 활동에 템플릿 이전에 만들어진 자유 형식 블록만
+            # 있으면(메인 서버 GET 응답에는 slot_id가 없어 AI에게는 흔한
+            # 모양이다) 모델이 "기존 앵커가 있다"고 신고하면서도 동시에 새
+            # 템플릿 앵커를 만드는 자기모순을 결정론적으로 반복해, 재시도해도
+            # 매번 똑같이 실패했다.
             logger.warning(
                 "structure: 카테고리·앵커 자기모순 감지, 온도를 올려 전체 재시도: %s", exc
             )
@@ -2034,7 +2052,7 @@ def _validate_category_reuse(
                 for category in reported_existing
                 if category.section_kind == item.section_kind
             )
-            raise ValueError(
+            raise _SelfContradictionError(
                 f"[{item.section_kind}] section은 이미 활동 트리의 [{alias}]로 판단하고도 "
                 "새 카테고리를 또 만들었습니다. 새로 만들지 말고 그 별칭을 parent_ref로 "
                 "재사용하세요."
@@ -2073,7 +2091,7 @@ def _validate_anchor_reuse(
             continue
         existing_anchor = anchor_alias_by_container.get(item.parent_ref)
         if existing_anchor is not None:
-            raise ValueError(
+            raise _SelfContradictionError(
                 f"[{item.parent_ref}] 아래에는 이미 앵커 [{existing_anchor}]가 있다고 "
                 "신고하고도 새 앵커를 또 만들었습니다. 새로 만들지 말고 그 별칭을 "
                 "parent_ref로 재사용하세요."

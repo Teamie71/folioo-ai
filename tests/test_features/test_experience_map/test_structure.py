@@ -13,7 +13,11 @@ from features.experience_map.nodes.structure import (
     next_node,
     structure_blocks,
 )
-from features.experience_map.schemas import StructureLlmItem, StructureOutput
+from features.experience_map.schemas import (
+    ExistingCategoryClassification,
+    StructureLlmItem,
+    StructureOutput,
+)
 from features.experience_map.state import start_turn
 from features.experience_map.templates import TemplateCatalog, TemplateCatalogClient
 
@@ -706,6 +710,95 @@ async def test_anchor_text_without_any_source_is_cleared(fake_dependencies, monk
     items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
     assert items_by_slot["TASK.SUMMARY"]["text"] is None
     assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+
+
+@pytest.mark.asyncio
+async def test_self_contradiction_retries_whole_batch_with_higher_temperature(fake_dependencies):
+    """자기모순(기존 앵커 자기 신고와 실제 출력 불일치) 실패는 그래프 재시도를
+    기다리지 않고 노드 안에서 온도를 올려 배치 루프 전체를 한 번 더 시도한다.
+
+    실제 OpenRouter 호출로 재현된 경우다 — temperature=0에서는 같은
+    프롬프트에 같은 자기모순을 그대로 반복해서, 그래프 레벨의 1회 자동
+    재시도(완전히 같은 프롬프트)로는 구제되지 않았다.
+    """
+    contradictory = StructureOutput(
+        existing_categories=[
+            ExistingCategoryClassification(
+                alias="b_1", section_kind="TASK", existing_anchor_alias="b_2"
+            )
+        ],
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.SUMMARY",
+                text="새로 지어낸 요약",
+                source_item_ids=["it_1"],
+            )
+        ],
+    )
+    corrected = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_2",
+                action="add",
+                parent_ref="b_2",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="결제 오류를 해결했다",
+                source_item_ids=["it_1"],
+            )
+        ]
+    )
+    prompts = fake_dependencies([contradictory, corrected])
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306"},
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n  [b_1] 담당업무\n    [b_2] 기존 요약 내용"
+        ),
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "결제 오류를 해결했다"
+    assert len(prompts) == 2
+
+
+def test_deterministic_anchor_conflict_is_not_a_self_contradiction_error():
+    """활동 트리만으로 판정하는 결정론적 앵커 중복은 자기모순 재시도 대상이 아니다.
+
+    `_validate_anchor_reuse_deterministic`은 모델의 `existing_categories`
+    자기 신고와 무관하게 활동 트리의 빈 슬롯 가이드 문구만으로 판정한다.
+    이 실패까지 자기모순 전용 재시도(정정 지시문이 "신고한 기존 카테고리와
+    실제 parent_ref를 일치시키라"는, 애초에 신고가 없었던 이 경우엔 맞지
+    않는 지시문을 덧붙임)로 잘못 처리하지 않으려면, `structure_blocks`가
+    타입으로 구분하는 `_SelfContradictionError`가 아니라 평범한 `ValueError`
+    여야 한다.
+    """
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    item = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="TASK.SUMMARY",
+        text="새로 지어낸 요약",
+        source_item_ids=["it_1"],
+    )
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305"},
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n"
+            "  [b_1] 담당업무\n"
+            "    [b_2] (빈 블록 — 가이드: 업무 요약)\n"
+            "      [b_3] (빈 블록 — 가이드: 목적)"
+        ),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        structure_node._validate_anchor_reuse_deterministic([item], catalog, state)
+
+    assert not isinstance(exc_info.value, structure_node._SelfContradictionError)
 
 
 @pytest.mark.asyncio
