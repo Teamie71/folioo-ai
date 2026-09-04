@@ -618,9 +618,11 @@ class ExperienceMapRepository:
         """세션의 대화 메시지를 `id` 오름차순으로 커서 페이징해 반환한다.
 
         Returns:
-            (조회된 행, 다음 커서). `limit` 만큼 꽉 채워 왔을 때만 다음 커서를
-            돌려준다 — 그래야 마지막 페이지에서 빈 페이지를 한 번 더 부르지
-            않는다.
+            (조회된 행, 다음 커서). `limit`보다 1개 더 가져와 실제로 다음
+            페이지가 있는지 확인한다 — 단순히 이번 페이지가 `limit`만큼
+            꽉 찼는지만 보면, 마지막 페이지가 우연히 `limit`과 같은 개수로
+            끝날 때도 존재하지 않는 다음 페이지를 가리키는 커서를 돌려주게
+            된다.
         """
         records = await self._pool.fetch(
             """
@@ -634,10 +636,10 @@ class ExperienceMapRepository:
             int(user_id),
             uuid.UUID(session_id),
             cursor,
-            limit,
+            limit + 1,
         )
-        rows = [MessageRow.from_record(record) for record in records]
-        next_cursor = rows[-1].id if len(rows) == limit else None
+        rows = [MessageRow.from_record(record) for record in records[:limit]]
+        next_cursor = rows[-1].id if len(records) > limit else None
         return rows, next_cursor
 
     # ===== 정리 =====
