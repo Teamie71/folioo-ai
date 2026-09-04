@@ -106,198 +106,239 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         }
         document_slot_hints = _document_slot_hints(source_items, state.get("extracted_text"))
 
-        # 원문이 많으면(실제로 파일 업로드에서 15개 넘는 경우가 흔하다) 한
-        # 번에 다 맡길수록 모델이 일부를 빠뜨리거나 잘못 연결하는 사고가
-        # 눈에 띄게 잦아진다. 작은 배치로 나눠 순차 처리하면 배치당 실패율이
-        # 크게 낮아진다 — 뒤 배치는 앞 배치가 이미 만든 카테고리·앵커를
-        # `previous_batch_note`로 안내받아 재사용할 수 있다.
-        items: list[StructureLlmItem] = []
-        # alias로 병합한다 — 배치마다 독립적으로 호출되는 LLM이 같은 활동
-        # 트리를 보고도 매번 자기 신고 내용을 조금씩 다르게 낼 수 있다. 마지막
-        # 배치 결과로 덮어쓰면 앞선 배치가 옳게 신고한 카테고리·앵커가
-        # 사라져, 그 배치의 item들이 최종 _validate_output 에서 자기모순으로
-        # 잘못 거부되거나(신고 유실) 중복 카테고리 생성을 놓칠 수 있다.
-        existing_categories_by_alias: dict[str, ExistingCategoryClassification] = {}
-        cumulative_source_text: dict[str, str] = {}
-        call_index = 0
-        batches = _source_batches(source_items)
-        for batch_index, batch in enumerate(batches):
-            batch_source_text = {item["item_id"]: item["text"] for item in batch}
-            cumulative_source_text.update(batch_source_text)
-            # 배치 하나당 최대 2번 시도한다(그래프 RetryPolicy의 "노드마다
-            # 1회"와는 별개로, 이 노드 실행 하나 안에서 완결된다). 모델이
-            # 원문 일부를 통째로 빠뜨리는 사고가 실제로 있었는데, 같은
-            # 프롬프트를 그대로 다시 보내도 결과가 매번 조금씩 달라
-            # 재시도만으로 고쳐지는 경우가 많았다 — 그렇다면 빠진 항목을
-            # 콕 집어 다시 요청하는 편이 통째로 재시도하는 것보다 낫다.
-            #
-            # 재시도는 **배치 전체를 다시 시키지 않는다** — 처음엔 그렇게
-            # 했는데, 이미 잘 배정한 부분까지 모델이 처음부터 다시 만들면서
-            # 새로운 실수(같은 슬롯을 두 번 만드는 등)를 또 냈다. 대신
-            # 1차에서 성공한 부분은 `previous_batch_note`로 "이미 만든 것"
-            # 취급해 그대로 두고, 빠진 item만 새 source_items로 좁혀서
-            # 다시 맡긴다 — 모델이 풀어야 할 문제 자체를 작게 줄인다.
-            round_note_items = items
-            round_source_items = batch
-            instruction = base_instruction
-            batch_items: list[StructureLlmItem] = []
-            for attempt in range(2):
-                prompt_vars = {
-                    **base_prompt_vars,
-                    "previous_batch_note": render_previous_batch_note(
-                        _render_previous_batch_lines(round_note_items, catalog)
-                    ),
-                    "document_context": _render_document_context(
-                        round_source_items, document_slot_hints
-                    ),
-                    "source_items": render_source_items(round_source_items),
-                }
-                active_chain = chain if attempt == 0 else retry_chain
-                try:
-                    result: StructureOutput = await active_chain.ainvoke(
-                        {**prompt_vars, "gap_instruction": instruction}
-                    )
-                except Exception as exc:
-                    # LLM이 스키마 자체를 어기는 item을 낼 때가 있다(예: parent_ref도
-                    # parent_item_id도 없는 item) — pydantic이 파싱 단계에서 바로
-                    # 거부해 결과를 볼 기회조차 없다. 이걸 여기서 안 잡으면 배치
-                    # 하나의 일시적 실수가 이미 끝낸 앞 배치들까지 통째로 날린다.
-                    #
-                    # 같은 프롬프트를 그대로 다시 보내면 온도 0에서는 같은 실수를
-                    # 그대로 반복한다 — 실제로 재현됐다. 무엇이 잘못됐는지 구체적인
-                    # 지시문을 덧붙여 입력 자체를 바꿔야 재시도가 의미 있다.
-                    if attempt == 1:
-                        raise
-                    if _is_timeout_exception(exc):
+        async def _run_batches_and_validate(
+            run_instruction: str, first_attempt_chain
+        ) -> list[StructureLlmItem]:
+            """배치 루프 전체를 한 번 돌리고 교차-배치 최종 검증까지 마친다.
+
+            자기모순 재시도(아래 `_run_structuring_batches` 호출부)가 이 함수
+            전체를 다시 부를 수 있으므로, 배치 루프에 필요한 가변 상태
+            (`items`, `existing_categories_by_alias` 등)는 전부 이 함수
+            안에서 새로 초기화한다 — 실패한 시도의 상태가 재시도로 새지
+            않아야 한다.
+            """
+            # 원문이 많으면(실제로 파일 업로드에서 15개 넘는 경우가 흔하다) 한
+            # 번에 다 맡길수록 모델이 일부를 빠뜨리거나 잘못 연결하는 사고가
+            # 눈에 띄게 잦아진다. 작은 배치로 나눠 순차 처리하면 배치당 실패율이
+            # 크게 낮아진다 — 뒤 배치는 앞 배치가 이미 만든 카테고리·앵커를
+            # `previous_batch_note`로 안내받아 재사용할 수 있다.
+            items: list[StructureLlmItem] = []
+            # alias로 병합한다 — 배치마다 독립적으로 호출되는 LLM이 같은 활동
+            # 트리를 보고도 매번 자기 신고 내용을 조금씩 다르게 낼 수 있다. 마지막
+            # 배치 결과로 덮어쓰면 앞선 배치가 옳게 신고한 카테고리·앵커가
+            # 사라져, 그 배치의 item들이 최종 _validate_output 에서 자기모순으로
+            # 잘못 거부되거나(신고 유실) 중복 카테고리 생성을 놓칠 수 있다.
+            existing_categories_by_alias: dict[str, ExistingCategoryClassification] = {}
+            cumulative_source_text: dict[str, str] = {}
+            call_index = 0
+            batches = _source_batches(source_items)
+            for batch_index, batch in enumerate(batches):
+                batch_source_text = {item["item_id"]: item["text"] for item in batch}
+                cumulative_source_text.update(batch_source_text)
+                # 배치 하나당 최대 2번 시도한다(그래프 RetryPolicy의 "노드마다
+                # 1회"와는 별개로, 이 노드 실행 하나 안에서 완결된다). 모델이
+                # 원문 일부를 통째로 빠뜨리는 사고가 실제로 있었는데, 같은
+                # 프롬프트를 그대로 다시 보내도 결과가 매번 조금씩 달라
+                # 재시도만으로 고쳐지는 경우가 많았다 — 그렇다면 빠진 항목을
+                # 콕 집어 다시 요청하는 편이 통째로 재시도하는 것보다 낫다.
+                #
+                # 재시도는 **배치 전체를 다시 시키지 않는다** — 처음엔 그렇게
+                # 했는데, 이미 잘 배정한 부분까지 모델이 처음부터 다시 만들면서
+                # 새로운 실수(같은 슬롯을 두 번 만드는 등)를 또 냈다. 대신
+                # 1차에서 성공한 부분은 `previous_batch_note`로 "이미 만든 것"
+                # 취급해 그대로 두고, 빠진 item만 새 source_items로 좁혀서
+                # 다시 맡긴다 — 모델이 풀어야 할 문제 자체를 작게 줄인다.
+                round_note_items = items
+                round_source_items = batch
+                instruction = run_instruction
+                batch_items: list[StructureLlmItem] = []
+                for attempt in range(2):
+                    prompt_vars = {
+                        **base_prompt_vars,
+                        "previous_batch_note": render_previous_batch_note(
+                            _render_previous_batch_lines(round_note_items, catalog)
+                        ),
+                        "document_context": _render_document_context(
+                            round_source_items, document_slot_hints
+                        ),
+                        "source_items": render_source_items(round_source_items),
+                    }
+                    active_chain = first_attempt_chain if attempt == 0 else retry_chain
+                    try:
+                        result: StructureOutput = await active_chain.ainvoke(
+                            {**prompt_vars, "gap_instruction": instruction}
+                        )
+                    except Exception as exc:
+                        # LLM이 스키마 자체를 어기는 item을 낼 때가 있다(예: parent_ref도
+                        # parent_item_id도 없는 item) — pydantic이 파싱 단계에서 바로
+                        # 거부해 결과를 볼 기회조차 없다. 이걸 여기서 안 잡으면 배치
+                        # 하나의 일시적 실수가 이미 끝낸 앞 배치들까지 통째로 날린다.
+                        #
+                        # 같은 프롬프트를 그대로 다시 보내면 온도 0에서는 같은 실수를
+                        # 그대로 반복한다 — 실제로 재현됐다. 무엇이 잘못됐는지 구체적인
+                        # 지시문을 덧붙여 입력 자체를 바꿔야 재시도가 의미 있다.
+                        if attempt == 1:
+                            raise
+                        if _is_timeout_exception(exc):
+                            logger.warning(
+                                "structure: 배치 %d/%d LLM 제한 시간 초과, 같은 배치 재시도",
+                                batch_index + 1,
+                                len(batches),
+                            )
+                            instruction = run_instruction + (
+                                "**주의: 이전 시도는 제한 시간 안에 끝나지 않았습니다.** "
+                                "이번 원문 item만 가장 가까운 카테고리와 템플릿 하나에 "
+                                "배정하고, 관련 없는 카테고리·템플릿은 출력하지 마세요.\n\n"
+                            )
+                            continue
                         logger.warning(
-                            "structure: 배치 %d/%d LLM 제한 시간 초과, 같은 배치 재시도",
+                            "structure: 배치 %d/%d 응답 파싱 실패, 같은 배치 재시도",
                             batch_index + 1,
                             len(batches),
+                            exc_info=True,
                         )
-                        instruction = base_instruction + (
-                            "**주의: 이전 시도는 제한 시간 안에 끝나지 않았습니다.** "
-                            "이번 원문 item만 가장 가까운 카테고리와 템플릿 하나에 "
-                            "배정하고, 관련 없는 카테고리·템플릿은 출력하지 마세요.\n\n"
+                        instruction = run_instruction + (
+                            "**주의: 이전 시도에서 일부 item의 부모 참조가 스키마 규칙을 "
+                            "어겼습니다.** 모든 add item은 parent_ref와 parent_item_id 중 "
+                            "정확히 하나만 가져야 합니다. 기존 블록 아래면 parent_ref만, "
+                            "이번 응답에서 만든 새 블록 아래면 parent_item_id만 쓰고 다른 "
+                            "필드는 null로 두세요.\n\n"
                         )
                         continue
-                    logger.warning(
-                        "structure: 배치 %d/%d 응답 파싱 실패, 같은 배치 재시도",
-                        batch_index + 1,
-                        len(batches),
-                        exc_info=True,
+                    # 이번 호출이 새로 만든 item_id가 이전 호출(다른 배치, 또는
+                    # 같은 배치의 이전 시도)과 겹칠 수 있다 — 각 호출은 서로의
+                    # 출력을 모르는 채 독립적으로 "blk_1" 같은 이름을 짓는다.
+                    # 병합할 게 있는(call_index > 0) 모든 호출에 접두사를 붙여
+                    # 겹치지 않게 한다. 첫 호출(call_index == 0)은 병합 대상이
+                    # 없으니 그대로 둔다 — item_id가 굳이 안 바뀌는 편이 낫다.
+                    if any(raw_item.action != "add" for raw_item in result.items):
+                        # 구조화 LLM은 항상 add만 낸다 — update는 결정론적 보정
+                        # (`_reuse_existing_filled_anchor`,
+                        # `_redirect_leaf_add_to_existing_empty_slot`)이 add를
+                        # 안전한 경우에만 코드로 바꿔치기하는 용도로만 쓴다.
+                        raise ValueError("구조화 노드는 add operation만 만들 수 있습니다.")
+                    namespaced = (
+                        _namespace_batch_item_ids(result.items, call_index)
+                        if call_index > 0
+                        else result.items
                     )
-                    instruction = base_instruction + (
-                        "**주의: 이전 시도에서 일부 item의 부모 참조가 스키마 규칙을 "
-                        "어겼습니다.** 모든 add item은 parent_ref와 parent_item_id 중 "
-                        "정확히 하나만 가져야 합니다. 기존 블록 아래면 parent_ref만, "
-                        "이번 응답에서 만든 새 블록 아래면 parent_item_id만 쓰고 다른 "
-                        "필드는 null로 두세요.\n\n"
+                    call_index += 1
+                    candidate = _apply_structuring_fixups(
+                        round_note_items + namespaced,
+                        cumulative_source_text,
+                        state,
+                        catalog,
+                        document_slot_hints,
                     )
-                    continue
-                # 이번 호출이 새로 만든 item_id가 이전 호출(다른 배치, 또는
-                # 같은 배치의 이전 시도)과 겹칠 수 있다 — 각 호출은 서로의
-                # 출력을 모르는 채 독립적으로 "blk_1" 같은 이름을 짓는다.
-                # 병합할 게 있는(call_index > 0) 모든 호출에 접두사를 붙여
-                # 겹치지 않게 한다. 첫 호출(call_index == 0)은 병합 대상이
-                # 없으니 그대로 둔다 — item_id가 굳이 안 바뀌는 편이 낫다.
-                if any(raw_item.action != "add" for raw_item in result.items):
-                    # 구조화 LLM은 항상 add만 낸다 — update는 결정론적 보정
-                    # (`_reuse_existing_filled_anchor`,
-                    # `_redirect_leaf_add_to_existing_empty_slot`)이 add를
-                    # 안전한 경우에만 코드로 바꿔치기하는 용도로만 쓴다.
-                    raise ValueError("구조화 노드는 add operation만 만들 수 있습니다.")
-                namespaced = (
-                    _namespace_batch_item_ids(result.items, call_index)
-                    if call_index > 0
-                    else result.items
-                )
-                call_index += 1
-                candidate = _apply_structuring_fixups(
-                    round_note_items + namespaced,
-                    cumulative_source_text,
-                    state,
-                    catalog,
-                    document_slot_hints,
-                )
-                for category in result.existing_categories:
-                    existing_categories_by_alias[category.alias] = category
-                missing = _missing_source_ids(candidate, batch_source_text)
-                duplicated = _duplicate_source_ids(candidate) & set(batch_source_text)
-                batch_items = candidate
-                if not missing and not duplicated:
-                    break
-                if attempt == 0:
-                    repair_ids = _coverage_repair_source_ids(
-                        candidate,
-                        batch_source_ids=set(batch_source_text),
-                        missing=missing,
-                        duplicated=duplicated,
-                    )
-                    logger.warning(
-                        "structure: 배치 %d/%d 원문 coverage 오류 감지, "
-                        "관련 원문만 좁혀서 재시도 (누락 %d개 · 중복 %d개 · 복구 %d개)",
-                        batch_index + 1,
-                        len(batches),
-                        len(missing),
-                        len(duplicated),
-                        len(repair_ids),
-                    )
-                    # 중복 source가 들어간 블록을 통째로 버리면, 같은 블록에 함께
-                    # 병합돼 있던 정상 source까지 사라진다. 실제로 it_1 중복을
-                    # 복구하다가 함께 있던 it_2가 최종 검증에서 누락된 사례가
-                    # 있었다. 관련 source만 비우고 구조·다른 배치 source는 보존한
-                    # 뒤, 영향받은 현재 배치 source를 모두 다시 맡긴다.
-                    round_note_items = _clear_repair_sources(candidate, repair_ids)
-                    round_source_items = [item for item in batch if item["item_id"] in repair_ids]
-                    instruction = base_instruction + _coverage_repair_instruction(
-                        missing=missing,
-                        duplicated=duplicated,
-                        repair_ids=repair_ids,
-                        source_items=batch,
-                    )
-            items = batch_items
+                    for category in result.existing_categories:
+                        existing_categories_by_alias[category.alias] = category
+                    missing = _missing_source_ids(candidate, batch_source_text)
+                    duplicated = _duplicate_source_ids(candidate) & set(batch_source_text)
+                    batch_items = candidate
+                    if not missing and not duplicated:
+                        break
+                    if attempt == 0:
+                        repair_ids = _coverage_repair_source_ids(
+                            candidate,
+                            batch_source_ids=set(batch_source_text),
+                            missing=missing,
+                            duplicated=duplicated,
+                        )
+                        logger.warning(
+                            "structure: 배치 %d/%d 원문 coverage 오류 감지, "
+                            "관련 원문만 좁혀서 재시도 (누락 %d개 · 중복 %d개 · 복구 %d개)",
+                            batch_index + 1,
+                            len(batches),
+                            len(missing),
+                            len(duplicated),
+                            len(repair_ids),
+                        )
+                        # 중복 source가 들어간 블록을 통째로 버리면, 같은 블록에 함께
+                        # 병합돼 있던 정상 source까지 사라진다. 실제로 it_1 중복을
+                        # 복구하다가 함께 있던 it_2가 최종 검증에서 누락된 사례가
+                        # 있었다. 관련 source만 비우고 구조·다른 배치 source는 보존한
+                        # 뒤, 영향받은 현재 배치 source를 모두 다시 맡긴다.
+                        round_note_items = _clear_repair_sources(candidate, repair_ids)
+                        round_source_items = [
+                            item for item in batch if item["item_id"] in repair_ids
+                        ]
+                        instruction = run_instruction + _coverage_repair_instruction(
+                            missing=missing,
+                            duplicated=duplicated,
+                            repair_ids=repair_ids,
+                            source_items=batch,
+                        )
+                items = batch_items
 
-        # 배치를 다 처리한 뒤 딱 한 번만 빈 슬롯을 채운다 — 배치마다 채우면
-        # 뒤 배치가 실제로 채우려는 slot을 앞 배치가 먼저 빈 슬롯으로 선점해
-        # 같은 slot이 두 번 생긴다.
-        non_empty_items = _drop_empty_new_section_subtrees(items)
-        meaningful_template_items = _drop_empty_template_groups(non_empty_items)
-        section_filled_items = _fill_missing_section_slots(meaningful_template_items, catalog)
-        filled_items = _fill_missing_template_slots(section_filled_items, catalog, state)
-        # 배치 중간 보정 시점에는 아직 비어 있던 하위 슬롯이 최종 채우기에서
-        # 추가된다. 모델이 기존 section 아래 새 앵커를 또 만든 경우, 최종 슬롯
-        # 전개까지 끝난 상태에서 한 번 더 재사용을 시도해야 정확한 기존 빈 슬롯을
-        # target_ref로 확정할 수 있다.
-        reused_existing = _reuse_existing_filled_anchor(filled_items, catalog, state)
-        redirected_existing = _redirect_leaf_add_to_existing_empty_slot(
-            reused_existing, catalog, state
-        )
-        ordered_items = _order_parents_before_children(redirected_existing)
+            # 배치를 다 처리한 뒤 딱 한 번만 빈 슬롯을 채운다 — 배치마다 채우면
+            # 뒤 배치가 실제로 채우려는 slot을 앞 배치가 먼저 빈 슬롯으로 선점해
+            # 같은 slot이 두 번 생긴다.
+            non_empty_items = _drop_empty_new_section_subtrees(items)
+            meaningful_template_items = _drop_empty_template_groups(non_empty_items)
+            section_filled_items = _fill_missing_section_slots(meaningful_template_items, catalog)
+            filled_items = _fill_missing_template_slots(section_filled_items, catalog, state)
+            # 배치 중간 보정 시점에는 아직 비어 있던 하위 슬롯이 최종 채우기에서
+            # 추가된다. 모델이 기존 section 아래 새 앵커를 또 만든 경우, 최종 슬롯
+            # 전개까지 끝난 상태에서 한 번 더 재사용을 시도해야 정확한 기존 빈 슬롯을
+            # target_ref로 확정할 수 있다.
+            reused_existing = _reuse_existing_filled_anchor(filled_items, catalog, state)
+            redirected_existing = _redirect_leaf_add_to_existing_empty_slot(
+                reused_existing, catalog, state
+            )
+            ordered_items = _order_parents_before_children(redirected_existing)
+            try:
+                validated = _validate_output(
+                    ordered_items,
+                    source_items=source_items,
+                    catalog=catalog,
+                    state=state,
+                    existing_categories=list(existing_categories_by_alias.values()),
+                )
+            except Exception:
+                logger.error(
+                    "structure: 검증 실패 item 연결 정보=%s",
+                    [
+                        {
+                            "item_id": item.item_id,
+                            "parent_ref": item.parent_ref,
+                            "parent_item_id": item.parent_item_id,
+                            "section_kind": item.section_kind,
+                            "slot_id": item.slot_id,
+                            "has_text": item.text is not None,
+                            "source_count": len(item.source_item_ids),
+                        }
+                        for item in ordered_items
+                    ],
+                )
+                raise
+            return validated
+
         try:
-            validated = _validate_output(
-                ordered_items,
-                source_items=source_items,
-                catalog=catalog,
-                state=state,
-                existing_categories=list(existing_categories_by_alias.values()),
+            validated = await _run_batches_and_validate(base_instruction, chain)
+        except ValueError as exc:
+            # `_validate_category_reuse`/`_validate_anchor_reuse`는 모델이 스스로
+            # "이미 있다"고 신고해 놓고도 그것과 모순되게 새 카테고리·앵커를 또
+            # 만들면 이 메시지로 거부한다(자기모순). 다른 배치 내부 재시도(파싱
+            # 실패·coverage 오류·timeout)는 온도를 올리고 지시문을 보강해 다시
+            # 시도하는데, 이 교차-배치 최종 검증 실패만은 그런 다양성 없이 그래프
+            # 레벨의 1회 자동 재시도(완전히 같은 프롬프트, 같은 temperature=0)에만
+            # 맡겨져 있었다 — 실제로 재현된 경우다: 활동에 템플릿 이전에 만들어진
+            # 자유 형식 블록만 있으면(메인 서버 GET 응답에는 slot_id가 없어
+            # AI에게는 흔한 모양이다) 모델이 "기존 앵커가 있다"고 신고하면서도
+            # 동시에 새 템플릿 앵커를 만드는 자기모순을 결정론적으로 반복해,
+            # 재시도해도 매번 똑같이 실패했다.
+            if not str(exc).endswith("재사용하세요."):
+                raise
+            logger.warning(
+                "structure: 카테고리·앵커 자기모순 감지, 온도를 올려 전체 재시도: %s", exc
             )
-        except Exception:
-            logger.error(
-                "structure: 검증 실패 item 연결 정보=%s",
-                [
-                    {
-                        "item_id": item.item_id,
-                        "parent_ref": item.parent_ref,
-                        "parent_item_id": item.parent_item_id,
-                        "section_kind": item.section_kind,
-                        "slot_id": item.slot_id,
-                        "has_text": item.text is not None,
-                        "source_count": len(item.source_item_ids),
-                    }
-                    for item in ordered_items
-                ],
+            corrective_instruction = base_instruction + (
+                "\n\n**주의: 이전 시도에서 자기모순이 있었습니다.** "
+                f"{exc} 이번에는 신고한 기존 카테고리·앵커와 실제로 만드는 블록의 "
+                "parent_ref를 반드시 일치시키세요. 확신이 없으면 새 카테고리·앵커를 "
+                "만들지 말고 신고한 기존 별칭 아래에 형제 블록으로만 추가하세요.\n\n"
             )
-            raise
+            validated = await _run_batches_and_validate(corrective_instruction, retry_chain)
     except LlmError:
         raise
     except Exception as exc:
