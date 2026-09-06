@@ -254,3 +254,46 @@ def test_explicit_anchor_wins_over_derivation():
     catalog = TemplateCatalog.model_validate(payload)
 
     assert catalog.get_slot("PROBLEM_SOLVING.SUMMARY").is_anchor is False
+
+
+def test_accepts_current_main_server_camel_case_catalog():
+    """메인 서버 DTO의 camelCase와 subTemplates 필드를 내부 모델로 정규화한다."""
+    payload = {
+        "version": "2026-08-20",
+        "sections": [
+            {
+                "sectionId": "PROBLEM_SOLVING",
+                "label": "문제해결",
+                "anchorSlotId": "PROBLEM_SOLVING.SUMMARY",
+                "slots": [
+                    {
+                        "slotId": "PROBLEM_SOLVING.SUMMARY",
+                        "level": 4,
+                        "placeholder": "문제 요약",
+                        "example": "가입 이탈 문제 해결",
+                    }
+                ],
+                "subTemplates": [
+                    {
+                        "templateId": "TROUBLESHOOTING",
+                        "label": "기술 트러블슈팅",
+                        "slots": [
+                            {
+                                "slotId": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+                                "level": 5,
+                                "placeholder": "원인",
+                                "example": "APM으로 병목을 확인했습니다.",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    catalog = TemplateCatalog.model_validate(payload)
+
+    assert catalog.sections[0].section_id == "PROBLEM_SOLVING"
+    assert catalog.sections[0].templates[0].template_id == "TROUBLESHOOTING"
+    assert catalog.get_slot("PROBLEM_SOLVING.SUMMARY").is_anchor is True
+    assert catalog.get_slot("PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE").placeholder == "원인"

@@ -22,7 +22,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from common.http_client import request_with_retry
 from features.experience_map.config import TEMPLATE_CACHE_TTL_SECONDS
@@ -46,11 +46,17 @@ ANCHOR_SLOT_IDS = frozenset({"TASK.SUMMARY", "PROBLEM_SOLVING.SUMMARY"})
 class TemplateSlot(BaseModel):
     """카탈로그의 한 작성 슬롯"""
 
-    slot_id: str = Field(min_length=1)
+    slot_id: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("slot_id", "slotId"),
+    )
     level: int = Field(ge=4, le=5)
     placeholder: str = Field(min_length=1)
     example: str = Field(min_length=1)
-    is_anchor: bool = False
+    is_anchor: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("is_anchor", "isAnchor"),
+    )
 
     @model_validator(mode="after")
     def _fill_anchor(self) -> "TemplateSlot":
@@ -68,7 +74,10 @@ class TemplateDefinition(BaseModel):
     거부된다. level 별 배치 규칙은 카탈로그 소유자인 메인 서버가 정한다.
     """
 
-    template_id: str = Field(min_length=1)
+    template_id: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("template_id", "templateId"),
+    )
     label: str = Field(min_length=1)
     slots: list[TemplateSlot] = Field(default_factory=list)
 
@@ -80,10 +89,16 @@ class TemplateSection(BaseModel):
     (`DETAIL.MOTIVATION` 등)는 어떤 템플릿에도 속하지 않으므로 이 자리로 온다.
     """
 
-    section_id: str = Field(min_length=1)
+    section_id: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("section_id", "sectionId"),
+    )
     label: str = Field(min_length=1)
     slots: list[TemplateSlot] = Field(default_factory=list)
-    templates: list[TemplateDefinition] = Field(default_factory=list)
+    templates: list[TemplateDefinition] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("templates", "subTemplates"),
+    )
 
     @model_validator(mode="after")
     def _check_slot_levels(self) -> "TemplateSection":

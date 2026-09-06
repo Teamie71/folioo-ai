@@ -156,6 +156,75 @@ async def test_maps_version_conflict_with_current_version():
 
 
 @pytest.mark.asyncio
+async def test_maps_main_server_version_conflict_envelope():
+    """메인 서버의 errorCode/reason/details camelCase 오류 응답을 해석한다."""
+
+    async def request(method, path, **kwargs):
+        return response(
+            409,
+            {
+                "isSuccess": False,
+                "error": {
+                    "errorCode": "EXPERIENCE_MAP4091",
+                    "reason": "경험 맵 버전이 충돌했습니다.",
+                    "details": {"currentMapVersion": "45"},
+                    "path": "/api/v1/experience-map/commit",
+                },
+                "result": None,
+            },
+        )
+
+    client = ExperienceMapMainClient(request=request, catalog_client=CatalogStub())
+
+    with pytest.raises(MapVersionConflictError) as exc_info:
+        await client.commit(
+            user_id="123",
+            request_id="550e8400-e29b-41d4-a716-446655440000",
+            base_map_version=42,
+            items=[],
+        )
+
+    assert exc_info.value.current_map_version == 45
+
+
+@pytest.mark.asyncio
+async def test_main_server_unknown_slot_envelope_refreshes_catalog():
+    """메인 서버의 unknown slot 오류도 카탈로그 갱신 분기로 연결한다."""
+    calls = 0
+    catalog = CatalogStub()
+
+    async def request(method, path, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return response(
+                422,
+                {
+                    "isSuccess": False,
+                    "error": {
+                        "errorCode": "EXPERIENCE_MAP4223",
+                        "reason": "알 수 없는 슬롯입니다.",
+                    },
+                    "result": None,
+                },
+            )
+        return response(200, commit_payload())
+
+    client = ExperienceMapMainClient(request=request, catalog_client=catalog)
+
+    result = await client.commit(
+        user_id="123",
+        request_id="550e8400-e29b-41d4-a716-446655440000",
+        base_map_version=42,
+        items=[],
+    )
+
+    assert result.map_version == 43
+    assert calls == 2
+    assert catalog.refresh_calls == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("code", "error_type"),
     [

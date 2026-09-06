@@ -392,6 +392,22 @@ def test_create_app_registers_test_ui_only_when_enabled(monkeypatch, clean_exper
     assert {"/experience-map/test", "/experience-map/test/session"} <= enabled_paths
 
 
+def test_create_app_registers_main_server_session_compatibility_path(
+    monkeypatch, clean_experience_map_settings
+):
+    """경험정리가 켜졌을 때만 메인 서버 호환용 루트 `/sessions`를 노출한다."""
+    monkeypatch.delenv("EXPERIENCE_MAP_ENABLED", raising=False)
+    experience_map_config.reset_settings()
+    disabled_paths = {route.path for route in main.create_app().routes}
+
+    monkeypatch.setenv("EXPERIENCE_MAP_ENABLED", "true")
+    experience_map_config.reset_settings()
+    enabled_paths = {route.path for route in main.create_app().routes}
+
+    assert "/sessions" not in disabled_paths
+    assert "/sessions" in enabled_paths
+
+
 @pytest.fixture
 def clean_experience_map_settings():
     """설정 캐시를 앞뒤로 비운다. 안 비우면 뒤 테스트가 이 값을 물려받는다."""

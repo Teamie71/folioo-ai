@@ -100,6 +100,23 @@ def test_result_response_lists_each_category_as_its_own_bullet():
     )
 
 
+def test_result_response_groups_deep_server_path_by_section():
+    """서버의 활동 > 카테고리 > 앵커 path는 카테고리 기준으로 묶는다."""
+    commit_result = result(
+        applied=[
+            AppliedItem(
+                item_id="add_1",
+                block_id="401",
+                path="커머스 리뉴얼 > 문제해결 > 가입 이탈 문제 해결",
+            )
+        ]
+    )
+
+    assert build_result_response(state(), commit_result) == (
+        "내용을 분석하여 경험을 정리했어요.\n- 문제해결 아래 1개의 블록 생성"
+    )
+
+
 def test_result_response_notes_truncated_file_content():
     """파일 페이지·글자 수 상한으로 일부를 버렸으면 결과 문구에 알린다.
 
@@ -214,6 +231,34 @@ async def test_gap_failure_omits_suggestion_and_clears_previous_gap():
 
 
 @pytest.mark.asyncio
+async def test_gap_failure_does_not_fail_commit_when_clearing_previous_gap_fails():
+    """gap 분석과 이전 gap 정리가 모두 실패해도 완료된 커밋 결과는 유지한다."""
+
+    async def run_commit(input_state):
+        return committed_state()
+
+    async def run_gap(input_state):
+        raise LlmError(failed_node="gap_analysis")
+
+    async def fail_to_save_gap(user_id: str, gap: dict | None):
+        raise RuntimeError("DB unavailable")
+
+    events = await collect(
+        commit_runner=run_commit,
+        gap_runner=run_gap,
+        save_active_gap=fail_to_save_gap,
+    )
+
+    assert [event.type for event in events] == [
+        "node_status",
+        "node_status",
+        "commit_result",
+        "message_complete",
+    ]
+    assert events[-1].message.response_kind == "result"
+
+
+@pytest.mark.asyncio
 async def test_commit_failure_cancels_gap_and_sends_no_suggestion():
     cancelled = asyncio.Event()
 
@@ -257,6 +302,35 @@ async def test_successful_gap_is_persisted_after_commit():
         "message_complete",
     ]
     assert saved == [("123", suggestion_state()["active_gap"])]
+
+
+@pytest.mark.asyncio
+async def test_active_gap_save_failure_does_not_fail_committed_request():
+    """제안 상태 저장 실패는 커밋 결과와 제안 이벤트를 막지 않는다."""
+
+    async def run_commit(input_state):
+        return committed_state()
+
+    async def run_gap(input_state):
+        return suggestion_state()
+
+    async def fail_to_save_gap(user_id: str, gap: dict | None):
+        raise RuntimeError("DB unavailable")
+
+    events = await collect(
+        commit_runner=run_commit,
+        gap_runner=run_gap,
+        save_active_gap=fail_to_save_gap,
+    )
+
+    assert [event.type for event in events] == [
+        "node_status",
+        "node_status",
+        "commit_result",
+        "message_complete",
+        "suggestion_ready",
+        "message_complete",
+    ]
 
 
 @pytest.mark.asyncio

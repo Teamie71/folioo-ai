@@ -74,12 +74,13 @@ async def client(service, monkeypatch):
     `TestClient` 대신 `httpx.AsyncClient` 를 쓴다. `TestClient` 는 앱을 별도
     이벤트 루프에서 돌려 asyncpg 풀이 다른 루프에 묶인다.
     """
-    from app.api.v1.experience_map import router
+    from app.api.v1.experience_map import compatibility_router, router
 
     monkeypatch.setattr(service_module, "_service", service)
 
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")
+    app.include_router(compatibility_router)
     app.add_middleware(ExperienceMapTicketMiddleware, secret_provider=lambda: SECRET)
 
     transport = httpx.ASGITransport(app=app)
@@ -153,6 +154,16 @@ async def test_create_session(client, api_user_id):
     body = response.json()
     assert body["status"] == "ready"
     uuid.UUID(body["session_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_session_supports_main_server_compatibility_path(client, api_user_id):
+    """메인 서버의 현재 `/sessions` 호출도 정식 경로와 같은 핸들러를 사용한다."""
+    response = await client.post("/sessions", json={"user_id": api_user_id})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    uuid.UUID(response.json()["session_id"])
 
 
 @pytest.mark.asyncio

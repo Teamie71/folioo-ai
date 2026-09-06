@@ -310,6 +310,12 @@ def create_app() -> FastAPI:
 
     # 라우터 등록
     app.include_router(api_router)
+    if get_experience_map_settings().enabled:
+        # 메인 서버는 현재 세션 생성만 루트 `/sessions`로 호출한다. 정식 API 경로는
+        # 유지하면서 동일 핸들러를 별칭으로 노출해 서버 배포와 독립적으로 호환한다.
+        from app.api.v1.experience_map import compatibility_router
+
+        app.include_router(compatibility_router)
 
     # 메인 서버 티켓 발급 전 실제 LLM·SSE를 점검하는 내부 페이지다. 테스트 환경에서만
     # 명시적으로 켜며, 기본값은 비노출이다.

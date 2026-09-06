@@ -111,13 +111,18 @@ def build_result_context(state: ExperienceMapState, result: CommitResult) -> Res
 
 
 def _path_parts(path: str) -> tuple[str, str]:
-    """메인 서버가 돌려준 path에서 활동명과 최종 카테고리를 읽는다."""
+    """메인 서버가 돌려준 path에서 활동명과 3단계 카테고리를 읽는다.
+
+    서버 path는 현재 블록을 제외한 부모 체인이므로 level 5 블록이면
+    `활동 > 카테고리 > 앵커`가 된다. 마지막 조각을 쓰면 앵커 문구로 잘못
+    그룹화되므로 항상 활동 바로 아래 조각을 카테고리로 사용한다.
+    """
     parts = [part.strip() for part in path.split(">") if part.strip()]
     if not parts:
         return "경험", "정리 항목"
     if len(parts) == 1:
         return parts[0], "정리 항목"
-    return parts[0], parts[-1]
+    return parts[0], parts[1]
 
 
 __all__ = [

@@ -103,15 +103,13 @@ async def coordinate(
         # 소비됐으므로, 분석 성공 여부와 무관하게 지운다 — 안 지우면 다음
         # 턴에도 같은 gap이 활성 상태로 남아 새 입력을 그 답변으로 오인한다.
         logger.exception("coordinator: gap 분석 실패 - suggestion 이벤트 생략")
-        if save_active_gap is not None:
-            await save_active_gap(_required_string(state, "user_id"), None)
+        await _save_active_gap_safely(save_active_gap, state, None)
         return
 
     suggestion = gap_state.get("suggestion")
     if not isinstance(suggestion, dict):
         raise ValueError("gap 분석 결과에 suggestion이 없습니다.")
-    if save_active_gap is not None:
-        await save_active_gap(_required_string(state, "user_id"), gap_state.get("active_gap"))
+    await _save_active_gap_safely(save_active_gap, state, gap_state.get("active_gap"))
     raw_gap = suggestion.get("gap")
     yield SuggestionReadyEvent(
         gap=SuggestionGap.model_validate(raw_gap) if raw_gap is not None else None
@@ -130,6 +128,20 @@ async def coordinate(
 async def _run_gap(state: ExperienceMapState) -> ExperienceMapState:
     """커밋과 병렬로 gap 후보를 분석한다. 실제 ID 변환은 커밋 성공 뒤 수행한다."""
     return await analyze_gap(state)
+
+
+async def _save_active_gap_safely(
+    save_active_gap: ActiveGapSaver | None,
+    state: ExperienceMapState,
+    gap: dict | None,
+) -> None:
+    """gap 저장 실패가 이미 성공한 커밋을 실패로 바꾸지 않게 격리한다."""
+    if save_active_gap is None:
+        return
+    try:
+        await save_active_gap(_required_string(state, "user_id"), gap)
+    except Exception:
+        logger.exception("coordinator: active gap 저장 실패 - 커밋 성공 상태 유지")
 
 
 def _required_string(state: ExperienceMapState, field: str) -> str:

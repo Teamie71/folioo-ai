@@ -48,6 +48,7 @@ from features.experience_map.upload_store import StoredFile, get_upload_store
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/experience-map", tags=["experience-map"])
+compatibility_router = APIRouter(tags=["experience-map"])
 
 _STREAM_END = object()
 
@@ -178,6 +179,13 @@ async def _collect_uploads(
     response_model=CreateSessionResponse,
     summary="세션 생성",
     description="메인 서버가 티켓 발급 과정에서 호출합니다. X-API-Key 인증입니다.",
+)
+@compatibility_router.post(
+    "/sessions",
+    response_model=CreateSessionResponse,
+    summary="세션 생성 (메인 서버 호환 경로)",
+    description="메인 서버의 현재 호출 경로와 호환하기 위한 별칭입니다. X-API-Key 인증입니다.",
+    include_in_schema=False,
 )
 async def create_session(payload: CreateSessionRequest):
     service = get_service()
