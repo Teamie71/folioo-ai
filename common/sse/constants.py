@@ -12,6 +12,11 @@ class SSEEventType(StrEnum):
     MESSAGE_COMPLETE = "message_complete"
     ERROR = "error"
     PING = "ping"
+    # PDF 텍스트 추출 활동 단위 스트리밍
+    EXTRACTION_STARTED = "extraction_started"
+    ACTIVITY_COMPLETED = "activity_completed"
+    EXTRACTION_COMPLETED = "extraction_completed"
+    EXTRACTION_FAILED = "extraction_failed"
 
 
 class SSEDeltaType(StrEnum):
@@ -28,6 +33,8 @@ class SSEErrorCode(StrEnum):
     LLM_ERROR = "llm_error"
     STREAM_EVENT_ERROR = "stream_event_error"
     INVALID_STREAM_EVENT = "invalid_stream_event"
+    EXTRACTION_INVALID_FILE = "extraction_invalid_file"
+    EXTRACTION_FAILED = "extraction_failed"
 
 
 class LangGraphEventType(StrEnum):

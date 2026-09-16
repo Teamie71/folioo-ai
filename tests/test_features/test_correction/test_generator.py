@@ -232,6 +232,28 @@ def test_generate_retry_with_validation_feedback(monkeypatch: pytest.MonkeyPatch
     assert chain.calls[1]["validation_feedback"].startswith("이전 출력 보완 필요:")
 
 
+def test_generate_replaces_empty_emphasis_points_with_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """빈 강조 포인트는 프롬프트에 "없음" 으로 전달한다."""
+    from features.correction import generator
+
+    chain = DummyChain([_decision_json(line_number=1)])
+    monkeypatch.setattr(generator, "correction_generator_prompt", DummyPrompt(chain))
+    monkeypatch.setattr(generator, "get_llm", lambda **_: DummyLLM())
+
+    CorrectionGenerator(max_retries=0).generate(
+        company_name="테스트 회사",
+        job_title="백엔드",
+        job_description="채용 공고",
+        company_insight="인사이트",
+        portfolio_data=_portfolio_data_for_output(),
+        emphasis_points="   ",
+    )
+
+    assert chain.calls[0]["emphasis_points"] == "없음"
+
+
 def test_generate_retries_on_fenced_json_then_succeeds(monkeypatch: pytest.MonkeyPatch):
     """LLM이 ```json``` 코드펜스로 감싼 JSON을 반환해도 파싱 후 진행한다."""
     from features.correction import generator

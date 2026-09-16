@@ -17,6 +17,21 @@ from features.portfolio.pdf_extraction.service import PdfExtractionService
 CORRECTION_ID = "123"
 
 
+@pytest.fixture(autouse=True)
+def reset_sse_app_status():
+    """`sse_starlette` 의 모듈 레벨 이벤트를 테스트마다 초기화한다.
+
+    `AppStatus.should_exit_event` 은 클래스 속성이라 첫 스트림에서 만들어진 뒤
+    계속 재사용된다. 테스트마다 이벤트 루프가 새로 뜨므로 두 번째 스트림부터
+    "bound to a different event loop" 가 난다.
+    """
+    from sse_starlette.sse import AppStatus
+
+    AppStatus.should_exit_event = None
+    yield
+    AppStatus.should_exit_event = None
+
+
 class DummyCorrectionClient:
     """API 테스트용 CorrectionClient Mock"""
 
@@ -126,6 +141,12 @@ class DummyPdfExtractionGenerator:
             ]
         )
         self._exc = exc
+
+    async def extract_stream(self, _file_bytes: bytes, _filename: str):
+        if self._exc is not None:
+            raise self._exc
+        for activity in self._result.activities:
+            yield activity
 
     def extract(self, _file_bytes: bytes, _filename: str) -> PdfExtractionResult:
         if self._exc is not None:
@@ -516,6 +537,17 @@ async def test_start_pdf_extraction_stops_when_chunk_limit_exceeded(monkeypatch)
     assert service.calls == []
 
 
+def test_get_correction_status_accepts_rag_failed(monkeypatch):
+    """메인 서버가 RAG_FAILED 를 반환해도 상태 조회가 200 을 반환한다."""
+    cc = DummyCorrectionClient(correction={"id": 123, "status": "RAG_FAILED"})
+    client = _create_client(monkeypatch, cc)
+
+    response = client.get(f"/api/v1/corrections/{CORRECTION_ID}/status")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rag_failed"
+
+
 # ------------------------------------------------------------------
 # 강조 포인트
 # ------------------------------------------------------------------
@@ -533,6 +565,20 @@ def test_update_emphasis_points_returns_200(monkeypatch):
 
     assert response.status_code == 200
     assert cc.updated_emphasis_points == (123, "새 포인트")
+
+
+def test_update_emphasis_points_accepts_empty_string(monkeypatch):
+    """강조 포인트는 선택 항목이므로 빈 문자열도 200을 반환한다."""
+    cc = DummyCorrectionClient(correction={"id": 123, "status": "COMPANY_INSIGHT"})
+    client = _create_client(monkeypatch, cc)
+
+    response = client.patch(
+        f"/api/v1/corrections/{CORRECTION_ID}/emphasis-points",
+        json={"emphasis_points": ""},
+    )
+
+    assert response.status_code == 200
+    assert cc.updated_emphasis_points == (123, "")
 
 
 # ------------------------------------------------------------------
@@ -718,3 +764,97 @@ def test_start_pdf_extraction_allows_text_plain_extension_fallback(monkeypatch):
 
     assert response.status_code == 202
     assert response.json()["status"] == "accepted"
+
+
+# ------------------------------------------------------------------
+# PDF 추출 스트리밍
+# ------------------------------------------------------------------
+
+
+def _parse_sse(body: str) -> list[dict]:
+    """SSE 응답 본문을 (event, data) 목록으로 파싱한다."""
+    import json
+
+    events = []
+    for block in body.replace("\r\n", "\n").split("\n\n"):
+        event_name = None
+        data_lines = []
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event_name = line[len("event:") :].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[len("data:") :].strip())
+        if event_name and data_lines:
+            events.append({"event": event_name, "data": json.loads("".join(data_lines))})
+    return events
+
+
+def test_stream_pdf_extraction_returns_sse_events(monkeypatch):
+    """스트리밍 엔드포인트는 활동 단위 SSE 이벤트를 반환한다."""
+    cc = DummyCorrectionClient()
+    pdf_client = DummyPdfExtractionClient()
+    pdf_service = _create_pdf_extraction_service(correction_client=pdf_client)
+    client = _create_client(monkeypatch, cc, pdf_service=pdf_service)
+
+    response = client.post(
+        f"/api/v1/corrections/{CORRECTION_ID}/pdf-extraction/stream",
+        files={"file": ("portfolio.pdf", b"%PDF-1.4", "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+
+    events = _parse_sse(response.text)
+    assert [event["event"] for event in events] == [
+        "extraction_started",
+        "activity_completed",
+        "extraction_completed",
+    ]
+    assert events[1]["data"]["activity"]["activityName"] == "프로젝트 A"
+    assert events[2]["data"]["activityCount"] == 1
+
+
+def test_stream_pdf_extraction_returns_400_for_file_too_large(monkeypatch):
+    """10MB를 초과한 파일이면 스트림을 열기 전에 400을 반환한다."""
+    cc = DummyCorrectionClient()
+    pdf_service = _create_pdf_extraction_service()
+    client = _create_client(monkeypatch, cc, pdf_service=pdf_service)
+
+    response = client.post(
+        f"/api/v1/corrections/{CORRECTION_ID}/pdf-extraction/stream",
+        files={"file": ("portfolio.pdf", b"a" * (10 * 1024 * 1024 + 1), "application/pdf")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "PDF 파일 크기는 10MB를 초과할 수 없습니다."
+
+
+def test_stream_pdf_extraction_reports_invalid_file_as_event(monkeypatch):
+    """PDF가 아닌 파일은 스트림 안에서 실패 이벤트로 알린다."""
+    cc = DummyCorrectionClient()
+    pdf_service = _create_pdf_extraction_service()
+    client = _create_client(monkeypatch, cc, pdf_service=pdf_service)
+
+    response = client.post(
+        f"/api/v1/corrections/{CORRECTION_ID}/pdf-extraction/stream",
+        files={"file": ("portfolio.txt", b"plain text", "text/plain")},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    assert [event["event"] for event in events] == ["extraction_failed"]
+    assert events[0]["data"]["error"]["code"] == "extraction_invalid_file"
+
+
+def test_stream_pdf_extraction_returns_404_for_invalid_correction_id(monkeypatch):
+    """correction_id가 정수가 아니면 404를 반환한다."""
+    cc = DummyCorrectionClient()
+    pdf_service = _create_pdf_extraction_service()
+    client = _create_client(monkeypatch, cc, pdf_service=pdf_service)
+
+    response = client.post(
+        "/api/v1/corrections/not-a-number/pdf-extraction/stream",
+        files={"file": ("portfolio.pdf", b"%PDF-1.4", "application/pdf")},
+    )
+
+    assert response.status_code == 404

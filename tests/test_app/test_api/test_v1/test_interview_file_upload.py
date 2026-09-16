@@ -47,7 +47,7 @@ def _patch_streaming_response(monkeypatch):
         async for event in stream:
             yield event["data"]
 
-    monkeypatch.setattr(interview_api, "_interleave_ping_events", _passthrough_events)
+    monkeypatch.setattr(interview_api, "interleave_ping_events", _passthrough_events)
     monkeypatch.setattr(interview_api, "EventSourceResponse", StreamingResponse)
 
 

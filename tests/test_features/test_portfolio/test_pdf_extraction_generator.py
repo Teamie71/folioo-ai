@@ -1,5 +1,7 @@
 """PDF 추출 생성기 테스트"""
 
+from types import SimpleNamespace
+
 import pytest
 
 from features.portfolio.pdf_extraction.generator import (
@@ -114,6 +116,46 @@ def test_extract_uses_pdf_extraction_model_name(monkeypatch: pytest.MonkeyPatch)
     PdfExtractionGenerator().extract(b"%PDF", "resume.pdf")
 
     assert llm_calls == [{"model": "openai/gpt-4.1-mini", "temperature": 0.0}]
+
+
+@pytest.mark.asyncio
+async def test_extract_stream_offloads_message_building_to_thread(monkeypatch: pytest.MonkeyPatch):
+    """extract_stream 도 extract() 와 동일하게 메시지 생성(파일 읽기 + PDF 인코딩)을
+    스레드로 넘겨 이벤트 루프를 블로킹하지 않는다."""
+    from features.portfolio.pdf_extraction import generator
+
+    build_calls: list[dict] = []
+
+    def _fake_build_messages(*, file_bytes: bytes, filename: str):
+        build_calls.append({"file_bytes": file_bytes, "filename": filename})
+        return ["message"]
+
+    async def _fake_astream(messages):
+        assert messages == ["message"]
+        yield SimpleNamespace(content='{"activities": [')
+        yield SimpleNamespace(
+            content=(
+                '{"activity_name": "A", "detail": [], "responsibility": [], '
+                '"problem_solving": [], "learning": []}'
+            )
+        )
+        yield SimpleNamespace(content="]}")
+
+    class DummyStreamLlm:
+        def astream(self, messages):
+            return _fake_astream(messages)
+
+    monkeypatch.setattr(generator, "get_llm", lambda model=None, temperature=0.7: DummyStreamLlm())
+    monkeypatch.setattr(generator, "build_pdf_extraction_messages", _fake_build_messages)
+
+    activities = [
+        activity
+        async for activity in PdfExtractionGenerator().extract_stream(b"%PDF", "resume.pdf")
+    ]
+
+    assert [a.activity_name for a in activities] == ["A"]
+    # 스레드로 넘겨도 asyncio.to_thread 는 kwargs 를 그대로 전달한다.
+    assert build_calls == [{"file_bytes": b"%PDF", "filename": "resume.pdf"}]
 
 
 def test_extract_uses_preview_model_by_default(monkeypatch: pytest.MonkeyPatch):

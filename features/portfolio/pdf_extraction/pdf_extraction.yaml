@@ -1,0 +1,12 @@
+# PDF 포트폴리오 추출 설정
+#
+# 화면설계서 v.3.5 [포트폴리오 첨삭 - 포트폴리오 업로드] 기준값이다.
+# 글자수 상한은 카테고리(텍스트 에어리어) 전체 합계 기준이며,
+# 불릿을 개행으로 이은 문자열의 길이로 센다.
+
+limits:
+    max_activity_count: 4
+    detail_max_length: 300 # 상세정보
+    responsibility_max_length: 700 # 담당업무
+    problem_solving_max_length: 700 # 문제해결
+    learning_max_length: 300 # 배운 점

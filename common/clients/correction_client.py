@@ -18,8 +18,12 @@ def _as_payload_dict(value: Any) -> dict[str, Any]:
     return value
 
 
-def _build_problem_solving_payload(item: Any) -> dict[str, Any]:
-    """문제 해결 항목을 callback payload 형식으로 변환"""
+def build_problem_solving_payload(item: Any) -> dict[str, Any]:
+    """문제 해결 항목을 callback payload 형식으로 변환
+
+    PDF 추출의 SSE payload(`activity_completed`)와 메인 서버 콜백 payload가
+    같은 모양을 쓰도록 공유한다.
+    """
     data = _as_payload_dict(item)
     return {
         "no": data["no"],
@@ -29,15 +33,19 @@ def _build_problem_solving_payload(item: Any) -> dict[str, Any]:
     }
 
 
-def _build_pdf_activity_payload(activity: Any) -> dict[str, Any]:
-    """PDF 활동 스키마를 callback payload 형식으로 변환"""
+def build_pdf_activity_payload(activity: Any) -> dict[str, Any]:
+    """PDF 활동 스키마를 callback payload 형식으로 변환
+
+    PDF 추출의 SSE payload(`activity_completed`)와 메인 서버 콜백 payload가
+    같은 모양을 쓰도록 공유한다.
+    """
     data = _as_payload_dict(activity)
     problem_solving = data.get("problem_solving", data.get("problemSolving", []))
     return {
         "activityName": data.get("activity_name", data.get("activityName")),
         "detail": data["detail"],
         "responsibility": data["responsibility"],
-        "problemSolving": [_build_problem_solving_payload(item) for item in problem_solving],
+        "problemSolving": [build_problem_solving_payload(item) for item in problem_solving],
         "learning": data["learning"],
     }
 
@@ -185,7 +193,7 @@ class CorrectionClient(BaseClient):
             f"{self._PDF_EXTRACTION_CALLBACK_PREFIX}/{correction_id}/pdf-extraction-result",
             json={
                 "status": "completed",
-                "activities": [_build_pdf_activity_payload(activity) for activity in activities],
+                "activities": [build_pdf_activity_payload(activity) for activity in activities],
                 "sourceType": source_type,
             },
         )
@@ -251,6 +259,8 @@ def reset_correction_client() -> None:
 
 __all__ = [
     "CorrectionClient",
+    "build_pdf_activity_payload",
+    "build_problem_solving_payload",
     "get_correction_client",
     "init_correction_client",
     "reset_correction_client",

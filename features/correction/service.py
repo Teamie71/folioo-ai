@@ -23,6 +23,7 @@ from .schemas import CorrectionOutput, CorrectionStatus, PortfolioCorrectionResu
 logger = logging.getLogger(__name__)
 
 _service: "CorrectionService | None" = None
+_MAX_PORTFOLIO_COUNT = 4
 _FIELD_NAME_TO_SERVER = {
     "description": "description",
     "contributions": "responsibilities",
@@ -302,8 +303,8 @@ class CorrectionService:
             portfolio_ids = correction.get("portfolioIds") or []
             if not portfolio_ids:
                 raise ValueError("포트폴리오 ID가 없습니다.")
-            if len(portfolio_ids) > 5:
-                raise ValueError("포트폴리오는 최대 5개까지 허용됩니다.")
+            if len(portfolio_ids) > _MAX_PORTFOLIO_COUNT:
+                raise ValueError(f"포트폴리오는 최대 {_MAX_PORTFOLIO_COUNT}개까지 허용됩니다.")
 
             logger.info(
                 "첨삭 데이터 조회 완료 (correction_id: %s, company: %s, portfolios: %s개)",

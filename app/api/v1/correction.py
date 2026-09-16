@@ -5,6 +5,7 @@ import logging
 from contextlib import suppress
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Response, UploadFile, status
+from sse_starlette.sse import EventSourceResponse
 
 from app.schemas.correction import (
     CompanyInsightResponse,
@@ -17,6 +18,7 @@ from app.schemas.interview import ErrorResponse
 from app.schemas.pdf_extraction import PdfExtractionAcceptedResponse
 from common.clients.base_client import MainServerError
 from common.clients.correction_client import get_correction_client
+from common.sse import interleave_ping_events
 from features.correction.service import get_correction_service
 from features.portfolio.pdf_extraction.service import get_pdf_extraction_service
 
@@ -36,6 +38,21 @@ def _validate_correction_id(correction_id: str) -> int:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"첨삭을 찾을 수 없습니다: {correction_id}",
         ) from e
+
+
+async def _read_upload_within_limit(file: UploadFile) -> bytes:
+    """업로드 파일을 크기 상한 안에서 읽어 바이트로 반환한다."""
+    file_bytes_buffer = bytearray()
+
+    while chunk := await file.read(_PDF_UPLOAD_CHUNK_SIZE_BYTES):
+        file_bytes_buffer.extend(chunk)
+        if len(file_bytes_buffer) > _MAX_PDF_FILE_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="PDF 파일 크기는 10MB를 초과할 수 없습니다.",
+            )
+
+    return bytes(file_bytes_buffer)
 
 
 def _raise_internal_server_error() -> None:
@@ -318,19 +335,11 @@ async def start_pdf_extraction(
     service = get_pdf_extraction_service()
 
     try:
-        file_bytes_buffer = bytearray()
-
-        while chunk := await file.read(_PDF_UPLOAD_CHUNK_SIZE_BYTES):
-            file_bytes_buffer.extend(chunk)
-            if len(file_bytes_buffer) > _MAX_PDF_FILE_SIZE_BYTES:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="PDF 파일 크기는 10MB를 초과할 수 없습니다.",
-                )
+        file_bytes = await _read_upload_within_limit(file)
 
         await service.start_extraction(
             correction_id=cid,
-            file_bytes=bytes(file_bytes_buffer),
+            file_bytes=file_bytes,
             filename=file.filename or "",
             content_type=file.content_type,
             background_tasks=background_tasks,
@@ -354,6 +363,54 @@ async def start_pdf_extraction(
     finally:
         with suppress(Exception):
             await file.close()
+
+
+@router.post(
+    "/{correction_id}/pdf-extraction/stream",
+    summary="PDF 추출 활동 단위 스트리밍",
+    description=(
+        "PDF 업로드를 받아 활동이 완성될 때마다 SSE 로 흘려보낸다. "
+        "저장은 스트림이 끝난 뒤 기존 PDF 추출 결과 콜백 1회로 처리한다."
+    ),
+    responses={
+        200: {"description": "SSE 스트림", "content": {"text/event-stream": {}}},
+        400: {"model": ErrorResponse, "description": "PDF 업로드 검증 실패"},
+        404: {"model": ErrorResponse, "description": "첨삭이 없는 경우"},
+        500: {"model": ErrorResponse, "description": "내부 서버 에러"},
+    },
+)
+async def stream_pdf_extraction(
+    correction_id: str,
+    file: UploadFile = File(...),
+) -> EventSourceResponse:
+    """PDF 추출을 활동 단위로 SSE 스트리밍한다."""
+    cid = _validate_correction_id(correction_id)
+    service = get_pdf_extraction_service()
+
+    try:
+        file_bytes = await _read_upload_within_limit(file)
+    except HTTPException:
+        raise
+    except Exception:
+        _raise_internal_server_error()
+    finally:
+        with suppress(Exception):
+            await file.close()
+
+    stream = service.stream_extraction(
+        correction_id=cid,
+        file_bytes=file_bytes,
+        filename=file.filename or "",
+        content_type=file.content_type,
+    )
+
+    return EventSourceResponse(
+        interleave_ping_events(stream),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Nginx 프록시 버퍼링 비활성화
+        },
+    )
 
 
 @router.delete(
