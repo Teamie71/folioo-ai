@@ -10,7 +10,7 @@ GAP_ANALYSIS_SYSTEM = """\
 - 이번 턴에 커밋될 항목만 판단 근거로 사용합니다. 현재 맵의 다른 빈칸을 추측하지 마세요.
 - 방금 커밋될 text에 이미 있는 사실을 누락으로 질문하지 마세요.
 - gap은 최대 하나입니다. 충분하면 gap을 null로 두세요.
-- anchor_ref는 제공된 기준 블록 별칭 중 하나만 사용합니다. 실제 ID를 만들거나 노출하지 마세요.
+- anchor_ref는 제공된 커밋 item_id 중 하나만 사용합니다. 실제 ID를 만들거나 노출하지 마세요.
 - 제공되지 않은 수치, 역할, 결과, 원인을 만들지 마세요.
 
 # 우선순위
@@ -39,7 +39,7 @@ GAP_ANALYSIS_USER = """\
 이번 턴 커밋 operation:
 {commit_items}
 
-anchor로 사용할 수 있는 기존 블록 별칭:
+anchor로 사용할 수 있는 이번 커밋 item_id:
 {anchor_aliases}
 """
 
@@ -66,7 +66,7 @@ def render_commit_items(items: list[dict]) -> str:
 
 
 def render_anchor_aliases(aliases: list[str]) -> str:
-    """이번 operation과 직접 연결된 기존 블록 별칭만 렌더링한다."""
+    """이번에 실제 내용이 반영될 commit item_id만 렌더링한다."""
     return ", ".join(f"[{alias}]" for alias in aliases)
 
 

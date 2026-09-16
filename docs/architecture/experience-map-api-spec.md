@@ -52,6 +52,20 @@ validate 성공 → 커밋 API 호출 ──────────→ 결과 �
 gap 답변 여부는 Router가 아니라 반영 내용 필터링 노드가 판정합니다.
 활성 gap은 `ai_experience_session.active_gap`에 저장돼 다음 턴까지 유지됩니다 (3-2).
 
+위 흐름은 에이전트 문서 3절의 노드 구성입니다. AI 서버 그래프에는 그 사이에
+**에이전트 문서에 없는 내부 노드 둘**이 더 있습니다. 기획상의 처리 단계가 아니라
+구현 제약을 푸는 자리라 에이전트 문서에는 의도적으로 넣지 않았고, 사용자에게
+보이는 스트리밍 문구도 없습니다(6절 `node_status`).
+
+| 노드 | 위치 | 하는 일 |
+| --- | --- | --- |
+| `target_activity` | 반영 내용 필터링 → 블록 구조화 | 이번 요청이 수정할 level 2 활동 하나를 고른다. `context_experience_id` → 활성 gap의 `anchor_block_id` → 메시지+outline 순으로 판정하고, 하나로 특정하지 못하면 커밋 없이 `ambiguous_target` fallback이다 |
+| `file_cleanup` | 파일처리 → 반영 내용 필터링 | 추출 결과가 checkpoint에 저장된 뒤 GCS 원본을 지운다 (4-4) |
+
+`target_activity`가 필요한 이유는 4-1에 있습니다 — **한 요청은 한 활동만
+수정합니다.** 활동 50개를 매번 프롬프트에 넣으면 토큰이 감당되지 않고, 관계없는
+활동이 섞이면 사실이 교차 오염됩니다.
+
 커밋과 gap 분석은 동시에 시작합니다. AI 서버는 커밋 완료를 먼저 기다려 결과 응답을
 보내고, 준비된 제안을 뒤이어 보냅니다. gap 분석 실패는 결과 응답에 영향을 주지 않습니다.
 
@@ -113,7 +127,7 @@ TTL을 연결 시점에만 보는 이유는 파일처리 120초 + LLM 60초 + ga
 TTL보다 오래 살 수 있기 때문입니다. 재시도 TTL(30분)이 티켓 TTL(5분)보다 길어
 재시도 시점에는 티켓이 만료돼 있는 것이 정상입니다.
 
-body를 읽기 전에 검증하는 이유는 파일 업로드가 프론트 → AI 직결이라 최대 30MB가
+body를 읽기 전에 검증하는 이유는 파일 업로드가 프론트 → AI 직결이라 최대 10MB가
 직접 들어오기 때문입니다. 검증 전에 버퍼링하면 인증되지 않은 호출자가 그만큼
 밀어넣을 수 있습니다.
 
@@ -123,7 +137,7 @@ body를 읽기 전에 검증하는 이유는 파일 업로드가 프론트 → A
 
 - **CORS**: `ALLOWED_ORIGINS`에 웹 오리진 추가, `Authorization` 헤더 preflight 허용
 - **rate limit**: 티켓 `sub`(사용자) 단위. 티켓 발급 자체의 제한은 메인 서버 책임
-- **요청 크기 제한**: 파일 3개 × 10MB (5절)
+- **요청 크기 제한**: 파일 1개 × 10MB (5절)
 
 ### 2-2. 식별자
 
@@ -170,7 +184,8 @@ LLM에는 실제 block ID를 전달하지 않고 요청 안에서만 유효한 `
 | 대상 | 처리 |
 | --- | --- |
 | Router·파일처리·filter·structure·refine | 실패한 노드만 1회 자동 재시도 |
-| gap 분석·제안 생성 | 자동 재시도 없음, 실패 시 화면에 표시하지 않음 |
+| gap 분석 | 자동 재시도 없음, 실패 시 화면에 표시하지 않음 |
+| 제안 생성 | 자동 재시도 없음, 실패 시 고정 문구로 대체 |
 | validate 보정 | `structure` 또는 `refine`으로 최대 2회 회귀 |
 | 커밋 API `5xx`·타임아웃 | 최대 3회, 1초·2초·3초 backoff |
 | 커밋 API `4xx` | 재시도하지 않음 (`409 map_version_conflict`는 4-3의 재구성 경로) |
@@ -417,6 +432,18 @@ AI가 보내는 것     : slot_id = "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE"
 AI가 만들 블록을 모두 명시하는 방식입니다. items 외에 특수 명령이 없어 계약이
 단순하고, AI가 어떤 슬롯을 만들지 완전히 제어합니다.
 
+**이미 있는 빈 슬롯을 나중에 채우는 경우, `add`로 옆에 또 만들지 않고 그 슬롯
+자신을 `update`합니다.** gap 분석은 커밋과 **병렬로** 실행되므로(1절), 이번 턴에
+막 만드는 카테고리·앵커·빈 슬롯은 그 턴 안에서는 아직 실제 `block_id`가 없어
+`extend_block`으로 정밀하게 가리킬 수 없습니다 — 그래서 다음 턴 사용자가 그 gap에
+답하면 `new_child_block`으로 분류돼 블록 단위 구조화 노드로 전달됩니다. 이때
+구조화 노드가 활동 트리에서 그 앵커 아래 **이미 있는 빈 슬롯**(예:
+`TASK.BASIC.PURPOSE`, `content IS NULL`)과 정확히 같은 슬롯을 채우려는 것으로
+판단되면, 같은 `slot_id`로 새 블록을 또 만들지 않고 그 빈 슬롯 자신을 `target_id`로
+삼아 `update`로 채웁니다. 같은 (부모, `slot_id`) 조합이 두 번 생기는 것(하나는 빈
+채로 방치되고 하나는 내용이 실리는 상태)을 막기 위한 예외이며, 그 외의 경우
+구조화 노드는 계속 `add`만 만듭니다.
+
 ---
 
 ## 4. AI 서버의 처리
@@ -651,13 +678,17 @@ Accept: text/event-stream
 | 처리 방식 | MIME | 확장자 |
 | --- | --- | --- |
 | 파일 파서 | `text/plain`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`, `application/vnd.openxmlformats-officedocument.presentationml.presentation` | `.txt`, `.docx`, `.pptx` |
-| OCR 모델 | `application/pdf`, `image/png`, `image/jpeg` | `.pdf`, `.png`, `.jpg`, `.jpeg` |
+| PDF 전 페이지 OCR | `application/pdf` | `.pdf` |
+| OCR 모델 | `image/png`, `image/jpeg` | `.png`, `.jpg`, `.jpeg` |
 
-개수 최대 3개, 파일당 최대 10MB.
+개수 최대 1개, 파일당 최대 10MB.
 
 MIME·확장자·실제 파일 signature를 모두 검사합니다. `.txt`는 signature가 없으므로
 UTF-8 디코딩 성공 여부로 판정합니다. 메시지와 파일 중 하나 이상이 있어야 합니다.
-한 요청에 파서 형식과 OCR 형식이 섞여 있으면 각각 처리한 뒤 입력 순서대로 이어 붙입니다.
+PDF는 최대 10페이지까지 텍스트 레이어 유무와 관계없이 모든 페이지를 PNG로
+렌더링해 페이지별 OCR을 수행합니다. 여러 페이지를 한 모델 요청에 몰아넣지 않으며
+최대 3개 요청만 동시에 실행합니다. 한 요청에 파서 형식과 OCR 형식이 섞여 있으면
+각각 처리한 뒤 입력 순서대로 이어 붙입니다.
 
 동일 request가 이미 완료됐다면 새 graph를 실행하지 않고 저장한 `commit_result`,
 결과 메시지, 제안, `processing_complete`를 같은 순서로 재전송합니다.
@@ -740,9 +771,16 @@ processing_started
 `message_complete`는 **메시지 단위 종료**이지 스트림 종료가 아닙니다. 결과 응답을
 먼저 닫아 즉시 보여주고, gap 제안은 뒤이어 별도 메시지로 붙습니다.
 
-gap 분석 또는 제안 생성이 **실패**했을 때만 `suggestion_ready`와 suggestion 메시지를
-생략합니다. 분석에 성공했다면 **gap이 없어도 제안 메시지는 전송**합니다
-(고정 문구 “더 정리하고 싶으신 내용이 있나요?”).
+**`suggestion_ready`와 suggestion 메시지를 생략하는 경우는 gap 분석 자체가 실패했을
+때뿐입니다** (에이전트 문서 3절 공통 규칙 — gap 분석은 재시도하지 않고 화면에도
+표시하지 않는다).
+
+그 밖의 경우는 모두 전송합니다. **gap이 없을 때와 제안 문구 생성에 실패했을 때는
+고정 문구 “더 정리하고 싶으신 내용이 있나요?”를 보냅니다** (에이전트 문서 3-9).
+제안 생성 실패를
+생략이 아니라 고정 문구로 처리하는 이유는, 분석까지 끝난 턴에서 대화가 아무 말 없이
+끊긴 것처럼 보이지 않게 하기 위해서입니다. 이때 `suggestion_ready`의 `gap`은 `null`
+이므로 `active_gap`도 함께 비워집니다.
 
 커밋 실패 시 실행 중인 gap 분석을 취소하고 `error`를 전송합니다.
 
@@ -761,12 +799,22 @@ gap 분석 또는 제안 생성이 **실패**했을 때만 `suggestion_ready`와
 {
   "type": "node_status",
   "node": "structure",
-  "status": "running"
+  "status": "running",
+  "phrase": "경험 블록을 정리하고 있어요."
 }
 ```
 
-`node` 값: `router`, `file_processor`, `content_filter`, `gap_resolver`,
-`structure`, `refine`, `validate`, `commit`.
+`node` 값: `router`, `file_processor`, `file_cleanup`, `content_filter`,
+`target_activity`, `structure`, `refine`, `validate`, `commit`, `fallback`.
+
+`phrase`는 에이전트 문서 4절의 노드별 고정 문구다. 문구가 있는 노드는 그 표의
+7개(`router`·`file_processor`·`content_filter`·`structure`·`refine`·`validate`·
+`commit`)뿐이다. `status: "running"`일 때만 채워지며, 4절 표에 문구가 없는
+노드(`file_cleanup`·`target_activity`·`gap_analysis`·`fallback` 등)와
+`completed`/`failed` 상태에서는 `null`이다. Validation이
+제한사항 미준수로 이전 노드를 되돌려 재실행시키는 경우, 그 재실행에는
+`phrase`가 실리지 않는다 — 화면에는 Validation의 문구가 계속 보여야 하므로
+클라이언트는 `phrase`가 `null`이면 마지막으로 받은 문구를 그대로 유지한다.
 
 ### `commit_result`
 
@@ -800,8 +848,9 @@ gap 분석 또는 제안 생성이 **실패**했을 때만 `suggestion_ready`와
 items에서 제외되므로 메인 서버는 그 존재를 모릅니다. 커밋 API 응답에는 `dropped`가
 없습니다.
 
-`path`는 결과 문구에 “어디에 넣었는지”를 보여주기 위해 필요합니다. 사전 승인이 없는
-경로이므로 이 문구가 사용자가 오배정을 발견하는 주 경로입니다.
+`path`는 `{활동명} > {카테고리명}` 형식입니다. AI 서버가 결과 문구의 `{카테고리명}`을
+여기서 뽑고(에이전트 문서 3-8), `suggestion_ready`도 같은 경로를 그대로 실어 보냅니다. 사전 승인이
+없는 배정이므로 이 경로 표시가 사용자가 오배정을 발견하는 주 수단입니다.
 
 ### `message_complete`
 
@@ -812,7 +861,7 @@ items에서 제외되므로 메인 서버는 그 존재를 모릅니다. 커밋 
     "request_id": "550e8400-e29b-41d4-a716-446655440000",
     "session_id": "d9428888-122b-11e1-b85c-61cd3cbb3210",
     "response_kind": "result",
-    "ai_response": "교내 커머스 리뉴얼 > 문제해결에 블록 1개를 추가했습니다.",
+    "ai_response": "내용을 분석하여 경험을 정리했어요.\n- 문제해결 아래 1개의 블록 생성",
     "committed": true,
     "map_version": 43,
     "can_revert": true
@@ -821,7 +870,51 @@ items에서 제외되므로 메인 서버는 그 존재를 모릅니다. 커밋 
 ```
 
 `response_kind`는 `result`, `suggestion`, `fallback` 중 하나입니다.
-Fallback은 `committed: false`이며 고정 문구 “아직 지원하지 않는 기능이에요.”를 보냅니다.
+**세 종류 모두 LLM을 쓰지 않는 결정적 문구입니다.**
+
+#### `result` — 에이전트 문서 3-8
+
+첫 문장은 고정이고, 그 아래 변경이 발생한 **3단계 카테고리 단위로** 불렛을 붙입니다.
+
+```markdown
+내용을 분석하여 경험을 정리했어요.
+- {카테고리명} 아래 {N}개의 블록 수정
+- {카테고리명} 아래 {N}개의 블록 생성
+- {카테고리명} 생성
+```
+
+- 수정·생성 개수가 0이면 그 줄은 출력하지 않습니다
+- `{카테고리명} 생성`은 level 3 블록을 새로 만든 경우에만 붙습니다
+- 한 카테고리에서 수정과 생성이 모두 일어나면 각각 별도 불렛입니다
+- `{카테고리명}`은 `commit_result`의 `path` 마지막 구간(또는 이번에 만든
+  카테고리의 `section_kind` 라벨)입니다
+
+#### `fallback` — 에이전트 문서 3-10
+
+**진입 경로마다 문구가 다릅니다.** 하나로 합치지 않는 이유는 사용자가 취할 다음
+행동이 다르기 때문입니다 — 파일이 손상돼 실패한 사용자에게 “아직 지원하지 않는
+기능이에요”라고 하면 다른 파일로 올려볼 생각을 하지 못합니다.
+
+| `fallback_reason` | 선행 노드 | 문구 |
+| --- | --- | --- |
+| `out_of_scope` | Router | 지금은 제공해주신 내용을 바탕으로 경험을 정리하는 것만 도와드릴 수 있어요.<br>정리하고 싶은 경험의 상황, 맡은 역할, 진행 과정, 결과를 알려주시면 적절한 블록으로 정리해드릴게요. |
+| `nothing_to_apply` | 블록 반영 내용 필터링 | 경험정리 블록에 반영할 수 있는 내용을 찾지 못했어요.<br>어떤 활동에서 무엇을 했고, 어떤 방식으로 진행했으며, 결과가 어땠는지 알려주시면 블록으로 정리해드릴게요. |
+| `file_unreadable` | 파일처리 | 파일에서 내용을 읽지 못했어요. 다른 파일로 올려 주시거나 내용을 직접 입력해 주세요. |
+| `ambiguous_target` | 대상 활동 선택 | 어떤 경험에 정리할지 알려주세요. |
+
+`out_of_scope`·`nothing_to_apply`가 에이전트 문서 3-10의 응답 템플릿 1·2를 그대로
+옮긴 것입니다. `file_unreadable`은 같은 절 fallback 처리 대상 6번(파일 품질 문제로
+추출 불가)에 대응하고, `ambiguous_target`은 대상 활동을 하나로 특정하지 못한 경우로
+3-10에 문구가 정해져 있지 않아 AI 서버가 추가했습니다.
+
+Fallback은 어느 경로든 `committed: false`이고 DB를 바꾸지 않으며, **실패가 아니므로
+요청은 `completed`로 저장되고 재시도 버튼을 노출하지 않습니다.**
+
+#### `suggestion` — 에이전트 문서 3-9
+
+gap 제안 문구입니다. **gap이 없을 때와 제안 문구 생성에 실패했을 때는** 고정 문구
+“더 정리하고 싶으신 내용이 있나요?”를 보냅니다. gap 분석 자체가 실패한 경우에만
+이 메시지가 생략됩니다.
 
 ### `suggestion_ready`
 
@@ -879,10 +972,13 @@ Fallback은 `committed: false`이며 고정 문구 “아직 지원하지 않는
 | `commit_conflict` | 가능 |
 | `llm_error` | 가능 |
 | `node_timeout` | 가능 |
+| `stream_error` | 가능 |
 | `db_constraint_violation` | 불가 |
 
 `retryable: true`일 때만 프론트가 재시도 버튼을 노출합니다. 재시도 요청에
 `failed_node`를 되돌려 보낼 필요는 없습니다. 서버 checkpoint가 원본입니다.
+`stream_error`는 graph 밖의 SSE 전달·직렬화 계층에서 예기치 못한 오류가 발생한
+경우이며 `failed_node`는 `null`입니다.
 
 ---
 

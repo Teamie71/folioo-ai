@@ -17,7 +17,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import suppress
 
-from fastapi import APIRouter, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
@@ -26,7 +26,9 @@ from app.schemas.experience_map import (
     ChatStreamRequest,
     CreateSessionRequest,
     CreateSessionResponse,
+    ErrorEvent,
     ExperienceMapEvent,
+    MessagesResponse,
     PingEvent,
     RequestStateResponse,
     RetryStreamRequest,
@@ -37,6 +39,7 @@ from features.experience_map.errors import (
     ExperienceMapError,
     InvalidRequestError,
     SessionForbiddenError,
+    StreamError,
     TicketInvalidError,
 )
 from features.experience_map.service import ExperienceMapService, PreparedRequest, get_service
@@ -45,6 +48,7 @@ from features.experience_map.upload_store import StoredFile, get_upload_store
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/experience-map", tags=["experience-map"])
+compatibility_router = APIRouter(tags=["experience-map"])
 
 _STREAM_END = object()
 
@@ -85,6 +89,11 @@ def _sse(event: ExperienceMapEvent) -> ServerSentEvent:
     return ServerSentEvent(event=payload["type"], data=json.dumps(payload, ensure_ascii=False))
 
 
+def _stream_error_event() -> ServerSentEvent:
+    """SSE 어댑터 자체의 예기치 못한 실패를 프론트에 알린다."""
+    return _sse(ErrorEvent(error=StreamError().to_sse_error().model_dump()))
+
+
 async def _with_heartbeat(
     events: AsyncIterator[ExperienceMapEvent],
 ) -> AsyncIterator[ServerSentEvent]:
@@ -109,12 +118,19 @@ async def _with_heartbeat(
                 raise
             except Exception:
                 logger.exception("경험정리 SSE 스트림 처리 중 예외")
+                yield _stream_error_event()
                 break
 
             if event is _STREAM_END:
                 break
 
-            yield _sse(event)
+            try:
+                serialized = _sse(event)
+            except Exception:
+                logger.exception("경험정리 SSE 이벤트 직렬화 중 예외")
+                yield _stream_error_event()
+                break
+            yield serialized
             pending = asyncio.create_task(anext(iterator, _STREAM_END))
     finally:
         pending.cancel()
@@ -164,6 +180,13 @@ async def _collect_uploads(
     summary="세션 생성",
     description="메인 서버가 티켓 발급 과정에서 호출합니다. X-API-Key 인증입니다.",
 )
+@compatibility_router.post(
+    "/sessions",
+    response_model=CreateSessionResponse,
+    summary="세션 생성 (메인 서버 호환 경로)",
+    description="메인 서버의 현재 호출 경로와 호환하기 위한 별칭입니다. X-API-Key 인증입니다.",
+    include_in_schema=False,
+)
 async def create_session(payload: CreateSessionRequest):
     service = get_service()
     try:
@@ -204,6 +227,26 @@ async def get_request_state(request: Request, session_id: str, request_id: str):
         user_id = _ticket_user_id(request)
         _require_session_owner(request, session_id)
         return await get_service().get_request_state(user_id, request_id)
+    except ExperienceMapError as exc:
+        return _error_response(exc)
+
+
+@router.get(
+    "/sessions/{session_id}/messages",
+    response_model=MessagesResponse,
+    summary="대화 히스토리 조회",
+    description="재접속 시 지난 대화 내용을 이어서 보여줄 때 호출합니다.",
+)
+async def get_messages(
+    request: Request,
+    session_id: str,
+    cursor: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    try:
+        user_id = _ticket_user_id(request)
+        _require_session_owner(request, session_id)
+        return await get_service().get_messages(user_id, session_id, cursor=cursor, limit=limit)
     except ExperienceMapError as exc:
         return _error_response(exc)
 

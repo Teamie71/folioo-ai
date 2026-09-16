@@ -51,7 +51,7 @@ def fake_llm(monkeypatch):
     def _set(result: RefinementOutput | Exception) -> list[str]:
         prompts: list[str] = []
 
-        def _handle(prompt_value) -> RefinementOutput:
+        async def _handle(prompt_value) -> RefinementOutput:
             prompts.append(prompt_value.to_string())
             if isinstance(result, Exception):
                 raise result
@@ -69,8 +69,8 @@ def fake_llm(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refines_whole_activity_and_keeps_empty_slot(fake_llm):
-    """한 번의 호출로 모든 구조화 item을 받고 빈 슬롯은 그대로 둔다."""
+async def test_refines_content_only_and_restores_empty_slot(fake_llm):
+    """빈 슬롯은 LLM에 보내지 않고 코드가 null 결과를 복원한다."""
     prompts = fake_llm(
         RefinementOutput(
             items=[
@@ -87,8 +87,123 @@ async def test_refines_whole_activity_and_keeps_empty_slot(fake_llm):
         {"item_id": "empty_1", "refined_text": None},
     ]
     assert "[it_1]" in prompts[0]
-    assert "[empty_1] null" in prompts[0]
+    assert "[empty_1]" not in prompts[0]
     assert "[exp_1] 교내 커머스 리뉴얼" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_validate_refine_only_retry_reuses_unflagged_items(fake_llm):
+    """validate가 refine만 지목한 재시도는 지목된 item만 다시 LLM에 보낸다.
+
+    지목되지 않은 item(it_1)은 지난 회차 정제 결과를 그대로 재사용해야
+    한다 — structure는 이번 루프에서 실행되지 않았으므로 structured_items가
+    바뀌지 않았다.
+    """
+    prompts = fake_llm(
+        RefinementOutput(
+            items=[RefinedItem(item_id="it_2", refined_text="캐싱 도입으로 페이지 로딩 속도 개선")]
+        )
+    )
+
+    state = make_state(
+        structured_items=[
+            {
+                "item_id": "it_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "APM으로 병목을 확인해 결제 오류를 해결했다.",
+            },
+            {
+                "item_id": "it_2",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "캐싱을 도입해 페이지 로딩 속도를 개선했다.",
+            },
+        ],
+        refined_items=[
+            {"item_id": "it_1", "refined_text": "APM으로 병목 확인 → 결제 오류 해결"},
+            {
+                "item_id": "it_2",
+                "refined_text": "캐싱을 도입해 페이지 로딩 속도를 개선했다 (지난 회차, 반려됨)",
+            },
+        ],
+        validation_errors=[
+            {
+                "item_id": "it_2",
+                "code": "content_too_long",
+                "message": "내용이 최대 글자 수를 넘었습니다.",
+                "repair_target": "refine",
+            }
+        ],
+        repair_count=1,
+    )
+
+    result = await refine_text(state)
+
+    # it_2만 LLM에 보내고, it_1은 프롬프트에 아예 없어야 한다.
+    assert "[it_2]" in prompts[0]
+    assert "[it_1]" not in prompts[0]
+    assert result["refined_items"] == [
+        # it_1은 재시도 대상이 아니므로 지난 회차 결과를 그대로 재사용한다.
+        {"item_id": "it_1", "refined_text": "APM으로 병목 확인 → 결제 오류 해결"},
+        # it_2만 새로 정제된다.
+        {"item_id": "it_2", "refined_text": "캐싱 도입으로 페이지 로딩 속도 개선"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_validate_structure_and_refine_retry_reprocesses_everything(fake_llm):
+    """validate가 structure까지 지목한 회귀는 refine도 전체를 다시 정제한다.
+
+    structured_items 자체가 바뀌었을 수 있으므로, 지난 회차 정제 결과를
+    재사용하면 새로 생기거나 없어진 블록을 놓칠 수 있다.
+    """
+    prompts = fake_llm(
+        RefinementOutput(
+            items=[
+                RefinedItem(item_id="it_1", refined_text="APM으로 병목 확인 → 결제 오류 해결"),
+                RefinedItem(item_id="it_2", refined_text="새로 만들어진 블록"),
+            ]
+        )
+    )
+
+    state = make_state(
+        structured_items=[
+            {
+                "item_id": "it_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "APM으로 병목을 확인해 결제 오류를 해결했다.",
+            },
+            {
+                "item_id": "it_2",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "새로 만들어진 블록이다.",
+            },
+        ],
+        refined_items=[
+            {"item_id": "it_1", "refined_text": "지난 회차 it_1 (다른 블록 집합 기준)"},
+        ],
+        validation_errors=[
+            {
+                "item_id": "__operations__",
+                "code": "item_set_mismatch",
+                "message": "정제 전후 item 집합이 다릅니다.",
+                "repair_target": "structure",
+            }
+        ],
+        repair_count=1,
+    )
+
+    result = await refine_text(state)
+
+    assert "[it_1]" in prompts[0]
+    assert "[it_2]" in prompts[0]
+    assert result["refined_items"] == [
+        {"item_id": "it_1", "refined_text": "APM으로 병목 확인 → 결제 오류 해결"},
+        {"item_id": "it_2", "refined_text": "새로 만들어진 블록"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -126,17 +241,19 @@ async def test_extend_gap_combines_existing_content_and_answer(fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_rejects_added_or_missing_item_ids(fake_llm):
-    fake_llm(RefinementOutput(items=[RefinedItem(item_id="it_1", refined_text="정제됨")]))
+async def test_missing_or_extra_item_ids_fall_back_to_source(fake_llm):
+    fake_llm(RefinementOutput(items=[RefinedItem(item_id="invented", refined_text="임의 결과")]))
 
-    with pytest.raises(LlmError) as exc_info:
-        await refine_text(make_state())
+    result = await refine_text(make_state())
 
-    assert exc_info.value.failed_node == "refine"
+    assert result["refined_items"][0] == {
+        "item_id": "it_1",
+        "refined_text": "APM으로 병목을 확인해 결제 오류를 해결했다.",
+    }
 
 
 @pytest.mark.asyncio
-async def test_rejects_number_not_grounded_in_source(fake_llm):
+async def test_number_not_grounded_in_source_falls_back_to_source(fake_llm):
     fake_llm(
         RefinementOutput(
             items=[
@@ -146,12 +263,97 @@ async def test_rejects_number_not_grounded_in_source(fake_llm):
         )
     )
 
-    with pytest.raises(LlmError):
-        await refine_text(make_state())
+    result = await refine_text(make_state())
+
+    assert result["refined_items"][0]["refined_text"] == (
+        "APM으로 병목을 확인해 결제 오류를 해결했다."
+    )
 
 
 @pytest.mark.asyncio
-async def test_rejects_new_proper_noun_not_grounded_in_source(fake_llm):
+async def test_source_number_deleted_by_refine_falls_back_to_source(fake_llm):
+    """정제가 원문 수치를 통째로 지워도 원문으로 되돌린다.
+
+    실제로 재현된 경우다. "알림 시간을 8분에서 3초로 단축하고 2,400건을
+    처리했다"를 "알림 처리 성능 개선"으로 뭉뚱그리면 수치가 전부 사라지는데,
+    기존 검사는 "정제 결과에 없던 수치가 새로 생겼는지"만 봐서
+    (refined ⊆ source) 수치를 지우는 방향은 잡지 못했다.
+    """
+    fake_llm(
+        RefinementOutput(
+            items=[
+                RefinedItem(item_id="it_1", refined_text="알림 처리 성능 개선"),
+                RefinedItem(item_id="empty_1", refined_text=None),
+            ]
+        )
+    )
+    state = make_state(
+        structured_items=[
+            {
+                "item_id": "it_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "알림 시간을 8분에서 3초로 단축하고 2,400건을 처리했다.",
+            },
+            {
+                "item_id": "empty_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "slot_id": "TASK.BASIC.RESULT",
+                "text": None,
+            },
+        ]
+    )
+
+    result = await refine_text(state)
+
+    assert result["refined_items"][0]["refined_text"] == (
+        "알림 시간을 8분에서 3초로 단축하고 2,400건을 처리했다."
+    )
+
+
+@pytest.mark.asyncio
+async def test_fabricated_korean_method_falls_back_to_source(fake_llm):
+    """정제가 원문에 없는 한국어 방법·수단을 지어내도 원문으로 되돌린다.
+
+    실제로 재현된 경우다. "로그 분석을 통해 결제 오류를 해결했다"를
+    "고객 인터뷰를 통해 결제 오류 해결"로 바꾸면 방법 자체가 지어낸
+    내용인데, 숫자·영문 토큰 검사만으로는 못 잡았다 — 둘 다 새 숫자나
+    영문 고유명사를 담고 있지 않기 때문이다.
+    """
+    fake_llm(
+        RefinementOutput(
+            items=[
+                RefinedItem(item_id="it_1", refined_text="고객 인터뷰를 통해 결제 오류 해결"),
+                RefinedItem(item_id="empty_1", refined_text=None),
+            ]
+        )
+    )
+    state = make_state(
+        structured_items=[
+            {
+                "item_id": "it_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "text": "로그 분석을 통해 결제 오류를 해결했다.",
+            },
+            {
+                "item_id": "empty_1",
+                "action": "add",
+                "parent_ref": "b_1",
+                "slot_id": "TASK.BASIC.RESULT",
+                "text": None,
+            },
+        ]
+    )
+
+    result = await refine_text(state)
+
+    assert result["refined_items"][0]["refined_text"] == "로그 분석을 통해 결제 오류를 해결했다."
+
+
+@pytest.mark.asyncio
+async def test_new_proper_noun_not_grounded_in_source_falls_back_to_source(fake_llm):
     fake_llm(
         RefinementOutput(
             items=[
@@ -161,8 +363,11 @@ async def test_rejects_new_proper_noun_not_grounded_in_source(fake_llm):
         )
     )
 
-    with pytest.raises(LlmError):
-        await refine_text(make_state())
+    result = await refine_text(make_state())
+
+    assert result["refined_items"][0]["refined_text"] == (
+        "APM으로 병목을 확인해 결제 오류를 해결했다."
+    )
 
 
 @pytest.mark.asyncio

@@ -65,6 +65,17 @@ class ValidationError(TypedDict):
     repair_target: Literal["structure", "refine"]
 
 
+class AliasBlockMetadata(TypedDict):
+    """선택 활동 alias가 가리키는 기존 블록의 검증용 메타데이터."""
+
+    block_id: str
+    parent_alias: str | None
+    level: int
+    kind: str
+    placeholder: str | None
+    is_text_editable: bool
+
+
 class ExperienceMapState(TypedDict, total=False):
     """경험정리 그래프의 공유 state"""
 
@@ -87,6 +98,7 @@ class ExperienceMapState(TypedDict, total=False):
     file_references: list[FileReference]
     extracted_files: list[ExtractedFile]
     extracted_text: str | None  # 입력 순서대로 이어 붙인 전체 텍스트
+    file_content_truncated: bool  # 페이지 수·글자 수 상한으로 일부를 버렸는지
 
     # ===== 라우팅 =====
     intent: Intent | None
@@ -98,6 +110,7 @@ class ExperienceMapState(TypedDict, total=False):
     outline: list[OutlineNode]
     target_experience_alias: str | None
     alias_to_block_id: dict[str, str]
+    alias_metadata: dict[str, AliasBlockMetadata]
     activity_tree_text: str | None
     block_id_to_experience_alias: dict[str, str]
     block_id_to_content: dict[str, str]
@@ -141,6 +154,7 @@ TURN_FIELD_DEFAULTS: dict[str, Any] = {
     "file_references": [],
     "extracted_files": [],
     "extracted_text": None,
+    "file_content_truncated": False,
     "intent": None,
     "current_node": None,
     "fallback_reason": None,
@@ -148,6 +162,7 @@ TURN_FIELD_DEFAULTS: dict[str, Any] = {
     "outline": [],
     "target_experience_alias": None,
     "alias_to_block_id": {},
+    "alias_metadata": {},
     "activity_tree_text": None,
     "block_id_to_experience_alias": {},
     "block_id_to_content": {},

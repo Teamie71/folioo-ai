@@ -7,6 +7,7 @@
 동작이라 mock 으로는 검증되지 않습니다. DB 가 없으면 skip 합니다.
 """
 
+import asyncio
 import json
 import time
 import uuid
@@ -17,7 +18,9 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 
+from app.api.v1 import experience_map as api_module
 from app.middleware.experience_map_ticket import ExperienceMapTicketMiddleware
+from app.schemas.experience_map import ProcessingStartedEvent
 from features.experience_map import service as service_module
 from features.experience_map.graph_runner import MockGraphRunner
 from features.experience_map.repository import ExperienceMapRepository
@@ -71,12 +74,13 @@ async def client(service, monkeypatch):
     `TestClient` 대신 `httpx.AsyncClient` 를 쓴다. `TestClient` 는 앱을 별도
     이벤트 루프에서 돌려 asyncpg 풀이 다른 루프에 묶인다.
     """
-    from app.api.v1.experience_map import router
+    from app.api.v1.experience_map import compatibility_router, router
 
     monkeypatch.setattr(service_module, "_service", service)
 
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")
+    app.include_router(compatibility_router)
     app.add_middleware(ExperienceMapTicketMiddleware, secret_provider=lambda: SECRET)
 
     transport = httpx.ASGITransport(app=app)
@@ -98,6 +102,46 @@ def chat_form(request_id: str, message: str = "결제 실패 문제를 해결한
     return {"request": json.dumps({"request_id": request_id, "user_message": message})}
 
 
+@pytest.mark.asyncio
+async def test_sse_adapter_emits_retryable_error_when_upstream_crashes():
+    """서비스 밖 예외도 조용히 연결을 닫지 않고 error 이벤트로 전달한다."""
+
+    async def broken_events():
+        yield ProcessingStartedEvent(request_id=str(uuid.uuid4()))
+        raise RuntimeError("unexpected stream failure")
+
+    events = [event async for event in api_module._with_heartbeat(broken_events())]
+    payload = json.loads(events[-1].data)
+
+    assert events[-1].event == "error"
+    assert payload == {
+        "type": "error",
+        "error": {
+            "code": "stream_error",
+            "failed_node": None,
+            "retryable": True,
+            "message": "응답 스트림 처리 중 오류가 발생했습니다. 다시 시도해 주세요.",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_sse_adapter_emits_heartbeat_while_waiting(monkeypatch):
+    """조용한 처리 구간에는 ping heartbeat를 보낸다."""
+
+    async def delayed_events():
+        await asyncio.sleep(0.05)
+        yield ProcessingStartedEvent(request_id=str(uuid.uuid4()))
+
+    monkeypatch.setattr(api_module, "SSE_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+    stream = api_module._with_heartbeat(delayed_events())
+    first = await anext(stream)
+    await stream.aclose()
+
+    assert first.event == "ping"
+    assert json.loads(first.data) == {"type": "ping"}
+
+
 # ===== 세션 =====
 
 
@@ -110,6 +154,16 @@ async def test_create_session(client, api_user_id):
     body = response.json()
     assert body["status"] == "ready"
     uuid.UUID(body["session_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_session_supports_main_server_compatibility_path(client, api_user_id):
+    """메인 서버의 현재 `/sessions` 호출도 정식 경로와 같은 핸들러를 사용한다."""
+    response = await client.post("/sessions", json={"user_id": api_user_id})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    uuid.UUID(response.json()["session_id"])
 
 
 @pytest.mark.asyncio
@@ -393,6 +447,96 @@ async def test_unknown_request_is_404(client, session):
 
     assert response.status_code == 404
     assert response.json()["code"] == "request_not_found"
+
+
+@pytest.mark.asyncio
+async def test_get_messages_after_completion(client, session):
+    """완료된 턴이 user_message·ai_responses와 함께 조회된다."""
+    session_id, auth = session
+    request_id = str(uuid.uuid4())
+    await client.post(
+        f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
+        data=chat_form(request_id, "결제 오류를 해결했다."),
+        headers={"Authorization": auth},
+    )
+
+    response = await client.get(
+        f"/api/v1/experience-map/sessions/{session_id}/messages", headers={"Authorization": auth}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["next_cursor"] is None
+    assert len(body["messages"]) == 1
+    message = body["messages"][0]
+    assert message["request_id"] == request_id
+    assert message["user_message"] == "결제 오류를 해결했다."
+    assert message["ai_responses"] == [
+        "교내 커머스 리뉴얼 > 문제해결에 1개를 정리했어요.",
+        "그 해결 방법을 고른 기준이 무엇이었나요?",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_messages_paginates_with_cursor(client, session):
+    """limit보다 메시지가 많으면 next_cursor로 이어서 조회한다."""
+    session_id, auth = session
+    for text in ("첫 번째 내용", "두 번째 내용"):
+        await client.post(
+            f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
+            data=chat_form(str(uuid.uuid4()), text),
+            headers={"Authorization": auth},
+        )
+
+    first_page = await client.get(
+        f"/api/v1/experience-map/sessions/{session_id}/messages",
+        params={"limit": 1},
+        headers={"Authorization": auth},
+    )
+    assert first_page.status_code == 200
+    first_body = first_page.json()
+    assert len(first_body["messages"]) == 1
+    assert first_body["messages"][0]["user_message"] == "첫 번째 내용"
+    assert first_body["next_cursor"] is not None
+
+    second_page = await client.get(
+        f"/api/v1/experience-map/sessions/{session_id}/messages",
+        params={"limit": 1, "cursor": first_body["next_cursor"]},
+        headers={"Authorization": auth},
+    )
+    assert second_page.status_code == 200
+    second_body = second_page.json()
+    assert len(second_body["messages"]) == 1
+    assert second_body["messages"][0]["user_message"] == "두 번째 내용"
+    assert second_body["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_messages_rejects_other_session_ticket(client, session, api_user_id):
+    """서명이 유효해도 다른 세션 경로에는 쓸 수 없다."""
+    session_id, _ = session
+    other_ticket = f"Bearer {make_ticket(api_user_id, str(uuid.uuid4()))}"
+
+    response = await client.get(
+        f"/api/v1/experience-map/sessions/{session_id}/messages",
+        headers={"Authorization": other_ticket},
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_messages_rejects_invalid_cursor(client, session):
+    session_id, auth = session
+
+    response = await client.get(
+        f"/api/v1/experience-map/sessions/{session_id}/messages",
+        params={"cursor": "not-a-number"},
+        headers={"Authorization": auth},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "invalid_request"
 
 
 # ===== 재시도 =====

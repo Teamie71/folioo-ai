@@ -27,9 +27,8 @@ logger = logging.getLogger(__name__)
 async def route(state: ExperienceMapState) -> ExperienceMapState:
     """입력 의도를 판정해 `intent` 를 채운다.
 
-    Raises:
-        LlmError: LLM 호출 실패. 자동 재시도 대상이며, 재시도 후에도 실패하면
-            graph 가 fallback 으로 보낸다 (5-1)
+    LLM 실패는 타입 있는 노드 오류로 올린다. 그래프의 공통 RetryPolicy가 정확히
+    한 번 자동 재시도하고, 소진 뒤에는 사용자가 router부터 재개할 수 있다.
     """
     updated = dict(state)
     updated["current_node"] = "router"
@@ -59,9 +58,9 @@ async def route(state: ExperienceMapState) -> ExperienceMapState:
             }
         )
     except Exception as exc:
-        # 입력 원문은 로그에 남기지 않는다.
-        logger.exception("router: LLM 호출 실패")
-        raise LlmError("입력을 분류하지 못했습니다.", failed_node="router") from exc
+        # 입력 원문과 upstream 예외 문자열은 로그에 남기지 않는다.
+        logger.warning("router: LLM 분류 실패")
+        raise LlmError("입력 의도를 분류하지 못했습니다.", failed_node="router") from exc
 
     updated["intent"] = result.intent
     if result.intent == "out_of_scope":

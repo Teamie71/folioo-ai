@@ -22,6 +22,8 @@ from app.schemas.experience_map import (
     ErrorEvent,
     ExperienceMapEvent,
     MessageCompleteEvent,
+    MessageItem,
+    MessagesResponse,
     ProcessingCompleteEvent,
     ProcessingStartedEvent,
     RequestErrorInfo,
@@ -34,6 +36,7 @@ from features.experience_map.config import LEASE_RENEW_INTERVAL_SECONDS
 from features.experience_map.errors import (
     ExperienceMapError,
     IdempotencyKeyReusedError,
+    InvalidRequestError,
     LeaseLostError,
     RequestNotFoundError,
     RetryExpiredError,
@@ -188,6 +191,38 @@ class ExperienceMapService:
         if row is None:
             raise RequestNotFoundError()
         return _to_request_state(row)
+
+    async def get_messages(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        cursor: str | None,
+        limit: int,
+    ) -> MessagesResponse:
+        """재접속 시 지난 대화를 이어서 보여줄 때 조회한다."""
+        parsed_cursor = None
+        if cursor is not None:
+            try:
+                parsed_cursor = int(cursor)
+            except ValueError as exc:
+                raise InvalidRequestError("cursor 형식이 올바르지 않습니다.") from exc
+
+        rows, next_cursor = await self.repository.list_messages(
+            user_id, session_id, cursor=parsed_cursor, limit=limit
+        )
+        return MessagesResponse(
+            messages=[
+                MessageItem(
+                    request_id=row.request_id,
+                    user_message=row.user_message,
+                    ai_responses=row.ai_responses,
+                    created_at=row.created_at.isoformat(),
+                )
+                for row in rows
+            ],
+            next_cursor=str(next_cursor) if next_cursor is not None else None,
+        )
 
     # ===== 요청 준비 (스트림 열기 전) =====
 
@@ -368,6 +403,20 @@ class ExperienceMapService:
                 )
             )
 
+        if not row.result and not row.suggestion and row.fallback_message:
+            # fallback으로 끝난 요청은 result·suggestion이 둘 다 없다. 이걸
+            # 저장해 두지 않으면 재연결·멱등 재생 시 안내 문구 없이
+            # processing_started → processing_complete만 남는다.
+            yield MessageCompleteEvent(
+                message=CompletedMessage(
+                    request_id=row.request_id,
+                    session_id=row.session_id,
+                    response_kind="fallback",
+                    ai_response=row.fallback_message,
+                    committed=False,
+                )
+            )
+
         yield ProcessingCompleteEvent(request_id=row.request_id, status="completed")
 
     async def _execute(self, prepared: PreparedRequest) -> AsyncIterator[ExperienceMapEvent]:
@@ -375,6 +424,7 @@ class ExperienceMapService:
         state = await _build_state(prepared, self.repository)
         result_payload: dict[str, Any] | None = None
         suggestion_payload: dict[str, Any] | None = None
+        fallback_message: str | None = None
 
         try:
             async with LeaseRenewer(
@@ -398,6 +448,8 @@ class ExperienceMapService:
                                 **(suggestion_payload or {}),
                                 "message": event.message.ai_response,
                             }
+                        elif event.message.response_kind == "fallback":
+                            fallback_message = event.message.ai_response
 
                     yield event
 
@@ -423,6 +475,7 @@ class ExperienceMapService:
             result=result_payload,
             suggestion=suggestion_payload,
             committed_version=(result_payload or {}).get("map_version"),
+            fallback_message=fallback_message,
             owner_token=prepared.owner_token,
         )
         if completed is None:
@@ -431,7 +484,42 @@ class ExperienceMapService:
             yield ErrorEvent(error=LeaseLostError().to_sse_error().model_dump())
             return
 
+        await self._save_message(prepared, result_payload, suggestion_payload, fallback_message)
+
         yield ProcessingCompleteEvent(request_id=prepared.request_id, status="completed")
+
+    async def _save_message(
+        self,
+        prepared: PreparedRequest,
+        result_payload: dict[str, Any] | None,
+        suggestion_payload: dict[str, Any] | None,
+        fallback_message: str | None,
+    ) -> None:
+        """이번 턴의 대화 메시지를 남긴다.
+
+        `_execute`가 실제로 이 turn을 완료시켰을 때만(재생·lease 상실 경로
+        제외) 호출된다. 대화 히스토리는 부가 기능이라, 저장이 실패해도
+        이미 끝난 핵심 흐름(커밋)을 되돌리지 않고 로그만 남긴다.
+        """
+        ai_responses = [
+            text
+            for text in (
+                (result_payload or {}).get("ai_response"),
+                (suggestion_payload or {}).get("message"),
+                fallback_message,
+            )
+            if text
+        ]
+        try:
+            await self.repository.save_message(
+                prepared.user_id,
+                prepared.session_id,
+                prepared.request_id,
+                user_message=prepared.user_message,
+                ai_responses=ai_responses,
+            )
+        except Exception:
+            logger.exception("대화 메시지 저장 실패 (request_id=%s)", prepared.request_id)
 
     async def _fail(self, prepared: PreparedRequest, exc: ExperienceMapError) -> ErrorEvent:
         """실패를 저장하고 error 이벤트를 만든다.
@@ -557,6 +645,7 @@ async def _build_state(
         alias: {
             "tree_text": context.tree_text,
             "alias_to_block_id": context.alias_to_block_id,
+            "alias_metadata": context.alias_metadata,
         }
         for alias in state["block_id_to_experience_alias"].values()
         if (context := snapshot.get_activity_context(alias)) is not None
@@ -576,6 +665,7 @@ def _apply_activity_context(state: ExperienceMapState, activity_alias: str) -> N
     state["target_experience_alias"] = activity_alias
     state["activity_tree_text"] = context["tree_text"]
     state["alias_to_block_id"] = context["alias_to_block_id"]
+    state["alias_metadata"] = context["alias_metadata"]
 
 
 def _to_request_state(row: RequestRow) -> RequestStateResponse:

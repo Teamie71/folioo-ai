@@ -27,14 +27,17 @@ async def analyze_gap(state: ExperienceMapState) -> ExperienceMapState:
     updated = dict(state)
     updated["current_node"] = "gap_analysis"
     items = list(state.get("commit_items", []))
-    anchors = _anchor_aliases(items, state.get("alias_to_block_id", {}))
+    anchors = _anchor_refs(items)
     if not items or not anchors:
         updated["gap_candidate"] = None
         updated["gap_message"] = NO_GAP_MESSAGE
         return updated  # type: ignore[return-value]
 
     try:
-        llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
+        # gap 분석은 결과 응답과 병렬로 돌지만 결과 응답을 먼저 내보내야
+        # 하므로, 일반 LLM 노드(60초)가 아니라 전용 30초 제한(3-9, 2-4)을
+        # 써야 한다 — 그래야 늦어도 제안이 결과보다 너무 오래 안 늦어진다.
+        llm = get_experience_map_llm(timeout=get_settings().timeouts.gap)
         chain = gap_analysis_prompt | llm.with_structured_output(GapOutput)
         result: GapOutput = await chain.ainvoke(
             {
@@ -58,14 +61,25 @@ async def analyze_gap(state: ExperienceMapState) -> ExperienceMapState:
     return updated  # type: ignore[return-value]
 
 
-def _anchor_aliases(items: list[dict], aliases: dict[str, str]) -> list[str]:
-    """이번 operation이 직접 참조한 기존 블록만 질문 기준 후보로 남긴다."""
+def _anchor_refs(items: list[dict]) -> list[str]:
+    """이번에 실제 내용이 커밋되는 operation의 item_id만 anchor 후보로 남긴다.
+
+    add와 update 모두 메인 서버의 ``applied`` 결과에서 실제 block_id로 바뀐다.
+    부모 별칭을 대신 쓰면 새 블록의 부족한 정보를 부모 블록에 덧붙이는 잘못된
+    gap이 생기므로, 방금 반영된 내용 자체를 기준으로 제한한다.
+    """
     candidates: list[str] = []
     for item in items:
-        for field in ("parent_ref", "target_ref", "after_ref"):
-            alias = item.get(field)
-            if isinstance(alias, str) and alias in aliases and alias not in candidates:
-                candidates.append(alias)
+        item_id = item.get("item_id")
+        text = item.get("text")
+        if (
+            isinstance(item_id, str)
+            and item_id
+            and isinstance(text, str)
+            and text.strip()
+            and item_id not in candidates
+        ):
+            candidates.append(item_id)
     return candidates
 
 
@@ -74,7 +88,7 @@ def _validate_output(result: GapOutput, anchors: list[str]) -> None:
     if result.gap is None:
         return
     if result.gap.anchor_ref not in anchors:
-        raise ValueError("이번 커밋과 직접 연결되지 않은 gap 기준 블록입니다.")
+        raise ValueError("이번에 내용이 커밋된 블록이 아닌 gap 기준입니다.")
     message = result.message.strip()
     if not message or "\n" in message or message.count("?") != 1 or not message.endswith("?"):
         raise ValueError("gap 제안은 물음표로 끝나는 한 문장이어야 합니다.")

@@ -49,7 +49,7 @@ def fake_llm(monkeypatch):
     def _set(result: RouterOutput | Exception) -> list[str]:
         prompts: list[str] = []
 
-        def _handle(prompt_value) -> RouterOutput:
+        async def _handle(prompt_value) -> RouterOutput:
             prompts.append(prompt_value.to_string())
             if isinstance(result, Exception):
                 raise result
@@ -123,27 +123,28 @@ async def test_router_records_current_node(fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_llm_failure_raises_llm_error(fake_llm):
-    """자동 재시도 대상이다. 재시도 후에도 실패하면 graph 가 fallback 으로 보낸다."""
-    fake_llm(RuntimeError("upstream 500"))
+async def test_llm_failure_raises_retryable_node_error(fake_llm):
+    """그래프 공통 정책이 재시도할 수 있도록 시스템 실패를 fallback으로 숨기지 않는다."""
+    prompts = fake_llm(RuntimeError("upstream 500"))
 
     with pytest.raises(LlmError) as exc_info:
         await route(make_state())
 
+    assert len(prompts) == 1
     assert exc_info.value.failed_node == "router"
     assert exc_info.value.retryable is True
 
 
 @pytest.mark.asyncio
-async def test_user_message_not_in_exception(fake_llm):
-    """입력 원문이 예외 메시지로 새지 않는다."""
+async def test_user_message_not_logged_on_failure(fake_llm, caplog):
+    """분류 실패 로그에 입력 원문이 새지 않는다."""
     fake_llm(RuntimeError("boom"))
     secret = "주민등록번호 900101-1234567 로 가입했다"
 
-    with pytest.raises(LlmError) as exc_info:
+    with pytest.raises(LlmError):
         await route(make_state(user_message=secret))
 
-    assert secret not in str(exc_info.value)
+    assert secret not in caplog.text
 
 
 # ===== gap 맥락 =====
@@ -283,22 +284,20 @@ async def test_partial_runner_falls_through_for_chat_input(fake_llm, monkeypatch
 
     # content_filter 도 실제로 돈다. 그쪽 LLM 도 대역으로 바꾼다.
     def _filter_llm(**kwargs):
-        class _Structured(RunnableLambda):
-            pass
+        async def _output(_):
+            return ContentFilterOutput(
+                new_items=[
+                    {
+                        "item_id": "it_1",
+                        "text": "결제 실패 문제를 해결한 내용을 정리해줘",
+                        "source": "message",
+                    }
+                ]
+            )
 
         class _FakeLlm:
             def with_structured_output(self, schema):
-                return RunnableLambda(
-                    lambda _: ContentFilterOutput(
-                        new_items=[
-                            {
-                                "item_id": "it_1",
-                                "text": "결제 실패 문제를 해결한 내용을 정리해줘",
-                                "source": "message",
-                            }
-                        ]
-                    )
-                )
+                return RunnableLambda(_output)
 
         return _FakeLlm()
 

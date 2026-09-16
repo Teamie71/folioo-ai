@@ -160,6 +160,29 @@ class RequestStateResponse(BaseModel):
     error: RequestErrorInfo | None = None
 
 
+# ===== GET /sessions/{session_id}/messages =====
+
+
+class MessageItem(BaseModel):
+    """대화 메시지 한 턴.
+
+    `ai_responses`는 한 턴에서 나온 `message_complete` 텍스트를 순서대로
+    담는다 — 커밋 결과와 gap 제안이 함께 오면 2개, fallback이면 1개다.
+    """
+
+    request_id: str
+    user_message: str | None = None
+    ai_responses: list[str] = Field(default_factory=list)
+    created_at: str
+
+
+class MessagesResponse(BaseModel):
+    """재접속 시 지난 대화를 이어서 보여줄 때 조회한다."""
+
+    messages: list[MessageItem]
+    next_cursor: str | None = None
+
+
 # ===== SSE 이벤트 (API 명세 6절) =====
 
 
@@ -172,6 +195,9 @@ class NodeStatusEvent(BaseModel):
     type: Literal["node_status"] = "node_status"
     node: NodeName
     status: Literal["running", "completed", "failed"]
+    phrase: str | None = Field(
+        None, description="에이전트 문서 4절 노드별 고정 문구. running 상태에만 채운다."
+    )
 
 
 class CommitResultEvent(BaseModel):

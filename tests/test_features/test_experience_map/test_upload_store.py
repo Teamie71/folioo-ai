@@ -203,41 +203,40 @@ async def test_store_files_uploads_and_hashes(upload_store, store):
 
 
 @pytest.mark.asyncio
-async def test_store_files_preserves_input_order(upload_store):
-    """파일처리 노드가 추출 결과를 이 순서로 이어 붙인다."""
+async def test_store_files_preserves_single_input_filename(upload_store):
+    """요청당 한 개인 파일의 이름을 변경하지 않는다."""
     stored = await upload_store.store_files(
         USER_ID,
         REQUEST_ID,
-        [
-            ("첫번째.txt", "text/plain", FakeStream(TXT_BODY)),
-            ("두번째.pdf", "application/pdf", FakeStream(PDF_BODY)),
-            ("세번째.png", "image/png", FakeStream(PNG_BODY)),
-        ],
+        [("경험정리.txt", "text/plain", FakeStream(TXT_BODY))],
     )
 
-    assert [item.filename for item in stored] == ["첫번째.txt", "두번째.pdf", "세번째.png"]
+    assert [item.filename for item in stored] == ["경험정리.txt"]
 
 
 @pytest.mark.asyncio
-async def test_extractor_is_chosen_by_type(upload_store):
+@pytest.mark.parametrize(
+    ("filename", "content_type", "body", "expected"),
+    [
+        ("메모.txt", "text/plain", TXT_BODY, "parser"),
+        ("포트폴리오.pdf", "application/pdf", PDF_BODY, "ocr"),
+    ],
+)
+async def test_extractor_is_chosen_by_type(upload_store, filename, content_type, body, expected):
     stored = await upload_store.store_files(
         USER_ID,
         REQUEST_ID,
-        [
-            ("메모.txt", "text/plain", FakeStream(TXT_BODY)),
-            ("포트폴리오.pdf", "application/pdf", FakeStream(PDF_BODY)),
-        ],
+        [(filename, content_type, FakeStream(body))],
     )
 
-    assert stored[0].extractor == "parser"
-    assert stored[1].extractor == "ocr"
+    assert stored[0].extractor == expected
 
 
 @pytest.mark.asyncio
 async def test_rejects_too_many_files(upload_store, store):
-    files = [(f"f{i}.txt", "text/plain", FakeStream(TXT_BODY)) for i in range(4)]
+    files = [(f"f{i}.txt", "text/plain", FakeStream(TXT_BODY)) for i in range(2)]
 
-    with pytest.raises(InvalidRequestError, match="최대 3개"):
+    with pytest.raises(InvalidRequestError, match="최대 1개"):
         await upload_store.store_files(USER_ID, REQUEST_ID, files)
 
     assert store.objects == {}
@@ -261,22 +260,6 @@ async def test_rejects_empty_file(upload_store):
         )
 
 
-@pytest.mark.asyncio
-async def test_partial_failure_removes_already_uploaded(upload_store, store):
-    """두 번째 파일이 거부되면 첫 번째도 남기지 않는다."""
-    with pytest.raises(UnsupportedFileTypeError):
-        await upload_store.store_files(
-            USER_ID,
-            REQUEST_ID,
-            [
-                ("정상.pdf", "application/pdf", FakeStream(PDF_BODY)),
-                ("위조.png", "image/png", FakeStream(PDF_BODY)),
-            ],
-        )
-
-    assert store.objects == {}
-
-
 # ===== 삭제와 수명 =====
 
 
@@ -297,10 +280,7 @@ async def test_discard_request_removes_all_objects(upload_store, store):
     await upload_store.store_files(
         USER_ID,
         REQUEST_ID,
-        [
-            ("a.pdf", "application/pdf", FakeStream(PDF_BODY)),
-            ("b.png", "image/png", FakeStream(PNG_BODY)),
-        ],
+        [("a.pdf", "application/pdf", FakeStream(PDF_BODY))],
     )
 
     await upload_store.discard_request(USER_ID, REQUEST_ID)

@@ -23,7 +23,7 @@ def build_suggestion(state: ExperienceMapState) -> ExperienceMapState:
         return updated  # type: ignore[return-value]
 
     candidate = GapCandidate.model_validate(raw_candidate)
-    anchor_id = state.get("alias_to_block_id", {}).get(candidate.anchor_ref)
+    anchor_id, anchor_path = _resolve_anchor(state, candidate.anchor_ref)
     request_id = state.get("request_id")
     if not anchor_id or not isinstance(request_id, str) or not request_id:
         raise ValueError("gap을 저장할 기준 블록 또는 request_id를 찾을 수 없습니다.")
@@ -42,11 +42,29 @@ def build_suggestion(state: ExperienceMapState) -> ExperienceMapState:
     updated["suggestion"] = {
         "gap": {
             **gap.model_dump(),
-            "path": _path_for_anchor(state.get("activity_tree_text"), candidate.anchor_ref),
+            "path": anchor_path,
         },
         "message": gap.message,
     }
     return updated  # type: ignore[return-value]
+
+
+def _resolve_anchor(state: ExperienceMapState, anchor_ref: str) -> tuple[str | None, str]:
+    """기존 alias 또는 방금 커밋한 item_id를 실제 block ID와 경로로 바꾼다."""
+    existing_id = state.get("alias_to_block_id", {}).get(anchor_ref)
+    if existing_id:
+        return existing_id, _path_for_anchor(state.get("activity_tree_text"), anchor_ref)
+
+    commit_result = state.get("commit_result") or {}
+    applied = commit_result.get("applied", []) if isinstance(commit_result, dict) else []
+    for item in applied:
+        if not isinstance(item, dict) or item.get("item_id") != anchor_ref:
+            continue
+        block_id = item.get("block_id")
+        path = item.get("path")
+        if isinstance(block_id, str) and block_id:
+            return block_id, str(path or anchor_ref)
+    return None, anchor_ref
 
 
 def _path_for_anchor(activity_tree: str | None, anchor_alias: str) -> str:

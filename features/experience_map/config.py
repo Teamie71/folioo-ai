@@ -28,7 +28,7 @@ from features.experience_map.rate_limit import DEFAULT_MAX_REQUESTS
 logger = logging.getLogger(__name__)
 
 # ===== 첨부 파일 제한 (API 명세 5절) =====
-MAX_UPLOAD_FILES = 3
+MAX_UPLOAD_FILES = 1
 MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024
 
 PARSER_MIME_TYPES: dict[str, tuple[str, ...]] = {
@@ -50,6 +50,15 @@ MAX_FILE_TEXT_CHARS = 40_000
 MAX_TOTAL_TEXT_CHARS = 80_000
 """요청 전체 추출 텍스트 상한. 프롬프트 토큰과 비용을 묶어 둔다."""
 
+MAX_PDF_PAGES = 10
+"""PDF에서 OCR할 최대 페이지 수. 넘으면 앞쪽 페이지만 쓴다."""
+
+PDF_RENDER_SCALE = 2.0
+"""PDF→이미지 렌더링 배율. 한글처럼 획이 많은 글자가 뭉개지지 않을 정도로 키운다."""
+
+PDF_OCR_CONCURRENCY = 3
+"""PDF의 페이지별 OCR 최대 동시 호출 수."""
+
 # ===== 블록 제약 (API 명세 4-2) =====
 MAX_CONTENT_LENGTH = 500
 MIN_CONTENT_LENGTH = 1
@@ -58,6 +67,32 @@ MAX_BLOCK_LEVEL = 5
 # ===== 재시도·보정 (API 명세 2-4) =====
 NODE_MAX_ATTEMPTS = 2
 """LangGraph RetryPolicy. 1회 자동 재시도를 의미한다."""
+
+MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 3
+"""구조화 노드가 LLM 한 번에 배정을 맡기는 최대 원문 item 수.
+
+채팅 원문은 짧은 문장 여러 개가 한 주제를 구성하는 경우가 많아 최대 3개를 함께
+배정한다. 파일 원문은 아래의 더 작은 별도 한도를 적용한다."""
+
+MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 1
+"""PDF·문서에서 추출한 원문을 구조화 LLM 한 번에 맡기는 최대 item 수.
+
+파일 원문을 2~3개씩 맡기면 서로 다른 카테고리·하위 템플릿 판단이 한 응답에
+섞이면서 60초 제한을 넘거나 계약을 어기는 경우가 반복돼 하나씩 처리한다."""
+
+MAX_SOURCE_ITEM_CHARS = MAX_CONTENT_LENGTH
+"""구조화에 넘기는 원문 item 하나의 최대 글자 수.
+
+PDF OCR 결과처럼 긴 문단 하나가 통째로 분류되면 item 개수 제한만으로는 구조화
+프롬프트와 structured output 크기를 제어할 수 없다. 최종 블록의 500자 제한과
+같은 크기로 원문을 나누되, 내용은 고치지 않고 문장·줄바꿈 경계만 사용한다.
+"""
+
+MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH = 1_200
+"""구조화 LLM 한 번에 전달하는 원문 text 총 글자 수 상한."""
+
+MAX_FILE_SOURCE_CHARS_PER_STRUCTURE_BATCH = MAX_SOURCE_ITEM_CHARS
+"""파일 원문 구조화 호출의 text 총 글자 수 상한."""
 
 MAX_VALIDATION_REPAIRS = 2
 """validate → structure/refine 회귀 최대 횟수."""

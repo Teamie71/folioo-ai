@@ -142,6 +142,12 @@ async def clean_db(db_pool):
     """테스트 대역 데이터를 앞뒤로 지운다."""
 
     async def _wipe() -> None:
+        # ai_experience_message → ai_experience_request → ai_experience_session
+        # 순서를 지킨다. 둘 다 session 을 FK 로 참조하는데 CASCADE 를 안 걸었으므로
+        # (ai_experience_request 와 같은 관례), session 을 먼저 지우면 위반이 난다.
+        await db_pool.execute(
+            "DELETE FROM ai_experience_message WHERE user_id >= $1", TEST_USER_ID_BASE
+        )
         await db_pool.execute(
             "DELETE FROM ai_experience_request WHERE user_id >= $1", TEST_USER_ID_BASE
         )

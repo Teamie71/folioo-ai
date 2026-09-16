@@ -67,6 +67,10 @@ def test_activity_context_only_exposes_selected_activity(snapshot):
     assert context.resolve_alias("exp_1") == "20"
     assert set(context.alias_to_block_id.values()) == {"20", "30", "31", "40", "41"}
     assert "11" not in context.alias_to_block_id.values()
+    assert context.alias_metadata["exp_1"]["level"] == 2
+    assert context.alias_metadata["b_1"]["parent_alias"] == "exp_1"
+    assert context.alias_metadata["b_1"]["is_text_editable"] is True
+    assert context.alias_metadata["b_2"]["placeholder"] == "어떤 계기로 시작했나요?"
     other_context = snapshot.get_activity_context("exp_2")
     assert other_context is not None
     assert other_context.resolve_alias("exp_2") == "11"

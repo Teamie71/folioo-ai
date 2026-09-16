@@ -41,7 +41,8 @@ logger = logging.getLogger(__name__)
 REQUEST_COLUMNS = """
     user_id, session_id, request_id, request_hash, status, failed_node,
     retryable, retry_expires_at, lease_expires_at, owner_token, base_map_version,
-    committed_version, input_meta, result, suggestion, error, created_at, updated_at
+    committed_version, input_meta, result, suggestion, error, fallback_message,
+    created_at, updated_at
 """
 
 
@@ -60,6 +61,15 @@ def _as_dict(value: Any) -> dict[str, Any] | None:
     """asyncpg가 jsonb를 문자열로 돌려주는 경우를 흡수한다."""
     if value is None:
         return None
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _as_list(value: Any) -> list[Any]:
+    """asyncpg가 jsonb 배열을 문자열로 돌려주는 경우를 흡수한다."""
+    if value is None:
+        return []
     if isinstance(value, str):
         return json.loads(value)
     return value
@@ -104,6 +114,9 @@ class RequestRow:
     result: dict[str, Any] | None = None
     suggestion: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
+    fallback_message: str | None = None
+    """fallback으로 끝난 요청의 안내 문구. result·suggestion이 둘 다 없을 때만
+    쓴다 — 그래야 재연결·멱등 재생 시에도 fallback 안내가 사라지지 않는다."""
 
     @classmethod
     def from_record(cls, record: asyncpg.Record) -> "RequestRow":
@@ -124,6 +137,30 @@ class RequestRow:
             result=_as_dict(record["result"]),
             suggestion=_as_dict(record["suggestion"]),
             error=_as_dict(record["error"]),
+            fallback_message=record["fallback_message"],
+        )
+
+
+@dataclass(frozen=True)
+class MessageRow:
+    """`ai_experience_message` 한 행"""
+
+    id: int
+    """세션 안에서의 커서 페이징 전용 값. 다른 테이블과 달리 자연키가 없다."""
+
+    request_id: str
+    user_message: str | None
+    ai_responses: list[str]
+    created_at: datetime
+
+    @classmethod
+    def from_record(cls, record: asyncpg.Record) -> "MessageRow":
+        return cls(
+            id=record["id"],
+            request_id=str(record["request_id"]),
+            user_message=record["user_message"],
+            ai_responses=_as_list(record["ai_responses"]),
+            created_at=record["created_at"],
         )
 
 
@@ -442,6 +479,7 @@ class ExperienceMapRepository:
         result: dict[str, Any] | None = None,
         suggestion: dict[str, Any] | None = None,
         committed_version: int | None = None,
+        fallback_message: str | None = None,
         owner_token: str,
     ) -> RequestRow | None:
         """요청을 완료로 저장한다. lease를 비워 정리 대상에서 제외한다.
@@ -449,6 +487,10 @@ class ExperienceMapRepository:
         **실행권을 가진 worker 만 쓸 수 있다.** `owner_token` 이 맞지 않으면
         `None` 을 돌려주고 아무것도 바꾸지 않는다. lease 를 잃은 worker 가 뒤늦게
         끝나서 다른 worker 의 결과를 덮는 것을 막는다.
+
+        `fallback_message`는 result·suggestion이 모두 없는 fallback 완료 요청의
+        안내 문구다. 이걸 안 남기면 재연결·멱등 재생 시 fallback 안내가 사라지고
+        `processing_started → processing_complete`만 남는다.
 
         Raises:
             ValueError: `owner_token` 이 비어 있음
@@ -460,6 +502,7 @@ class ExperienceMapRepository:
                    result = COALESCE($3::jsonb, result),
                    suggestion = COALESCE($4::jsonb, suggestion),
                    committed_version = COALESCE($5, committed_version),
+                   fallback_message = COALESCE($7, fallback_message),
                    retryable = false,
                    lease_expires_at = NULL,
                    owner_token = NULL,
@@ -475,6 +518,7 @@ class ExperienceMapRepository:
             json.dumps(suggestion, ensure_ascii=False) if suggestion is not None else None,
             committed_version,
             _require_token(owner_token),
+            fallback_message,
         )
         if record is None:
             logger.warning("완료 처리를 건너뜁니다 — 실행권이 없습니다 (request_id=%s)", request_id)
@@ -531,6 +575,72 @@ class ExperienceMapRepository:
             logger.warning("실패 처리를 건너뜁니다 — 실행권이 없습니다 (request_id=%s)", request_id)
             return None
         return RequestRow.from_record(record)
+
+    # ===== 대화 히스토리 =====
+
+    async def save_message(
+        self,
+        user_id: str,
+        session_id: str,
+        request_id: str,
+        *,
+        user_message: str | None,
+        ai_responses: list[str],
+    ) -> None:
+        """대화 메시지 한 턴을 남긴다.
+
+        `ai_experience_message` 는 다른 테이블과 달리 메인 서버 migration 과
+        대조할 필요가 없는, AI 가 직접 소유하는 테이블이다. 요청 하나가
+        `ai_response` 를 여러 개 낼 수 있어(예: 커밋 결과 + gap 제안) 배열로
+        받는다.
+        """
+        await self._pool.execute(
+            """
+            INSERT INTO ai_experience_message
+                (user_id, session_id, request_id, user_message, ai_responses)
+            VALUES ($1, $2, $3, $4, $5::jsonb)
+            """,
+            int(user_id),
+            uuid.UUID(session_id),
+            uuid.UUID(request_id),
+            user_message,
+            json.dumps(ai_responses, ensure_ascii=False),
+        )
+
+    async def list_messages(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        cursor: int | None,
+        limit: int,
+    ) -> tuple[list[MessageRow], int | None]:
+        """세션의 대화 메시지를 `id` 오름차순으로 커서 페이징해 반환한다.
+
+        Returns:
+            (조회된 행, 다음 커서). `limit`보다 1개 더 가져와 실제로 다음
+            페이지가 있는지 확인한다 — 단순히 이번 페이지가 `limit`만큼
+            꽉 찼는지만 보면, 마지막 페이지가 우연히 `limit`과 같은 개수로
+            끝날 때도 존재하지 않는 다음 페이지를 가리키는 커서를 돌려주게
+            된다.
+        """
+        records = await self._pool.fetch(
+            """
+            SELECT id, request_id, user_message, ai_responses, created_at
+              FROM ai_experience_message
+             WHERE user_id = $1 AND session_id = $2
+               AND ($3::bigint IS NULL OR id > $3)
+             ORDER BY id ASC
+             LIMIT $4
+            """,
+            int(user_id),
+            uuid.UUID(session_id),
+            cursor,
+            limit + 1,
+        )
+        rows = [MessageRow.from_record(record) for record in records[:limit]]
+        next_cursor = rows[-1].id if len(records) > limit else None
+        return rows, next_cursor
 
     # ===== 정리 =====
 

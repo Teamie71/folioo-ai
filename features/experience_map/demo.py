@@ -34,6 +34,22 @@ async def run_demo() -> tuple[list[dict], list[dict[str, str]]]:
             }
         ],
         "alias_to_block_id": {"exp_1": "101", "b_1": "305"},
+        "alias_metadata": {
+            "exp_1": {
+                "block_id": "101",
+                "parent_alias": None,
+                "level": 2,
+                "kind": "experience",
+                "is_text_editable": False,
+            },
+            "b_1": {
+                "block_id": "305",
+                "parent_alias": "exp_1",
+                "level": 3,
+                "kind": "category",
+                "is_text_editable": False,
+            },
+        },
         "activity_contexts": {},
         "block_id_to_content": {"305": "기존 문제 해결 내용"},
         "block_id_to_experience_alias": {"305": "exp_1"},

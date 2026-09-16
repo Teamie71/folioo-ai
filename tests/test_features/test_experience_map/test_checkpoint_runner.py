@@ -5,18 +5,23 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.schemas.experience_map import MessageCompleteEvent, NodeStatusEvent
 from features.experience_map import graph as graph_module
-from features.experience_map.graph_runner import CheckpointGraphRunner, _state_events
+from features.experience_map.graph_runner import (
+    NODE_STREAMING_PHRASES,
+    CheckpointGraphRunner,
+    _state_events,
+)
+from features.experience_map.nodes.fallback import FALLBACK_MESSAGES
 
 
 class GraphStub:
-    """ainvoke 입력을 기록하는 compiled graph 대역."""
+    """astream 입력을 기록하고 최종 state 하나만 내는 compiled graph 대역."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[object, dict]] = []
 
-    async def ainvoke(self, value, config):
-        self.calls.append((value, config))
-        return {"request_id": "request"}
+    async def astream(self, value, config, **kwargs):
+        self.calls.append((value, config, kwargs))
+        yield "values", {"request_id": "request"}
 
 
 async def events(state):
@@ -33,9 +38,14 @@ async def test_resume_uses_checkpoint_without_replaying_input_state():
     received = [event async for event in runner.resume({"session_id": "session-1"})]
 
     assert received[0].node == "refine"
-    assert graph.calls == [
-        (None, {"configurable": {"thread_id": "session-1", "checkpoint_ns": "experience_map"}})
-    ]
+    assert graph.calls[0][0:2] == (
+        None,
+        {"configurable": {"thread_id": "session-1", "checkpoint_ns": "experience_map"}},
+    )
+    assert graph.calls[0][2] == {
+        "stream_mode": ["tasks", "values"],
+        "durability": "sync",
+    }
 
 
 @pytest.mark.asyncio
@@ -49,9 +59,73 @@ async def test_run_passes_new_state_to_graph():
     assert graph.calls[0][0] == state
 
 
+class RepeatedNodeGraphStub:
+    """validate가 structure를 되돌려 재실행시키는 상황을 흉내 내는 그래프 대역."""
+
+    async def astream(self, value, config, **kwargs):
+        for name in ("structure", "validate", "structure", "validate"):
+            yield "tasks", {"name": name}
+            yield "tasks", {"name": name, "result": None}
+        yield "values", {"request_id": "request"}
+
+
+class FailedNodeGraphStub:
+    """노드 실행 실패 task 이벤트를 내는 그래프 대역."""
+
+    async def astream(self, value, config, **kwargs):
+        yield "tasks", {"name": "refine"}
+        yield "tasks", {"name": "refine", "error": RuntimeError("refine failed")}
+        raise RuntimeError("refine failed")
+
+
+@pytest.mark.asyncio
+async def test_streaming_phrase_is_sent_only_on_a_nodes_first_run():
+    """에이전트 문서 4절: Validation이 structure를 되돌려도 화면 문구가 유지된다.
+
+    validate 실패로 structure가 두 번째 도는 경우, 그 재실행에는 phrase를
+    비워서 클라이언트가 마지막으로 받은 문구(Validation의 것)를 계속 보여주게
+    한다 — 문서 4절 Validation 행의 "이전 노드로 회귀 시에도 스트리밍 문구 유지"
+    정책이다.
+    """
+    runner = CheckpointGraphRunner(RepeatedNodeGraphStub(), state_events=events)
+
+    received = [
+        event async for event in runner.run({"session_id": "session-1", "request_id": "request"})
+    ]
+
+    running_phrases = [
+        event.phrase
+        for event in received
+        if isinstance(event, NodeStatusEvent)
+        if event.status == "running"
+    ]
+    assert running_phrases == [
+        NODE_STREAMING_PHRASES["structure"],
+        NODE_STREAMING_PHRASES["validate"],
+        None,
+        None,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_graph_node_emits_failed_status_before_raising():
+    """프론트가 진행 중인 노드를 실패 상태로 닫을 수 있어야 한다."""
+    runner = CheckpointGraphRunner(FailedNodeGraphStub(), state_events=events)
+    received = []
+
+    with pytest.raises(RuntimeError, match="refine failed"):
+        async for event in runner.run({"session_id": "session-1", "request_id": "request"}):
+            received.append(event)
+
+    assert [(event.node, event.status) for event in received] == [
+        ("refine", "running"),
+        ("refine", "failed"),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_out_of_scope_input_runs_graph_and_emits_fallback_sse(monkeypatch):
-    """기능 밖 입력은 실제 graph 배선을 거쳐 fallback SSE 하나로 끝난다."""
+    """기능 밖 입력은 실제 graph 배선을 거쳐 router node_status + fallback SSE로 끝난다."""
 
     async def out_of_scope(state):
         return {**state, "intent": "out_of_scope", "fallback_reason": "out_of_scope"}
@@ -68,11 +142,13 @@ async def test_out_of_scope_input_runs_graph_and_emits_fallback_sse(monkeypatch)
         )
     ]
 
-    assert len(events) == 1
-    assert isinstance(events[0], MessageCompleteEvent)
-    assert events[0].message.response_kind == "fallback"
-    assert events[0].message.committed is False
-    assert events[0].message.ai_response == "아직 지원하지 않는 기능이에요."
+    node_events = [event for event in events if isinstance(event, NodeStatusEvent)]
+    message_events = [event for event in events if isinstance(event, MessageCompleteEvent)]
+    assert {event.node for event in node_events} == {"router", "fallback"}
+    assert len(message_events) == 1
+    assert message_events[0].message.response_kind == "fallback"
+    assert message_events[0].message.committed is False
+    assert message_events[0].message.ai_response == FALLBACK_MESSAGES["out_of_scope"]
 
 
 @pytest.mark.asyncio
@@ -103,10 +179,17 @@ async def test_unreadable_file_runs_graph_and_emits_file_fallback_sse(monkeypatc
         )
     ]
 
-    assert len(events) == 1
-    assert isinstance(events[0], MessageCompleteEvent)
-    assert events[0].message.response_kind == "fallback"
-    assert events[0].message.ai_response.startswith("파일에서 내용을 읽지 못했어요.")
+    node_events = [event for event in events if isinstance(event, NodeStatusEvent)]
+    message_events = [event for event in events if isinstance(event, MessageCompleteEvent)]
+    assert {event.node for event in node_events} == {
+        "router",
+        "file_processor",
+        "file_cleanup",
+        "fallback",
+    }
+    assert len(message_events) == 1
+    assert message_events[0].message.response_kind == "fallback"
+    assert message_events[0].message.ai_response.startswith("파일에서 내용을 읽지 못했어요.")
 
 
 @pytest.mark.asyncio
@@ -223,11 +306,28 @@ async def test_gap_answer_uses_expected_graph_path_before_commit(
                 "user_id": "1",
                 "active_gap": {"gap_type": gap_type, "anchor_block_id": "305"},
                 "alias_to_block_id": {"exp_1": "101", "b_1": "305"},
+                "alias_metadata": {
+                    "exp_1": {
+                        "block_id": "101",
+                        "parent_alias": None,
+                        "level": 2,
+                        "kind": "ACTIVITY",
+                        "is_text_editable": False,
+                    },
+                    "b_1": {
+                        "block_id": "305",
+                        "parent_alias": "exp_1",
+                        "level": 4,
+                        "kind": "ITEM",
+                        "is_text_editable": True,
+                    },
+                },
             }
         )
     ]
 
-    assert events == []
+    # capture_state는 아무것도 안 내므로, 남는 건 실제 graph가 낸 node_status뿐이다.
+    assert all(isinstance(event, NodeStatusEvent) for event in events)
     assert calls == expected_path
     assert len(completed_states) == 1
     assert completed_states[0]["commit_items"]

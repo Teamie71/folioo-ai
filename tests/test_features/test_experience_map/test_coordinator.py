@@ -75,14 +75,15 @@ async def collect(**kwargs) -> list:
     return [event async for event in coordinate(state(), **kwargs)]
 
 
-def test_result_response_uses_single_category_and_dropped_template():
+def test_result_response_uses_fixed_intro_and_dropped_template():
+    """에이전트 문서 3-8: 첫 문장은 항상 고정, 글자 수 초과 안내는 별도 문단."""
     message = build_result_response(state(), result(dropped=2))
 
-    assert message.startswith("커머스 리뉴얼 > 담당업무에 1개를 정리했어요.")
+    assert message.startswith("내용을 분석하여 경험을 정리했어요.\n- 담당업무 아래 1개의 블록 생성")
     assert "2개는 글자 수 제한(500자)을 넘어" in message
 
 
-def test_result_response_uses_multiple_categories_and_update_counts():
+def test_result_response_lists_each_category_as_its_own_bullet():
     commit_result = result(
         applied=[
             AppliedItem(item_id="add_1", block_id="401", path="커머스 리뉴얼 > 담당업무"),
@@ -92,9 +93,41 @@ def test_result_response_uses_multiple_categories_and_update_counts():
 
     message = build_result_response(state(), commit_result)
 
-    assert "커머스 리뉴얼에 정리했어요." in message
-    assert "- 담당업무 — 1개 추가" in message
-    assert "- 주요성과 — 1개 수정" in message
+    assert message == (
+        "내용을 분석하여 경험을 정리했어요.\n"
+        "- 담당업무 아래 1개의 블록 생성\n"
+        "- 주요성과 아래 1개의 블록 수정"
+    )
+
+
+def test_result_response_groups_deep_server_path_by_section():
+    """서버의 활동 > 카테고리 > 앵커 path는 카테고리 기준으로 묶는다."""
+    commit_result = result(
+        applied=[
+            AppliedItem(
+                item_id="add_1",
+                block_id="401",
+                path="커머스 리뉴얼 > 문제해결 > 가입 이탈 문제 해결",
+            )
+        ]
+    )
+
+    assert build_result_response(state(), commit_result) == (
+        "내용을 분석하여 경험을 정리했어요.\n- 문제해결 아래 1개의 블록 생성"
+    )
+
+
+def test_result_response_notes_truncated_file_content():
+    """파일 페이지·글자 수 상한으로 일부를 버렸으면 결과 문구에 알린다.
+
+    실제로 지적된 문제다 — `MAX_PDF_PAGES`나 `MAX_FILE_TEXT_CHARS`로 파일
+    내용 일부가 조용히 버려져도 사용자 응답에는 아무 표시가 없었다.
+    """
+    truncated_state = state() | {"file_content_truncated": True}
+
+    message = build_result_response(truncated_state, result())
+
+    assert "일부만 반영됐어요" in message
 
 
 def test_result_response_uses_update_only_template():
@@ -102,9 +135,37 @@ def test_result_response_uses_update_only_template():
         applied=[AppliedItem(item_id="update_1", block_id="402", path="커머스 리뉴얼 > 주요성과")]
     )
 
-    assert (
-        build_result_response(state(), commit_result)
-        == "커머스 리뉴얼 > 주요성과 내용을 보완했어요."
+    assert build_result_response(state(), commit_result) == (
+        "내용을 분석하여 경험을 정리했어요.\n- 주요성과 아래 1개의 블록 수정"
+    )
+
+
+def test_result_response_marks_newly_created_category():
+    """에이전트 문서 3-8: 3단계 카테고리를 새로 만든 경우에만 '{카테고리} 생성' 불렛이 붙는다.
+
+    새 컨테이너는 내용이 없어 path에 자기 라벨이 실리지 않으므로(2-4-3), commit_items의
+    section_kind로 새로 만든 카테고리인지 판단해야 한다.
+    """
+    commit_state = state() | {
+        "commit_items": [
+            {"item_id": "category_1", "action": "add", "section_kind": "TASK"},
+            {"item_id": "anchor_1", "action": "add", "parent_item_id": "category_1"},
+            {"item_id": "add_1", "action": "add", "parent_item_id": "anchor_1"},
+        ]
+    }
+    commit_result = result(
+        applied=[
+            # 컨테이너 자신의 path는 활동명뿐이다 — 내용이 없어 자기 라벨이 안 실린다.
+            AppliedItem(item_id="category_1", block_id="400", path="커머스 리뉴얼"),
+            AppliedItem(item_id="anchor_1", block_id="401", path="커머스 리뉴얼"),
+            AppliedItem(item_id="add_1", block_id="402", path="커머스 리뉴얼"),
+        ]
+    )
+
+    message = build_result_response(commit_state, commit_result)
+
+    assert message == (
+        "내용을 분석하여 경험을 정리했어요.\n- 담당업무 아래 2개의 블록 생성\n- 담당업무 생성"
     )
 
 
@@ -121,26 +182,80 @@ async def test_commit_result_is_emitted_before_slow_gap_suggestion():
         return suggestion_state()
 
     events = coordinate(state(), commit_runner=run_commit, gap_runner=run_gap)
-    first = await anext(events)
-    second = await anext(events)
-    assert first.type == "commit_result"
-    assert second.type == "message_complete"
+    assert (await anext(events)).type == "node_status"  # commit: running
+    assert (await anext(events)).type == "node_status"  # commit: completed
+    assert (await anext(events)).type == "commit_result"
+    assert (await anext(events)).type == "message_complete"
     release_gap.set()
     assert (await anext(events)).type == "suggestion_ready"
     assert (await anext(events)).type == "message_complete"
 
 
 @pytest.mark.asyncio
-async def test_gap_failure_does_not_fail_committed_result():
+async def test_gap_failure_omits_suggestion_and_clears_previous_gap():
+    """gap 분석 실패는 결과 응답에 영향을 주지 않지만 suggestion 이벤트는 생략한다.
+
+    에이전트 문서 3절 공통 규칙("gap 분석 노드는 실패 시에도 재시도하지 않고,
+    화면에 표시하지 않음")과 API 명세 6절("분석 실패했을 때만 suggestion_ready와
+    suggestion 메시지를 생략")대로다. 이전에는 실패를 고정 문구
+    ("더 정리하고 싶으신 내용이 있나요?")로 덮어써 매번 제안 이벤트를
+    보냈는데, 이는 "화면에 표시하지 않음"과 정면으로 어긋났다. 다만 이번
+    턴이 이전 active_gap에 답하는 것이었다면 그 gap은 이미 소비된
+    것이므로, 분석 성공 여부와 무관하게 지워야 한다.
+    """
+    saved: list[tuple[str, dict | None]] = []
+
     async def run_commit(input_state):
         return committed_state()
 
     async def run_gap(input_state):
         raise LlmError(failed_node="gap_analysis")
 
-    events = await collect(commit_runner=run_commit, gap_runner=run_gap)
+    async def save_gap(user_id: str, gap: dict | None):
+        saved.append((user_id, gap))
 
-    assert [event.type for event in events] == ["commit_result", "message_complete"]
+    events = await collect(
+        commit_runner=run_commit,
+        gap_runner=run_gap,
+        save_active_gap=save_gap,
+    )
+
+    assert [event.type for event in events] == [
+        "node_status",
+        "node_status",
+        "commit_result",
+        "message_complete",
+    ]
+    assert events[-1].message.response_kind == "result"
+    assert saved == [("123", None)]
+
+
+@pytest.mark.asyncio
+async def test_gap_failure_does_not_fail_commit_when_clearing_previous_gap_fails():
+    """gap 분석과 이전 gap 정리가 모두 실패해도 완료된 커밋 결과는 유지한다."""
+
+    async def run_commit(input_state):
+        return committed_state()
+
+    async def run_gap(input_state):
+        raise LlmError(failed_node="gap_analysis")
+
+    async def fail_to_save_gap(user_id: str, gap: dict | None):
+        raise RuntimeError("DB unavailable")
+
+    events = await collect(
+        commit_runner=run_commit,
+        gap_runner=run_gap,
+        save_active_gap=fail_to_save_gap,
+    )
+
+    assert [event.type for event in events] == [
+        "node_status",
+        "node_status",
+        "commit_result",
+        "message_complete",
+    ]
+    assert events[-1].message.response_kind == "result"
 
 
 @pytest.mark.asyncio
@@ -179,9 +294,125 @@ async def test_successful_gap_is_persisted_after_commit():
     events = await collect(commit_runner=run_commit, gap_runner=run_gap, save_active_gap=save_gap)
 
     assert [event.type for event in events] == [
+        "node_status",
+        "node_status",
         "commit_result",
         "message_complete",
         "suggestion_ready",
         "message_complete",
     ]
     assert saved == [("123", suggestion_state()["active_gap"])]
+
+
+@pytest.mark.asyncio
+async def test_active_gap_save_failure_does_not_fail_committed_request():
+    """제안 상태 저장 실패는 커밋 결과와 제안 이벤트를 막지 않는다."""
+
+    async def run_commit(input_state):
+        return committed_state()
+
+    async def run_gap(input_state):
+        return suggestion_state()
+
+    async def fail_to_save_gap(user_id: str, gap: dict | None):
+        raise RuntimeError("DB unavailable")
+
+    events = await collect(
+        commit_runner=run_commit,
+        gap_runner=run_gap,
+        save_active_gap=fail_to_save_gap,
+    )
+
+    assert [event.type for event in events] == [
+        "node_status",
+        "node_status",
+        "commit_result",
+        "message_complete",
+        "suggestion_ready",
+        "message_complete",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_new_commit_item_anchor_is_resolved_after_parallel_gap_analysis():
+    """gap 분석과 commit은 병렬이어도 새 블록 ID 변환은 commit 결과를 기다린다."""
+    saved: list[dict | None] = []
+
+    async def run_commit(input_state):
+        return committed_state()
+
+    async def run_gap(input_state):
+        return input_state | {
+            "gap_candidate": {
+                "gap_type": "extend_block",
+                "anchor_ref": "add_1",
+                "reason": "판단 기준 부족",
+            },
+            "gap_message": "개선안을 선택한 기준은 무엇이었나요?",
+        }
+
+    async def save_gap(user_id: str, gap: dict | None):
+        saved.append(gap)
+
+    events = await collect(
+        commit_runner=run_commit,
+        gap_runner=run_gap,
+        save_active_gap=save_gap,
+    )
+
+    suggestion = events[-2].gap
+    assert suggestion is not None
+    assert suggestion.anchor_block_id == "401"
+    assert suggestion.path == "커머스 리뉴얼 > 담당업무"
+    assert saved[0]["anchor_block_id"] == "401"
+
+
+@pytest.mark.asyncio
+async def test_first_map_conflict_reprocesses_and_restarts_gap_from_recovered_state():
+    """첫 충돌은 최신 state를 재처리하고 최종 items 기준으로 gap 분석을 다시 시작한다."""
+    commit_calls: list[dict] = []
+    gap_started: list[str] = []
+    first_gap_cancelled = asyncio.Event()
+
+    async def run_commit(input_state):
+        commit_calls.append(input_state)
+        if len(commit_calls) == 1:
+            return input_state | {"commit_recovery_node": "validate"}
+        return committed_state()
+
+    async def run_gap(input_state):
+        marker = str(input_state.get("recovered", "initial"))
+        gap_started.append(marker)
+        if marker == "initial":
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                first_gap_cancelled.set()
+                raise
+        return suggestion_state()
+
+    async def recover(input_state, entry_node):
+        assert entry_node == "validate"
+        return input_state | {
+            "recovered": "latest-map",
+            "commit_recovery_node": None,
+            "commit_items": [{"item_id": "add_1", "action": "add"}],
+        }
+
+    events = await collect(
+        commit_runner=run_commit,
+        gap_runner=run_gap,
+        recover_commit=recover,
+    )
+
+    assert first_gap_cancelled.is_set()
+    assert gap_started == ["initial", "latest-map"]
+    assert len(commit_calls) == 2
+    assert [event.type for event in events] == [
+        "node_status",
+        "node_status",
+        "commit_result",
+        "message_complete",
+        "suggestion_ready",
+        "message_complete",
+    ]

@@ -253,7 +253,7 @@ EM-18로 넘깁니다.
 
 - TXT·DOCX·PPTX·PDF·PNG·JPEG의 MIME·확장자·file signature 검사
   (`.txt`는 UTF-8 디코딩)
-- 요청당 최대 3개, 파일당 최대 10MB, 업로드 중 SHA-256 계산
+- 요청당 최대 1개, 파일당 최대 10MB, 업로드 중 SHA-256 계산
 - GCS request 전용 임시 object, 추출 성공 즉시 삭제, 추출 실패 1시간 TTL
 - request claim 실패 또는 저장 결과 재전송이면 방금 올린 object 즉시 삭제
 - 만료 object 정리 job 또는 bucket lifecycle

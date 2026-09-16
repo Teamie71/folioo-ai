@@ -27,6 +27,13 @@ COMMIT_RECOVERY_PATH = "/api/v1/experience-map/commit/{request_id}"
 
 HttpRequest = Callable[..., Awaitable[httpx.Response]]
 
+SERVER_ERROR_CODE_MAP = {
+    "EXPERIENCE_MAP4091": "map_version_conflict",
+    "EXPERIENCE_MAP4092": "request_id_reused",
+    "EXPERIENCE_MAP4223": "unknown_slot_id",
+    "EXPERIENCE_MAP404": "map_not_initialized",
+}
+
 
 class CommitRecoveryResult:
     """커밋 응답 유실 뒤 조회한 결과"""
@@ -144,10 +151,18 @@ def _success_result(body: Any, status_code: int) -> Any:
 def _raise_commit_error(status_code: int, body: Any) -> None:
     """커밋 계약의 오류 코드를 타입 있는 예외로 올린다."""
     error = _error_body(body)
-    code = error.get("code")
+    raw_code = error.get("code") or error.get("errorCode")
+    code = SERVER_ERROR_CODE_MAP.get(raw_code, raw_code) if isinstance(raw_code, str) else None
     if code == "map_version_conflict":
+        details = error.get("details")
         current_version = error.get("current_map_version")
-        raise MapVersionConflictError(current_version if isinstance(current_version, int) else None)
+        if current_version is None and isinstance(details, dict):
+            current_version = details.get("currentMapVersion")
+        try:
+            parsed_version = int(current_version) if current_version is not None else None
+        except (TypeError, ValueError):
+            parsed_version = None
+        raise MapVersionConflictError(parsed_version)
     if code == "request_id_reused":
         raise CommitRequestIdReusedError()
     if code == "unknown_slot_id":
@@ -155,7 +170,9 @@ def _raise_commit_error(status_code: int, body: Any) -> None:
     if code == "map_not_initialized":
         raise MapNotInitializedError()
     raise MainServerError(
-        status_code, str(error.get("message") or "메인 서버 커밋 요청 실패"), error
+        status_code,
+        str(error.get("message") or error.get("reason") or "메인 서버 커밋 요청 실패"),
+        error,
     )
 
 

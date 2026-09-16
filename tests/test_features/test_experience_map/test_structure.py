@@ -3,10 +3,21 @@
 import pytest
 from langchain_core.runnables import RunnableLambda
 
-from features.experience_map.errors import LlmError
+from features.experience_map.errors import LlmError, NodeTimeoutError
 from features.experience_map.nodes import structure as structure_node
-from features.experience_map.nodes.structure import _validate_output, next_node, structure_blocks
-from features.experience_map.schemas import StructuredItem, StructureOutput
+from features.experience_map.nodes.structure import (
+    _normalize_new_hierarchy,
+    _prune_extra_templates,
+    _reparent_orphan_level5_items,
+    _validate_output,
+    next_node,
+    structure_blocks,
+)
+from features.experience_map.schemas import (
+    ExistingCategoryClassification,
+    StructureLlmItem,
+    StructureOutput,
+)
 from features.experience_map.state import start_turn
 from features.experience_map.templates import TemplateCatalog, TemplateCatalogClient
 
@@ -89,10 +100,16 @@ def make_state(**overrides):
 
 @pytest.fixture
 def fake_dependencies(monkeypatch):
-    """카탈로그와 LLM 대역을 주입하고 렌더된 프롬프트를 모은다."""
+    """카탈로그와 LLM 대역을 주입하고 렌더된 프롬프트를 모은다.
 
-    def _set(result: StructureOutput | Exception) -> list[str]:
+    `result`에 리스트를 주면 호출 순서대로 하나씩 반환한다(마지막 값은
+    이후 호출에도 계속 쓰인다) — 원문 누락 재시도처럼 첫 호출과 재시도
+    호출의 응답이 달라야 하는 테스트에 쓴다.
+    """
+
+    def _set(result: StructureOutput | Exception | list) -> list[str]:
         prompts: list[str] = []
+        sequence = result if isinstance(result, list) else [result]
 
         async def _fetcher():
             return catalog_payload()
@@ -100,11 +117,12 @@ def fake_dependencies(monkeypatch):
         client = TemplateCatalogClient(_fetcher)
         monkeypatch.setattr(structure_node, "get_template_catalog_client", lambda: client)
 
-        def _handle(prompt_value) -> StructureOutput:
+        async def _handle(prompt_value) -> StructureOutput:
             prompts.append(prompt_value.to_string())
-            if isinstance(result, Exception):
-                raise result
-            return result
+            current = sequence[min(len(prompts) - 1, len(sequence) - 1)]
+            if isinstance(current, Exception):
+                raise current
+            return current
 
         class _FakeLlm:
             def with_structured_output(self, schema):
@@ -123,15 +141,16 @@ async def test_new_category_expands_all_section_slots_and_preserves_source(fake_
     prompts = fake_dependencies(
         StructureOutput(
             items=[
-                StructuredItem(
+                StructureLlmItem(
                     item_id="category_1", action="add", parent_ref="exp_1", section_kind="DETAIL"
                 ),
-                StructuredItem(
-                    item_id="it_1",
+                StructureLlmItem(
+                    item_id="blk_1",
                     action="add",
                     parent_item_id="category_1",
                     slot_id="DETAIL.MOTIVATION",
                     text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
                 ),
             ]
         )
@@ -139,8 +158,10 @@ async def test_new_category_expands_all_section_slots_and_preserves_source(fake_
 
     result = await structure_blocks(make_state())
 
-    assert [item["item_id"] for item in result["structured_items"]] == ["category_1", "it_1"]
+    assert [item["item_id"] for item in result["structured_items"]] == ["category_1", "blk_1"]
     assert result["structured_items"][1]["text"] == "결제 오류를 해결했다"
+    # source_item_ids 는 구조화 노드 내부 전용이라 공용 스키마로 나가지 않는다.
+    assert "source_item_ids" not in result["structured_items"][1]
     assert "[exp_1] 교내 커머스 리뉴얼" in prompts[0]
     assert "[DETAIL.MOTIVATION]" in prompts[0]
 
@@ -151,14 +172,15 @@ async def test_template_expands_empty_slots(fake_dependencies):
     fake_dependencies(
         StructureOutput(
             items=[
-                StructuredItem(
-                    item_id="it_1",
+                StructureLlmItem(
+                    item_id="blk_1",
                     action="add",
                     parent_ref="b_1",
                     slot_id="TASK.BASIC.PURPOSE",
                     text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
                 ),
-                StructuredItem(
+                StructureLlmItem(
                     item_id="empty_1",
                     action="add",
                     parent_ref="b_1",
@@ -170,39 +192,149 @@ async def test_template_expands_empty_slots(fake_dependencies):
 
     result = await structure_blocks(make_state())
 
-    assert result["structured_items"][1]["text"] is None
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] is None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "items",
-    [
-        [],
-        [StructuredItem(item_id="it_1", action="add", parent_ref="exp_1", text="바뀐 원문")],
-    ],
-)
-async def test_missing_or_changed_source_is_rejected(fake_dependencies, items):
-    """구조화가 원문을 누락하거나 고쳐 쓰면 다음 단계로 넘기지 않는다."""
-    fake_dependencies(StructureOutput(items=items))
+async def test_multiple_source_items_can_merge_into_one_slot(fake_dependencies):
+    """content_filter 는 불릿 단위, 템플릿은 주제 단위라 여러 원문이 한 슬롯에 모일 수 있다.
 
-    with pytest.raises(LlmError) as exc_info:
-        await structure_blocks(make_state())
-
-    assert exc_info.value.failed_node == "structure"
-
-
-@pytest.mark.asyncio
-async def test_unknown_slot_and_partial_template_are_rejected(fake_dependencies):
+    합친 text 는 원문을 이어붙인 것과 정확히 같아야 하며(공백 차이는 허용),
+    출력 item_id 는 입력 item_id 를 재사용하지 않는다.
+    """
     fake_dependencies(
         StructureOutput(
             items=[
-                StructuredItem(
-                    item_id="it_1",
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="원인을 조사했다 해결책을 적용했다",
+                    source_item_ids=["it_1", "it_2"],
+                ),
+                StructureLlmItem(
+                    item_id="empty_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.RESULT",
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "원인을 조사했다", "source": "message"},
+            {"item_id": "it_2", "text": "해결책을 적용했다", "source": "message"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "원인을 조사했다 해결책을 적용했다"
+
+
+@pytest.mark.asyncio
+async def test_merge_ignores_llm_typed_separator(fake_dependencies):
+    """병합 블록의 text는 LLM이 뭐라고 썼든 코드가 원문을 그대로 이어붙여 만든다.
+
+    실제로 재현된 경우다. 문장이 마침표로 끝나는데 모델이 다음 조각을 띄어쓰기
+    없이 바로 이어 붙이는 등, 이어붙이는 방식이 매번 달랐다. text는 이제
+    LLM이 검증만 통과하면 되는 게 아니라 애초에 코드가 새로 조립하므로,
+    LLM이 뭘 쓰든(공백 유무 등) 항상 같은 결과가 나와야 한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="원인을 조사했다.해결책을 적용했다",  # 공백 없이 이어붙임
+                    source_item_ids=["it_1", "it_2"],
+                ),
+                StructureLlmItem(
+                    item_id="empty_1", action="add", parent_ref="b_1", slot_id="TASK.BASIC.RESULT"
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "원인을 조사했다.", "source": "message"},
+            {"item_id": "it_2", "text": "해결책을 적용했다", "source": "message"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "원인을 조사했다. 해결책을 적용했다"
+
+
+@pytest.mark.asyncio
+async def test_merged_text_ignores_llm_summary(fake_dependencies):
+    """LLM이 합친 text를 요약·윤문해도, 실제 커밋되는 text는 원문 그대로다.
+
+    예전엔 이 경우를 거부하고 재시도를 유도했는데, LLM이 재시도에서도 같은
+    실수를 반복하는 일이 잦았다. 이제는 LLM이 뭐라고 썼든 코드가 무시하고
+    원문을 그대로 조립하므로, 이 실수 자체가 실패로 이어지지 않는다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="원인 조사 후 해결",  # 요약됨 — 무시되고 원문으로 대체된다
+                    source_item_ids=["it_1", "it_2"],
+                ),
+                StructureLlmItem(
+                    item_id="empty_1", action="add", parent_ref="b_1", slot_id="TASK.BASIC.RESULT"
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "원인을 조사했다", "source": "message"},
+            {"item_id": "it_2", "text": "해결책을 적용했다", "source": "message"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "원인을 조사했다 해결책을 적용했다"
+
+
+@pytest.mark.asyncio
+async def test_source_item_used_twice_is_rejected(fake_dependencies):
+    """같은 원문 item이 두 블록에 나눠 들어가면 안 된다."""
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
                     action="add",
                     parent_ref="b_1",
                     slot_id="TASK.BASIC.PURPOSE",
                     text="결제 오류를 해결했다",
-                )
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.RESULT",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
             ]
         )
     )
@@ -212,16 +344,2115 @@ async def test_unknown_slot_and_partial_template_are_rejected(fake_dependencies)
 
 
 @pytest.mark.asyncio
+async def test_missing_source_is_rejected(fake_dependencies):
+    """구조화가 원문 item을 아예 누락하면 다음 단계로 넘기지 않는다."""
+    fake_dependencies(StructureOutput(items=[]))
+
+    with pytest.raises(LlmError) as exc_info:
+        await structure_blocks(make_state())
+
+    assert exc_info.value.failed_node == "structure"
+
+
+@pytest.mark.asyncio
+async def test_changed_source_text_is_silently_corrected(fake_dependencies):
+    """LLM이 원문을 고쳐 써도, source_item_ids만 맞으면 실패하지 않고 원문으로
+    바로잡힌 채 커밋된다 — text 자체는 이제 검증 대상이 아니다."""
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="exp_1",
+                    text="바뀐 원문",
+                    source_item_ids=["it_1"],
+                )
+            ]
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    assert result["structured_items"][0]["text"] == "결제 오류를 해결했다"
+
+
+@pytest.mark.asyncio
+async def test_level5_slot_attached_to_container_is_auto_reparented_to_anchor(fake_dependencies):
+    """level 5 슬롯이 앵커가 아니라 카테고리 컨테이너에 바로 붙으면, 코드가
+    같은 배치의 진짜 앵커 밑으로 자동으로 옮긴다.
+
+    실제로 재현된 경우다. 모델이 하위 템플릿의 level 5 슬롯 하나를 앵커가
+    아니라 카테고리 컨테이너에 바로 매달았다. 예전엔 이걸 에러로 거부하고
+    재시도를 유도했는데, 모델이 재시도에서도 같은 실수를 반복하는 일이
+    잦아서 — 이미 배치 안에 진짜 앵커가 있는 이상 코드가 결정론적으로
+    바로잡는다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="TASK"
+                ),
+                StructureLlmItem(
+                    item_id="anchor_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",  # 컨테이너에 바로 붙임 — 잘못됨
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="원인을 조사했다",
+                    source_item_ids=["it_2"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "결제 오류를 해결했다", "source": "message"},
+            {"item_id": "it_2", "text": "원인을 조사했다", "source": "message"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    anchor_id = items_by_slot["TASK.SUMMARY"]["item_id"]
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_item_id"] == anchor_id
+
+
+@pytest.mark.asyncio
+async def test_level5_using_parent_ref_for_batch_local_anchor_is_reinterpreted(
+    fake_dependencies, monkeypatch
+):
+    """방금 만든 앵커를 `parent_ref`로 가리키면 `parent_item_id`로 바로잡는다.
+
+    실제 PDF 이력서 입력으로 재현된 경우다. 모델이 새로 만든 앵커
+    (`blk_1`)를 그 하위 level 5 슬롯의 부모로 연결하면서 `parent_item_id`가
+    아니라 `parent_ref="blk_1"`을 썼다. `blk_1`은 활동 트리의 블록 별칭일
+    수 없으므로(서버가 그런 별칭을 주지 않는다), 방금 만든 item을 가리키려던
+    의도가 명백해 코드가 `parent_item_id`로 고쳐 끼운다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 3)
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="사내 결제 시스템 백엔드 개발을 담당했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_ref="blk_1",  # 잘못됨 — parent_item_id="blk_1"이어야 한다
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_2"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_3",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.RESULT",
+                    text="전환율이 올랐다",
+                    source_item_ids=["it_3"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {
+                "item_id": "it_1",
+                "text": "사내 결제 시스템 백엔드 개발을 담당했다",
+                "source": "file",
+            },
+            {"item_id": "it_2", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_3", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    anchor_id = items_by_slot["TASK.SUMMARY"]["item_id"]
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_ref"] is None
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_item_id"] == anchor_id
+
+
+@pytest.mark.asyncio
+async def test_redundant_target_activity_parent_ref_is_resolved_to_new_parent_item_id(
+    fake_dependencies, monkeypatch
+):
+    """`parent_ref`가 선택 활동 자신이면서 `parent_item_id`도 있으면 후자를 우선한다.
+
+    모델이 방금 만든 앵커의 `parent_item_id`를 정확히 적고도 선택 활동
+    자신을 `parent_ref`로 redundant하게 함께 낸 경우다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 3)
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="사내 결제 시스템 백엔드 개발을 담당했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_ref="exp_1",  # redundant — 선택 활동 자신
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_2"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {
+                "item_id": "it_1",
+                "text": "사내 결제 시스템 백엔드 개발을 담당했다",
+                "source": "file",
+            },
+            {"item_id": "it_2", "text": "전환율 개선을 목표로 했다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    anchor_id = items_by_slot["TASK.SUMMARY"]["item_id"]
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_ref"] is None
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["parent_item_id"] == anchor_id
+
+
+@pytest.mark.asyncio
+async def test_genuinely_conflicting_parent_refs_are_rejected_not_guessed(
+    fake_dependencies, monkeypatch
+):
+    """`parent_ref`가 선택 활동이 아닌 다른 기존 별칭이면서 `parent_item_id`도
+    있으면 거부한다.
+
+    이건 redundant가 아니라 모델이 서로 다른 두 부모를 낸 진짜 모순이다.
+    하나를 짐작해 버리면 잘못된 부모 아래 블록이 조용히 만들어질 수 있어,
+    검증 실패로 재시도를 유도해야 한다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 3)
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="사내 결제 시스템 백엔드 개발을 담당했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_ref="b_1",  # 다른 기존 블록 — 선택 활동이 아니다
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_2"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {
+                "item_id": "it_1",
+                "text": "사내 결제 시스템 백엔드 개발을 담당했다",
+                "source": "file",
+            },
+            {"item_id": "it_2", "text": "전환율 개선을 목표로 했다", "source": "file"},
+        ]
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(state)
+
+
+def test_unknown_slot_parent_ref_is_rerooted_to_selected_activity():
+    """커밋되지 않은 가짜 기존 별칭은 선택 활동 별칭으로 되돌린다."""
+    item = StructureLlmItem(
+        item_id="anchor_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="PROBLEM_SOLVING.SUMMARY",
+    )
+    state = make_state(alias_to_block_id={"exp_1": "200"})
+
+    [result] = structure_node._repair_unknown_slot_parent_refs([item], state)
+
+    assert result.parent_ref == "exp_1"
+    assert result.parent_item_id is None
+
+
+@pytest.mark.asyncio
+async def test_anchor_reusing_same_source_as_its_level5_child_is_emptied(
+    fake_dependencies, monkeypatch
+):
+    """앵커가 하위 level 5 슬롯과 똑같은 원문을 또 쓰면, 앵커를 빈 슬롯으로 되돌린다.
+
+    실제 PDF 이력서 입력으로 재현된 경우다. 프롬프트는 "같은 입력 item을
+    SUMMARY 앵커와 세부 슬롯에 동시에 쓰지 말고, 더 구체적인 세부 슬롯에만
+    배정하라"고 명시하는데도, 모델이 같은 문장을 앵커와 그 바로 아래
+    level 5 슬롯에 완전히 똑같이 중복 배정했다 — 원문 하나가 두 블록에서
+    쓰여 `_validate_source_coverage`가 거부했다. level 5가 항상 더
+    구체적이므로, 코드가 앵커 쪽 배정만 비워 원문을 한 곳에서만 쓰게 한다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 2)
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_1"],  # 앵커와 완전히 같은 원문 — 중복
+                ),
+                StructureLlmItem(
+                    item_id="blk_3",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.RESULT",
+                    text="전환율이 올랐다",
+                    source_item_ids=["it_2"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_2", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.SUMMARY"]["text"] is None
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+
+
+@pytest.mark.asyncio
+async def test_anchor_text_without_any_source_is_cleared(fake_dependencies, monkeypatch):
+    """앵커가 `source_item_ids` 없이 text만 채우면, 그 text를 비우고 통과시킨다.
+
+    실제 LLM 호출로 재현된 경우다(로컬에서 직접 실행해 확인). 프롬프트는
+    "요약할 별도 원문이 없으면 SUMMARY를 비워 둔다"고 명시하는데도, 모델이
+    `source_item_ids`를 하나도 안 단 채 요약을 스스로 지어내 앵커 text를
+    채웠다. `_validate_output`이 "source_item_ids 없이 text를 만들 수
+    없습니다"로 거부해 재시도해도 같은 실수를 반복해 매번 구조화가
+    실패했다 — 이웃 테스트(중복 원문 사고)와 같은 이유로, 코드가 결정론적으로
+    비운다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 2)
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="사내 결제 시스템 백엔드 개발을 담당한 경험",  # source_item_ids 없이 모델이 지어낸 요약
+                    source_item_ids=[],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_1"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[{"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "message"}]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.SUMMARY"]["text"] is None
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+
+
+@pytest.mark.asyncio
+async def test_self_contradiction_retries_whole_batch_with_higher_temperature(fake_dependencies):
+    """자기모순(기존 앵커 자기 신고와 실제 출력 불일치) 실패는 그래프 재시도를
+    기다리지 않고 노드 안에서 온도를 올려 배치 루프 전체를 한 번 더 시도한다.
+
+    실제 OpenRouter 호출로 재현된 경우다 — temperature=0에서는 같은
+    프롬프트에 같은 자기모순을 그대로 반복해서, 그래프 레벨의 1회 자동
+    재시도(완전히 같은 프롬프트)로는 구제되지 않았다.
+    """
+    contradictory = StructureOutput(
+        existing_categories=[
+            ExistingCategoryClassification(
+                alias="b_1", section_kind="TASK", existing_anchor_alias="b_2"
+            )
+        ],
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.SUMMARY",
+                text="새로 지어낸 요약",
+                source_item_ids=["it_1"],
+            )
+        ],
+    )
+    corrected = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_2",
+                action="add",
+                parent_ref="b_2",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="결제 오류를 해결했다",
+                source_item_ids=["it_1"],
+            )
+        ]
+    )
+    prompts = fake_dependencies([contradictory, corrected])
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306"},
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n  [b_1] 담당업무\n    [b_2] 기존 요약 내용"
+        ),
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "결제 오류를 해결했다"
+    assert len(prompts) == 2
+
+
+def test_deterministic_anchor_conflict_is_not_a_self_contradiction_error():
+    """활동 트리만으로 판정하는 결정론적 앵커 중복은 자기모순 재시도 대상이 아니다.
+
+    `_validate_anchor_reuse_deterministic`은 모델의 `existing_categories`
+    자기 신고와 무관하게 활동 트리의 빈 슬롯 가이드 문구만으로 판정한다.
+    이 실패까지 자기모순 전용 재시도(정정 지시문이 "신고한 기존 카테고리와
+    실제 parent_ref를 일치시키라"는, 애초에 신고가 없었던 이 경우엔 맞지
+    않는 지시문을 덧붙임)로 잘못 처리하지 않으려면, `structure_blocks`가
+    타입으로 구분하는 `_SelfContradictionError`가 아니라 평범한 `ValueError`
+    여야 한다.
+    """
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    item = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="TASK.SUMMARY",
+        text="새로 지어낸 요약",
+        source_item_ids=["it_1"],
+    )
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305"},
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n"
+            "  [b_1] 담당업무\n"
+            "    [b_2] (빈 블록 — 가이드: 업무 요약)\n"
+            "      [b_3] (빈 블록 — 가이드: 목적)"
+        ),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        structure_node._validate_anchor_reuse_deterministic([item], catalog, state)
+
+    assert not isinstance(exc_info.value, structure_node._SelfContradictionError)
+
+
+@pytest.mark.asyncio
+async def test_missing_source_item_triggers_one_targeted_retry(fake_dependencies):
+    """원문 item을 통째로 빠뜨리면, 빠진 것만 콕 집어 한 번 더 시도한다.
+
+    실제 PDF 이력서(원문 15개) 입력으로 재현된 경우다. 첫 시도에서 모델이
+    일부 원문 item을 어느 블록에도 배정하지 않고 빠뜨렸다 — 그래프 수준
+    RetryPolicy가 같은 프롬프트를 그대로 재시도해도 결과가 매번 달라
+    운에 맡기는 것보다, 빠진 item을 명시해 다시 요청하는 편이 낫다. 이
+    보정은 이 노드 실행 안에서 누락된 원문만 대상으로 한 번 수행한다.
+    """
+    first_attempt = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="전환율 개선을 목표로 했다",
+                source_item_ids=["it_1"],
+            ),
+            # it_2 는 빠뜨렸다.
+        ]
+    )
+    second_attempt = StructureOutput(
+        items=[
+            # 재시도는 빠진 it_2 하나만 새로 맡는다 — blk_1(it_1)은 1차에서
+            # 이미 성공했으므로 다시 만들 필요가 없다.
+            StructureLlmItem(
+                item_id="blk_2",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="전환율이 올랐다",
+                source_item_ids=["it_2"],
+            ),
+        ]
+    )
+    prompts = fake_dependencies([first_attempt, second_attempt])
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_2", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "전환율이 올랐다"
+    assert len(prompts) == 2
+    assert "it_2" in prompts[1] and "전환율이 올랐다" in prompts[1]
+    # 재시도 프롬프트의 "반영할 원문 item" 절에는 빠진 it_2만 실린다 — 이미
+    # 성공한 it_1을 다시 만들면서 새 실수를 낼 여지를 줄인다.
+    retry_source_section = prompts[1].split("반영할 원문 item:")[1]
+    assert "it_1" not in retry_source_section
+
+
+@pytest.mark.asyncio
+async def test_duplicate_source_across_sibling_slots_triggers_one_targeted_retry(
+    fake_dependencies,
+):
+    """원문 하나가 서로 다른 슬롯 여럿에 나눠 붙으면, 그 원문만 콕 집어 한 번 더 시도한다.
+
+    실제로 재현된 경우다. 원문이 한 문장뿐이라 content_filter가 나누지 않고
+    하나의 item으로 넘겼는데, 모델이 그 문장을 담당업무 템플릿의 서로 다른
+    level 5 슬롯 2개(PURPOSE·RESULT)에 전부 같은 출처로 붙였다. 기존
+    "빠뜨린 원문" 재시도는 이 경우를 못 잡았다 — `_missing_source_ids`는
+    "한 번도 안 쓰인 원문"만 찾으므로, 여러 번 쓰인 이 원문은 "빠지지 않은
+    것"으로 보여 곧장 최종 검증까지 흘러가 재시도 기회 없이 실패했다.
+    """
+    first_attempt = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="결제 오류를 해결했다",
+                source_item_ids=["it_1"],
+            ),
+            StructureLlmItem(
+                item_id="blk_2",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="결제 오류를 해결했다",
+                source_item_ids=["it_1"],
+            ),
+        ]
+    )
+    second_attempt = StructureOutput(
+        items=[
+            # 재시도는 중복 배정한 it_1만 다시 맡는다 — 이번엔 슬롯 하나에만 붙인다.
+            StructureLlmItem(
+                item_id="blk_3",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="결제 오류를 해결했다",
+                source_item_ids=["it_1"],
+            ),
+        ]
+    )
+    prompts = fake_dependencies([first_attempt, second_attempt])
+    state = make_state()
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {
+        item["slot_id"]: item for item in result["structured_items"] if item["slot_id"]
+    }
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "결제 오류를 해결했다"
+    # RESULT는 원문이 없는 빈 슬롯으로만 채워진다 — 새 앵커라 템플릿 전체를
+    # 전개하지만(기존 규칙), it_1을 다시 붙이지는 않는다.
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] is None
+    assert len(prompts) == 2
+    retry_source_section = prompts[1].split("반영할 원문 item:")[1]
+    assert "it_1" in retry_source_section
+
+
+@pytest.mark.asyncio
+async def test_duplicate_repair_keeps_collateral_merged_source(fake_dependencies):
+    """중복 source와 한 블록에 병합된 정상 source도 함께 다시 배정한다.
+
+    실제 다문장 입력에서 첫 블록이 it_1·it_2를 함께 담고 다른 블록이 it_1을
+    중복 사용했다. 예전 로직은 it_1이 든 블록을 통째로 제거하면서 it_2까지
+    잃었지만, 재시도에는 it_1만 보내 최종 coverage 검증에서 it_2가 누락됐다.
+    """
+    first_attempt = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="알림 시간을 단축했다 가입자 목표를 초과했다",
+                source_item_ids=["it_1", "it_2"],
+            ),
+            StructureLlmItem(
+                item_id="blk_2",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="알림 시간을 단축했다",
+                source_item_ids=["it_1"],
+            ),
+        ]
+    )
+    second_attempt = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_3",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="알림 시간을 단축했다 가입자 목표를 초과했다",
+                source_item_ids=["it_1", "it_2"],
+            )
+        ]
+    )
+    prompts = fake_dependencies([first_attempt, second_attempt])
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "알림 시간을 단축했다", "source": "message"},
+            {"item_id": "it_2", "text": "가입자 목표를 초과했다", "source": "message"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {
+        item["slot_id"]: item for item in result["structured_items"] if item["slot_id"]
+    }
+    assert (
+        items_by_slot["TASK.BASIC.RESULT"]["text"] == "알림 시간을 단축했다 가입자 목표를 초과했다"
+    )
+    retry_source_section = prompts[1].split("반영할 원문 item:")[1]
+    assert "it_1" in retry_source_section
+    assert "it_2" in retry_source_section
+
+
+@pytest.mark.asyncio
+async def test_schema_violating_response_retries_the_same_batch(fake_dependencies):
+    """모델 응답이 스키마 자체를 어겨 파싱이 실패해도, 같은 배치를 한 번 더 시도한다.
+
+    실제로 재현된 경우다. 모델이 `parent_ref`도 `parent_item_id`도 없는 item을
+    내서 pydantic이 파싱 단계에서 바로 거부했다 — 결과를 볼 기회조차 없어
+    "원문 누락" 재시도 경로를 못 타고 그대로 예외가 번져나갔다. 여러 배치로
+    나눠 처리할 때 이 배치 하나의 일시적 실수가 이미 끝낸 앞 배치들까지
+    통째로 날리면 안 된다.
+    """
+    prompts = fake_dependencies(
+        [
+            ValueError("모델이 parent_ref/parent_item_id 없는 item을 냄 (pydantic 파싱 실패)"),
+            StructureOutput(
+                items=[
+                    StructureLlmItem(
+                        item_id="blk_1",
+                        action="add",
+                        parent_ref="b_1",
+                        slot_id="TASK.BASIC.PURPOSE",
+                        text="전환율 개선을 목표로 했다",
+                        source_item_ids=["it_1"],
+                    ),
+                ]
+            ),
+        ]
+    )
+    state = make_state(
+        new_items=[{"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"}]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+    assert len(prompts) == 2
+
+
+@pytest.mark.asyncio
+async def test_large_input_is_split_into_batches_that_reuse_earlier_anchors(
+    fake_dependencies, monkeypatch
+):
+    """원문이 많으면 배치로 나눠 순차 처리하고, 뒤 배치는 앞 배치가 만든 앵커를 재사용한다.
+
+    실제 PDF 이력서(원문 15개)로 재현된 문제의 근본 대책이다. 한 번에 너무
+    많이 맡기면 모델이 일부를 빠뜨리거나 잘못 연결하는 사고가 잦아져서,
+    작은 배치로 나눠 순차 처리한다 — 뒤 배치는 `previous_batch_note`로 앞
+    배치가 이미 만든 카테고리·앵커를 안내받아 새로 만들지 않고 재사용해야
+    한다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 2)
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 2)
+
+    first_batch_response = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="category_1", action="add", parent_ref="exp_1", section_kind="TASK"
+            ),
+            StructureLlmItem(
+                item_id="anchor_1",
+                action="add",
+                parent_item_id="category_1",
+                slot_id="TASK.SUMMARY",
+                text="결제 시스템 백엔드 개발을 담당했다",
+                source_item_ids=["it_1"],
+            ),
+            StructureLlmItem(
+                item_id="blk_purpose",
+                action="add",
+                parent_item_id="anchor_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="전환율 개선을 목표로 했다",
+                source_item_ids=["it_2"],
+            ),
+        ]
+    )
+    second_batch_response = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_result",
+                action="add",
+                # 앞 배치가 만든 앵커를 재사용한다. 이 요청의 첫 호출(call_index
+                # 0)이 만든 item_id는 병합할 대상이 없어 접두사 없이 그대로다.
+                parent_item_id="anchor_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="전환율이 올랐다 재발도 없었다",
+                source_item_ids=["it_3", "it_4"],
+            ),
+        ]
+    )
+    prompts = fake_dependencies([first_batch_response, second_batch_response])
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "결제 시스템 백엔드 개발을 담당했다", "source": "file"},
+            {"item_id": "it_2", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_3", "text": "전환율이 올랐다", "source": "file"},
+            {"item_id": "it_4", "text": "재발도 없었다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    assert len(prompts) == 2
+    # 두 번째 배치 프롬프트에 첫 배치가 만든 앵커 안내가 실려야 한다.
+    assert "anchor_1" in prompts[1] and "TASK.SUMMARY" in prompts[1]
+    # 첫 배치 프롬프트에는 아직 아무것도 안내할 게 없다.
+    assert "anchor_1" not in prompts[0]
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.SUMMARY"]["text"] == "결제 시스템 백엔드 개발을 담당했다"
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "전환율이 올랐다 재발도 없었다"
+    assert (
+        items_by_slot["TASK.BASIC.RESULT"]["parent_item_id"]
+        == items_by_slot["TASK.SUMMARY"]["item_id"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_structure_timeout_is_reported_as_node_timeout(fake_dependencies):
+    """모델 제한 시간 초과를 일반 LLM 오류로 숨기지 않는다."""
+    fake_dependencies(TimeoutError("upstream timed out"))
+
+    with pytest.raises(NodeTimeoutError) as exc_info:
+        await structure_blocks(make_state())
+
+    assert exc_info.value.failed_node == "structure"
+
+
+def test_source_batches_are_also_limited_by_total_text_length(monkeypatch):
+    """item 수가 적어도 긴 원문들이 한 구조화 호출에 함께 실리지 않는다."""
+    monkeypatch.setattr(structure_node, "MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 3)
+    monkeypatch.setattr(structure_node, "MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH", 10)
+    source_items = [
+        {"item_id": "it_1", "text": "가" * 6, "source": "message"},
+        {"item_id": "it_2", "text": "나" * 6, "source": "message"},
+        {"item_id": "it_3", "text": "다" * 3, "source": "message"},
+    ]
+
+    batches = structure_node._source_batches(source_items)
+
+    assert [[item["item_id"] for item in batch] for batch in batches] == [
+        ["it_1"],
+        ["it_2", "it_3"],
+    ]
+
+
+def test_file_source_batches_use_one_item_even_when_text_is_short(monkeypatch):
+    """PDF 원문은 주제가 섞이거나 시간 초과하지 않도록 한 item씩 처리한다."""
+    monkeypatch.setattr(structure_node, "MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 3)
+    monkeypatch.setattr(structure_node, "MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 1)
+    source_items = [
+        {"item_id": "it_1", "text": "프로젝트 배경", "source": "file"},
+        {"item_id": "it_2", "text": "담당 역할", "source": "file"},
+    ]
+
+    batches = structure_node._source_batches(source_items)
+
+    assert [[item["item_id"] for item in batch] for batch in batches] == [
+        ["it_1"],
+        ["it_2"],
+    ]
+
+
+def test_pdf_document_headings_provide_deterministic_slot_hints():
+    """PDF item을 한 개씩 보내도 원본 제목의 슬롯 문맥을 잃지 않는다."""
+    extracted_text = """
+경력 정리 메모 — 백엔드 개발자
+1. 담당 업무
+- 결제 승인 API를 담당했다.
+2. 문제 해결 경험 — 결제 승인 API 응답 지연
+상황
+응답 시간이 4초까지 치솟았다.
+원인 분석
+외부 API의 응답 지연이 원인이었다.
+해결 과정
+Kafka로 비동기 전환했다.
+결과
+P99를 320ms로 낮춰 검증했다.
+3. 주요 성과
+배치를 45분에서 12분으로 단축했다.
+4. 배운 점
+원인을 구조적으로 분리해야 함을 배웠다.
+""".strip()
+    source_items = [
+        {"item_id": "it_1", "text": "결제 승인 API를 담당했다.", "source": "file"},
+        {
+            "item_id": "it_2",
+            "text": "2. 문제 해결 경험 — 결제 승인 API 응답 지연",
+            "source": "file",
+        },
+        {"item_id": "it_3", "text": "응답 시간이 4초까지 치솟았다.", "source": "file"},
+        {"item_id": "it_4", "text": "외부 API의 응답 지연이 원인이었다.", "source": "file"},
+        {"item_id": "it_5", "text": "Kafka로 비동기 전환했다.", "source": "file"},
+        {"item_id": "it_6", "text": "P99를 320ms로 낮춰 검증했다.", "source": "file"},
+        {"item_id": "it_7", "text": "배치를 45분에서 12분으로 단축했다.", "source": "file"},
+        {"item_id": "it_8", "text": "원인을 구조적으로 분리해야 함을 배웠다.", "source": "file"},
+    ]
+
+    hints = structure_node._document_slot_hints(source_items, extracted_text)
+
+    assert hints == {
+        "it_1": "TASK.SUMMARY",
+        "it_2": "PROBLEM_SOLVING.SUMMARY",
+        "it_3": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "it_4": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+        "it_5": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        "it_6": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+        "it_7": "ACHIEVEMENT.QUANTITATIVE",
+        "it_8": "LEARNING.GROWTH",
+    }
+
+
+@pytest.mark.asyncio
+async def test_batches_reusing_the_same_item_id_are_namespaced_apart(
+    fake_dependencies, monkeypatch
+):
+    """서로 다른 배치가 우연히 같은 item_id를 지어도 충돌하지 않는다.
+
+    실제 PDF 이력서(원문 15개, 여러 배치)로 재현된 경우다. 각 배치는 서로의
+    출력을 모르는 채 독립적으로 item_id를 지으므로, 두 배치가 똑같이
+    "blk_1"을 써서 `item_id가 중복되었습니다`로 거부된 적이 있다.
+    """
+    monkeypatch.setattr(structure_node, "MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH", 1)
+
+    first_batch_response = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",  # 배치 1의 blk_1
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="전환율 개선을 목표로 했다",
+                source_item_ids=["it_1"],
+            ),
+        ]
+    )
+    second_batch_response = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",  # 배치 2도 우연히 같은 이름을 지었다
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="전환율이 올랐다",
+                source_item_ids=["it_2"],
+            ),
+        ]
+    )
+    fake_dependencies([first_batch_response, second_batch_response])
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_2", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    item_ids = [item["item_id"] for item in result["structured_items"]]
+    assert len(item_ids) == len(set(item_ids))
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "전환율이 올랐다"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_slot_under_same_parent_is_merged_not_rejected(fake_dependencies):
+    """같은 부모 아래 같은 slot을 두 item으로 쪼개 만들면 하나로 합친다.
+
+    실제 PDF 이력서 입력으로 재현된 경우다. 모델이 TASK.BASIC.PURPOSE를
+    같은 앵커 아래 두 item으로 나눠 만들어 "같은 slot을 두 번 이상
+    만들었습니다"로 거부됐다. 어느 쪽을 버릴지 모호하므로(둘 다 서로 다른
+    원문일 수 있다) 버리지 않고 원문을 합쳐 하나로 만든다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="전환율 개선을 목표로 했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",  # 같은 부모·같은 slot 중복
+                    text="이탈률도 함께 낮추고자 했다",
+                    source_item_ids=["it_2"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_3",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.RESULT",
+                    text="전환율이 올랐다",
+                    source_item_ids=["it_3"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_2", "text": "이탈률도 함께 낮추고자 했다", "source": "file"},
+            {"item_id": "it_3", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == (
+        "전환율 개선을 목표로 했다 이탈률도 함께 낮추고자 했다"
+    )
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "전환율이 올랐다"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_section_kind_is_merged(fake_dependencies):
+    """같은 카테고리를 두 번 만들면 첫 컨테이너로 자식을 합친다.
+
+    실제로 재현된 경우다. 문제해결 템플릿 6종 중 하나만 골라야 하는데, 모델이
+    템플릿마다 별도의 PROBLEM_SOLVING 카테고리 컨테이너를 중첩해서 만들었다.
+
+    두 컨테이너는 내용이 없고 section_kind가 같아 병합 대상이 명확하다. 자식
+    원문은 버리지 않고 같은 슬롯에 순서대로 합친다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="DETAIL"
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="category_2", action="add", parent_ref="exp_1", section_kind="DETAIL"
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_item_id="category_2",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="재시도 로직을 추가했다",
+                    source_item_ids=["it_2"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "결제 오류를 해결했다", "source": "message"},
+            {"item_id": "it_2", "text": "재시도 로직을 추가했다", "source": "message"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    categories = [item for item in result["structured_items"] if item["section_kind"] == "DETAIL"]
+    assert len(categories) == 1
+    detail = next(
+        item for item in result["structured_items"] if item["slot_id"] == "DETAIL.MOTIVATION"
+    )
+    assert detail["text"] == "결제 오류를 해결했다 재시도 로직을 추가했다"
+
+
+@pytest.mark.asyncio
+async def test_new_category_contradicting_self_reported_classification_is_rejected(
+    fake_dependencies,
+):
+    """existing_categories에서 이미 있다고 판단한 section을 또 새로 만들면 거부한다.
+
+    실제로 재현된 경우다. 활동 트리에 이미 TASK 컨테이너(자식이 자유 텍스트로만
+    있는)가 있는데, 이후 요청에서 모델이 그 컨테이너를 재사용하지 않고 같은
+    section의 새 카테고리를 또 만들었다 — "트리에 있으면 재사용하라"는 지시만
+    으로는 재발이 잦아, 모델이 스스로 분류한 결과와 실제 행동이 모순되면 코드가
+    바로 걸러 재시도를 유도한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            existing_categories=[{"alias": "b_1", "section_kind": "TASK"}],
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="TASK"
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(make_state())
+
+
+@pytest.mark.asyncio
+async def test_reporting_the_activity_alias_itself_as_existing_category_is_ignored(
+    fake_dependencies,
+):
+    """활동 별칭 자체를 '이미 있는 카테고리'로 잘못 신고해도 새 카테고리 생성은 정상 처리된다.
+
+    실제로 재현된 경우다. 카테고리 컨테이너가 하나도 없는 활동에서 모델이
+    existing_categories에 활동 별칭(exp_1)을 section_kind=TASK로 잘못 신고했다.
+    새 카테고리는 항상 활동 별칭을 parent_ref로 삼으므로, 이 신고를 곧이곧대로
+    믿으면 정상적으로 새 카테고리를 만드는 매 요청이 자기모순으로 오판되어
+    거부됐다. 카테고리 컨테이너는 활동의 하위일 뿐 활동 자신일 수 없으므로,
+    활동 별칭을 가리키는 신고는 무시해야 한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            existing_categories=[{"alias": "exp_1", "section_kind": "TASK"}],
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="TASK"
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.SUMMARY"]["text"] == "결제 오류를 해결했다"
+
+
+@pytest.mark.asyncio
+async def test_reporting_previous_batch_item_as_existing_category_is_ignored(
+    fake_dependencies,
+):
+    """이전 배치 item_id는 실제 활동 트리 별칭이 아니므로 자기 신고에서 무시한다."""
+    fake_dependencies(
+        StructureOutput(
+            existing_categories=[{"alias": "batch1_blk_1", "section_kind": "TASK"}],
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="TASK"
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.SUMMARY"]["text"] == "결제 오류를 해결했다"
+
+
+@pytest.mark.asyncio
+async def test_new_anchor_contradicting_self_reported_existing_anchor_is_rejected(
+    fake_dependencies,
+):
+    """existing_anchor_alias로 이미 있다고 신고한 앵커를 또 새로 만들면 거부한다.
+
+    실제로 재현된 경우다. 카테고리 컨테이너는 제대로 재사용했는데, 그 아래
+    앵커(level 4)는 매 턴 새로 하나씩 또 만들어서 같은 컨테이너 밑에 "담당업무
+    요약" 앵커가 두 개 생겼다. 컨테이너 재사용 검증만으로는 안 걸리므로,
+    앵커도 스스로 신고하게 하고 그 신고와 모순되면 코드가 거른다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            existing_categories=[
+                {"alias": "b_1", "section_kind": "TASK", "existing_anchor_alias": "b_4"}
+            ],
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 시스템을 강화했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+    state = make_state(alias_to_block_id={"exp_1": "101", "b_1": "305", "b_4": "306"})
+
+    with pytest.raises(LlmError):
+        await structure_blocks(state)
+
+
+@pytest.mark.asyncio
+async def test_new_anchor_duplicating_existing_filled_anchor_is_redirected_to_its_empty_slot(
+    fake_dependencies,
+):
+    """이미 채워진 앵커 옆에 새 앵커를 또 만들면, 남은 빈 슬롯이 하나뿐일 때 그리로 되돌린다.
+
+    실제로 재현된 경우다(gap 질문에 답하는 흐름). 컨테이너 안에 이미 실제
+    내용으로 채워진 앵커(`b_4`)가 있는데, `existing_categories` 자기 신고도
+    없이 그 옆에 새 앵커 + 빈 템플릿 전체를 또 만들었다. 이 서브트리에
+    남은 진짜 빈 슬롯("결과")이 정확히 하나뿐이므로, 새 앵커가 아니라 그
+    슬롯을 채우려던 의도가 명백하다 — 코드가 새 앵커를 그 슬롯으로 바꾸고
+    기존 앵커(`b_4`)에 직접 붙인다. 자기가 만든 빈 템플릿 나머지는 버린다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 시스템을 강화했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305", "b_4": "306", "b_5": "307"},
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n"
+            "  [b_1] (빈 블록)\n"
+            "    [b_4] 기존 담당업무 내용\n"
+            "      [b_5] (빈 블록 — 가이드: 결과)"
+        ),
+        new_items=[{"item_id": "it_1", "text": "결제 시스템을 강화했다", "source": "message"}],
+    )
+
+    result = await structure_blocks(state)
+
+    # add로 앵커(b_4) 밑에 새 블록을 또 만들면 안 된다 — b_5는 이미 있는
+    # 진짜 빈 블록이라, 그 자신을 target_ref로 삼아 update로 채워야 한다.
+    assert len(result["structured_items"]) == 1
+    item = result["structured_items"][0]
+    assert item["action"] == "update"
+    assert item["target_ref"] == "b_5"
+    assert item["text"] == "결제 시스템을 강화했다"
+    assert item["slot_id"] is None
+    assert item["parent_ref"] is None
+
+
+@pytest.mark.asyncio
+async def test_new_anchor_duplicating_existing_slots_ambiguously_is_rejected(fake_dependencies):
+    """겹치는 빈 슬롯이 여러 개라 모호하면, 되돌리지 않고 그대로 거부한다.
+
+    `_reuse_existing_filled_anchor`는 남은 빈 슬롯이 정확히 하나일 때만
+    확신하고 고친다 — 여러 개면 어느 슬롯을 채우려던 것인지 코드가 판단할
+    수 없으므로, 이전처럼 재시도를 유도하는 에러로 남겨야 한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text="결제 시스템을 강화했다",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+    state = make_state(
+        alias_to_block_id={
+            "exp_1": "101",
+            "b_1": "305",
+            "b_4": "306",
+            "b_5": "307",
+            "b_6": "308",
+        },
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n"
+            "  [b_1] (빈 블록)\n"
+            "    [b_4] 기존 담당업무 내용\n"
+            "      [b_5] (빈 블록 — 가이드: 목적)\n"
+            "      [b_6] (빈 블록 — 가이드: 결과)"
+        ),
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(state)
+
+
+@pytest.mark.asyncio
+async def test_new_anchor_group_with_correct_child_slot_is_redirected_by_slot_id(
+    fake_dependencies,
+):
+    """새 앵커의 자식 중 실제 내용 있는 것의 slot_id가 정확히 겹치면, 후보가 여럿이어도 되돌린다.
+
+    실제로 재현된 경우다(gap 질문에 답하는 흐름). 컨테이너 밑에 이미 채워진
+    앵커(`b_2`)가 있고, 그 아래 빈 슬롯이 "목적"·"조사" 두 개나 남아 있는데,
+    모델이 그 옆에 새 앵커 + 템플릿 전체(목적 슬롯만 실제 내용, 나머지는
+    빈 자동 생성)를 또 만들었다. 남은 빈 슬롯이 두 개라 section만 보면
+    모호하지만, 실제 내용 있는 자식의 slot_id(`TASK.BASIC.PURPOSE`)가 그중
+    하나와 정확히 같으므로 다른 후보(조사)는 무시하고 그 슬롯으로 되돌려야
+    한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.SUMMARY",
+                    text=None,
+                    source_item_ids=[],
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="이탈률을 낮추는 게 목표였다.",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_3",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.BASIC.RESEARCH",
+                    text=None,
+                    source_item_ids=[],
+                ),
+            ],
+        )
+    )
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306", "b_3": "307"},
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n"
+            "  [b_1] (빈 블록)\n"
+            "    [b_2] 기존 담당업무 내용\n"
+            "      [b_3] (빈 블록 — 가이드: 목적)\n"
+            "      [b_4] (빈 블록 — 가이드: 조사)"
+        ),
+        new_items=[
+            {"item_id": "it_1", "text": "이탈률을 낮추는 게 목표였다.", "source": "message"}
+        ],
+    )
+
+    result = await structure_blocks(state)
+
+    # b_3(목적)은 이미 있는 진짜 빈 블록이다 — add로 b_2 밑에 새 블록을
+    # 또 만들면 안 되고, b_3 자신을 target_ref로 삼아 update로 채워야 한다.
+    assert len(result["structured_items"]) == 1
+    item = result["structured_items"][0]
+    assert item["action"] == "update"
+    assert item["target_ref"] == "b_3"
+    assert item["text"] == "이탈률을 낮추는 게 목표였다."
+    assert item["slot_id"] is None
+    assert item["parent_ref"] is None
+
+
+@pytest.mark.asyncio
+async def test_leaf_add_matching_existing_empty_slot_becomes_update(fake_dependencies):
+    """기존 앵커에 직접 add한 슬롯이 이미 빈 블록으로 있으면, add 대신 update로 채운다.
+
+    실제로 재현된 경우다(gap 질문에 답하는 흐름). 모델이 `existing_anchor_alias`를
+    올바르게 골라 기존 앵커(`b_2`)에 직접 level 5 슬롯을 add했다 — 가짜
+    앵커를 또 만드는 사고는 없었다. 하지만 그 slot_id(`TASK.BASIC.PURPOSE`)는
+    이미 빈 블록(`b_3`)으로 트리에 있었는데, add는 항상 새 블록을 만들므로
+    에러 없이 통과는 되지만 b_3는 그대로 비워진 채 새 형제 블록만 하나 더
+    생긴다 — 사용자에게는 "이미 있던 빈 블록을 안 채우고 새 블록을 또
+    만든" 것으로 보인다. 이 경우 add를 그 블록 자신을 향한 update로
+    바꿔야 한다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_2",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="이탈률을 낮추는 게 목표였다.",
+                    source_item_ids=["it_1"],
+                ),
+            ],
+        )
+    )
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306", "b_3": "307", "b_4": "308"},
+        activity_tree_text=(
+            "[exp_1] 교내 커머스 리뉴얼\n"
+            "  [b_1] (빈 블록)\n"
+            "    [b_2] 기존 담당업무 내용\n"
+            "      [b_3] (빈 블록 — 가이드: 목적)\n"
+            "      [b_4] (빈 블록 — 가이드: 조사)"
+        ),
+        new_items=[
+            {"item_id": "it_1", "text": "이탈률을 낮추는 게 목표였다.", "source": "message"}
+        ],
+    )
+
+    result = await structure_blocks(state)
+
+    assert len(result["structured_items"]) == 1
+    item = result["structured_items"][0]
+    assert item["action"] == "update"
+    assert item["target_ref"] == "b_3"
+    assert item["text"] == "이탈률을 낮추는 게 목표였다."
+    assert item["slot_id"] is None
+    assert item["parent_ref"] is None
+
+
+@pytest.mark.asyncio
+async def test_empty_item_with_invalid_slot_id_is_dropped_not_rejected(fake_dependencies):
+    """내용도 없고 카탈로그에도 없는 slot_id를 단 item은 검증에 걸리지 않고 버려진다.
+
+    실제로 재현된 경우다. 모델이 실제 슬롯을 채우는 item과는 별개로,
+    빈 item에 slot_id로 실제 슬롯이 아니라 템플릿 id 자체
+    (`TASK.BASIC.PURPOSE`가 아니라 `TASK.BASIC`)를 적어 넣었다. text도
+    source_item_ids도 없어 버려도 잃을 정보가 없다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    section_kind="TASK",
+                    parent_ref="exp_1",
+                ),
+                StructureLlmItem(
+                    item_id="blk_2",
+                    action="add",
+                    parent_item_id="blk_1",
+                    slot_id="TASK.SUMMARY",
+                    text="담당업무를 수행했다.",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="blk_3",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC",
+                    text=None,
+                    source_item_ids=[],
+                ),
+            ],
+        )
+    )
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305"},
+        activity_tree_text="[exp_1] 교내 커머스 리뉴얼\n  [b_1] (빈 블록)",
+        new_items=[{"item_id": "it_1", "text": "담당업무를 수행했다.", "source": "message"}],
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert "TASK.SUMMARY" in items_by_slot
+    assert "TASK.BASIC" not in items_by_slot
+
+
+@pytest.mark.asyncio
+async def test_new_sibling_after_ref_is_cleared_not_rejected(fake_dependencies):
+    """방금 만든 블록의 id를 after_ref 에 쓰면 코드가 비운다.
+
+    실제로 재현된 경우다. `after_ref` 는 기존 블록 별칭만 가리킬 수 있는데,
+    모델이 이걸로 새로 만든 카테고리끼리 순서를 매기려다 걸렸다. 새로
+    만드는 형제끼리의 순서는 `items` 배열 순서로 이미 확보되므로, 잘못된
+    참조는 거부 대신 코드가 비운다 — 순서 정보를 잃지 않는다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="category_1", action="add", parent_ref="exp_1", section_kind="DETAIL"
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+                StructureLlmItem(
+                    item_id="category_2",
+                    action="add",
+                    parent_ref="exp_1",
+                    section_kind="TASK",
+                    after_ref="category_1",  # 기존 별칭이 아니라 방금 만든 id
+                ),
+                StructureLlmItem(
+                    item_id="anchor_2",
+                    action="add",
+                    parent_item_id="category_2",
+                    slot_id="TASK.SUMMARY",
+                    text="전환율 개선을 담당했다",
+                    source_item_ids=["it_2"],
+                ),
+            ]
+        )
+    )
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "결제 오류를 해결했다", "source": "message"},
+            {"item_id": "it_2", "text": "전환율 개선을 담당했다", "source": "message"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_id = {item["item_id"]: item for item in result["structured_items"]}
+    assert items_by_id["category_2"]["after_ref"] is None
+
+
+@pytest.mark.asyncio
+async def test_partial_template_is_auto_filled_not_rejected(fake_dependencies):
+    """모델이 빈 슬롯 placeholder를 누락해도 코드가 나머지를 채운다.
+
+    원문이 짧으면 모델이 채울 slot 하나만 만들고 나머지 null placeholder를
+    빠뜨리는 사고가 실제로 반복됐다. 프롬프트만으로는 신뢰할 수 없어서, 이미
+    출력에 드러난 하위 템플릿·부모 정보로 코드가 결정론적으로 나머지 slot을
+    채운다 — 더 이상 이 사고로 요청 전체가 실패하지 않는다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.PURPOSE",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                )
+            ]
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "결제 오류를 해결했다"
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_slot_id_is_rejected(fake_dependencies):
+    """카탈로그에 없는 slot_id를 지어내면 자동 보정 대신 거부한다."""
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="TASK.BASIC.NOT_A_REAL_SLOT",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(make_state())
+
+
+def test_known_problem_solving_result_alias_is_normalized():
+    """모델이 TROUBLESHOOTING 결과 슬롯을 RESULT로 부르면 공식 슬롯으로 고친다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "PROBLEM_SOLVING",
+            "label": "문제해결",
+            "slots": [],
+            "templates": [
+                {
+                    "template_id": "TROUBLESHOOTING",
+                    "label": "트러블슈팅",
+                    "slots": [
+                        {
+                            "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+                            "level": 5,
+                            "placeholder": "검증",
+                            "example": "재발 여부 확인",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.RESULT",
+        text="재시도 후 오류가 재발하지 않았다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._normalize_known_slot_aliases([raw], catalog)
+
+    assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION"
+    assert result[0].text == "재시도 후 오류가 재발하지 않았다"
+
+
+def test_explicit_cause_text_is_reassigned_to_troubleshooting_cause():
+    """원인임이 명시된 채팅 문장은 모델이 PROBLEM으로 골라도 CAUSE로 보정한다."""
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_2",
+        slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        text="모델 출력은 이후 원문으로 재조립된다",
+        source_item_ids=["it_1"],
+    )
+    source_text = {
+        "it_1": "로그 분석 결과 이미지 처리와 알림이 같은 큐를 사용한 것이 원인이었습니다."
+    }
+
+    result = structure_node._align_explicit_troubleshooting_slots(
+        [raw], source_text, protected_source_ids=set()
+    )
+
+    assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE"
+
+
+def test_explicit_problem_text_is_moved_out_of_task_template():
+    """TASK로 잘못 분류된 명시적 장애 상황도 문제해결 문제 슬롯으로 보정한다."""
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_item_id="task_anchor",
+        slot_id="TASK.BASIC.EXECUTION",
+        text="모델 출력은 이후 원문으로 재조립된다",
+        source_item_ids=["it_1"],
+    )
+    source_text = {"it_1": "요청이 몰리면서 알림이 지연되는 문제가 발생했습니다."}
+
+    result = structure_node._align_explicit_troubleshooting_slots(
+        [raw], source_text, protected_source_ids=set()
+    )
+
+    assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM"
+
+
+def test_task_basic_process_alias_is_normalized_to_execution():
+    """모델이 만든 PROCESS 별칭은 카탈로그의 EXECUTION 슬롯으로 정규화한다."""
+    payload = catalog_payload()
+    payload["sections"][1]["templates"][0]["slots"].append(
+        {
+            "slot_id": "TASK.BASIC.EXECUTION",
+            "level": 5,
+            "placeholder": "실행",
+            "example": "알림 처리 구현",
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="TASK.BASIC.PROCESS",
+        text="알림 처리 과정을 구현했다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._normalize_known_slot_aliases([raw], catalog)
+
+    assert result[0].slot_id == "TASK.BASIC.EXECUTION"
+
+
+def test_existing_block_alias_is_removed_from_source_item_ids():
+    """기존 b_N 별칭은 새 원문 source가 아니므로 복사 항목에서 제거한다."""
+    copied = StructureLlmItem(
+        item_id="copied",
+        action="add",
+        parent_ref="b_2",
+        text="기존 블록 내용을 복사함",
+        source_item_ids=["b_5"],
+    )
+    mixed = StructureLlmItem(
+        item_id="mixed",
+        action="add",
+        parent_ref="b_2",
+        slot_id="TASK.BASIC.RESULT",
+        text="기존 내용과 새 내용을 섞음",
+        source_item_ids=["b_5", "it_1"],
+    )
+
+    result = structure_node._remove_unknown_source_references([copied, mixed], {"it_1": "새 원문"})
+
+    assert [item.item_id for item in result] == ["mixed"]
+    assert result[0].source_item_ids == ["it_1"]
+
+
+def test_existing_filled_anchor_is_reused_from_placeholder_metadata():
+    """내용이 채워져 tree에서 가이드가 안 보여도 placeholder로 기존 앵커를 재사용한다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "PROBLEM_SOLVING",
+            "label": "문제해결",
+            "slots": [
+                {
+                    "slot_id": "PROBLEM_SOLVING.SUMMARY",
+                    "level": 4,
+                    "placeholder": "문제해결 요약",
+                    "example": "알림 지연 문제 해결",
+                    "is_anchor": True,
+                }
+            ],
+            "templates": [
+                {
+                    "template_id": "TROUBLESHOOTING",
+                    "label": "기술 트러블슈팅",
+                    "slots": [
+                        {
+                            "slot_id": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+                            "level": 5,
+                            "placeholder": "원인",
+                            "example": "큐 경합",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    items = [
+        StructureLlmItem(
+            item_id="new_anchor",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.SUMMARY",
+        ),
+        StructureLlmItem(
+            item_id="cause",
+            action="add",
+            parent_item_id="new_anchor",
+            slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+            text="큐 경합이 원인이었다",
+            source_item_ids=["it_1"],
+        ),
+    ]
+    state = make_state(
+        alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306"},
+        alias_metadata={
+            "b_1": {
+                "block_id": "305",
+                "parent_alias": "exp_1",
+                "level": 3,
+                "kind": "CONTENT",
+                "placeholder": None,
+                "is_text_editable": True,
+            },
+            "b_2": {
+                "block_id": "306",
+                "parent_alias": "b_1",
+                "level": 4,
+                "kind": "CONTENT",
+                "placeholder": "문제해결 요약",
+                "is_text_editable": True,
+            },
+        },
+    )
+
+    result = structure_node._reuse_existing_anchor_from_metadata(items, catalog, state)
+
+    assert [item.item_id for item in result] == ["cause"]
+    assert result[0].parent_ref == "b_2"
+    assert result[0].parent_item_id is None
+
+
+@pytest.mark.parametrize(
+    "invented_slot",
+    [
+        "TASK.BASIC.LEARNING",
+        "PROBLEM_SOLVING.RECOVERY.LEARNING",
+        "PROBLEM_SOLVING.TROUBLESHOOTING.LESSONS",
+    ],
+)
+def test_invented_learning_slot_is_merged_into_task_result(invented_slot):
+    """배운 점 전용 슬롯이 없는 예전 카탈로그에서는 TASK RESULT로 보정한다."""
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id=invented_slot,
+        text="원인을 구조적으로 분리하는 방식을 배웠다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._normalize_known_slot_aliases([raw], catalog)
+
+    assert result[0].slot_id == "TASK.BASIC.RESULT"
+    assert result[0].text == "원인을 구조적으로 분리하는 방식을 배웠다"
+
+
+@pytest.mark.parametrize(
+    ("invented_slot", "official_slot"),
+    [
+        ("TASK.BASIC.PROBLEM", "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM"),
+        ("TASK.BASIC.CAUSE", "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE"),
+        ("TASK.BASIC.SOLUTION", "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION"),
+        ("TASK.BASIC.VERIFICATION", "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION"),
+    ],
+)
+def test_problem_solving_slots_invented_under_task_are_normalized(invented_slot, official_slot):
+    """자연어 시나리오에서 TASK 아래로 잘못 만든 문제해결 슬롯을 복구한다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "PROBLEM_SOLVING",
+            "label": "문제해결",
+            "slots": [
+                {
+                    "slot_id": "PROBLEM_SOLVING.SUMMARY",
+                    "level": 4,
+                    "placeholder": "문제해결 요약",
+                    "example": "알림 지연 문제 해결",
+                    "is_anchor": True,
+                }
+            ],
+            "templates": [
+                {
+                    "template_id": "TROUBLESHOOTING",
+                    "label": "기술 트러블슈팅",
+                    "slots": [
+                        {
+                            "slot_id": f"PROBLEM_SOLVING.TROUBLESHOOTING.{suffix}",
+                            "level": 5,
+                            "placeholder": suffix,
+                            "example": suffix,
+                        }
+                        for suffix in ("PROBLEM", "CAUSE", "SOLUTION", "VERIFICATION")
+                    ],
+                }
+            ],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="exp_1",
+        slot_id=invented_slot,
+        text="알림 지연 문제를 해결했다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._normalize_known_slot_aliases([raw], catalog)
+
+    assert result[0].slot_id == official_slot
+
+
+def test_invented_learning_slot_uses_learning_section_when_catalog_has_it():
+    """현재 에이전트 카탈로그의 배운 점은 LEARNING.GROWTH에 배정한다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "LEARNING",
+            "label": "배운 점",
+            "slots": [
+                {
+                    "slot_id": "LEARNING.GROWTH",
+                    "level": 4,
+                    "placeholder": "배운 점",
+                    "example": "원인을 구조적으로 분리해야 한다.",
+                }
+            ],
+            "templates": [],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="TASK.BASIC.LEARNING",
+        text="원인을 구조적으로 분리하는 방식을 배웠다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._normalize_known_slot_aliases([raw], catalog)
+
+    assert result[0].slot_id == "LEARNING.GROWTH"
+
+
+def test_explicit_learning_text_is_rehomed_from_existing_task_anchor():
+    """배웠다는 원문은 기존 담당업무 앵커 아래가 아니라 배운 점 카테고리로 옮긴다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "LEARNING",
+            "label": "배운 점",
+            "slots": [
+                {
+                    "slot_id": "LEARNING.GROWTH",
+                    "level": 4,
+                    "placeholder": "배운 점",
+                    "example": "장애 복구의 중요성을 배웠다.",
+                }
+            ],
+            "templates": [],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    raw = StructureLlmItem(
+        item_id="learning",
+        action="add",
+        parent_ref="b_2",
+        section_kind="PROBLEM_SOLVING",
+        slot_id="TASK.BASIC.RESULT",
+        text="장애 복구 방식도 고려해야 한다는 점을 배웠습니다.",
+        source_item_ids=["it_1"],
+    )
+    state = make_state(alias_metadata={})
+
+    aligned = structure_node._align_explicit_learning_slots(
+        [raw],
+        {"it_1": "장애 복구 방식도 고려해야 한다는 점을 배웠습니다."},
+        catalog,
+        state,
+        protected_source_ids=set(),
+    )
+    normalized = _normalize_new_hierarchy(aligned, catalog, state)
+
+    learning = next(item for item in normalized if item.item_id == "learning")
+    category = next(item for item in normalized if item.section_kind == "LEARNING")
+    assert learning.slot_id == "LEARNING.GROWTH"
+    assert learning.section_kind is None
+    assert learning.parent_item_id == category.item_id
+
+
+def test_document_hint_rehomes_direct_slot_under_matching_section():
+    """문서 구획으로 슬롯이 바뀌면 level 4의 카테고리도 함께 바뀌어야 한다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "LEARNING",
+            "label": "배운 점",
+            "slots": [
+                {
+                    "slot_id": "LEARNING.GROWTH",
+                    "level": 4,
+                    "placeholder": "배운 점",
+                    "example": "원인을 구조적으로 분리해야 한다.",
+                }
+            ],
+            "templates": [],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    category = StructureLlmItem(
+        item_id="category_task",
+        action="add",
+        parent_ref="exp_1",
+        section_kind="TASK",
+    )
+    learning = StructureLlmItem(
+        item_id="learning",
+        action="add",
+        parent_item_id="category_task",
+        slot_id="TASK.BASIC.RESULT",
+        text="원인을 구조적으로 분리하는 방식을 배웠다",
+        source_item_ids=["it_1"],
+    )
+
+    aligned = structure_node._apply_document_slot_hints(
+        [category, learning], catalog, {"it_1": "LEARNING.GROWTH"}
+    )
+    normalized = _normalize_new_hierarchy(aligned, catalog, make_state())
+
+    learning_item = next(item for item in normalized if item.item_id == "learning")
+    learning_category = next(item for item in normalized if item.section_kind == "LEARNING")
+    assert learning_item.slot_id == "LEARNING.GROWTH"
+    assert learning_item.parent_item_id == learning_category.item_id
+
+
+def test_missing_new_section_level4_slots_are_auto_filled():
+    """새 카테고리의 결정 가능한 빈 level 4 슬롯은 코드가 전부 만든다."""
+    payload = catalog_payload()
+    payload["sections"][0]["slots"].append(
+        {
+            "slot_id": "DETAIL.PERIOD",
+            "level": 4,
+            "placeholder": "기간",
+            "example": "2025.01~2025.03",
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    items = [
+        StructureLlmItem(
+            item_id="category_1",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="DETAIL",
+        ),
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_item_id="category_1",
+            slot_id="DETAIL.MOTIVATION",
+            text="프로젝트를 시작했다",
+            source_item_ids=["it_1"],
+        ),
+    ]
+
+    result = structure_node._fill_missing_section_slots(items, catalog)
+
+    by_slot = {item.slot_id: item for item in result if item.slot_id}
+    assert by_slot["DETAIL.MOTIVATION"].text == "프로젝트를 시작했다"
+    assert by_slot["DETAIL.PERIOD"].text is None
+    assert by_slot["DETAIL.PERIOD"].parent_item_id == "category_1"
+
+
+def test_empty_extra_new_section_subtree_is_dropped_after_all_batches():
+    """원문이 배정되지 않은 여분 카테고리만 제거하고 내용 있는 카테고리는 보존한다."""
+    items = [
+        StructureLlmItem(
+            item_id="empty_category",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="DETAIL",
+        ),
+        StructureLlmItem(
+            item_id="empty_slot",
+            action="add",
+            parent_item_id="empty_category",
+            slot_id="DETAIL.MOTIVATION",
+        ),
+        StructureLlmItem(
+            item_id="filled_category",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="TASK",
+        ),
+        StructureLlmItem(
+            item_id="filled_anchor",
+            action="add",
+            parent_item_id="filled_category",
+            slot_id="TASK.SUMMARY",
+            text="백엔드 개발을 담당했다",
+            source_item_ids=["it_1"],
+        ),
+    ]
+
+    result = structure_node._drop_empty_new_section_subtrees(items)
+
+    assert {item.item_id for item in result} == {"filled_category", "filled_anchor"}
+
+
+def test_empty_template_group_is_dropped_when_anchor_has_summary_only():
+    """앵커 요약만 있으면 원문 없는 level 5 템플릿을 생성하지 않는다."""
+    items = [
+        StructureLlmItem(
+            item_id="anchor",
+            action="add",
+            parent_item_id="category",
+            slot_id="TASK.SUMMARY",
+            text="백엔드 개발을 담당했다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="purpose",
+            action="add",
+            parent_item_id="anchor",
+            slot_id="TASK.BASIC.PURPOSE",
+        ),
+        StructureLlmItem(
+            item_id="result",
+            action="add",
+            parent_item_id="anchor",
+            slot_id="TASK.BASIC.RESULT",
+        ),
+    ]
+
+    result = structure_node._drop_empty_template_groups(items)
+
+    assert [item.item_id for item in result] == ["anchor"]
+
+
+def test_template_group_is_kept_when_any_slot_has_source_content():
+    """템플릿의 한 슬롯이라도 원문을 담았으면 빈 형제 슬롯도 보존한다."""
+    items = [
+        StructureLlmItem(
+            item_id="purpose",
+            action="add",
+            parent_item_id="anchor",
+            slot_id="TASK.BASIC.PURPOSE",
+            text="결제 안정성을 높이는 것이 목표였다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="result",
+            action="add",
+            parent_item_id="anchor",
+            slot_id="TASK.BASIC.RESULT",
+        ),
+    ]
+
+    result = structure_node._drop_empty_template_groups(items)
+
+    assert [item.item_id for item in result] == ["purpose", "result"]
+
+
+def test_basic_and_troubleshooting_under_same_anchor_are_collapsed():
+    """배치마다 다르게 고른 일반·트러블슈팅 템플릿을 한 템플릿으로 합친다."""
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_item_id="anchor_1",
+            slot_id="PROBLEM_SOLVING.BASIC.PROBLEM",
+            text="결제 응답이 지연됐다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="blk_2",
+            action="add",
+            parent_item_id="anchor_1",
+            slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+            text="중복 쿼리가 원인이었다",
+            source_item_ids=["it_2"],
+        ),
+    ]
+
+    result = structure_node._collapse_basic_troubleshooting_templates(items)
+
+    assert {item.slot_id for item in result} == {
+        "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+    }
+
+
+@pytest.mark.asyncio
 async def test_foreign_parent_alias_is_rejected(fake_dependencies):
     """다른 활동의 alias를 지어내도 구조화 단계에서 차단한다."""
     fake_dependencies(
         StructureOutput(
             items=[
-                StructuredItem(
-                    item_id="it_1",
+                StructureLlmItem(
+                    item_id="blk_1",
                     action="add",
                     parent_ref="exp_999",
                     text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
                 )
             ]
         )
@@ -249,11 +2480,12 @@ async def test_new_child_gap_is_fixed_to_anchor(fake_dependencies):
     fake_dependencies(
         StructureOutput(
             items=[
-                StructuredItem(
-                    item_id="it_1",
+                StructureLlmItem(
+                    item_id="blk_1",
                     action="add",
                     parent_ref="exp_1",
                     text="재시도 로직을 추가했다",
+                    source_item_ids=["it_1"],
                 )
             ]
         )
@@ -324,15 +2556,16 @@ def test_problem_solving_templates_accept_all_required_slots(template_id):
     )
     source = [{"item_id": "it_1", "text": "결제 오류를 분석하고 재시도 로직을 추가했다."}]
     items = [
-        StructuredItem(
-            item_id="it_1",
+        StructureLlmItem(
+            item_id="blk_1",
             action="add",
             parent_ref="b_1",
             slot_id=slot_ids[0],
             text=source[0]["text"],
+            source_item_ids=["it_1"],
         ),
         *[
-            StructuredItem(
+            StructureLlmItem(
                 item_id=f"empty_{index}", action="add", parent_ref="b_1", slot_id=slot_id
             )
             for index, slot_id in enumerate(slot_ids[1:], start=1)
@@ -347,3 +2580,501 @@ def test_problem_solving_templates_accept_all_required_slots(template_id):
     )
 
     assert [item.slot_id for item in validated] == slot_ids
+
+
+def test_reparent_orphan_level5_creates_anchor_when_missing():
+    """level 5가 앵커 없이 컨테이너 별칭에 바로 붙으면, 빈 앵커를 새로 만들어
+    그 아래로 옮긴다 — 실제로 모델이 '기존 카테고리 재사용'을 지시받고도
+    앵커를 건너뛰고 level 5를 컨테이너에 형제로 붙이는 사고가 반복됐다.
+    """
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="TASK.BASIC.PURPOSE",
+            text="결제 오류를 해결했다",
+            source_item_ids=["it_1"],
+        ),
+    ]
+
+    result = _reparent_orphan_level5_items(items, catalog)
+
+    by_id = {item.item_id: item for item in result}
+    orphan = by_id["blk_1"]
+    assert orphan.parent_ref is None
+    assert orphan.parent_item_id is not None
+    anchor = by_id[orphan.parent_item_id]
+    assert anchor.slot_id == "TASK.SUMMARY"
+    assert anchor.parent_ref == "b_1"
+    assert anchor.text is None
+
+
+def test_reparent_orphan_level5_reuses_anchor_already_in_batch():
+    """같은 배치에 이미 맞는 앵커가 있으면, 새로 만들지 않고 거기로 연결한다."""
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    items = [
+        StructureLlmItem(
+            item_id="anchor_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="TASK.SUMMARY",
+            text="결제 오류 해결 업무",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="TASK.BASIC.PURPOSE",
+            text="결제 오류를 해결했다",
+            source_item_ids=["it_2"],
+        ),
+    ]
+
+    result = _reparent_orphan_level5_items(items, catalog)
+
+    assert len(result) == 2  # 앵커를 새로 만들지 않았다.
+    by_id = {item.item_id: item for item in result}
+    assert by_id["blk_1"].parent_item_id == "anchor_1"
+    assert by_id["blk_1"].parent_ref is None
+
+
+def test_reparent_orphan_level5_fixes_fake_anchor_hub():
+    """level 5 형제 중 하나를 마치 앵커인 것처럼 가리키는 경우도 바로잡는다.
+
+    실제로 재현된 경우다 — 진짜 앵커(TASK.SUMMARY)는 안 만들고, level 5
+    슬롯 하나(blk_1)를 다른 level 5 슬롯들의 `parent_item_id`로 써서 마치
+    앵커처럼 취급했다. blk_1도 결국 컨테이너 별칭에 바로 붙어 있으므로,
+    셋 다 새로 만든 진짜 앵커 밑으로 평평하게 옮겨져야 한다.
+    """
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="TASK.BASIC.PURPOSE",
+            text="결제 오류를 해결했다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="blk_2",
+            action="add",
+            parent_item_id="blk_1",  # blk_1을 가짜 앵커처럼 씀 — 잘못됨
+            slot_id="TASK.BASIC.RESULT",
+        ),
+    ]
+
+    result = _reparent_orphan_level5_items(items, catalog)
+
+    by_id = {item.item_id: item for item in result}
+    anchor_candidates = [it for it in result if it.slot_id == "TASK.SUMMARY"]
+    assert len(anchor_candidates) == 1
+    anchor_id = anchor_candidates[0].item_id
+    assert by_id["blk_1"].parent_item_id == anchor_id
+    assert by_id["blk_2"].parent_item_id == anchor_id
+
+
+def test_normalize_new_hierarchy_inserts_category_above_activity_rooted_anchor():
+    """앵커가 활동 바로 아래에 붙으면 같은 section 카테고리를 끼워 넣는다."""
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    items = [
+        StructureLlmItem(
+            item_id="anchor_1",
+            action="add",
+            parent_ref="exp_1",
+            slot_id="TASK.SUMMARY",
+            text="결제 오류 해결 업무",
+            source_item_ids=["it_1"],
+        )
+    ]
+
+    result = _normalize_new_hierarchy(items, catalog, make_state())
+
+    by_id = {item.item_id: item for item in result}
+    category = next(item for item in result if item.section_kind == "TASK")
+    assert category.parent_ref == "exp_1"
+    assert by_id["anchor_1"].parent_ref is None
+    assert by_id["anchor_1"].parent_item_id == category.item_id
+
+
+def test_normalize_new_hierarchy_flattens_level5_nested_under_sibling():
+    """level 5가 다른 level 5 아래에 중첩되면 같은 앵커의 직속 자식으로 옮긴다."""
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    items = [
+        StructureLlmItem(
+            item_id="category_1",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="TASK",
+        ),
+        StructureLlmItem(
+            item_id="anchor_1",
+            action="add",
+            parent_item_id="category_1",
+            slot_id="TASK.SUMMARY",
+        ),
+        StructureLlmItem(
+            item_id="purpose_1",
+            action="add",
+            parent_item_id="anchor_1",
+            slot_id="TASK.BASIC.PURPOSE",
+            text="목적",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="result_1",
+            action="add",
+            parent_item_id="purpose_1",
+            slot_id="TASK.BASIC.RESULT",
+            text="결과",
+            source_item_ids=["it_2"],
+        ),
+    ]
+
+    result = _normalize_new_hierarchy(items, catalog, make_state())
+
+    by_id = {item.item_id: item for item in result}
+    assert by_id["purpose_1"].parent_item_id == "anchor_1"
+    assert by_id["result_1"].parent_item_id == "anchor_1"
+
+
+def test_normalize_new_hierarchy_separates_level5_from_other_section_anchor():
+    """다른 section 앵커 아래의 level 5는 자기 카테고리와 앵커로 분리한다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "PROBLEM_SOLVING",
+            "label": "문제해결",
+            "slots": [
+                {
+                    "slot_id": "PROBLEM_SOLVING.SUMMARY",
+                    "level": 4,
+                    "placeholder": "문제해결 요약",
+                    "example": "결제 오류 해결",
+                    "is_anchor": True,
+                }
+            ],
+            "templates": [
+                {
+                    "template_id": "BASIC",
+                    "label": "기본",
+                    "slots": [
+                        {
+                            "slot_id": "PROBLEM_SOLVING.BASIC.SOLUTION",
+                            "level": 5,
+                            "placeholder": "해결",
+                            "example": "재시도 로직 추가",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    items = [
+        StructureLlmItem(
+            item_id="task_category",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="TASK",
+        ),
+        StructureLlmItem(
+            item_id="task_anchor",
+            action="add",
+            parent_item_id="task_category",
+            slot_id="TASK.SUMMARY",
+        ),
+        StructureLlmItem(
+            item_id="solution_1",
+            action="add",
+            parent_item_id="task_anchor",
+            slot_id="PROBLEM_SOLVING.BASIC.SOLUTION",
+            text="재시도 로직을 추가했다",
+            source_item_ids=["it_1"],
+        ),
+    ]
+
+    result = _normalize_new_hierarchy(items, catalog, make_state())
+
+    by_id = {item.item_id: item for item in result}
+    problem_category = next(item for item in result if item.section_kind == "PROBLEM_SOLVING")
+    problem_anchor = next(item for item in result if item.slot_id == "PROBLEM_SOLVING.SUMMARY")
+    assert problem_category.parent_ref == "exp_1"
+    assert problem_anchor.parent_item_id == problem_category.item_id
+    assert by_id["solution_1"].parent_item_id == problem_anchor.item_id
+
+
+def test_generated_parents_are_ordered_before_children():
+    """보정 중 뒤에 추가된 카테고리·앵커도 commit 배열에서는 자식보다 앞선다."""
+    items = [
+        StructureLlmItem(
+            item_id="leaf_1",
+            action="add",
+            parent_item_id="anchor_1",
+            slot_id="TASK.BASIC.RESULT",
+            text="응답 시간을 개선했다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="category_1",
+            action="add",
+            parent_ref="exp_1",
+            section_kind="TASK",
+        ),
+        StructureLlmItem(
+            item_id="anchor_1",
+            action="add",
+            parent_item_id="category_1",
+            slot_id="TASK.SUMMARY",
+        ),
+    ]
+
+    result = structure_node._order_parents_before_children(items)
+
+    assert [item.item_id for item in result] == ["category_1", "anchor_1", "leaf_1"]
+
+
+@pytest.mark.asyncio
+async def test_new_section_wrongly_rooted_under_other_category_is_fixed(fake_dependencies):
+    """새 카테고리 컨테이너가 활동이 아니라 다른 기존 카테고리 밑에 잘못
+    붙어도, 코드가 활동 별칭으로 바로잡는다.
+
+    실제로 재현된 경우다 — 한 요청에 서로 다른 두 카테고리(하나는 재사용,
+    하나는 신규 생성)를 같이 처리할 때, 모델이 새 컨테이너의 `parent_ref`를
+    활동 별칭이 아니라 같이 다루던 다른 기존 카테고리 블록으로 잘못 썼다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="category_1",
+                    action="add",
+                    parent_ref="b_1",  # 잘못됨 — exp_1 이어야 한다
+                    section_kind="DETAIL",
+                ),
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="category_1",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+            ]
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    container = next(
+        item for item in result["structured_items"] if item["section_kind"] == "DETAIL"
+    )
+    assert container["parent_ref"] == "exp_1"
+
+
+def test_prune_extra_templates_keeps_only_the_one_with_real_content():
+    """모델이 원문이 짧아 하위 템플릿 6종을 다 만들어도, 내용 있는 것만 남긴다."""
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.FEEDBACK.NEED",
+            text="피드백을 받았다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="empty_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.BASIC.PROBLEM",
+        ),
+        StructureLlmItem(
+            item_id="empty_2",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        ),
+    ]
+
+    pruned = _prune_extra_templates(items)
+
+    assert [item.item_id for item in pruned] == ["blk_1"]
+
+
+def test_prune_extra_templates_leaves_ambiguous_multi_content_alone():
+    """두 템플릿 다 실제 내용이 있으면 애매하니 건드리지 않고 검증기에 맡긴다."""
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.FEEDBACK.NEED",
+            text="피드백을 받았다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="blk_2",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.BASIC.PROBLEM",
+            text="문제가 있었다",
+            source_item_ids=["it_2"],
+        ),
+    ]
+
+    pruned = _prune_extra_templates(items)
+
+    assert {item.item_id for item in pruned} == {"blk_1", "blk_2"}
+
+
+@pytest.mark.asyncio
+async def test_entirely_empty_new_anchor_subtree_is_rejected(fake_dependencies):
+    """새 앵커 서브트리 전체가 비어 있으면(내용이 하나도 없으면) 거부한다.
+
+    실제로 모델이 이번 입력과 무관한 **기존** 카테고리(예: 이미 내용이 있는
+    "성과") 밑에도 앵커 + 빈 하위 슬롯을 통째로 만들어버린 적이 있다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                # 실제로 반영하는 내용 — 이건 정상.
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_ref="b_1",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+                # 무관한 기존 카테고리(b_2)에 내용 없이 앵커+빈 슬롯만 새로 추가.
+                StructureLlmItem(
+                    item_id="empty_anchor",
+                    action="add",
+                    parent_ref="b_2",
+                    slot_id="TASK.SUMMARY",
+                ),
+                StructureLlmItem(
+                    item_id="empty_child",
+                    action="add",
+                    parent_item_id="empty_anchor",
+                    slot_id="TASK.BASIC.PURPOSE",
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(
+            make_state(alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306"})
+        )
+
+
+@pytest.mark.asyncio
+async def test_entirely_empty_new_section_container_is_rejected(fake_dependencies):
+    """앵커가 없는 section(`DETAIL` 등)도, 새 컨테이너 서브트리가 전부
+    비어 있으면 거부한다 — 앵커가 있는 section에만 걸리면 이 경로는 빠진다.
+    """
+    fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="empty_container",
+                    action="add",
+                    parent_ref="exp_1",
+                    section_kind="DETAIL",
+                ),
+                StructureLlmItem(
+                    item_id="empty_slot",
+                    action="add",
+                    parent_item_id="empty_container",
+                    slot_id="DETAIL.MOTIVATION",
+                ),
+            ]
+        )
+    )
+
+    with pytest.raises(LlmError):
+        await structure_blocks(make_state())
+
+
+def test_two_templates_under_one_anchor_are_rejected():
+    """앵커 하나에는 문제해결 하위 템플릿 6종 중 정확히 하나만 붙어야 한다.
+
+    실제로 모델이 원문이 짧을 때 6종 전부를 한꺼번에 만든 적이 있다 — 내용에
+    맞춰 고른 게 아니라 카탈로그를 기계적으로 다 채운 것이다.
+    """
+    catalog = TemplateCatalog.model_validate(
+        {
+            "version": "v1",
+            "sections": [
+                {
+                    "section_id": "PROBLEM_SOLVING",
+                    "label": "문제해결",
+                    "slots": [
+                        {
+                            "slot_id": "PROBLEM_SOLVING.SUMMARY",
+                            "level": 4,
+                            "placeholder": "에피소드 요약",
+                            "example": "결제 오류 해결",
+                            "is_anchor": True,
+                        }
+                    ],
+                    "templates": [
+                        {
+                            "template_id": "BASIC",
+                            "label": "BASIC",
+                            "slots": [
+                                {
+                                    "slot_id": "PROBLEM_SOLVING.BASIC.PROBLEM",
+                                    "level": 5,
+                                    "placeholder": "문제",
+                                    "example": "예시",
+                                }
+                            ],
+                        },
+                        {
+                            "template_id": "FEEDBACK",
+                            "label": "FEEDBACK",
+                            "slots": [
+                                {
+                                    "slot_id": "PROBLEM_SOLVING.FEEDBACK.NEED",
+                                    "level": 5,
+                                    "placeholder": "필요",
+                                    "example": "예시",
+                                }
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    source = [{"item_id": "it_1", "text": "피드백을 받아 개선했다"}]
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.BASIC.PROBLEM",
+            text=source[0]["text"],
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="blk_2",
+            action="add",
+            parent_ref="b_1",
+            slot_id="PROBLEM_SOLVING.FEEDBACK.NEED",
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="하위 템플릿을 두 개 이상"):
+        _validate_output(
+            items,
+            source_items=source,
+            catalog=catalog,
+            state={"target_experience_alias": "exp_1", "alias_to_block_id": {"b_1": "305"}},
+        )

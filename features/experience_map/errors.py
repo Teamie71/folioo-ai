@@ -17,6 +17,7 @@ SseErrorCode = Literal[
     "commit_conflict",
     "llm_error",
     "node_timeout",
+    "stream_error",
     "db_constraint_violation",
 ]
 
@@ -26,6 +27,7 @@ SSE_RETRYABLE: dict[str, bool] = {
     "commit_conflict": True,
     "llm_error": True,
     "node_timeout": True,
+    "stream_error": True,
     "db_constraint_violation": False,
 }
 
@@ -266,6 +268,15 @@ class NodeTimeoutError(ExperienceMapError):
     code = "node_timeout"
     sse_code = "node_timeout"
     message = "처리 시간이 초과되었습니다."
+
+
+class StreamError(ExperienceMapError):
+    """graph 밖 SSE 전달·직렬화 계층의 예기치 못한 실패"""
+
+    status_code = 500
+    code = "stream_error"
+    sse_code = "stream_error"
+    message = "응답 스트림 처리 중 오류가 발생했습니다. 다시 시도해 주세요."
 
 
 class LeaseLostError(ExperienceMapError):

@@ -43,7 +43,7 @@ def fake_llm(monkeypatch):
     def _set(result: GapOutput | Exception) -> list[str]:
         prompts: list[str] = []
 
-        def _handle(prompt_value) -> GapOutput:
+        async def _handle(prompt_value) -> GapOutput:
             prompts.append(prompt_value.to_string())
             if isinstance(result, Exception):
                 raise result
@@ -61,12 +61,44 @@ def fake_llm(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_uses_dedicated_gap_timeout_not_general_llm_timeout(monkeypatch):
+    """gap 분석은 일반 LLM 60초가 아니라 전용 30초 제한(2-4, 3-9)을 쓴다.
+
+    실제로 재현된 경우다 — `get_experience_map_llm(timeout=...)` 호출에
+    `get_settings().timeouts.llm`(60초)을 그대로 썼는데, 별도로 존재하는
+    `timeouts.gap`(기본 30초, `EXPMAP_GAP_TIMEOUT_SECONDS`)은 어디서도
+    쓰이지 않았다. 커밋 결과가 먼저 나가고 gap 제안이 뒤이어 나가는 구조상,
+    gap 분석이 일반 LLM만큼 오래 걸리면 제안 완료가 불필요하게 늦어진다.
+    """
+    captured_timeouts: list[int] = []
+
+    class _FakeLlm:
+        def with_structured_output(self, schema):
+            async def _handle(prompt_value) -> GapOutput:
+                return GapOutput(gap=None, message="")
+
+            return RunnableLambda(_handle)
+
+    def _fake_get_llm(**kwargs):
+        captured_timeouts.append(kwargs.get("timeout"))
+        return _FakeLlm()
+
+    monkeypatch.setattr(gap_node, "get_experience_map_llm", _fake_get_llm)
+
+    await analyze_gap(make_state())
+
+    settings = gap_node.get_settings()
+    assert captured_timeouts == [settings.timeouts.gap]
+    assert settings.timeouts.gap != settings.timeouts.llm
+
+
+@pytest.mark.asyncio
 async def test_analyzes_only_committed_items_and_direct_anchor_candidates(fake_llm):
-    """현재 맵 전체 대신 방금 커밋될 text와 연결된 별칭만 LLM에 준다."""
+    """현재 맵 전체 대신 방금 내용이 커밋될 item_id만 LLM에 준다."""
     prompts = fake_llm(
         GapOutput(
             gap=GapCandidate(
-                gap_type="extend_block", anchor_ref="b_1", reason="판단 기준이 부족함"
+                gap_type="extend_block", anchor_ref="it_1", reason="판단 기준이 부족함"
             ),
             message="개선안을 선택한 판단 기준은 무엇이었나요?",
         )
@@ -76,12 +108,12 @@ async def test_analyzes_only_committed_items_and_direct_anchor_candidates(fake_l
 
     assert result["gap_candidate"] == {
         "gap_type": "extend_block",
-        "anchor_ref": "b_1",
+        "anchor_ref": "it_1",
         "reason": "판단 기준이 부족함",
     }
     assert result["gap_message"] == "개선안을 선택한 판단 기준은 무엇이었나요?"
     assert "결제 오류 원인을 분석해 개선안을 적용했다." in prompts[0]
-    assert "[b_1]" in prompts[0]
+    assert "[it_1]" in prompts[0]
     assert "[b_2]" not in prompts[0]
     assert "교내 커머스 리뉴얼" not in prompts[0]
 
@@ -116,6 +148,21 @@ async def test_invalid_indirect_anchor_is_gap_analysis_failure(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_anchor_ref_keeps_committed_item_id_until_commit_result(fake_llm):
+    """병렬 gap 분석 중에는 item_id를 유지하고 커밋 성공 뒤 실제 ID로 바꾼다."""
+    fake_llm(
+        GapOutput(
+            gap=GapCandidate(gap_type="extend_block", anchor_ref="it_1"),
+            message="이 목적을 위해 구체적으로 무엇을 조사했나요?",
+        )
+    )
+
+    result = await analyze_gap(make_state())
+
+    assert result["gap_candidate"]["anchor_ref"] == "it_1"
+
+
+@pytest.mark.asyncio
 async def test_gap_analysis_failure_is_distinct_from_no_gap(fake_llm):
     """LLM 실패는 no-gap suggestion을 만들지 않고 coordinator로 전파한다."""
     fake_llm(RuntimeError("upstream failure"))
@@ -125,9 +172,14 @@ async def test_gap_analysis_failure_is_distinct_from_no_gap(fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_no_existing_anchor_skips_llm_and_returns_no_gap(fake_llm):
-    """새 블록끼리만 연결된 커밋은 근거 없는 질문을 만들지 않는다."""
-    prompts = fake_llm(GapOutput(gap=None, message="unused"))
+async def test_new_blocks_are_valid_gap_anchors(fake_llm):
+    """새 블록끼리 연결돼도 내용이 있는 커밋 블록 자체를 gap 기준으로 쓴다."""
+    prompts = fake_llm(
+        GapOutput(
+            gap=GapCandidate(gap_type="extend_block", anchor_ref="section_1"),
+            message="이 일을 선택한 이유는 무엇이었나요?",
+        )
+    )
     state = make_state(
         commit_items=[
             {
@@ -141,9 +193,8 @@ async def test_no_existing_anchor_skips_llm_and_returns_no_gap(fake_llm):
 
     result = await analyze_gap(state)
 
-    assert prompts == []
-    assert result["gap_candidate"] is None
-    assert result["gap_message"] == NO_GAP_MESSAGE
+    assert "[section_1]" in prompts[0]
+    assert result["gap_candidate"]["anchor_ref"] == "section_1"
 
 
 def test_suggestion_converts_alias_to_active_gap_and_path():
@@ -159,3 +210,25 @@ def test_suggestion_converts_alias_to_active_gap_and_path():
     assert result["active_gap"]["gap_type"] == "new_child_block"
     assert result["active_gap"]["created_request_id"] == REQUEST_ID
     assert result["suggestion"]["gap"]["path"] == "교내 커머스 리뉴얼 > 담당업무 > 결제 개선"
+
+
+def test_suggestion_converts_new_commit_item_to_active_gap():
+    """방금 생성된 블록은 commit applied 결과로 실제 ID와 경로를 얻는다."""
+    result = build_suggestion(
+        make_state(
+            gap_candidate={"gap_type": "extend_block", "anchor_ref": "it_1"},
+            gap_message="개선안을 선택한 기준은 무엇이었나요?",
+            commit_result={
+                "applied": [
+                    {
+                        "item_id": "it_1",
+                        "block_id": "401",
+                        "path": "교내 커머스 리뉴얼 > 담당업무 > 결제 개선",
+                    }
+                ]
+            },
+        )
+    )
+
+    assert result["active_gap"]["anchor_block_id"] == "401"
+    assert result["suggestion"]["gap"]["path"].endswith("결제 개선")
