@@ -1,0 +1,85 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+    name: folioo-main-server
+    labels:
+        app: folioo-main-server
+        component: main-server
+    annotations:
+        run.googleapis.com/ingress: all
+        run.googleapis.com/invoker-iam-disabled: "true"
+spec:
+    template:
+        metadata:
+            annotations:
+                autoscaling.knative.dev/minScale: "0"
+                autoscaling.knative.dev/maxScale: "10"
+                run.googleapis.com/execution-environment: gen2
+        spec:
+            serviceAccountName: ${MAIN_SERVER_RUNTIME_SERVICE_ACCOUNT}
+            containerConcurrency: 80
+            timeoutSeconds: 300
+            containers:
+                - image: ${IMAGE_URI}
+                  ports:
+                      - name: http1
+                        containerPort: 8080
+                  env:
+                      - name: LLM_MODEL_NAME
+                        value: "${LLM_MODEL_NAME}"
+                      - name: PDF_EXTRACTION_MODEL_NAME
+                        value: "${PDF_EXTRACTION_MODEL_NAME}"
+                      - name: FILE_PROCESSOR_MODEL_NAME
+                        value: "${FILE_PROCESSOR_MODEL_NAME}"
+                      - name: MAIN_BACKEND_URL
+                        value: "${MAIN_BACKEND_URL}"
+                      - name: ALLOWED_ORIGINS
+                        value: "${ALLOWED_ORIGINS}"
+                      - name: INSIGHT_SEARCH_TOP_K
+                        value: "${INSIGHT_SEARCH_TOP_K}"
+                      - name: INSIGHT_SEARCH_THRESHOLD
+                        value: "${INSIGHT_SEARCH_THRESHOLD}"
+                      - name: DATABASE_URL
+                        valueFrom:
+                            secretKeyRef:
+                                name: ${DATABASE_URL_SECRET}
+                                key: latest
+                      - name: CHECKPOINT_DATABASE_URL
+                        valueFrom:
+                            secretKeyRef:
+                                name: ${CHECKPOINT_DATABASE_URL_SECRET}
+                                key: latest
+                      - name: OPENROUTER_API_KEY
+                        valueFrom:
+                            secretKeyRef:
+                                name: ${OPENROUTER_API_KEY_SECRET}
+                                key: latest
+                      - name: LANGSMITH_API_KEY
+                        valueFrom:
+                            secretKeyRef:
+                                name: ${LANGSMITH_API_KEY_SECRET}
+                                key: latest
+                      - name: TAVILY_API_KEY
+                        valueFrom:
+                            secretKeyRef:
+                                name: ${TAVILY_API_KEY_SECRET}
+                                key: latest
+                      - name: AI_SERVICE_API_KEY
+                        valueFrom:
+                            secretKeyRef:
+                                name: ${AI_SERVICE_API_KEY_SECRET}
+                                key: latest
+                      - name: MAIN_BACKEND_API_KEY
+                        valueFrom:
+                            secretKeyRef:
+                                name: ${MAIN_BACKEND_API_KEY_SECRET}
+                                key: latest
+                      - name: EXPMAP_TICKET_SECRET
+                        valueFrom:
+                            secretKeyRef:
+                                name: ${EXPMAP_TICKET_SECRET_SECRET}
+                                key: latest
+                  resources:
+                      limits:
+                          cpu: "1"
+                          memory: "1024Mi"
