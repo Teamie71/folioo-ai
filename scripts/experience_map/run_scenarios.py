@@ -175,7 +175,7 @@ async def scenario_file() -> None:
         "장바구니 페이지 로딩 속도가 5초를 넘어 이탈률이 높았다. "
         "번들 크기를 분석해 불필요한 라이브러리를 제거하고 코드 스플리팅을 적용해 "
         "로딩 속도를 1.2초로 줄였다.\n"
-    ).encode("utf-8")
+    ).encode()
 
     request_id = str(uuid.uuid4())
     stored = await upload_store.store_files(
@@ -253,9 +253,7 @@ async def scenario_retry() -> None:
     # graph.py는 `from ...validate import validate_operations`로 이름을 미리
     # 바인딩해 뒀으므로, validate_node(원본 모듈)가 아니라 graph_module 쪽
     # 이름을 바꿔 끼워야 그래프 실행에 실제로 반영된다.
-    with patch.object(
-        graph_module, "validate_operations", _fake_first_call_forces_refine_repair
-    ):
+    with patch.object(graph_module, "validate_operations", _fake_first_call_forces_refine_repair):
         await _run_turn(runner, state)
 
     print(f"\n--- validate 호출 횟수: {call_count['n']} (1번째는 강제 실패, 이후 정상) ---")

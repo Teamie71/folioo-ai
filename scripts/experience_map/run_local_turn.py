@@ -92,7 +92,9 @@ def _print_map(display: dict) -> None:
 
 
 async def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("message", nargs="?", help="경험 사실 텍스트")
     parser.add_argument(
         "--activity",
