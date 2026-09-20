@@ -539,6 +539,54 @@ async def test_get_messages_rejects_invalid_cursor(client, session):
     assert response.json()["code"] == "invalid_request"
 
 
+# ===== 작업 중지 =====
+
+
+@pytest.mark.asyncio
+async def test_cancel_unknown_request_is_404(client, session):
+    session_id, auth = session
+
+    response = await client.post(
+        f"/api/v1/experience-map/sessions/{session_id}/requests/{uuid.uuid4()}/cancel",
+        headers={"Authorization": auth},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "request_not_found"
+
+
+@pytest.mark.asyncio
+async def test_cancel_already_completed_request_is_404(client, session):
+    """이미 끝난 요청은 중지 대상이 아니다."""
+    session_id, auth = session
+    request_id = str(uuid.uuid4())
+    await client.post(
+        f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
+        data=chat_form(request_id),
+        headers={"Authorization": auth},
+    )
+
+    response = await client.post(
+        f"/api/v1/experience-map/sessions/{session_id}/requests/{request_id}/cancel",
+        headers={"Authorization": auth},
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_cancel_rejects_other_session_ticket(client, session, api_user_id):
+    session_id, _ = session
+    other = f"Bearer {make_ticket(api_user_id, str(uuid.uuid4()))}"
+
+    response = await client.post(
+        f"/api/v1/experience-map/sessions/{session_id}/requests/{uuid.uuid4()}/cancel",
+        headers={"Authorization": other},
+    )
+
+    assert response.status_code == 403
+
+
 # ===== 재시도 =====
 
 

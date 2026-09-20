@@ -231,6 +231,22 @@ async def get_request_state(request: Request, session_id: str, request_id: str):
         return _error_response(exc)
 
 
+@router.post(
+    "/sessions/{session_id}/requests/{request_id}/cancel",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="작업 중지",
+    description="진행 중인 요청에 중지를 요청합니다(프론트 요청, 2026-09-20).",
+)
+async def cancel_request(request: Request, session_id: str, request_id: str):
+    try:
+        user_id = _ticket_user_id(request)
+        _require_session_owner(request, session_id)
+        await get_service().cancel_request(user_id, request_id)
+    except ExperienceMapError as exc:
+        return _error_response(exc)
+    return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+
+
 @router.get(
     "/sessions/{session_id}/messages",
     response_model=MessagesResponse,

@@ -606,6 +606,7 @@ block 쓰기와 `ai_experience_request.result` 저장이 서로 다른 서비스
 | `POST` | `/api/v1/experience-map/sessions/{session_id}/chat/stream` | 프론트 | `Bearer` |
 | `POST` | `/api/v1/experience-map/sessions/{session_id}/retry/stream` | 프론트 | `Bearer` |
 | `GET` | `/api/v1/experience-map/sessions/{session_id}/requests/{request_id}` | 프론트 | `Bearer` |
+| `POST` | `/api/v1/experience-map/sessions/{session_id}/requests/{request_id}/cancel` | 프론트 | `Bearer` |
 
 `POST /sessions`만 메인 서버가 호출합니다. 티켓 발급 과정에서 세션이 없을 때
 먼저 만들기 위해서입니다 (2-1).
@@ -740,6 +741,24 @@ SSE 연결 종료·단절 뒤 요청 상태와 저장 결과를 복구합니다.
 `status`는 `running`, `completed`, `failed` 중 하나입니다. 커밋이 끝난 직후에는
 `running`이면서 `result`가 존재할 수 있습니다. 만료 lease 정리 시 4-3의 확인을
 수행합니다.
+
+### `POST /sessions/{session_id}/requests/{request_id}/cancel`
+
+진행 중인 요청에 중지를 요청합니다(프론트 요청, 2026-09-20). Body가 없습니다.
+
+**Response `204 No Content`**
+
+**즉시 반영되지 않습니다.** 실행 중인 worker가 lease 갱신 주기
+(`LEASE_RENEW_INTERVAL_SECONDS`, 기본 30초)마다 이 플래그를 확인해 스스로
+멈추므로, 최대 그 주기만큼 늦게 반영됩니다. 중지되면 SSE 스트림에
+`error`(`code: "cancelled"`, `retryable: false`) 이벤트가 오고 요청은
+`failed`로 저장됩니다 — **재시도 불가**입니다(사용자가 명시적으로 멈춘
+것이므로). 다시 시작하려면 새 `request_id`로 채팅을 처음부터 보냅니다.
+
+커밋이 이미 메인 서버에 전송된 뒤(`commit_changes`의 `asyncio.shield` 보호
+구간 이후)라면 취소해도 이미 반영된 커밋은 되돌릴 수 없습니다.
+
+대상이 없거나(요청이 이미 끝남) 소유자가 아니면 `404 request_not_found`입니다.
 
 ---
 

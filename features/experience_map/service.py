@@ -38,6 +38,7 @@ from features.experience_map.errors import (
     IdempotencyKeyReusedError,
     InvalidRequestError,
     LeaseLostError,
+    RequestCancelledError,
     RequestNotFoundError,
     RetryExpiredError,
     RetryNotAllowedError,
@@ -191,6 +192,19 @@ class ExperienceMapService:
         if row is None:
             raise RequestNotFoundError()
         return _to_request_state(row)
+
+    async def cancel_request(self, user_id: str, request_id: str) -> None:
+        """진행 중인 요청에 중지를 요청한다 (프론트 요청, 2026-09-20).
+
+        실제 중단은 그 요청을 실행 중인 worker가 다음 lease 갱신 주기에
+        스스로 확인해 수행한다 — 이 호출은 플래그만 세우고 바로 끝난다.
+
+        Raises:
+            RequestNotFoundError: 요청이 없거나 이미 끝나 중지할 대상이 아님
+        """
+        cancelled = await self.repository.request_cancellation(user_id, request_id)
+        if not cancelled:
+            raise RequestNotFoundError()
 
     async def get_messages(
         self,
@@ -572,33 +586,41 @@ class ExperienceMapService:
 async def _interrupt_when_lease_lost(
     events: AsyncIterator[ExperienceMapEvent], renewer: LeaseRenewer
 ) -> AsyncIterator[ExperienceMapEvent]:
-    """lease 를 잃는 즉시 실행을 끊는다.
+    """lease 를 잃거나 사용자가 중지를 요청하면 즉시 실행을 끊는다.
 
     이벤트가 도착할 때만 확인하면 조용한 구간에서 lease 를 잃어도 그 구간이
     끝날 때까지 모른다. 파일처리 120초·LLM 60초처럼 긴 침묵이 정상인 구조라
-    실제로 벌어진다.
+    실제로 벌어진다. 작업 중지(프론트 요청, 2026-09-20)도 같은 `LeaseRenewer`
+    갱신 주기에 얹히므로 같은 방식으로 끊는다.
 
     Raises:
         LeaseLostError: 실행 중 실행권을 잃음
+        RequestCancelledError: 사용자가 작업 중지를 요청함
     """
     iterator = aiter(events)
     lost_wait = asyncio.create_task(renewer.lost.wait())
+    cancelled_wait = asyncio.create_task(renewer.cancelled.wait())
+
+    def _raise_if_interrupted() -> None:
+        if renewer.lost.is_set():
+            raise LeaseLostError()
+        if renewer.cancelled.is_set():
+            raise RequestCancelledError()
 
     try:
         while True:
-            if renewer.lost.is_set():
-                raise LeaseLostError()
+            _raise_if_interrupted()
 
             next_event = asyncio.create_task(anext(iterator, _STREAM_END))
             done, _ = await asyncio.wait(
-                {next_event, lost_wait}, return_when=asyncio.FIRST_COMPLETED
+                {next_event, lost_wait, cancelled_wait}, return_when=asyncio.FIRST_COMPLETED
             )
 
             if next_event not in done:
                 next_event.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await next_event
-                raise LeaseLostError()
+                _raise_if_interrupted()
 
             event = next_event.result()
             if event is _STREAM_END:
@@ -606,8 +628,11 @@ async def _interrupt_when_lease_lost(
             yield event
     finally:
         lost_wait.cancel()
+        cancelled_wait.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await lost_wait
+        with suppress(asyncio.CancelledError, Exception):
+            await cancelled_wait
         aclose = getattr(iterator, "aclose", None)
         if callable(aclose):
             with suppress(Exception):

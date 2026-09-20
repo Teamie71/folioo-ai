@@ -244,6 +244,67 @@ async def test_lease_loss_interrupts_during_silence(repo, user_id):
     assert "processing_complete" not in types
 
 
+@pytest.mark.asyncio
+async def test_cancel_request_interrupts_running_stream(repo, user_id):
+    """작업 중지 API(2026-09-20)로 세운 플래그가 실행 중인 스트림을 끊는다.
+
+    `test_lease_loss_interrupts_during_silence`와 같은 방식이다 — 조용한
+    구간(파일처리·LLM 호출)에서도 다음 lease 갱신 주기에 끊겨야 한다.
+    """
+    service = ExperienceMapService(
+        repository=repo, runner=_SlowRunner(gap_seconds=5), lease_renew_interval=0.1
+    )
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    prepared = await service.prepare_chat(
+        user_id,
+        session.session_id,
+        request_id,
+        user_message="정리해줘",
+        context_experience_id=None,
+        view=None,
+        stored_files=[],
+    )
+
+    async def consume() -> list[dict]:
+        collected = []
+        async for event in service.stream(prepared):
+            dumped = event.model_dump()
+            collected.append(dumped)
+            if dumped["type"] == "node_status":
+                await service.cancel_request(user_id, request_id)
+        return collected
+
+    events = await asyncio.wait_for(consume(), timeout=4)
+
+    assert events[-1]["type"] == "error"
+    assert events[-1]["error"]["code"] == "cancelled"
+    assert events[-1]["error"]["retryable"] is False
+
+    stored = await repo.get_request(user_id, request_id)
+    assert stored.status == "failed"
+    assert stored.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_request_rejects_already_finished_request(service, repo, user_id):
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    prepared = await service.prepare_chat(
+        user_id,
+        session.session_id,
+        request_id,
+        user_message="정리해줘",
+        context_experience_id=None,
+        view=None,
+        stored_files=[],
+    )
+    await run_stream(service, prepared)
+
+    with pytest.raises(RequestNotFoundError):
+        await service.cancel_request(user_id, request_id)
+
+
 # ===== 직전 턴 제안(active_gap) 전달 =====
 
 
