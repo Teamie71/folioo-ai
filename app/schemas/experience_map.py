@@ -24,6 +24,10 @@ RequestStatus = Literal["running", "completed", "failed"]
 ResponseKind = Literal["result", "suggestion", "fallback"]
 ViewKind = Literal["map", "list"]
 
+MAX_USER_MESSAGE_LENGTH = 500
+"""프론트 요청(2026-09-20)으로 추가된 채팅 입력 상한. 블록 content 상한
+(`MAX_CONTENT_LENGTH`, 정제된 결과물 기준)과는 별개 개념이라 따로 둔다."""
+
 
 def _require_uuid(value: str, field: str) -> str:
     if not UUID_PATTERN.match(value):
@@ -93,6 +97,14 @@ class ChatStreamRequest(BaseModel):
         if v is None:
             return None
         return _require_decimal_id(v, "context_experience_id")
+
+    @field_validator("user_message")
+    @classmethod
+    def _check_message_length(cls, v: str | None) -> str | None:
+        """메시지는 최대 500자다 (프론트 요청, 2026-09-20)."""
+        if v is not None and len(v) > MAX_USER_MESSAGE_LENGTH:
+            raise ValueError(f"user_message는 최대 {MAX_USER_MESSAGE_LENGTH}자여야 합니다.")
+        return v
 
     def require_message_or_files(self, file_count: int) -> None:
         """메시지와 파일 중 하나 이상이 있어야 한다.
