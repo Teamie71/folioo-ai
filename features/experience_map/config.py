@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 
 # ===== 첨부 파일 제한 (API 명세 5절) =====
 MAX_UPLOAD_FILES = 1
-MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024
+MAX_UPLOAD_FILE_BYTES = 5 * 1024 * 1024
+"""프론트 요청(2026-09-20)으로 10MB에서 5MB로 낮췄다."""
 
 PARSER_MIME_TYPES: dict[str, tuple[str, ...]] = {
     "text/plain": (".txt",),
