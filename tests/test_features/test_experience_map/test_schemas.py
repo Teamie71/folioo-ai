@@ -5,7 +5,9 @@ from pydantic import ValidationError
 
 from features.experience_map.schemas import (
     ActiveGap,
+    AppliedItem,
     CommitAddItem,
+    CommitDeleteItem,
     CommitResult,
     CommitUpdateItem,
     ContentFilterOutput,
@@ -206,6 +208,33 @@ def test_commit_items_match_spec_example():
         "target_id": "3055",
         "content": "원인은 외부 PG사 응답 지연이었고 로그 분석으로 확인했다.",
     }
+
+
+def test_commit_delete_item_matches_spec_example():
+    """메인 서버 변경사항(2026-09-20)의 delete operation 형태."""
+    delete = CommitDeleteItem(item_id="it_3", target_id="3021")
+
+    assert delete.model_dump() == {
+        "item_id": "it_3",
+        "action": "delete",
+        "target_id": "3021",
+    }
+
+
+def test_applied_item_carries_optional_action():
+    """applied 항목의 action(2026-09-20 추가)은 메인 응답을 그대로 반영한다.
+
+    이전 메인 서버 버전은 이 필드를 안 보낼 수 있어 optional이어야 한다.
+    """
+    without_action = AppliedItem(
+        item_id="it_1", block_id="3701", path="교내 커머스 리뉴얼 > 문제해결"
+    )
+    assert without_action.action is None
+
+    with_action = AppliedItem(
+        item_id="it_3", block_id="3021", path="교내 커머스 리뉴얼 > 문제해결", action="delete"
+    )
+    assert with_action.action == "delete"
 
 
 def test_commit_result_carries_dropped_items():
