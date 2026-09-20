@@ -211,7 +211,7 @@ async def test_gap_failure_omits_suggestion_and_clears_previous_gap():
     async def run_gap(input_state):
         raise LlmError(failed_node="gap_analysis")
 
-    async def save_gap(user_id: str, gap: dict | None):
+    async def save_gap(user_id: str, session_id: str, gap: dict | None):
         saved.append((user_id, gap))
 
     events = await collect(
@@ -240,7 +240,7 @@ async def test_gap_failure_does_not_fail_commit_when_clearing_previous_gap_fails
     async def run_gap(input_state):
         raise LlmError(failed_node="gap_analysis")
 
-    async def fail_to_save_gap(user_id: str, gap: dict | None):
+    async def fail_to_save_gap(user_id: str, session_id: str, gap: dict | None):
         raise RuntimeError("DB unavailable")
 
     events = await collect(
@@ -288,7 +288,7 @@ async def test_successful_gap_is_persisted_after_commit():
     async def run_gap(input_state):
         return suggestion_state()
 
-    async def save_gap(user_id: str, gap: dict | None):
+    async def save_gap(user_id: str, session_id: str, gap: dict | None):
         saved.append((user_id, gap))
 
     events = await collect(commit_runner=run_commit, gap_runner=run_gap, save_active_gap=save_gap)
@@ -314,7 +314,7 @@ async def test_active_gap_save_failure_does_not_fail_committed_request():
     async def run_gap(input_state):
         return suggestion_state()
 
-    async def fail_to_save_gap(user_id: str, gap: dict | None):
+    async def fail_to_save_gap(user_id: str, session_id: str, gap: dict | None):
         raise RuntimeError("DB unavailable")
 
     events = await collect(
@@ -351,7 +351,7 @@ async def test_new_commit_item_anchor_is_resolved_after_parallel_gap_analysis():
             "gap_message": "개선안을 선택한 기준은 무엇이었나요?",
         }
 
-    async def save_gap(user_id: str, gap: dict | None):
+    async def save_gap(user_id: str, session_id: str, gap: dict | None):
         saved.append(gap)
 
     events = await collect(

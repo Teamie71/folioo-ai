@@ -190,7 +190,7 @@ async def _collect_uploads(
 async def create_session(payload: CreateSessionRequest):
     service = get_service()
     try:
-        session_id, session_status = await service.create_session(payload.user_id)
+        session_id, session_status = await service.create_session(payload.user_id, payload.block_id)
     except ExperienceMapError as exc:
         return _error_response(exc)
 

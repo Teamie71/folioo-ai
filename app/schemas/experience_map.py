@@ -41,14 +41,24 @@ def _require_decimal_id(value: str, field: str) -> str:
 
 
 class CreateSessionRequest(BaseModel):
-    """메인 서버가 티켓 발급 과정에서 호출한다."""
+    """메인 서버가 티켓 발급 과정에서 호출한다.
+
+    세션은 활동(`block_id`) 단위다 — 같은 사용자라도 활동마다 별도 세션을
+    가진다. 메인 서버 변경사항(2026-09-20)으로 `block_id`가 추가됐다.
+    """
 
     user_id: str = Field(..., description="십진 문자열 사용자 ID")
+    block_id: str = Field(..., description="십진 문자열 활동(level 2) block ID")
 
     @field_validator("user_id")
     @classmethod
     def _check_user_id(cls, v: str) -> str:
         return _require_decimal_id(v, "user_id")
+
+    @field_validator("block_id")
+    @classmethod
+    def _check_block_id(cls, v: str) -> str:
+        return _require_decimal_id(v, "block_id")
 
 
 class CreateSessionResponse(BaseModel):

@@ -24,10 +24,10 @@ OTHER_SESSION_ID = "11111111-2222-3333-4444-555555555555"
 STREAM_PATH = f"/api/v1/experience-map/sessions/{SESSION_ID}/chat/stream"
 
 
-def make_ticket(*, sub="123", sid=SESSION_ID, secret=SECRET, expires_in=300) -> str:
+def make_ticket(*, sub="123", sid=SESSION_ID, bid="200", secret=SECRET, expires_in=300) -> str:
     now = int(time.time())
     return jwt.encode(
-        {"sub": sub, "sid": sid, "iat": now, "exp": now + expires_in},
+        {"sub": sub, "sid": sid, "bid": bid, "iat": now, "exp": now + expires_in},
         secret,
         algorithm="HS256",
     )

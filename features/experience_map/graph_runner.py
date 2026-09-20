@@ -382,8 +382,8 @@ async def _state_events(state: ExperienceMapState) -> AsyncIterator[ExperienceMa
 
         repository = get_repository()
 
-        async def save_active_gap(user_id: str, gap: dict | None) -> None:
-            await repository.save_active_gap(user_id, gap)
+        async def save_active_gap(user_id: str, session_id: str, gap: dict | None) -> None:
+            await repository.save_active_gap(user_id, session_id, gap)
 
         async def refresh_map(commit_state: ExperienceMapState) -> ExperienceMapState:
             """최신 snapshot으로 선택 활동의 alias와 검증 컨텍스트를 교체한다."""

@@ -58,8 +58,8 @@ async def fail(repo, user_id: str, request_id: str, **kwargs):
 @pytest.mark.asyncio
 async def test_get_or_create_session_creates_once(repo, user_id):
     """사용자당 세션은 1개다. 두 번 불러도 같은 세션이다."""
-    first = await repo.get_or_create_session(user_id)
-    second = await repo.get_or_create_session(user_id)
+    first = await repo.get_or_create_session(user_id, "200")
+    second = await repo.get_or_create_session(user_id, "200")
 
     assert first.session_id == second.session_id
     assert first.user_id == user_id
@@ -68,7 +68,7 @@ async def test_get_or_create_session_creates_once(repo, user_id):
 @pytest.mark.asyncio
 async def test_concurrent_session_creation_yields_one(repo, user_id):
     """여러 worker가 동시에 만들어도 세션은 하나다."""
-    results = await asyncio.gather(*[repo.get_or_create_session(user_id) for _ in range(10)])
+    results = await asyncio.gather(*[repo.get_or_create_session(user_id, "200") for _ in range(10)])
 
     assert len({r.session_id for r in results}) == 1
 
@@ -76,7 +76,7 @@ async def test_concurrent_session_creation_yields_one(repo, user_id):
 @pytest.mark.asyncio
 async def test_get_session_blocks_other_user(repo, user_id):
     """다른 사용자의 세션은 조회되지 않는다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     other_user = str(int(user_id) + 1)
 
     assert await repo.get_session(user_id, session.session_id) is not None
@@ -86,7 +86,7 @@ async def test_get_session_blocks_other_user(repo, user_id):
 @pytest.mark.asyncio
 async def test_active_gap_round_trip(repo, user_id):
     """gap을 저장하고 다음 턴에 읽는다. 없으면 null로 비운다 (5-10)."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     gap = {
         "gap_id": str(uuid.uuid4()),
         "gap_type": "extend_block",
@@ -95,10 +95,10 @@ async def test_active_gap_round_trip(repo, user_id):
         "created_request_id": str(uuid.uuid4()),
     }
 
-    await repo.save_active_gap(user_id, gap)
+    await repo.save_active_gap(user_id, session.session_id, gap)
     assert (await repo.get_session(user_id, session.session_id)).active_gap == gap
 
-    await repo.save_active_gap(user_id, None)
+    await repo.save_active_gap(user_id, session.session_id, None)
     assert (await repo.get_session(user_id, session.session_id)).active_gap is None
 
 
@@ -107,7 +107,7 @@ async def test_active_gap_round_trip(repo, user_id):
 
 @pytest.mark.asyncio
 async def test_claim_creates_running_request(repo, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
 
     result = await repo.claim_request(user_id, session.session_id, new_request_id(), HASH_A)
 
@@ -119,7 +119,7 @@ async def test_claim_creates_running_request(repo, user_id):
 @pytest.mark.asyncio
 async def test_second_running_request_is_busy(repo, user_id):
     """세션당 running 은 1건이다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     await repo.claim_request(user_id, session.session_id, new_request_id(), HASH_A)
 
     result = await repo.claim_request(user_id, session.session_id, new_request_id(), HASH_B)
@@ -133,7 +133,7 @@ async def test_concurrent_claims_only_one_wins(repo, user_id):
 
     partial unique index 가 두 번째 INSERT 를 막는다.
     """
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
 
     results = await asyncio.gather(
         *[
@@ -151,7 +151,7 @@ async def test_concurrent_claims_only_one_wins(repo, user_id):
 @pytest.mark.asyncio
 async def test_same_request_same_hash_while_running_is_busy(repo, user_id):
     """같은 요청에 stream 을 두 번 붙이면 409 다 (명세 2-5)."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
 
@@ -163,7 +163,7 @@ async def test_same_request_same_hash_while_running_is_busy(repo, user_id):
 @pytest.mark.asyncio
 async def test_same_request_same_hash_completed_replays(repo, user_id):
     """완료된 요청은 저장 결과를 재전송한다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await complete(repo, user_id, request_id, result={"map_version": 43})
@@ -182,7 +182,7 @@ async def test_fallback_completed_request_replays_its_message(repo, user_id):
     이 컬럼이 없던 시절에는 재연결·멱등 재생 시 안내 문구 없이
     `processing_started → processing_complete`만 갔다.
     """
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await complete(repo, user_id, request_id, fallback_message="지금은 도와드릴 수 없어요.")
@@ -198,7 +198,7 @@ async def test_fallback_completed_request_replays_its_message(repo, user_id):
 @pytest.mark.asyncio
 async def test_same_request_different_hash_conflicts(repo, user_id):
     """같은 request_id 에 다른 입력은 idempotency_key_reused 다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await complete(repo, user_id, request_id)
@@ -211,7 +211,7 @@ async def test_same_request_different_hash_conflicts(repo, user_id):
 @pytest.mark.asyncio
 async def test_failed_request_requires_retry_api(repo, user_id):
     """실패한 요청은 chat 이 아니라 retry API 로 이어간다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await fail(repo, user_id, request_id, error={"code": "llm_error"})
@@ -224,7 +224,7 @@ async def test_failed_request_requires_retry_api(repo, user_id):
 @pytest.mark.asyncio
 async def test_new_request_disables_previous_retry(repo, user_id):
     """새 요청을 시작하면 이전 실패 요청은 재시도할 수 없다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     old_request = new_request_id()
     await repo.claim_request(user_id, session.session_id, old_request, HASH_A)
     await fail(repo, user_id, old_request, error={"code": "llm_error"})
@@ -241,7 +241,7 @@ async def test_new_request_disables_previous_retry(repo, user_id):
 @pytest.mark.asyncio
 async def test_mark_completed_clears_lease(repo, user_id):
     """완료된 요청은 만료 정리 대상이 아니다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
 
@@ -257,7 +257,7 @@ async def test_mark_completed_clears_lease(repo, user_id):
 
 @pytest.mark.asyncio
 async def test_mark_failed_sets_retry_ttl(repo, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
 
@@ -273,7 +273,7 @@ async def test_mark_failed_sets_retry_ttl(repo, user_id):
 @pytest.mark.asyncio
 async def test_non_retryable_failure_has_no_ttl(repo, user_id):
     """db_constraint_violation 처럼 재시도해도 같은 결과면 버튼을 주지 않는다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
 
@@ -287,7 +287,7 @@ async def test_non_retryable_failure_has_no_ttl(repo, user_id):
 
 @pytest.mark.asyncio
 async def test_get_request_blocks_other_user(repo, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
 
@@ -297,7 +297,7 @@ async def test_get_request_blocks_other_user(repo, user_id):
 
 @pytest.mark.asyncio
 async def test_get_latest_request(repo, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     first = new_request_id()
     await repo.claim_request(user_id, session.session_id, first, HASH_A)
     await complete(repo, user_id, first)
@@ -312,7 +312,7 @@ async def test_get_latest_request(repo, user_id):
 
 @pytest.mark.asyncio
 async def test_renew_lease_extends(repo, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     claimed = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     before = claimed.request.lease_expires_at
@@ -325,7 +325,7 @@ async def test_renew_lease_extends(repo, user_id):
 @pytest.mark.asyncio
 async def test_renew_lease_fails_when_not_running(repo, user_id):
     """완료된 요청의 lease 는 갱신되지 않는다. 호출자는 실행을 멈춰야 한다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     token = await claim(repo, user_id, session.session_id, request_id)
     await complete(repo, user_id, request_id)
@@ -335,7 +335,7 @@ async def test_renew_lease_fails_when_not_running(repo, user_id):
 
 @pytest.mark.asyncio
 async def test_renew_lease_fails_for_other_user(repo, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     token = await claim(repo, user_id, session.session_id, request_id)
 
@@ -350,7 +350,7 @@ async def test_expired_lease_stays_retryable(clean_db, user_id):
     보내지 않았으므로 재시도 버튼이 남아야 한다.
     """
     repo = ExperienceMapRepository(clean_db, lease_seconds=-1)  # 이미 만료된 lease
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     stale_request = new_request_id()
     await repo.claim_request(user_id, session.session_id, stale_request, HASH_A)
     await clean_db.execute(
@@ -373,7 +373,7 @@ async def test_expired_lease_stays_retryable(clean_db, user_id):
 async def test_expired_lease_is_not_directly_failed_by_claim(clean_db, user_id):
     """Repository claim은 메인 서버 확인 없이 만료 요청을 실패시키지 않는다."""
     repo = ExperienceMapRepository(clean_db, lease_seconds=300)
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     stale_request = new_request_id()
     await repo.claim_request(user_id, session.session_id, stale_request, HASH_A)
 
@@ -388,7 +388,7 @@ async def test_expired_lease_is_not_directly_failed_by_claim(clean_db, user_id):
 async def test_claim_expired_request_for_recovery_rotates_owner_token(clean_db, user_id):
     """복구 worker는 만료 행 하나만 새 실행권으로 가져간다."""
     repo = ExperienceMapRepository(clean_db, lease_seconds=300)
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     initial = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await clean_db.execute(
@@ -417,7 +417,7 @@ async def test_claim_expired_request_for_recovery_rotates_owner_token(clean_db, 
 
 @pytest.mark.asyncio
 async def test_expire_leaves_live_requests_alone(repo, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
 
@@ -431,7 +431,7 @@ async def test_expire_leaves_live_requests_alone(repo, user_id):
 async def test_lease_renewer_signals_loss(clean_db, user_id):
     """lease 를 잃으면 lost 이벤트가 켜진다. 호출자가 실행을 취소한다."""
     repo = ExperienceMapRepository(clean_db, lease_seconds=300)
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     token = await claim(repo, user_id, session.session_id, request_id)
 
@@ -451,7 +451,7 @@ async def test_lease_renewer_signals_loss(clean_db, user_id):
 
 @pytest.mark.asyncio
 async def test_purge_old_requests(repo, clean_db, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await complete(repo, user_id, request_id)
@@ -467,7 +467,7 @@ async def test_purge_old_requests(repo, clean_db, user_id):
 
 @pytest.mark.asyncio
 async def test_purge_keeps_recent_requests(repo, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await complete(repo, user_id, request_id)
@@ -486,7 +486,7 @@ async def test_retry_transitions_to_running(repo, user_id):
 
     이게 안 되면 `failed` 인 채로 그래프가 돌고 lease 갱신도 실패한다.
     """
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await fail(repo, user_id, request_id, error={"code": "llm_error"})
@@ -505,7 +505,7 @@ async def test_retry_transitions_to_running(repo, user_id):
 @pytest.mark.asyncio
 async def test_concurrent_retries_only_one_wins(repo, user_id):
     """같은 실패 요청에 재시도를 동시에 보내도 하나만 잡는다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await fail(repo, user_id, request_id, error={"code": "llm_error"})
@@ -520,7 +520,7 @@ async def test_concurrent_retries_only_one_wins(repo, user_id):
 @pytest.mark.asyncio
 async def test_retry_issues_new_owner_token(repo, user_id):
     """재시도할 때마다 새 실행권을 발급한다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     claimed = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     first_token = claimed.request.owner_token
@@ -534,7 +534,7 @@ async def test_retry_issues_new_owner_token(repo, user_id):
 @pytest.mark.asyncio
 async def test_retry_rejects_expired_ttl(clean_db, user_id):
     repo = ExperienceMapRepository(clean_db, lease_seconds=300)
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await fail(repo, user_id, request_id, error={"code": "llm_error"})
@@ -550,7 +550,7 @@ async def test_retry_rejects_expired_ttl(clean_db, user_id):
 
 @pytest.mark.asyncio
 async def test_retry_on_completed_request_replays(repo, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await complete(repo, user_id, request_id, result={"map_version": 43})
@@ -561,7 +561,7 @@ async def test_retry_on_completed_request_replays(repo, user_id):
 @pytest.mark.asyncio
 async def test_retry_blocked_by_other_running_request(repo, clean_db, user_id):
     """다른 running 요청이 있으면 savepoint 뒤에도 SESSION_BUSY를 반환한다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     failed_request = new_request_id()
     await repo.claim_request(user_id, session.session_id, failed_request, HASH_A)
     await fail(repo, user_id, failed_request, error={"code": "llm_error"})
@@ -585,7 +585,7 @@ async def test_retry_blocked_by_other_running_request(repo, clean_db, user_id):
 
 @pytest.mark.asyncio
 async def test_retry_unknown_request(repo, user_id):
-    await repo.get_or_create_session(user_id)
+    await repo.get_or_create_session(user_id, "200")
 
     result = await repo.retry_request(user_id, new_request_id())
 
@@ -598,7 +598,7 @@ async def test_retry_unknown_request(repo, user_id):
 @pytest.mark.asyncio
 async def test_completed_request_cannot_be_overwritten(repo, user_id):
     """lease 를 잃은 옛 worker 가 완료된 요청을 실패로 되돌리지 못한다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     claimed = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     token = claimed.request.owner_token
@@ -615,7 +615,7 @@ async def test_completed_request_cannot_be_overwritten(repo, user_id):
 @pytest.mark.asyncio
 async def test_stale_token_cannot_renew_or_finish(repo, user_id):
     """재시도로 주인이 바뀌면 이전 worker 의 쓰기가 전부 무시된다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     first = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     stale_token = first.request.owner_token
@@ -651,7 +651,7 @@ async def test_stale_token_cannot_renew_or_finish(repo, user_id):
 async def test_expiry_clears_owner_token(clean_db, user_id):
     """만료 정리는 실행권을 회수한다. 옛 worker 의 뒤늦은 쓰기를 막는다."""
     repo = ExperienceMapRepository(clean_db, lease_seconds=-1)
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     claimed = await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     stale_token = claimed.request.owner_token
@@ -672,7 +672,7 @@ async def test_state_change_requires_owner_token(repo, user_id):
     선택 인자로 두면 호출부가 실수로 빠뜨려도 테스트가 통과하고, 운영에서만
     남의 결과를 덮는다.
     """
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await claim(repo, user_id, session.session_id, request_id)
 
@@ -698,7 +698,7 @@ async def test_null_owner_token_row_cannot_be_finished(repo, clean_db, user_id):
     NULL 이다. 그 행이 **검사를 우회하면 안 된다** — 어떤 token 으로도 맞지
     않아 잠기고, 만료 정리가 회수한다.
     """
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     token = await claim(repo, user_id, session.session_id, request_id)
     await clean_db.execute(
@@ -718,7 +718,7 @@ async def test_null_owner_token_row_cannot_be_finished(repo, clean_db, user_id):
 async def test_expiry_recovers_null_token_row(clean_db, user_id):
     """NULL token 으로 잠긴 행도 만료 정리가 풀어 준다."""
     repo = ExperienceMapRepository(clean_db, lease_seconds=-1)
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await claim(repo, user_id, session.session_id, request_id)
     await clean_db.execute(
@@ -738,7 +738,7 @@ async def test_retry_reason_is_consistent_under_lock(repo, user_id):
 
     동시에 여러 재시도가 와도 각자 받는 사유가 실제 상태와 어긋나지 않는다.
     """
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await claim(repo, user_id, session.session_id, request_id)
     await fail(repo, user_id, request_id)
@@ -757,7 +757,7 @@ async def test_retry_reason_is_consistent_under_lock(repo, user_id):
 @pytest.mark.asyncio
 async def test_save_and_list_messages_round_trip(repo, user_id):
     """저장한 메시지를 id 오름차순으로 그대로 돌려받는다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
 
     await repo.save_message(
@@ -780,7 +780,7 @@ async def test_save_and_list_messages_round_trip(repo, user_id):
 @pytest.mark.asyncio
 async def test_list_messages_paginates_with_cursor(repo, user_id):
     """limit 만큼 꽉 채워 왔을 때만 다음 커서를 주고, 커서 이후부터 이어서 준다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     for index in range(3):
         await repo.save_message(
             user_id,
@@ -805,9 +805,9 @@ async def test_list_messages_paginates_with_cursor(repo, user_id):
 @pytest.mark.asyncio
 async def test_list_messages_is_scoped_to_session(repo, user_id):
     """다른 세션의 메시지는 안 섞인다."""
-    session_a = await repo.get_or_create_session(user_id)
+    session_a = await repo.get_or_create_session(user_id, "200")
     other_user = str(int(user_id) + 1)
-    session_b = await repo.get_or_create_session(other_user)
+    session_b = await repo.get_or_create_session(other_user, "200")
 
     await repo.save_message(
         user_id, session_a.session_id, new_request_id(), user_message="A", ai_responses=["a"]
@@ -824,7 +824,7 @@ async def test_list_messages_is_scoped_to_session(repo, user_id):
 @pytest.mark.asyncio
 async def test_save_message_allows_no_user_message(repo, user_id):
     """파일만 첨부된 턴은 user_message 없이 저장된다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
 
     await repo.save_message(
         user_id,

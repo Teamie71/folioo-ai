@@ -25,10 +25,15 @@ SESSION_ID = "d9428888-122b-11e1-b85c-61cd3cbb3210"
 
 
 def test_create_session_requires_decimal_user_id():
-    assert CreateSessionRequest(user_id="123").user_id == "123"
+    assert CreateSessionRequest(user_id="123", block_id="200").user_id == "123"
 
     with pytest.raises(ValidationError, match="십진 문자열"):
-        CreateSessionRequest(user_id="user-123")
+        CreateSessionRequest(user_id="user-123", block_id="200")
+
+
+def test_create_session_requires_decimal_block_id():
+    with pytest.raises(ValidationError, match="십진 문자열"):
+        CreateSessionRequest(user_id="123", block_id="block-abc")
 
 
 def test_chat_request_requires_uuid_request_id():

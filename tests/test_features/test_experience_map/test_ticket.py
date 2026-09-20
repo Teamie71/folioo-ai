@@ -26,13 +26,14 @@ def make_ticket(
     *,
     sub: str = "123",
     sid: str = SESSION_ID,
+    bid: str = "200",
     secret: str = SECRET,
     expires_in: int = 300,
     algorithm: str = "HS256",
     **overrides,
 ) -> str:
     now = int(time.time())
-    payload = {"sub": sub, "sid": sid, "iat": now, "exp": now + expires_in}
+    payload = {"sub": sub, "sid": sid, "bid": bid, "iat": now, "exp": now + expires_in}
     payload.update(overrides)
     return jwt.encode(payload, secret, algorithm=algorithm)
 
