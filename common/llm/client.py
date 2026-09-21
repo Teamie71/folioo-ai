@@ -1,8 +1,15 @@
 """Gemini LLM 클라이언트
 
-기본은 Gemini Developer API(`GEMINI_API_KEY`)를 쓴다. `GOOGLE_GENAI_USE_VERTEXAI=true`와
-`GOOGLE_CLOUD_PROJECT`를 설정하면 같은 코드로 Vertex AI 백엔드로 전환된다
-(`langchain-google-genai`가 두 백엔드를 모두 지원).
+기본은 Gemini Developer API(`GEMINI_API_KEY`)를 쓴다. `GOOGLE_GENAI_USE_VERTEXAI=true`로
+같은 API 키를 Vertex AI Express 모드로 전환할 수 있다 (예: `vertex-express@` 서비스
+계정에 묶인 API 키).
+
+주의: Express 모드(API 키)를 쓸 때는 `GOOGLE_CLOUD_PROJECT`를 **설정하면 안 된다**.
+`google-genai` SDK가 project가 있으면 API 키를 무시하고 ADC(서비스 계정/gcloud 로그인)
+인증으로 전환해버려, API 키만 있고 ADC가 없는 환경에서는
+`DefaultCredentialsError`로 실패한다. 서비스 계정 자격증명으로 완전한 Vertex AI를 쓰려면
+API 키를 빼고 `GOOGLE_CLOUD_PROJECT` + ADC(`gcloud auth application-default login`
+또는 서비스 계정 키)를 쓴다.
 """
 
 import os
