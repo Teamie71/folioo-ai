@@ -246,7 +246,7 @@ async def test_rejects_too_many_files(upload_store, store):
 async def test_rejects_oversized_file(upload_store):
     oversized = b"%PDF-" + b"0" * MAX_UPLOAD_FILE_BYTES
 
-    with pytest.raises(FileTooLargeError, match="10MB"):
+    with pytest.raises(FileTooLargeError, match="5MB"):
         await upload_store.store_files(
             USER_ID, REQUEST_ID, [("큰파일.pdf", "application/pdf", FakeStream(oversized))]
         )
