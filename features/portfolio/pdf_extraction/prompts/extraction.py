@@ -28,10 +28,9 @@ def load_pdf_classification_criteria() -> str:
         raise ValueError(f"PDF 추출 기준 문서를 읽을 수 없습니다: {exc}") from exc
 
 
-def encode_pdf_data_url(file_bytes: bytes) -> str:
-    """PDF 바이트를 base64 데이터 URL로 변환한다."""
-    encoded = base64.b64encode(file_bytes).decode("utf-8")
-    return f"data:application/pdf;base64,{encoded}"
+def encode_pdf_base64(file_bytes: bytes) -> str:
+    """PDF 바이트를 base64 문자열로 변환한다."""
+    return base64.b64encode(file_bytes).decode("utf-8")
 
 
 def build_pdf_extraction_messages(
@@ -39,7 +38,7 @@ def build_pdf_extraction_messages(
 ) -> list[SystemMessage | HumanMessage]:
     """PDF 추출용 멀티모달 메시지 리스트를 생성한다."""
     criteria = load_pdf_classification_criteria()
-    pdf_data_url = encode_pdf_data_url(file_bytes)
+    pdf_base64 = encode_pdf_base64(file_bytes)
 
     system_message = SystemMessage(content=criteria)
     human_message = HumanMessage(
@@ -53,11 +52,9 @@ def build_pdf_extraction_messages(
                 ),
             },
             {
-                "type": "file",
-                "file": {
-                    "filename": filename,
-                    "file_data": pdf_data_url,
-                },
+                "type": "media",
+                "mime_type": "application/pdf",
+                "data": pdf_base64,
             },
         ]
     )
@@ -67,6 +64,6 @@ def build_pdf_extraction_messages(
 
 __all__ = [
     "build_pdf_extraction_messages",
-    "encode_pdf_data_url",
+    "encode_pdf_base64",
     "load_pdf_classification_criteria",
 ]

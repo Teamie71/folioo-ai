@@ -5,7 +5,7 @@
 (`InMemoryTestMapStore` + `TestUiGraphRunner`)를 쓰되, FastAPI·티켓 발급
 과정을 완전히 건너뛰고 Python에서 그래프를 바로 호출한다. LangGraph
 checkpointer도 `InMemorySaver`라 `DATABASE_URL`이 없어도 된다. 실제로
-필요한 건 `.env`의 LLM 키(`OPENROUTER_API_KEY` 등)뿐이다.
+필요한 건 `.env`의 LLM 키(`GEMINI_API_KEY` 등)뿐이다.
 
 사용법:
     uv run python scripts/experience_map/run_local_turn.py "결제 오류 원인을 분석하고 재시도 로직을 추가해 장애를 줄였다."

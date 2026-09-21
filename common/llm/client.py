@@ -1,12 +1,19 @@
-"""OpenRouter LLM 클라이언트"""
+"""Gemini LLM 클라이언트
+
+기본은 Gemini Developer API(`GEMINI_API_KEY`)를 쓴다. `GOOGLE_GENAI_USE_VERTEXAI=true`와
+`GOOGLE_CLOUD_PROJECT`를 설정하면 같은 코드로 Vertex AI 백엔드로 전환된다
+(`langchain-google-genai`가 두 백엔드를 모두 지원).
+"""
 
 import os
 from functools import lru_cache
 
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv()
+
+DEFAULT_MODEL_NAME = "gemini-3.1-flash-lite"
 
 
 def _build_llm(
@@ -17,28 +24,28 @@ def _build_llm(
     disable_streaming: bool = False,
     max_retries: int | None = None,
     max_tokens: int | None = None,
-) -> ChatOpenAI:
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    default_model = os.getenv("LLM_MODEL_NAME", "openai/gpt-oss-120b")
+) -> ChatGoogleGenerativeAI:
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    default_model = os.getenv("LLM_MODEL_NAME", DEFAULT_MODEL_NAME)
+    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI")
 
-    if not api_key:
-        raise ValueError("OPENROUTER_API_KEY 환경변수가 설정되지 않았습니다.")
+    if not api_key and not use_vertexai:
+        raise ValueError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
 
     llm_kwargs = {
         "model": model or default_model,
-        "openai_api_key": api_key,
-        "openai_api_base": base_url,
         "temperature": temperature,
         "request_timeout": timeout,
         "disable_streaming": disable_streaming,
     }
+    if api_key:
+        llm_kwargs["api_key"] = api_key
     if max_retries is not None:
         llm_kwargs["max_retries"] = max_retries
     if max_tokens is not None:
         llm_kwargs["max_tokens"] = max_tokens
 
-    return ChatOpenAI(
+    return ChatGoogleGenerativeAI(
         **llm_kwargs,
     )
 
@@ -48,17 +55,17 @@ def get_llm(
     model: str | None = None,
     temperature: float = 0.7,
     timeout: float | None = None,
-) -> ChatOpenAI:
+) -> ChatGoogleGenerativeAI:
     """
-    OpenRouter 기반 LLM 클라이언트 반환 (캐시됨)
+    Gemini 기반 LLM 클라이언트 반환 (캐시됨)
 
     Args:
-        model: 사용할 모델명 (기본값: 환경변수 LLM_MODEL)
+        model: 사용할 모델명 (기본값: 환경변수 LLM_MODEL_NAME)
         temperature: 생성 다양성 (0.0 ~ 1.0)
         timeout: 요청 타임아웃(초). None이면 라이브러리 기본값 사용
 
     Returns:
-        ChatOpenAI: LangChain 호환 LLM 클라이언트
+        ChatGoogleGenerativeAI: LangChain 호환 LLM 클라이언트
     """
     return _build_llm(model=model, temperature=temperature, timeout=timeout)
 
@@ -67,7 +74,7 @@ def get_llm(
 def get_analyst_llm(
     model: str | None = None,
     temperature: float = 0.3,
-) -> ChatOpenAI:
+) -> ChatGoogleGenerativeAI:
     """Analyst 노드 전용 LLM 클라이언트 반환"""
 
     return _build_llm(
@@ -84,7 +91,7 @@ def get_experience_map_llm(
     model: str | None = None,
     temperature: float = 0.0,
     timeout: float = 60,
-) -> ChatOpenAI:
+) -> ChatGoogleGenerativeAI:
     """경험정리 노드 전용 LLM 클라이언트 반환
 
     `max_retries=0` 으로 고정한다. 자동 재시도는 LangGraph `RetryPolicy` 한 곳에서만
@@ -114,7 +121,7 @@ FILE_PROCESSOR_MAX_TOKENS = 16384
 def get_file_processor_llm(
     model: str | None = None,
     temperature: float = 0.0,
-) -> ChatOpenAI:
+) -> ChatGoogleGenerativeAI:
     """FileProcessor 노드 전용 Vision LLM 클라이언트 반환"""
 
     return _build_llm(
@@ -130,7 +137,7 @@ def get_file_processor_llm(
 def get_file_processor_llm_uncached(
     model: str | None = None,
     temperature: float = 0.0,
-) -> ChatOpenAI:
+) -> ChatGoogleGenerativeAI:
     """FileProcessor 노드 전용 Vision LLM 클라이언트를 캐시 없이 반환"""
 
     return _build_llm(
@@ -147,11 +154,11 @@ def get_llm_uncached(
     model: str | None = None,
     temperature: float = 0.7,
     timeout: float | None = None,
-) -> ChatOpenAI:
+) -> ChatGoogleGenerativeAI:
     """캐싱 없이 새 LLM 인스턴스 반환 (테스트/특수 케이스용)"""
 
     return _build_llm(model=model, temperature=temperature, timeout=timeout)
 
 
 def _file_processor_model(model: str | None) -> str:
-    return model or os.getenv("FILE_PROCESSOR_MODEL_NAME", "google/gemini-3.1-flash-lite")
+    return model or os.getenv("FILE_PROCESSOR_MODEL_NAME", DEFAULT_MODEL_NAME)

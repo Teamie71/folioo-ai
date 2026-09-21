@@ -42,23 +42,19 @@ def _encode_data_url(file_bytes: bytes, content_type: str) -> str:
 
 def _encode_file_content(file_payload: FilePayload, file_bytes: bytes) -> dict[str, object]:
     """FilePayload를 LangChain 멀티모달 content block으로 변환한다."""
-    filename = file_payload["filename"]
     content_type = file_payload["content_type"]
-    data_url = _encode_data_url(file_bytes, content_type)
 
     if content_type == "application/pdf":
         return {
-            "type": "file",
-            "file": {
-                "filename": filename,
-                "file_data": data_url,
-            },
+            "type": "media",
+            "mime_type": content_type,
+            "data": base64.b64encode(file_bytes).decode("utf-8"),
         }
 
     return {
         "type": "image_url",
         "image_url": {
-            "url": data_url,
+            "url": _encode_data_url(file_bytes, content_type),
         },
     }
 

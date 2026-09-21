@@ -15,7 +15,7 @@ from .streaming import ActivityJsonStreamParser
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_PDF_EXTRACTION_MODEL_NAME = "google/gemini-3.1-pro-preview"
+_DEFAULT_PDF_EXTRACTION_MODEL_NAME = "gemini-3.1-pro-preview"
 
 
 class PdfExtractionGenerationError(Exception):

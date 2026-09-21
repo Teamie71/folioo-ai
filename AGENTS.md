@@ -7,7 +7,7 @@
 - **언어**: Python 3.12+
 - **프레임워크**: LangGraph (멀티 에이전트), FastAPI (웹), LangChain (LLM 통합)
 - **패키지 매니저**: uv
-- **LLM 제공자**: OpenRouter (via LangChain ChatOpenAI)
+- **LLM 제공자**: Gemini (via LangChain `langchain-google-genai`, Gemini Developer API / Vertex AI 겸용)
 
 ## 디렉토리 구조
 
@@ -19,7 +19,7 @@ folioo-ai/
 │   ├── models/             # 데이터베이스 모델
 │   └── schemas/            # Pydantic 스키마
 ├── common/                 # 공유 유틸리티
-│   ├── llm/                # LLM 클라이언트 (OpenRouter)
+│   ├── llm/                # LLM 클라이언트 (Gemini)
 │   ├── utils/              # 공통 유틸리티
 │   └── vector_store/       # 벡터 스토어
 ├── features/               # 기능별 모듈
@@ -135,16 +135,16 @@ Google 스타일, 한국어 사용:
 def get_llm(
     model: str | None = None,
     temperature: float = 0.7,
-) -> ChatOpenAI:
+) -> ChatGoogleGenerativeAI:
     """
-    OpenRouter 기반 LLM 클라이언트 반환
+    Gemini 기반 LLM 클라이언트 반환
 
     Args:
-        model: 사용할 모델명 (기본값: 환경변수 LLM_MODEL)
+        model: 사용할 모델명 (기본값: 환경변수 LLM_MODEL_NAME)
         temperature: 생성 다양성 (0.0 ~ 1.0)
 
     Returns:
-        ChatOpenAI: LangChain 호환 LLM 클라이언트
+        ChatGoogleGenerativeAI: LangChain 호환 LLM 클라이언트
 
     Raises:
         ValueError: API 키가 설정되지 않은 경우
@@ -157,7 +157,7 @@ def get_llm(
 
 ```python
 if not api_key:
-    raise ValueError("OPENROUTER_API_KEY 환경변수가 설정되지 않았습니다.")
+    raise ValueError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
 
 if stage not in [1, 2, 3, 4]:
     raise ValueError(f"Invalid stage: {stage}. Must be 1-4.")
@@ -252,7 +252,7 @@ def test_all_stages_valid(stage):
 | `pyproject.toml` | 프로젝트 메타데이터, 의존성, Ruff/pytest 설정 |
 | `.pre-commit-config.yaml` | Pre-commit 훅 (ruff, trailing-whitespace 등) |
 | `langgraph.json` | LangGraph Studio 설정 |
-| `.env` | 환경변수 (OPENROUTER_API_KEY, LLM_MODEL_NAME) |
+| `.env` | 환경변수 (GEMINI_API_KEY, LLM_MODEL_NAME) |
 
 ## 주요 Ruff 규칙
 
