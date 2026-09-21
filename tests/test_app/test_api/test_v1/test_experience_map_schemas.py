@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.experience_map import (
+    MAX_USER_MESSAGE_LENGTH,
     ChatStreamRequest,
     CommitResultEvent,
     CreateSessionRequest,
@@ -55,6 +56,20 @@ def test_chat_request_allows_null_experience_id():
 
     assert request.context_experience_id is None
     assert request.view is None
+
+
+def test_chat_request_allows_message_up_to_500_chars():
+    """프론트 요청(2026-09-20)으로 추가된 상한 — 정확히 500자는 통과한다."""
+    message = "가" * MAX_USER_MESSAGE_LENGTH
+
+    request = ChatStreamRequest(request_id=REQUEST_ID, user_message=message)
+
+    assert request.user_message == message
+
+
+def test_chat_request_rejects_message_over_500_chars():
+    with pytest.raises(ValidationError, match="500자"):
+        ChatStreamRequest(request_id=REQUEST_ID, user_message="가" * (MAX_USER_MESSAGE_LENGTH + 1))
 
 
 def test_retry_request_requires_uuid():

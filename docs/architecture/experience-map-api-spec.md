@@ -690,7 +690,7 @@ Accept: text/event-stream
 | 필드 | 필수 | 설명 |
 | --- | --- | --- |
 | `request_id` | Y | 티켓과 함께 받은 UUID |
-| `user_message` | 조건부 | 파일이 없으면 필수 |
+| `user_message` | 조건부 | 파일이 없으면 필수. 최대 500자(2026-09-20 추가) — 넘으면 `422 invalid_request` |
 | `context_experience_id` | N | 현재 보고 있는 level 2 활동 block ID |
 | `view` | N | `map`, `list`, null |
 
