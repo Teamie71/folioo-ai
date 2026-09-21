@@ -625,6 +625,7 @@ block 쓰기와 `ai_experience_request.result` 저장이 서로 다른 서비스
 | `POST` | `/api/v1/experience-map/sessions/{session_id}/retry/stream` | 프론트 | `Bearer` |
 | `GET` | `/api/v1/experience-map/sessions/{session_id}/requests/{request_id}` | 프론트 | `Bearer` |
 | `POST` | `/api/v1/experience-map/sessions/{session_id}/requests/{request_id}/cancel` | 프론트 | `Bearer` |
+| `GET` | `/api/v1/experience-map/sessions/{session_id}/messages` | 프론트 | `Bearer` |
 
 `POST /sessions`만 메인 서버가 호출합니다. 티켓 발급 과정에서 세션이 없을 때
 먼저 만들기 위해서입니다 (2-1).
@@ -780,6 +781,48 @@ SSE 연결 종료·단절 뒤 요청 상태와 저장 결과를 복구합니다.
 구간 이후)라면 취소해도 이미 반영된 커밋은 되돌릴 수 없습니다.
 
 대상이 없거나(요청이 이미 끝남) 소유자가 아니면 `404 request_not_found`입니다.
+
+### `GET /sessions/{session_id}/messages`
+
+활동(세션) 단위 대화 히스토리를 커서로 페이징 조회합니다. 재접속 시 지난
+대화를 이어서 보여줄 때 씁니다.
+
+| 쿼리 파라미터 | 필수 | 설명 |
+| --- | --- | --- |
+| `cursor` | N | 이전 응답의 `next_cursor`. 없으면 최신부터 |
+| `limit` | N | 기본 50, 1~200 |
+
+**Response `200 OK`**
+
+```json
+{
+  "messages": [
+    {
+      "request_id": "550e8400-e29b-41d4-a716-446655440000",
+      "user_message": "결제 실패 문제를 해결한 내용을 정리해줘",
+      "ai_responses": ["내용을 분석하여 경험을 정리했어요.\n- 문제해결 아래 1개의 블록 생성"],
+      "attachments": [{ "filename": "이력서.pdf", "content_type": "application/pdf" }],
+      "status": "completed",
+      "can_revert": true,
+      "created_at": "2026-09-21T09:00:00+00:00"
+    }
+  ],
+  "next_cursor": "42"
+}
+```
+
+`attachments`·`status`·`can_revert`는 프론트 요청(2026-09-20)으로 추가됐습니다.
+
+- `attachments`: 그 턴에 첨부된 파일의 이름·형식만 담습니다. 파일 본문은
+  업로드 TTL이 지나면 지워지므로 메타데이터만 남습니다.
+- `status`: `completed` 또는 `failed`. 지금까지는 성공한 턴만 히스토리에
+  남아 실패한 턴이 조회에서 통째로 사라졌습니다 — 이제 실패한 턴도
+  `status: "failed"`와 함께 남고, `ai_responses`에는 그때 사용자에게 보였던
+  오류 문구가 하나 담깁니다.
+- `can_revert`: **커밋 시점에** 되돌리기가 가능했는지입니다. 실패한 턴은
+  `null`입니다. **그 뒤 사용자가 실제로 되돌렸는지는 메인 서버
+  (`POST /revert`, 7절)만 알고 있어 AI 서버에 알려주지 않는 한 추적할 수
+  없습니다** — 이 값은 항상 커밋 당시 스냅샷입니다.
 
 ---
 

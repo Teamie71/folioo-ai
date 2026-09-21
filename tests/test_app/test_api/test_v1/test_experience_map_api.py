@@ -485,6 +485,9 @@ async def test_get_messages_after_completion(client, session):
         "교내 커머스 리뉴얼 > 문제해결에 1개를 정리했어요.",
         "그 해결 방법을 고른 기준이 무엇이었나요?",
     ]
+    assert message["status"] == "completed"
+    assert message["can_revert"] is True
+    assert message["attachments"] == []
 
 
 @pytest.mark.asyncio

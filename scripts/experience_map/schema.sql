@@ -124,10 +124,26 @@ CREATE TABLE IF NOT EXISTS ai_experience_message (
   request_id    uuid NOT NULL,
   user_message  text,
   ai_responses  jsonb NOT NULL DEFAULT '[]'::jsonb,
+  -- 프론트 요청(2026-09-20 공지 5항)으로 추가됐다. 첨부파일은 {filename,
+  -- content_type} 목록 — 파일 본문은 TTL 뒤 지워지므로 메타데이터만 남긴다.
+  attachments   jsonb NOT NULL DEFAULT '[]'::jsonb,
+  -- 'completed' 또는 'failed'. 지금까지는 성공한 턴만 히스토리에 남아
+  -- 실패한 턴은 조회에서 통째로 사라졌다.
+  status        varchar(16) NOT NULL DEFAULT 'completed',
+  -- 커밋 당시(그 뒤 실제로 되돌렸는지가 아니라) 되돌리기가 가능했는지.
+  -- 실제 되돌림 여부는 메인 서버(POST /revert)만 알고 있어 AI 서버에
+  -- 알려주지 않는 한 추적할 수 없다 — 커밋 시점 값만 남긴다.
+  can_revert    boolean,
   created_at    timestamptz NOT NULL DEFAULT now(),
   FOREIGN KEY (user_id, session_id)
-    REFERENCES ai_experience_session(user_id, session_id)
+    REFERENCES ai_experience_session(user_id, session_id),
+  CHECK (status IN ('completed', 'failed'))
 );
+
+-- CREATE TABLE IF NOT EXISTS는 이미 있는 테이블에 새 컬럼을 반영하지 않는다.
+ALTER TABLE ai_experience_message ADD COLUMN IF NOT EXISTS attachments jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE ai_experience_message ADD COLUMN IF NOT EXISTS status varchar(16) NOT NULL DEFAULT 'completed';
+ALTER TABLE ai_experience_message ADD COLUMN IF NOT EXISTS can_revert boolean;
 
 -- 세션 안에서 id 순으로 훑는 조회(커서 페이징)의 인덱스.
 CREATE INDEX IF NOT EXISTS idx_ai_experience_message_session

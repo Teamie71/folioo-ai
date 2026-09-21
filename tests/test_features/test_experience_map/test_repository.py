@@ -852,6 +852,43 @@ async def test_list_messages_is_scoped_to_session(repo, user_id):
 
 
 @pytest.mark.asyncio
+async def test_save_message_carries_attachments_status_and_can_revert(repo, user_id):
+    """첨부파일·실패 상태·되돌림 가능 여부(2026-09-20)가 그대로 저장된다."""
+    session = await repo.get_or_create_session(user_id, "200")
+
+    await repo.save_message(
+        user_id,
+        session.session_id,
+        new_request_id(),
+        user_message="이력서를 정리해줘",
+        ai_responses=["내용을 분석하여 경험을 정리했어요."],
+        attachments=[{"filename": "이력서.pdf", "content_type": "application/pdf"}],
+        status="completed",
+        can_revert=True,
+    )
+    failed_request_id = new_request_id()
+    await repo.save_message(
+        user_id,
+        session.session_id,
+        failed_request_id,
+        user_message="이 내용도 정리해줘",
+        ai_responses=["AI 처리 중 오류가 발생했습니다."],
+        status="failed",
+    )
+
+    rows, _ = await repo.list_messages(user_id, session.session_id, cursor=None, limit=50)
+
+    assert rows[0].attachments == [{"filename": "이력서.pdf", "content_type": "application/pdf"}]
+    assert rows[0].status == "completed"
+    assert rows[0].can_revert is True
+
+    assert rows[1].request_id == failed_request_id
+    assert rows[1].status == "failed"
+    assert rows[1].can_revert is None
+    assert rows[1].attachments == []
+
+
+@pytest.mark.asyncio
 async def test_save_message_allows_no_user_message(repo, user_id):
     """파일만 첨부된 턴은 user_message 없이 저장된다."""
     session = await repo.get_or_create_session(user_id, "200")
