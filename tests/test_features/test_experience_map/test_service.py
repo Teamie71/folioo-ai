@@ -254,7 +254,7 @@ async def test_cancel_request_interrupts_running_stream(repo, user_id):
     service = ExperienceMapService(
         repository=repo, runner=_SlowRunner(gap_seconds=5), lease_renew_interval=0.1
     )
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     prepared = await service.prepare_chat(
         user_id,
@@ -288,7 +288,7 @@ async def test_cancel_request_interrupts_running_stream(repo, user_id):
 
 @pytest.mark.asyncio
 async def test_cancel_request_rejects_already_finished_request(service, repo, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     prepared = await service.prepare_chat(
         user_id,

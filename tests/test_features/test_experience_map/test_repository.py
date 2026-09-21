@@ -450,7 +450,7 @@ async def test_lease_renewer_signals_loss(clean_db, user_id):
 async def test_lease_renewer_signals_cancellation(clean_db, user_id):
     """작업 중지 요청(2026-09-20)은 lease 갱신 주기에 얹혀 cancelled 로 알려진다."""
     repo = ExperienceMapRepository(clean_db, lease_seconds=300)
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     token = await claim(repo, user_id, session.session_id, request_id)
 
@@ -468,7 +468,7 @@ async def test_lease_renewer_signals_cancellation(clean_db, user_id):
 @pytest.mark.asyncio
 async def test_request_cancellation_ignores_finished_request(repo, user_id):
     """이미 끝난 요청에는 중지를 세우지 않는다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await claim(repo, user_id, session.session_id, request_id)
     await complete(repo, user_id, request_id)
