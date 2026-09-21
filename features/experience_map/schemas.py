@@ -323,7 +323,23 @@ class CommitUpdateItem(BaseModel):
         return self
 
 
-CommitItem = CommitAddItem | CommitUpdateItem
+class CommitDeleteItem(BaseModel):
+    """블록 삭제 operation (메인 서버 변경사항 2026-09-20).
+
+    CONTENT 블록(4·5단계)만 지울 수 있다 — 섹션·활동·그룹을 가리키면 메인
+    서버가 422(`INVALID_TARGET`)로 거부한다. 하위 블록은 메인 서버가 자동으로
+    함께 지우므로 따로 보내면 안 되고, 같은 요청에서 방금 add한 블록은 delete
+    대상으로 쓸 수 없다 — 이 제약들은 메인 서버가 검증하며, 현재 이 에이전트는
+    스스로 delete를 만들지 않는다(문서 3-10: 블록 삭제 요청은 Fallback 대상).
+    이 타입은 커밋 API 계약을 완전히 표현하기 위해 존재한다.
+    """
+
+    item_id: str
+    action: Literal["delete"] = "delete"
+    target_id: str = Field(..., description="삭제 대상 블록의 실제 ID")
+
+
+CommitItem = CommitAddItem | CommitUpdateItem | CommitDeleteItem
 
 
 class DroppedItem(BaseModel):
@@ -342,6 +358,14 @@ class AppliedItem(BaseModel):
     item_id: str
     block_id: str
     path: str = Field(..., description="예: 교내 커머스 리뉴얼 > 문제해결")
+    action: Literal["add", "update", "delete"] | None = Field(
+        None,
+        description=(
+            "메인 서버 변경사항(2026-09-20)으로 추가된 필드. 프론트 변경 요약에 "
+            "쓰이므로 스트림 완료 이벤트로 그대로 전달한다. 이전 메인 서버 버전은 "
+            "이 필드를 안 보낼 수 있어 optional이다."
+        ),
+    )
 
 
 class CommitResult(BaseModel):

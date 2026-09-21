@@ -509,6 +509,11 @@ placeholder 블록)를 만듭니다. AI 서버는 빈 맵을 만들지 않고 `m
     "action": "update",
     "target_id": "3055",
     "content": "원인은 외부 PG사 응답 지연이었고 로그 분석으로 확인했다."
+  },
+  {
+    "item_id": "it_3",
+    "action": "delete",
+    "target_id": "3021"
   }
 ]
 ```
@@ -516,14 +521,22 @@ placeholder 블록)를 만듭니다. AI 서버는 빈 맵을 만들지 않고 `m
 | 필드 | 조건 |
 | --- | --- |
 | `item_id` | 요청 안에서 유일 |
-| `action` | `add` 또는 `update` |
+| `action` | `add`, `update` 또는 `delete` (2026-09-20 추가) |
 | `parent_id` | `add` 시 `parent_item_id`와 둘 중 하나 필수. 선택한 활동 내부 block |
 | `parent_item_id` | 같은 요청에서 앞서 정의한 add item을 부모로 쓸 때 지정 |
 | `section_kind` | level 3 카테고리 생성 시에만. 값은 아래 표 |
 | `slot_id` | 템플릿 슬롯에 대응하면 지정. 문구는 메인이 카탈로그에서 부여 (3-7) |
-| `target_id` | `update`에 필수. 선택한 활동 내부 editable block |
+| `target_id` | `update`·`delete`에 필수. 선택한 활동 내부 editable block |
 | `content` | 값이 있으면 공백 제외 1~500자. 카테고리 컨테이너와 템플릿 빈 슬롯은 생략 (3-8) |
 | `after_id` | 같은 부모의 형제 block. null이면 형제 목록 끝에 추가 |
+
+**`delete`는 CONTENT 블록(4·5단계)만 지울 수 있습니다.** 섹션·활동·그룹을
+가리키면 `422 INVALID_TARGET`입니다. 하위 블록은 메인 서버가 자동으로 함께
+지우므로 따로 보내면 안 되며(보내면 오류), 같은 요청에서 방금 `add`한 블록은
+`delete` 대상으로 쓸 수 없습니다. **현재 이 AI 에이전트는 스스로 `delete`
+operation을 만들지 않습니다** — 블록 삭제 요청은 여전히 Fallback 대상입니다
+(3-10). 이 계약은 메인 서버·다른 클라이언트가 delete를 쓸 수 있도록 문서화된
+것이며, AI가 직접 삭제를 결정하는 기능은 별도 결정 전까지 없습니다.
 
 **`level`·`position`·`kind`·`placeholder`는 메인 서버가 계산합니다.** LLM도 AI 서버도
 정하지 않습니다. `position` 재배치는 에디터 드래그 정렬과 같은 로직이어야 하므로
@@ -1058,10 +1071,15 @@ COMMIT
   "previous_version": 42,
   "map_version": 43,
   "applied": [
-    { "item_id": "it_1", "block_id": "3701", "path": "교내 커머스 리뉴얼 > 문제해결" }
+    { "item_id": "it_1", "block_id": "3701", "path": "교내 커머스 리뉴얼 > 문제해결", "action": "add" }
   ]
 }
 ```
+
+`applied` 각 항목의 `action`(2026-09-20 추가)은 `add`·`update`·`delete` 중
+하나로, 요청에 보낸 `action`을 그대로 반영합니다. AI 서버는 이 값을 가공하지
+않고 SSE `commit_result` 이벤트로 그대로 전달합니다 — 프론트 변경 요약에
+쓰입니다.
 
 `(user_id, request_id)` 기준으로 멱등합니다. 이미 커밋된 요청은 재실행하지 않고
 저장된 결과를 그대로 반환합니다.
