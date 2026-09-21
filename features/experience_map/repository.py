@@ -457,32 +457,66 @@ class ExperienceMapRepository:
         )
         return RequestRow.from_record(record) if record else None
 
-    async def renew_request_lease(self, user_id: str, request_id: str, owner_token: str) -> bool:
-        """lease를 연장한다.
+    async def renew_request_lease(
+        self, user_id: str, request_id: str, owner_token: str
+    ) -> tuple[bool, bool]:
+        """lease를 연장하고, 그 김에 작업 중지 요청 여부도 함께 확인한다.
 
         **`owner_token` 은 필수다.** 행이 `running` 인 것과 내가 그 running 의
         주인인 것은 다르다 — 만료 정리 뒤 다른 worker 가 재시도로 가져갔다면
         행은 `running` 이지만 내 것이 아니다.
 
+        `cancel_requested`(프론트 요청, 2026-09-20)를 같은 조회에 얹는 이유는
+        별도 폴링 없이 이미 도는 lease 갱신 주기에 얹기 위해서다 — 취소는 그만큼
+        (최대 `LEASE_RENEW_INTERVAL_SECONDS`) 늦게 반영된다.
+
         Returns:
-            bool: 연장했으면 `True`. 아니면 `False` — 호출자는 실행을 중단해야 한다
+            tuple[bool, bool]: `(renewed, cancel_requested)`. `renewed`가
+                `False`면 호출자는 실행을 중단해야 한다(lease 상실).
 
         Raises:
             ValueError: `owner_token` 이 비어 있음
         """
         token = _require_token(owner_token)
-        result = await self._pool.execute(
+        record = await self._pool.fetchrow(
             """
             UPDATE ai_experience_request
                SET lease_expires_at = now() + make_interval(secs => $3),
                    updated_at = now()
              WHERE user_id = $1 AND request_id = $2 AND status = 'running'
                AND owner_token = $4::uuid
+         RETURNING cancel_requested
             """,
             int(user_id),
             uuid.UUID(request_id),
             self._lease_seconds,
             token,
+        )
+        if record is None:
+            return False, False
+        return True, bool(record["cancel_requested"])
+
+    async def request_cancellation(self, user_id: str, request_id: str) -> bool:
+        """진행 중인 요청에 중지를 요청한다 (프론트 요청, 2026-09-20).
+
+        실행 중인 worker가 알아채 스스로 멈추므로 여기서는 플래그만 세운다.
+        `owner_token`을 요구하지 않는다 — 이 API는 실행권을 바꾸지 않고, 세션
+        소유자(`user_id`)라면 누구나 자신의 진행 중인 요청을 멈출 수 있어야
+        한다.
+
+        Returns:
+            bool: 실행 중인 요청에 실제로 세웠으면 `True`. 이미 끝났거나
+                없는 요청이면 `False`.
+        """
+        result = await self._pool.execute(
+            """
+            UPDATE ai_experience_request
+               SET cancel_requested = true,
+                   updated_at = now()
+             WHERE user_id = $1 AND request_id = $2 AND status = 'running'
+            """,
+            int(user_id),
+            uuid.UUID(request_id),
         )
         return result.endswith(" 1")
 
@@ -791,6 +825,10 @@ class LeaseRenewer:
         self._interval = interval_seconds
         self._task: asyncio.Task | None = None
         self.lost = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        """사용자가 작업 중지를 요청했다 (프론트 요청, 2026-09-20). `lost`와
+        달리 우리는 여전히 실행권을 갖고 있다 — 호출자가 스스로 실패로
+        정리해야 한다."""
 
     async def __aenter__(self) -> "LeaseRenewer":
         self._task = asyncio.create_task(self._loop())
@@ -808,7 +846,7 @@ class LeaseRenewer:
         while True:
             await asyncio.sleep(self._interval)
             try:
-                renewed = await self._repository.renew_request_lease(
+                renewed, cancel_requested = await self._repository.renew_request_lease(
                     self._user_id, self._request_id, self._owner_token
                 )
             except Exception:
@@ -818,6 +856,10 @@ class LeaseRenewer:
             if not renewed:
                 logger.warning("lease 를 잃었습니다 (request_id=%s)", self._request_id)
                 self.lost.set()
+                return
+            if cancel_requested:
+                logger.info("사용자 요청으로 중지합니다 (request_id=%s)", self._request_id)
+                self.cancelled.set()
                 return
 
 

@@ -19,6 +19,7 @@ SseErrorCode = Literal[
     "node_timeout",
     "stream_error",
     "db_constraint_violation",
+    "cancelled",
 ]
 
 # SSE error code별 사용자 재시도 가능 여부 (API 명세 6절)
@@ -29,6 +30,7 @@ SSE_RETRYABLE: dict[str, bool] = {
     "node_timeout": True,
     "stream_error": True,
     "db_constraint_violation": False,
+    "cancelled": False,
 }
 
 
@@ -296,6 +298,23 @@ class LeaseLostError(ExperienceMapError):
     @property
     def retryable(self) -> bool:
         return True
+
+
+class RequestCancelledError(ExperienceMapError):
+    """사용자가 진행 중인 요청을 명시적으로 중지시켰다 (프론트 요청, 2026-09-20).
+
+    `LeaseLostError`와 달리 우리가 여전히 이 요청의 주인이다 — DB 상태를
+    직접 실패로 정리해야 한다(`service._fail`을 그대로 탄다). 커밋이 이미
+    메인 서버에 전송된 뒤라면 되돌릴 수 없으므로, 취소 요청은 `commit_changes`
+    가 `asyncio.shield`로 보호하는 구간 이후에는 반영되지 않는다 — 다음
+    lease 갱신 주기에 확인하기 때문에 최대 `LEASE_RENEW_INTERVAL_SECONDS`
+    만큼 늦게 반영될 수 있다.
+    """
+
+    status_code = 409
+    code = "cancelled"
+    sse_code = "cancelled"
+    message = "사용자 요청으로 처리가 중단되었습니다."
 
 
 class DbConstraintViolationError(ExperienceMapError):

@@ -76,6 +76,10 @@ CREATE TABLE IF NOT EXISTS ai_experience_request (
   suggestion          jsonb,
   error               jsonb,
   fallback_message    text,
+  -- 프론트 요청(2026-09-20)으로 추가된 작업 중지 API가 세운다. lease 갱신
+  -- 주기(LEASE_RENEW_INTERVAL_SECONDS)마다 실행 중인 worker가 이 값을 확인해
+  -- 스스로 멈춘다 — 즉시 반영되지 않고 최대 그 주기만큼 늦게 반영된다.
+  cancel_requested    boolean NOT NULL DEFAULT false,
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, request_id),
@@ -93,6 +97,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_experience_request_running
 -- 스키마로 이미 만들어져 있으면) 새 컬럼을 반영하지 않는다. fallback_message는
 -- 이 파일에 나중에 추가됐으므로 별도로 보강한다.
 ALTER TABLE ai_experience_request ADD COLUMN IF NOT EXISTS fallback_message text;
+ALTER TABLE ai_experience_request ADD COLUMN IF NOT EXISTS cancel_requested boolean NOT NULL DEFAULT false;
 
 -- ===== 3-4. ai_commit_log =====
 -- 되돌리기용 역연산 기록. **메인 서버 단독 소유**이며 AI 서버 계정은 권한이 없다.

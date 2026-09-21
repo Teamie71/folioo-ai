@@ -318,7 +318,7 @@ async def test_renew_lease_extends(repo, user_id):
     before = claimed.request.lease_expires_at
     token = claimed.request.owner_token
 
-    assert await repo.renew_request_lease(user_id, request_id, token) is True
+    assert (await repo.renew_request_lease(user_id, request_id, token))[0] is True
     assert (await repo.get_request(user_id, request_id)).lease_expires_at >= before
 
 
@@ -330,7 +330,7 @@ async def test_renew_lease_fails_when_not_running(repo, user_id):
     token = await claim(repo, user_id, session.session_id, request_id)
     await complete(repo, user_id, request_id)
 
-    assert await repo.renew_request_lease(user_id, request_id, token) is False
+    assert (await repo.renew_request_lease(user_id, request_id, token))[0] is False
 
 
 @pytest.mark.asyncio
@@ -339,7 +339,7 @@ async def test_renew_lease_fails_for_other_user(repo, user_id):
     request_id = new_request_id()
     token = await claim(repo, user_id, session.session_id, request_id)
 
-    assert await repo.renew_request_lease(str(int(user_id) + 1), request_id, token) is False
+    assert (await repo.renew_request_lease(str(int(user_id) + 1), request_id, token))[0] is False
 
 
 @pytest.mark.asyncio
@@ -446,6 +446,36 @@ async def test_lease_renewer_signals_loss(clean_db, user_id):
         await asyncio.wait_for(renewer.lost.wait(), timeout=2)
 
 
+@pytest.mark.asyncio
+async def test_lease_renewer_signals_cancellation(clean_db, user_id):
+    """작업 중지 요청(2026-09-20)은 lease 갱신 주기에 얹혀 cancelled 로 알려진다."""
+    repo = ExperienceMapRepository(clean_db, lease_seconds=300)
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    token = await claim(repo, user_id, session.session_id, request_id)
+
+    async with LeaseRenewer(
+        repo, user_id, request_id, owner_token=token, interval_seconds=0.05
+    ) as renewer:
+        await asyncio.sleep(0.15)
+        assert not renewer.cancelled.is_set()
+
+        assert await repo.request_cancellation(user_id, request_id) is True
+        await asyncio.wait_for(renewer.cancelled.wait(), timeout=2)
+        assert not renewer.lost.is_set()
+
+
+@pytest.mark.asyncio
+async def test_request_cancellation_ignores_finished_request(repo, user_id):
+    """이미 끝난 요청에는 중지를 세우지 않는다."""
+    session = await repo.get_or_create_session(user_id)
+    request_id = new_request_id()
+    await claim(repo, user_id, session.session_id, request_id)
+    await complete(repo, user_id, request_id)
+
+    assert await repo.request_cancellation(user_id, request_id) is False
+
+
 # ===== 보관 정리 =====
 
 
@@ -499,7 +529,7 @@ async def test_retry_transitions_to_running(repo, user_id):
     assert row.lease_expires_at is not None
     assert row.owner_token is not None
     assert row.error is None
-    assert await repo.renew_request_lease(user_id, request_id, row.owner_token) is True
+    assert (await repo.renew_request_lease(user_id, request_id, row.owner_token))[0] is True
 
 
 @pytest.mark.asyncio
@@ -623,7 +653,7 @@ async def test_stale_token_cannot_renew_or_finish(repo, user_id):
     retried = await repo.retry_request(user_id, request_id)
     fresh_token = retried.request.owner_token
 
-    assert await repo.renew_request_lease(user_id, request_id, stale_token) is False
+    assert (await repo.renew_request_lease(user_id, request_id, stale_token))[0] is False
     assert (
         await repo.mark_request_completed(
             user_id, request_id, result={"map_version": 1}, owner_token=stale_token
@@ -638,7 +668,7 @@ async def test_stale_token_cannot_renew_or_finish(repo, user_id):
     )
 
     # 현재 주인은 정상적으로 쓸 수 있다.
-    assert await repo.renew_request_lease(user_id, request_id, fresh_token) is True
+    assert (await repo.renew_request_lease(user_id, request_id, fresh_token))[0] is True
     assert (
         await repo.mark_request_completed(
             user_id, request_id, result={"map_version": 43}, owner_token=fresh_token
@@ -659,7 +689,7 @@ async def test_expiry_clears_owner_token(clean_db, user_id):
     await repo.expire_stale_running_requests()
 
     assert (await repo.get_request(user_id, request_id)).owner_token is None
-    assert await repo.renew_request_lease(user_id, request_id, stale_token) is False
+    assert (await repo.renew_request_lease(user_id, request_id, stale_token))[0] is False
 
 
 # ===== 실행권은 선택이 아니다 (Codex 2차 리뷰 1) =====
@@ -705,7 +735,7 @@ async def test_null_owner_token_row_cannot_be_finished(repo, clean_db, user_id):
         "UPDATE ai_experience_request SET owner_token = NULL WHERE user_id = $1", int(user_id)
     )
 
-    assert await repo.renew_request_lease(user_id, request_id, token) is False
+    assert (await repo.renew_request_lease(user_id, request_id, token))[0] is False
     assert await repo.mark_request_completed(user_id, request_id, owner_token=token) is None
     assert (
         await repo.mark_request_failed(user_id, request_id, error={"code": "x"}, owner_token=token)
