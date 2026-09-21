@@ -36,10 +36,16 @@ BEARER_PREFIX = "bearer "
 
 
 class TicketPayload(BaseModel):
-    """티켓 payload (API 명세 2-1)"""
+    """티켓 payload (API 명세 2-1)
+
+    `bid`(활동 block ID)는 메인 서버 변경사항(2026-09-20)으로 추가됐다 —
+    세션이 활동 단위로 분리되면서, 그 세션이 어느 활동에 묶였는지를 티켓
+    자체에도 싣는다.
+    """
 
     sub: str = Field(..., description="사용자 ID (십진 문자열)")
     sid: str = Field(..., description="세션 UUID")
+    bid: str = Field(..., description="세션이 묶인 활동 block ID (십진 문자열)")
     iat: int = Field(..., description="발급 시각")
     exp: int = Field(..., description="만료 시각")
 

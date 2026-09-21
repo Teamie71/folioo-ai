@@ -30,7 +30,7 @@ def _require_api_key(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
 
-def _issue_test_ticket(user_id: str, session_id: str) -> str:
+def _issue_test_ticket(user_id: str, session_id: str, block_id: str) -> str:
     """테스트 UI에서만 쓰는 짧은 세션 티켓을 발급한다."""
     secret = os.getenv("EXPMAP_TICKET_SECRET", "")
     if not secret:
@@ -41,7 +41,13 @@ def _issue_test_ticket(user_id: str, session_id: str) -> str:
 
     now = int(time.time())
     return jwt.encode(
-        {"sub": user_id, "sid": session_id, "iat": now, "exp": now + _TICKET_TTL_SECONDS},
+        {
+            "sub": user_id,
+            "sid": session_id,
+            "bid": block_id,
+            "iat": now,
+            "exp": now + _TICKET_TTL_SECONDS,
+        },
         secret,
         algorithm="HS256",
     )
@@ -65,11 +71,13 @@ async def create_test_session(payload: CreateSessionRequest, request: Request) -
     """테스트 페이지 전용 세션과 티켓을 만든다."""
     _require_api_key(request)
     await get_test_map_store().reset(payload.user_id)
-    session_id, session_status = await get_service().create_session(payload.user_id)
+    session_id, session_status = await get_service().create_session(
+        payload.user_id, payload.block_id
+    )
     return {
         "session_id": session_id,
         "status": session_status,
-        "ticket": _issue_test_ticket(payload.user_id, session_id),
+        "ticket": _issue_test_ticket(payload.user_id, session_id, payload.block_id),
         "expires_in_seconds": str(_TICKET_TTL_SECONDS),
     }
 
@@ -241,7 +249,7 @@ document.querySelector('#createSession').onclick = async () => {
   try {
     const response = await fetch('/experience-map/test/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': document.querySelector('#apiKey').value },
-      body: JSON.stringify({ user_id: document.querySelector('#userId').value })
+      body: JSON.stringify({ user_id: document.querySelector('#userId').value, block_id: '200' })
     });
     if (!response.ok) throw new Error(await response.text());
     const data = await response.json(); state.sessionId = data.session_id; state.ticket = data.ticket; state.requestId = null;

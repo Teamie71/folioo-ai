@@ -72,7 +72,7 @@ async def fail_current(repo, user_id: str, request_id: str, **kwargs) -> None:
 
 async def make_failed_request(service, repo, user_id) -> tuple[str, str]:
     """실패 상태의 요청을 만든다. `(session_id, request_id)`"""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     await repo.claim_request(user_id, session.session_id, request_id, HASH_A)
     await fail_current(repo, user_id, request_id)
@@ -146,7 +146,7 @@ async def test_retry_only_latest_request(service, repo, user_id):
 
 @pytest.mark.asyncio
 async def test_retry_unknown_request_is_not_found(service, repo, user_id):
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
 
     with pytest.raises(RequestNotFoundError):
         await service.prepare_retry(user_id, session.session_id, new_request_id())
@@ -179,7 +179,7 @@ async def test_lost_lease_does_not_overwrite_other_worker(repo, user_id):
     저장되면 안 된다.
     """
     service = ExperienceMapService(repository=repo, runner=MockGraphRunner())
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     prepared = await service.prepare_chat(
         user_id,
@@ -216,7 +216,7 @@ async def test_lease_loss_interrupts_during_silence(repo, user_id):
     service = ExperienceMapService(
         repository=repo, runner=_SlowRunner(gap_seconds=5), lease_renew_interval=0.1
     )
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     prepared = await service.prepare_chat(
         user_id,
@@ -255,12 +255,12 @@ async def test_active_gap_reaches_the_graph_state(service, repo, user_id):
     직전 질문을 못 봐서, 그 질문에 대한 짧은 답변을 무관한 입력으로 판정하고
     fallback 으로 보낸다 (명세 5-1).
     """
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     gap = {
         "message": "이탈률이 감소한 주요 원인은 무엇인가요?",
         "path": "교내 커머스 리뉴얼 > 성과",
     }
-    await repo.save_active_gap(user_id, gap)
+    await repo.save_active_gap(user_id, session.session_id, gap)
 
     prepared = await service.prepare_chat(
         user_id=user_id,
@@ -282,7 +282,7 @@ async def test_retry_carries_active_gap_too(service, repo, user_id):
     """재시도도 같은 state 조립을 거치므로 제안이 실려야 한다."""
     session_id, request_id = await make_failed_request(service, repo, user_id)
     gap = {"message": "그때 맡은 역할은 무엇이었나요?", "path": "교내 커머스 리뉴얼 > 담당업무"}
-    await repo.save_active_gap(user_id, gap)
+    await repo.save_active_gap(user_id, session_id, gap)
 
     prepared = await service.prepare_retry(
         user_id=user_id, session_id=session_id, request_id=request_id
@@ -295,7 +295,7 @@ async def test_retry_carries_active_gap_too(service, repo, user_id):
 @pytest.mark.asyncio
 async def test_no_active_gap_gives_empty_context(service, repo, user_id):
     """제안이 없으면 빈 맥락이다. 라우터가 없는 질문을 지어내면 안 된다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
 
     prepared = await service.prepare_chat(
         user_id=user_id,
@@ -343,7 +343,7 @@ async def test_fallback_message_survives_idempotent_replay(repo, user_id):
     `processing_started → processing_complete`만 오고 안내 문구가 사라진다.
     """
     fallback_service = ExperienceMapService(repository=repo, runner=_FallbackOnlyRunner())
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
 
     async def run_once():
@@ -379,7 +379,7 @@ async def test_fallback_message_survives_idempotent_replay(repo, user_id):
 @pytest.mark.asyncio
 async def test_successful_turn_saves_message(service, repo, user_id):
     """정상 완료된 턴은 user_message와 모든 ai_response를 순서대로 남긴다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     prepared = await service.prepare_chat(
         user_id=user_id,
@@ -409,7 +409,7 @@ async def test_successful_turn_saves_message(service, repo, user_id):
 async def test_fallback_turn_saves_message(user_id, repo):
     """fallback으로 끝난 턴도 대화 히스토리에 남는다."""
     fallback_service = ExperienceMapService(repository=repo, runner=_FallbackOnlyRunner())
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     prepared = await fallback_service.prepare_chat(
         user_id=user_id,
@@ -434,7 +434,7 @@ async def test_fallback_turn_saves_message(user_id, repo):
 @pytest.mark.asyncio
 async def test_replaying_completed_request_does_not_duplicate_message(service, repo, user_id):
     """같은 request_id를 멱등 재생해도 대화 메시지는 한 번만 남는다."""
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
 
     async def run_once():
@@ -466,7 +466,7 @@ async def test_lost_lease_does_not_save_message(service, repo, user_id):
     스트림을 시작하기 전에 다른 경로가 이미 이 요청을 가져가서, 들고 있던
     `prepared`의 실행권이 못 쓰게 된 상태로 만든다.
     """
-    session = await repo.get_or_create_session(user_id)
+    session = await repo.get_or_create_session(user_id, "200")
     request_id = new_request_id()
     prepared = await service.prepare_chat(
         user_id,

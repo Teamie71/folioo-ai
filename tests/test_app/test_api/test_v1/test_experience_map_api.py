@@ -30,10 +30,12 @@ SECRET = "experience-map-api-test-secret-32bytes"
 USER_ID_BASE = 9_600_000
 
 
-def make_ticket(user_id: str, session_id: str, *, expires_in: int = 300) -> str:
+def make_ticket(
+    user_id: str, session_id: str, *, block_id: str = "200", expires_in: int = 300
+) -> str:
     now = int(time.time())
     return jwt.encode(
-        {"sub": user_id, "sid": session_id, "iat": now, "exp": now + expires_in},
+        {"sub": user_id, "sid": session_id, "bid": block_id, "iat": now, "exp": now + expires_in},
         SECRET,
         algorithm="HS256",
     )
@@ -148,7 +150,9 @@ async def test_sse_adapter_emits_heartbeat_while_waiting(monkeypatch):
 @pytest.mark.asyncio
 async def test_create_session(client, api_user_id):
     """메인 서버가 X-API-Key 로 호출한다. 티켓 경로가 아니다."""
-    response = await client.post("/api/v1/experience-map/sessions", json={"user_id": api_user_id})
+    response = await client.post(
+        "/api/v1/experience-map/sessions", json={"user_id": api_user_id, "block_id": "200"}
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -159,7 +163,7 @@ async def test_create_session(client, api_user_id):
 @pytest.mark.asyncio
 async def test_create_session_supports_main_server_compatibility_path(client, api_user_id):
     """메인 서버의 현재 `/sessions` 호출도 정식 경로와 같은 핸들러를 사용한다."""
-    response = await client.post("/sessions", json={"user_id": api_user_id})
+    response = await client.post("/sessions", json={"user_id": api_user_id, "block_id": "200"})
 
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
@@ -168,8 +172,12 @@ async def test_create_session_supports_main_server_compatibility_path(client, ap
 
 @pytest.mark.asyncio
 async def test_create_session_is_idempotent(client, api_user_id):
-    first = await client.post("/api/v1/experience-map/sessions", json={"user_id": api_user_id})
-    second = await client.post("/api/v1/experience-map/sessions", json={"user_id": api_user_id})
+    first = await client.post(
+        "/api/v1/experience-map/sessions", json={"user_id": api_user_id, "block_id": "200"}
+    )
+    second = await client.post(
+        "/api/v1/experience-map/sessions", json={"user_id": api_user_id, "block_id": "200"}
+    )
 
     assert first.json()["session_id"] == second.json()["session_id"]
 
@@ -184,7 +192,9 @@ async def test_create_session_rejects_bad_user_id(client):
 @pytest_asyncio.fixture
 async def session(client, api_user_id) -> tuple[str, str]:
     """(session_id, Authorization 헤더값)"""
-    response = await client.post("/api/v1/experience-map/sessions", json={"user_id": api_user_id})
+    response = await client.post(
+        "/api/v1/experience-map/sessions", json={"user_id": api_user_id, "block_id": "200"}
+    )
     session_id = response.json()["session_id"]
     return session_id, f"Bearer {make_ticket(api_user_id, session_id)}"
 

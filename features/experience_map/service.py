@@ -148,13 +148,13 @@ class ExperienceMapService:
 
     # ===== 세션 =====
 
-    async def create_session(self, user_id: str) -> tuple[str, str]:
-        """세션을 만들거나 기존 것을 돌려준다.
+    async def create_session(self, user_id: str, block_id: str) -> tuple[str, str]:
+        """활동(`block_id`) 단위 세션을 만들거나 기존 것을 돌려준다.
 
         Returns:
             tuple[str, str]: `(session_id, status)`
         """
-        session = await self.repository.get_or_create_session(user_id)
+        session = await self.repository.get_or_create_session(user_id, block_id)
         latest = await self.repository.get_latest_request(user_id, session.session_id)
         status = latest.status if latest and latest.status in {"running", "failed"} else "ready"
         return session.session_id, status

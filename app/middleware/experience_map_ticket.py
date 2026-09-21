@@ -130,6 +130,7 @@ class ExperienceMapTicketMiddleware:
         scope.setdefault("state", {})
         scope["state"]["experience_map_user_id"] = payload.sub
         scope["state"]["experience_map_session_id"] = payload.sid
+        scope["state"]["experience_map_block_id"] = payload.bid
 
         await self.app(scope, receive, send)
 

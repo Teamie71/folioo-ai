@@ -36,13 +36,16 @@ CREATE TABLE IF NOT EXISTS experience_map (
 );
 
 -- ===== 3-2. ai_experience_session =====
--- 사용자당 세션 1개. LangGraph thread_id = session_id.
+-- 세션은 활동(block_id) 단위다 — 메인 서버 변경사항(2026-09-20)으로 같은
+-- 사용자라도 활동마다 세션이 따로 있다. LangGraph thread_id = session_id.
 CREATE TABLE IF NOT EXISTS ai_experience_session (
-  user_id      bigint PRIMARY KEY,
+  user_id      bigint NOT NULL,
+  block_id     text NOT NULL,
   session_id   uuid NOT NULL UNIQUE,
   active_gap   jsonb,
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, block_id),
   UNIQUE (user_id, session_id)
 );
 
@@ -124,5 +127,31 @@ CREATE TABLE IF NOT EXISTS ai_experience_message (
 -- 세션 안에서 id 순으로 훑는 조회(커서 페이징)의 인덱스.
 CREATE INDEX IF NOT EXISTS idx_ai_experience_message_session
   ON ai_experience_message(session_id, id);
+
+-- 기존 로컬 클러스터에 이미 있던(활동 이전 방식, PK가 user_id 단독인)
+-- ai_experience_session을 활동 단위 구조로 옮긴다. CREATE TABLE IF NOT EXISTS는
+-- 이미 있는 테이블을 바꾸지 않으므로 필요하다. 로컬 개발 데이터는 폐기해도
+-- 되는 대상이라, 이 컬럼이 없던(활동 이전 방식) 세션과 그 하위 요청·대화
+-- 기록을 함께 지운다 — 의존 테이블이 이 시점에는 이미 만들어져 있어야
+-- FOREIGN KEY 위반 없이 지울 수 있다.
+ALTER TABLE ai_experience_session
+  ADD COLUMN IF NOT EXISTS block_id text;
+
+DELETE FROM ai_experience_message
+ WHERE session_id IN (SELECT session_id FROM ai_experience_session WHERE block_id IS NULL);
+
+DELETE FROM ai_experience_request
+ WHERE session_id IN (SELECT session_id FROM ai_experience_session WHERE block_id IS NULL);
+
+DELETE FROM ai_experience_session WHERE block_id IS NULL;
+
+ALTER TABLE ai_experience_session
+  ALTER COLUMN block_id SET NOT NULL;
+
+ALTER TABLE ai_experience_session
+  DROP CONSTRAINT IF EXISTS ai_experience_session_pkey;
+
+ALTER TABLE ai_experience_session
+  ADD CONSTRAINT ai_experience_session_pkey PRIMARY KEY (user_id, block_id);
 
 COMMIT;

@@ -100,10 +100,15 @@ gap 답변 여부는 Router가 아니라 반영 내용 필터링 노드가 판�
 {
   "sub": "123",
   "sid": "d9428888-122b-11e1-b85c-61cd3cbb3210",
+  "bid": "3021",
   "iat": 1754400000,
   "exp": 1754400300
 }
 ```
+
+`bid`는 이 세션이 묶인 활동(level 2) block ID입니다. 메인 서버 변경사항
+(2026-09-20)으로 세션이 사용자 단위가 아니라 **활동 단위**로 바뀌면서
+추가됐습니다 — 같은 사용자라도 활동마다 세션이 따로 있습니다.
 
 **AI 서버 검증 3단계: 서명 → 만료 → `sid` == path `{session_id}`**
 
@@ -613,8 +618,11 @@ block 쓰기와 `ai_experience_request.result` 저장이 서로 다른 서비스
 ### `POST /sessions`
 
 ```json
-{ "user_id": "123" }
+{ "user_id": "123", "block_id": "3021" }
 ```
+
+`block_id`는 세션이 묶일 활동(level 2) block ID입니다(2026-09-20 변경). 같은
+`user_id`라도 `block_id`가 다르면 별도 세션을 만듭니다.
 
 **Response `201 Created` 또는 `200 OK`**
 

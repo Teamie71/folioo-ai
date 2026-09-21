@@ -77,10 +77,15 @@ def _as_list(value: Any) -> list[Any]:
 
 @dataclass(frozen=True)
 class SessionRow:
-    """`ai_experience_session` 한 행"""
+    """`ai_experience_session` 한 행
+
+    세션은 활동(`block_id`) 단위다 — 메인 서버 변경사항(2026-09-20)으로
+    한 사용자가 활동마다 별도 세션을 가진다.
+    """
 
     user_id: str
     session_id: str
+    block_id: str
     active_gap: dict[str, Any] | None
 
     @classmethod
@@ -88,6 +93,7 @@ class SessionRow:
         return cls(
             user_id=str(record["user_id"]),
             session_id=str(record["session_id"]),
+            block_id=str(record["block_id"]),
             active_gap=_as_dict(record["active_gap"]),
         )
 
@@ -256,21 +262,23 @@ class ExperienceMapRepository:
 
     # ===== 세션 =====
 
-    async def get_or_create_session(self, user_id: str) -> SessionRow:
-        """사용자의 세션을 반환한다. 없으면 만든다.
+    async def get_or_create_session(self, user_id: str, block_id: str) -> SessionRow:
+        """사용자·활동 조합의 세션을 반환한다. 없으면 만든다.
 
-        사용자당 세션은 1개다. 여러 worker가 동시에 호출해도 `ON CONFLICT`로
+        세션은 활동 단위다(메인 서버 변경사항 2026-09-20) — 사용자당 활동마다
+        세션이 하나씩이다. 여러 worker가 동시에 호출해도 `ON CONFLICT`로
         하나만 삽입되고 나머지는 기존 행을 받는다.
         """
         record = await self._pool.fetchrow(
             """
-            INSERT INTO ai_experience_session (user_id, session_id)
-                 VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE
+            INSERT INTO ai_experience_session (user_id, block_id, session_id)
+                 VALUES ($1, $2, $3)
+            ON CONFLICT (user_id, block_id) DO UPDATE
                     SET updated_at = now()
-              RETURNING user_id, session_id, active_gap
+              RETURNING user_id, session_id, block_id, active_gap
             """,
             int(user_id),
+            block_id,
             uuid.uuid4(),
         )
         return SessionRow.from_record(record)
@@ -279,7 +287,7 @@ class ExperienceMapRepository:
         """세션을 조회한다. **소유자가 아니면 `None`이다.**"""
         record = await self._pool.fetchrow(
             """
-            SELECT user_id, session_id, active_gap
+            SELECT user_id, session_id, block_id, active_gap
               FROM ai_experience_session
              WHERE user_id = $1 AND session_id = $2
             """,
@@ -288,15 +296,22 @@ class ExperienceMapRepository:
         )
         return SessionRow.from_record(record) if record else None
 
-    async def save_active_gap(self, user_id: str, gap: dict[str, Any] | None) -> None:
-        """직전 턴의 gap을 저장한다. gap이 없으면 `None`으로 비운다 (5-10)."""
+    async def save_active_gap(
+        self, user_id: str, session_id: str, gap: dict[str, Any] | None
+    ) -> None:
+        """직전 턴의 gap을 저장한다. gap이 없으면 `None`으로 비운다 (5-10).
+
+        세션이 활동 단위로 분리된 뒤로는 `user_id`만으로 갱신 대상을 특정할
+        수 없다 — 반드시 `session_id`도 함께 지정한다.
+        """
         await self._pool.execute(
             """
             UPDATE ai_experience_session
-               SET active_gap = $2::jsonb, updated_at = now()
-             WHERE user_id = $1
+               SET active_gap = $3::jsonb, updated_at = now()
+             WHERE user_id = $1 AND session_id = $2
             """,
             int(user_id),
+            uuid.UUID(session_id),
             json.dumps(gap, ensure_ascii=False) if gap is not None else None,
         )
 

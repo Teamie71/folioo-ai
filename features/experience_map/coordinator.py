@@ -29,7 +29,7 @@ StateRunner = Callable[[ExperienceMapState], Awaitable[ExperienceMapState]]
 CommitRecoveryRunner = Callable[
     [ExperienceMapState, Literal["validate", "structure"]], Awaitable[ExperienceMapState]
 ]
-ActiveGapSaver = Callable[[str, dict | None], Awaitable[None]]
+ActiveGapSaver = Callable[[str, str, dict | None], Awaitable[None]]
 
 
 async def coordinate(
@@ -139,7 +139,9 @@ async def _save_active_gap_safely(
     if save_active_gap is None:
         return
     try:
-        await save_active_gap(_required_string(state, "user_id"), gap)
+        await save_active_gap(
+            _required_string(state, "user_id"), _required_string(state, "session_id"), gap
+        )
     except Exception:
         logger.exception("coordinator: active gap 저장 실패 - 커밋 성공 상태 유지")
 
