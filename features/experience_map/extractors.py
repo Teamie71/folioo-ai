@@ -244,7 +244,7 @@ async def extract_with_parser(data: bytes, filename: str, content_type: str) -> 
             raise FileUnreadableError("빈 파일입니다.")
         return _truncate(text)
 
-    # ZIP/XML 파싱은 업로드 상한(10MB) 안에서 짧고 결정적인 CPU 작업이다.
+    # ZIP/XML 파싱은 업로드 상한(5MB) 안에서 짧고 결정적인 CPU 작업이다.
     # 별도 thread로 넘기면 제한된 런타임에서 worker 생성 자체가 멈출 수 있다.
     text = _extract_office_xml(data, filename)
     return _truncate(text)
