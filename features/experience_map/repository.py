@@ -157,6 +157,16 @@ class MessageRow:
     request_id: str
     user_message: str | None
     ai_responses: list[str]
+    attachments: list[dict[str, Any]]
+    """{filename, content_type} 목록 (프론트 요청, 2026-09-20)."""
+
+    status: str
+    """'completed' 또는 'failed'."""
+
+    can_revert: bool | None
+    """커밋 시점에 되돌리기가 가능했는지. 실패한 턴은 `None`이다. 그 뒤 실제로
+    되돌렸는지는 메인 서버(`POST /revert`)만 알아 추적하지 않는다."""
+
     created_at: datetime
 
     @classmethod
@@ -166,6 +176,9 @@ class MessageRow:
             request_id=str(record["request_id"]),
             user_message=record["user_message"],
             ai_responses=_as_list(record["ai_responses"]),
+            attachments=_as_list(record["attachments"]),
+            status=record["status"],
+            can_revert=record["can_revert"],
             created_at=record["created_at"],
         )
 
@@ -635,6 +648,9 @@ class ExperienceMapRepository:
         *,
         user_message: str | None,
         ai_responses: list[str],
+        attachments: list[dict[str, Any]] | None = None,
+        status: str = "completed",
+        can_revert: bool | None = None,
     ) -> None:
         """대화 메시지 한 턴을 남긴다.
 
@@ -642,18 +658,26 @@ class ExperienceMapRepository:
         대조할 필요가 없는, AI 가 직접 소유하는 테이블이다. 요청 하나가
         `ai_response` 를 여러 개 낼 수 있어(예: 커밋 결과 + gap 제안) 배열로
         받는다.
+
+        `attachments`·`status`·`can_revert`는 프론트 요청(2026-09-20)으로
+        추가됐다 — 지금까지는 성공한 턴만 저장돼 실패한 턴이 히스토리에서
+        통째로 사라졌다.
         """
         await self._pool.execute(
             """
             INSERT INTO ai_experience_message
-                (user_id, session_id, request_id, user_message, ai_responses)
-            VALUES ($1, $2, $3, $4, $5::jsonb)
+                (user_id, session_id, request_id, user_message, ai_responses,
+                 attachments, status, can_revert)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8)
             """,
             int(user_id),
             uuid.UUID(session_id),
             uuid.UUID(request_id),
             user_message,
             json.dumps(ai_responses, ensure_ascii=False),
+            json.dumps(attachments or [], ensure_ascii=False),
+            status,
+            can_revert,
         )
 
     async def list_messages(
@@ -675,7 +699,8 @@ class ExperienceMapRepository:
         """
         records = await self._pool.fetch(
             """
-            SELECT id, request_id, user_message, ai_responses, created_at
+            SELECT id, request_id, user_message, ai_responses,
+                   attachments, status, can_revert, created_at
               FROM ai_experience_message
              WHERE user_id = $1 AND session_id = $2
                AND ($3::bigint IS NULL OR id > $3)

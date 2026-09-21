@@ -231,6 +231,9 @@ class ExperienceMapService:
                     request_id=row.request_id,
                     user_message=row.user_message,
                     ai_responses=row.ai_responses,
+                    attachments=row.attachments,
+                    status=row.status,
+                    can_revert=row.can_revert,
                     created_at=row.created_at.isoformat(),
                 )
                 for row in rows
@@ -498,29 +501,51 @@ class ExperienceMapService:
             yield ErrorEvent(error=LeaseLostError().to_sse_error().model_dump())
             return
 
-        await self._save_message(prepared, result_payload, suggestion_payload, fallback_message)
+        await self._save_message(
+            prepared,
+            result_payload,
+            suggestion_payload,
+            fallback_message,
+            can_revert=(result_payload or {}).get("can_revert"),
+        )
 
         yield ProcessingCompleteEvent(request_id=prepared.request_id, status="completed")
+
+    @staticmethod
+    def _attachments_of(prepared: PreparedRequest) -> list[dict[str, str]]:
+        """이번 턴 첨부파일의 메타데이터만 남긴다 (프론트 요청, 2026-09-20).
+
+        파일 본문은 TTL 뒤 지워지므로 히스토리에는 이름·형식만 남는다.
+        """
+        return [
+            {"filename": f.filename, "content_type": f.content_type} for f in prepared.stored_files
+        ]
 
     async def _save_message(
         self,
         prepared: PreparedRequest,
         result_payload: dict[str, Any] | None,
         suggestion_payload: dict[str, Any] | None,
-        fallback_message: str | None,
+        extra_message: str | None,
+        *,
+        status: str = "completed",
+        can_revert: bool | None = None,
     ) -> None:
         """이번 턴의 대화 메시지를 남긴다.
 
-        `_execute`가 실제로 이 turn을 완료시켰을 때만(재생·lease 상실 경로
-        제외) 호출된다. 대화 히스토리는 부가 기능이라, 저장이 실패해도
-        이미 끝난 핵심 흐름(커밋)을 되돌리지 않고 로그만 남긴다.
+        `_execute`가 실제로 이 turn을 끝냈을 때(성공 또는 실패, 재생·lease
+        상실 경로는 제외) 호출된다. 대화 히스토리는 부가 기능이라, 저장이
+        실패해도 이미 끝난 핵심 흐름(커밋)을 되돌리지 않고 로그만 남긴다.
+
+        `extra_message`는 결과·제안 어느 쪽도 아닌 단일 문구다 — fallback
+        응답이거나(성공 경로), 실패 시 사용자에게 보인 오류 문구다.
         """
         ai_responses = [
             text
             for text in (
                 (result_payload or {}).get("ai_response"),
                 (suggestion_payload or {}).get("message"),
-                fallback_message,
+                extra_message,
             )
             if text
         ]
@@ -531,6 +556,9 @@ class ExperienceMapService:
                 prepared.request_id,
                 user_message=prepared.user_message,
                 ai_responses=ai_responses,
+                attachments=self._attachments_of(prepared),
+                status=status,
+                can_revert=can_revert,
             )
         except Exception:
             logger.exception("대화 메시지 저장 실패 (request_id=%s)", prepared.request_id)
@@ -540,9 +568,14 @@ class ExperienceMapService:
 
         저장이 0행이어도 오류 이벤트는 보낸다. 사용자는 자기 스트림이 실패했다는
         사실을 알아야 하고, 상태는 이미 다른 경로가 정리했다.
+
+        실행권을 실제로 갖고 있어 실패 처리에 성공했을 때만(다른 worker가
+        이미 가져간 게 아닐 때만) 대화 히스토리에도 남긴다 — 프론트 요청
+        (2026-09-20)으로, 지금까지는 성공한 턴만 히스토리에 남아 실패한
+        턴이 조회에서 통째로 사라졌다.
         """
         payload = exc.to_sse_error()
-        await self.repository.mark_request_failed(
+        failed = await self.repository.mark_request_failed(
             prepared.user_id,
             prepared.request_id,
             error=payload.model_dump(),
@@ -550,6 +583,8 @@ class ExperienceMapService:
             retryable=payload.retryable,
             owner_token=prepared.owner_token,
         )
+        if failed is not None:
+            await self._save_message(prepared, None, None, payload.message, status="failed")
         return ErrorEvent(error=payload.model_dump())
 
     async def _reconcile_stale_requests(self, session_id: str | None = None) -> None:

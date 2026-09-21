@@ -185,16 +185,39 @@ class RequestStateResponse(BaseModel):
 # ===== GET /sessions/{session_id}/messages =====
 
 
+class MessageAttachment(BaseModel):
+    """대화 히스토리에 남기는 첨부파일 메타데이터 (프론트 요청, 2026-09-20).
+
+    파일 본문은 TTL 뒤 지워지므로 이름·형식만 남긴다.
+    """
+
+    filename: str
+    content_type: str
+
+
 class MessageItem(BaseModel):
     """대화 메시지 한 턴.
 
     `ai_responses`는 한 턴에서 나온 `message_complete` 텍스트를 순서대로
     담는다 — 커밋 결과와 gap 제안이 함께 오면 2개, fallback이면 1개다.
+
+    `attachments`·`status`·`can_revert`는 프론트 요청(2026-09-20)으로
+    추가됐다. `status`가 `failed`면 실패한 턴이라는 뜻이고, 그때는
+    `ai_responses`가 사용자에게 보였던 오류 문구 하나만 담는다.
     """
 
     request_id: str
     user_message: str | None = None
     ai_responses: list[str] = Field(default_factory=list)
+    attachments: list[MessageAttachment] = Field(default_factory=list)
+    status: Literal["completed", "failed"] = "completed"
+    can_revert: bool | None = Field(
+        None,
+        description=(
+            "커밋 시점에 되돌리기가 가능했는지. 실패한 턴은 null. 그 뒤 실제로 "
+            "되돌렸는지는 메인 서버(POST /revert)만 알아 여기서 추적하지 않는다."
+        ),
+    )
     created_at: str
 
 

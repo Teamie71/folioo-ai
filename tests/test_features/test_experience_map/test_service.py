@@ -27,6 +27,7 @@ from features.experience_map.prompts.router import build_gap_context
 from features.experience_map.repository import ExperienceMapRepository
 from features.experience_map.service import ExperienceMapService, _build_state
 from features.experience_map.state import ExperienceMapState
+from features.experience_map.upload_store import StoredFile
 
 HASH_A = "a" * 64
 
@@ -376,6 +377,20 @@ async def test_no_active_gap_gives_empty_context(service, repo, user_id):
 # ===== fallback 응답의 재연결·멱등 재생 =====
 
 
+class _FailingRunner:
+    """항상 LlmError로 실패하는 대역 실행기."""
+
+    async def run(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
+        from features.experience_map.errors import LlmError
+
+        yield NodeStatusEvent(node="router", status="running")
+        raise LlmError()
+
+    async def resume(self, state: ExperienceMapState) -> AsyncIterator[ExperienceMapEvent]:
+        async for event in self.run(state):
+            yield event
+
+
 class _FallbackOnlyRunner:
     """fallback message_complete만 내는 대역 실행기."""
 
@@ -464,6 +479,43 @@ async def test_successful_turn_saves_message(service, repo, user_id):
         "교내 커머스 리뉴얼 > 문제해결에 1개를 정리했어요.",
         "그 해결 방법을 고른 기준이 무엇이었나요?",
     ]
+    assert rows[0].status == "completed"
+    assert rows[0].can_revert is True
+    assert rows[0].attachments == []
+
+
+@pytest.mark.asyncio
+async def test_successful_turn_saves_attachments(service, repo, user_id):
+    """첨부파일이 있는 턴은 파일명·형식이 히스토리에 남는다 (프론트 요청, 2026-09-20).
+
+    본문은 TTL 뒤 지워지므로 메타데이터만 저장한다.
+    """
+    session = await repo.get_or_create_session(user_id, "200")
+    request_id = new_request_id()
+    stored_file = StoredFile(
+        file_id="f_1",
+        filename="이력서.pdf",
+        content_type="application/pdf",
+        file_size=1024,
+        sha256="a" * 64,
+        gcs_object="9000001/req-1/f_1",
+    )
+    prepared = await service.prepare_chat(
+        user_id=user_id,
+        session_id=session.session_id,
+        request_id=request_id,
+        user_message=None,
+        context_experience_id=None,
+        view=None,
+        stored_files=[stored_file],
+    )
+
+    async for _ in service.stream(prepared):
+        pass
+
+    rows, _ = await repo.list_messages(user_id, session.session_id, cursor=None, limit=50)
+
+    assert rows[0].attachments == [{"filename": "이력서.pdf", "content_type": "application/pdf"}]
 
 
 @pytest.mark.asyncio
@@ -490,6 +542,37 @@ async def test_fallback_turn_saves_message(user_id, repo):
     assert len(rows) == 1
     assert rows[0].user_message == "자기소개서 항목도 대신 써줘"
     assert rows[0].ai_responses == ["지금은 도와드릴 수 없어요."]
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_saves_message_with_failed_status(user_id, repo):
+    """실패한 턴도 대화 히스토리에 남는다 (프론트 요청, 2026-09-20).
+
+    지금까지는 성공한 턴만 저장돼 실패한 턴이 조회에서 통째로 사라졌다.
+    """
+    failing_service = ExperienceMapService(repository=repo, runner=_FailingRunner())
+    session = await repo.get_or_create_session(user_id, "200")
+    request_id = new_request_id()
+    prepared = await failing_service.prepare_chat(
+        user_id=user_id,
+        session_id=session.session_id,
+        request_id=request_id,
+        user_message="결제 오류를 해결했다.",
+        context_experience_id=None,
+        view=None,
+        stored_files=[],
+    )
+
+    async for _ in failing_service.stream(prepared):
+        pass
+
+    rows, _ = await repo.list_messages(user_id, session.session_id, cursor=None, limit=50)
+
+    assert len(rows) == 1
+    assert rows[0].request_id == request_id
+    assert rows[0].status == "failed"
+    assert rows[0].can_revert is None
+    assert rows[0].ai_responses == ["AI 처리 중 오류가 발생했습니다."]
 
 
 @pytest.mark.asyncio
