@@ -42,6 +42,21 @@ class _SelfContradictionError(ValueError):
     """
 
 
+class _BatchCoverageError(ValueError):
+    """배치 내부 복구 재시도(온도 0.4, 좁힌 원문)까지 실패했을 때만 쓴다.
+
+    한 배치가 1차 시도에서 원문을 누락·중복하면, 그 배치만 좁혀서 온도를 올려
+    재시도한다(`attempt == 1`). 이 재시도까지 실패하면 예전에는 그 사실을
+    무시하고 다음 배치로 조용히 넘어갔다 — 실패가 훨씬 나중에(모든 배치가 끝난
+    뒤) 최종 `_validate_source_coverage`에서야 드러나 `_SelfContradictionError`가
+    받는 것과 같은 전체 재시도 기회를 못 받았다. 실제로 재현된 경우다: 배치
+    하나의 원문 전체를 1차 시도와 좁힌 재시도 모두에서 통째로 빠뜨려, 그래프
+    레벨의 1회 자동 재시도(같은 prompt, 같은 temperature=0)도 똑같이
+    실패했다. 이 타입으로 던지면 `_SelfContradictionError`와 같은 경로로
+    온도를 올려 처음부터 다시 시도한다.
+    """
+
+
 # 구조화 모델이 카탈로그의 의미는 맞게 고르고 leaf 이름만 일반적인 표현으로
 # 바꿔 내는, 실환경에서 확인된 경우만 정규화한다. prefix까지 정확히 일치해야
 # 하므로 다른 템플릿의 동명 슬롯이나 완전히 지어낸 slot_id는 통과하지 않는다.
@@ -282,6 +297,16 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                             repair_ids=repair_ids,
                             source_items=batch,
                         )
+                if missing or duplicated:
+                    # 좁혀서 온도를 올린 복구 재시도(attempt == 1)까지 실패했다.
+                    # 다음 배치로 조용히 넘어가면 이 배치가 통째로 깨진 채
+                    # 남아, 모든 배치가 끝난 뒤 최종 검증에서야 훨씬 늦게
+                    # 드러난다 — 여기서 바로 잡아 전체 재시도로 넘긴다.
+                    raise _BatchCoverageError(
+                        f"배치 {batch_index + 1}/{len(batches)}에서 복구 재시도까지 "
+                        f"원문 coverage 오류가 남았습니다 (누락 {sorted(missing)} · "
+                        f"중복 {sorted(duplicated)})."
+                    )
                 items = batch_items
 
             # 배치를 다 처리한 뒤 딱 한 번만 빈 슬롯을 채운다 — 배치마다 채우면
@@ -338,11 +363,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
             # 정정 지시문("신고한 기존 카테고리·앵커와...")이 안 맞는다 — 그래서
             # 이 재시도는 `_SelfContradictionError`에만 반응한다.
             #
-            # 다른 배치 내부 재시도(파싱 실패·coverage 오류·timeout)는 온도를
-            # 올리고 지시문을 보강해 다시 시도하는데, 이 교차-배치 최종 검증
-            # 실패만은 그런 다양성 없이 그래프 레벨의 1회 자동 재시도(완전히
-            # 같은 프롬프트, 같은 temperature=0)에만 맡겨져 있었다 — 실제로
-            # 재현된 경우다: 활동에 템플릿 이전에 만들어진 자유 형식 블록만
+            # 실제로 재현된 경우다: 활동에 템플릿 이전에 만들어진 자유 형식 블록만
             # 있으면(메인 서버 GET 응답에는 slot_id가 없어 AI에게는 흔한
             # 모양이다) 모델이 "기존 앵커가 있다"고 신고하면서도 동시에 새
             # 템플릿 앵커를 만드는 자기모순을 결정론적으로 반복해, 재시도해도
@@ -355,6 +376,20 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                 f"{exc} 이번에는 신고한 기존 카테고리·앵커와 실제로 만드는 블록의 "
                 "parent_ref를 반드시 일치시키세요. 확신이 없으면 새 카테고리·앵커를 "
                 "만들지 말고 신고한 기존 별칭 아래에 형제 블록으로만 추가하세요.\n\n"
+            )
+            validated = await _run_batches_and_validate(corrective_instruction, retry_chain)
+        except _BatchCoverageError as exc:
+            # 배치 내부 복구 재시도(온도 0.4, 좁힌 원문)까지 실패한 경우다.
+            # 조용히 다음 배치로 넘어가면 그래프 레벨의 1회 자동 재시도(같은
+            # prompt, 같은 temperature=0)만 남는데, 실제로 그 재시도도 같은
+            # 배치의 같은 원문을 또 통째로 빠뜨리는 게 재현됐다 — 여기서 바로
+            # 온도를 올려 처음부터 다시 시도한다.
+            logger.warning("structure: 배치 복구 재시도까지 실패, 온도를 올려 전체 재시도: %s", exc)
+            corrective_instruction = base_instruction + (
+                "\n\n**주의: 이전 시도에서 일부 원문 item을 빠뜨리거나 중복 배정했습니다.** "
+                "'반영할 원문 item' 목록의 모든 it_N을 정확히 하나의 출력 블록에만 "
+                "배정하세요. 애매하면 가장 가까운 slot 하나에라도 반드시 배정하고, "
+                "절대 누락하지 마세요.\n\n"
             )
             validated = await _run_batches_and_validate(corrective_instruction, retry_chain)
     except LlmError:

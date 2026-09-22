@@ -145,7 +145,7 @@ TEST_PAGE_HTML = r"""<!doctype html>
       <details><summary>테스트 세션 설정</summary>
         <label>AI 서비스 API 키<input id="apiKey" type="password" value="demo-key" autocomplete="off"></label>
         <label>사용자 ID<input id="userId" value="9000001" inputmode="numeric"></label>
-        <label>화면<select id="view"><option value="map">map</option><option value="list">list</option></select></label>
+        <label>화면<select id="view"><option value="list">list</option><option value="map">map</option></select></label>
         <button id="createSession">새 테스트 세션</button>
         <p id="session" class="note">세션을 시작하세요.</p>
       </details>
@@ -154,7 +154,7 @@ TEST_PAGE_HTML = r"""<!doctype html>
       <div class="chat-header"><h2>경험정리 에이전트</h2><span id="chatStatus" class="status-dot">● 세션 시작 전</span></div>
       <div id="chatHistory"></div>
       <div class="composer">
-        <label>연결할 블록<select id="block" disabled><option>세션을 시작하면 빈 맵을 불러옵니다.</option></select></label>
+        <label>연결할 활동<select id="block" disabled><option>세션을 시작하면 빈 맵을 불러옵니다.</option></select></label>
         <label>경험 사실<textarea id="message" placeholder="정리할 경험의 사실을 처음부터 입력하세요."></textarea></label>
         <p class="note">경험의 사실을 입력하세요 · Enter로 전송 · Shift+Enter로 줄바꿈</p>
         <label>첨부 파일 (선택, 최대 1개)<input id="files" type="file"></label>
@@ -198,11 +198,13 @@ async function refreshMap() {
   if (!response.ok) throw new Error(await response.text());
   const map = await response.json(); blockSelect.textContent = ''; let tree = `map_version: ${map.map_version}\n`;
   for (const activity of map.activities) {
-    const lines = activity.tree.split('\n'); tree += `\n${activity.tree}\n`;
-    for (const line of lines) {
-      const option = document.createElement('option'); option.textContent = `${activity.title} · ${line.trim().replace(/^\[[^\]]+\]\s*/, '')}`;
-      option.dataset.activityId = activity.id; option.dataset.blockText = line.trim().replace(/^\[[^\]]+\]\s*/, ''); blockSelect.append(option);
-    }
+    tree += `\n${activity.tree}\n`;
+    // context_experience_id는 레벨2 활동 ID만 받는다 (설계 문서 3.4 target_activity —
+    // "이번 요청이 수정할 level 2 활동 하나를 고른다"). 하위 블록(b_1, b_2 ...)은
+    // 서버가 문장 내용을 보고 알아서 배정하므로, 여기서 하위 블록별로 옵션을
+    // 나누면 "이 슬롯을 채운다"는 오해를 유발한다 — 활동 단위로만 고른다.
+    const option = document.createElement('option'); option.textContent = activity.title;
+    option.dataset.activityId = activity.id; blockSelect.append(option);
   }
   blockSelect.disabled = false; mapTree.textContent = tree;
 }

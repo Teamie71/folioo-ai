@@ -765,6 +765,70 @@ async def test_self_contradiction_retries_whole_batch_with_higher_temperature(fa
     assert len(prompts) == 2
 
 
+@pytest.mark.asyncio
+async def test_batch_repair_exhaustion_retries_whole_batch_with_higher_temperature(
+    fake_dependencies,
+):
+    """배치 내부 복구 재시도(좁힌 원문, 온도 0.4)까지 원문을 빠뜨리면, 그래프
+    재시도를 기다리지 않고 노드 안에서 온도를 올려 배치 루프 전체를 한 번 더
+    시도한다.
+
+    실제 Gemini 호출로 재현된 경우다 — 1차 시도에서 원문 하나를 통째로
+    빠뜨리고, 좁혀서 그 원문만 다시 맡긴 복구 재시도에서도 똑같이 빠뜨렸다.
+    이전에는 이 실패를 조용히 다음 배치로 넘기고 훨씬 나중에(모든 배치가
+    끝난 뒤) 최종 검증에서야 잡아, 자기모순처럼 온도를 올린 전체 재시도
+    기회를 못 받았다.
+    """
+    first_attempt = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="전환율 개선을 목표로 했다",
+                source_item_ids=["it_1"],
+            ),
+            # it_2 는 빠뜨렸다.
+        ]
+    )
+    repair_attempt_still_missing = StructureOutput(items=[])  # 복구 재시도도 it_2를 또 빠뜨림
+    full_retry = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="전환율 개선을 목표로 했다",
+                source_item_ids=["it_1"],
+            ),
+            StructureLlmItem(
+                item_id="blk_2",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="전환율이 올랐다",
+                source_item_ids=["it_2"],
+            ),
+        ]
+    )
+    prompts = fake_dependencies([first_attempt, repair_attempt_still_missing, full_retry])
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_2", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "전환율이 올랐다"
+    assert len(prompts) == 3
+
+
 def test_deterministic_anchor_conflict_is_not_a_self_contradiction_error():
     """활동 트리만으로 판정하는 결정론적 앵커 중복은 자기모순 재시도 대상이 아니다.
 
