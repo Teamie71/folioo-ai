@@ -69,11 +69,16 @@ MAX_BLOCK_LEVEL = 5
 NODE_MAX_ATTEMPTS = 2
 """LangGraph RetryPolicy. 1회 자동 재시도를 의미한다."""
 
-MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 3
+MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 2
 """구조화 노드가 LLM 한 번에 배정을 맡기는 최대 원문 item 수.
 
-채팅 원문은 짧은 문장 여러 개가 한 주제를 구성하는 경우가 많아 최대 3개를 함께
-배정한다. 파일 원문은 아래의 더 작은 별도 한도를 적용한다."""
+채팅 원문은 짧은 문장 여러 개가 한 주제를 구성하는 경우가 많아 여러 개를 함께
+배정한다. 파일 원문은 아래의 더 작은 별도 한도를 적용한다.
+
+원래 3이었는데, 실제 Gemini 호출로 재현된 경우다 — 한 배치에 서로 다른
+문제해결 에피소드처럼 이질적인 원문 3개가 섞이면 모델이 그중 일부를 통째로
+빠뜨리는 빈도가 눈에 띄게 높았다(1차 시도와 좁힌 복구 재시도 모두 실패).
+파일 원문에서 이미 같은 이유로 1개까지 줄인 전례를 따라 2로 낮췄다."""
 
 MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 1
 """PDF·문서에서 추출한 원문을 구조화 LLM 한 번에 맡기는 최대 item 수.

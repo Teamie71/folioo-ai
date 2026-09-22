@@ -3,7 +3,7 @@
 import logging
 import re
 
-from common.llm import get_experience_map_llm
+from common.llm import get_structure_llm
 from features.experience_map.config import (
     MAX_FILE_SOURCE_CHARS_PER_STRUCTURE_BATCH,
     MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH,
@@ -118,14 +118,14 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
 
     try:
         catalog = await get_template_catalog_client().get_catalog()
-        llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
+        llm = get_structure_llm(timeout=get_settings().timeouts.llm)
         chain = structure_prompt | llm.with_structured_output(StructureOutput)
         # 재시도 전용 체인은 temperature를 살짝 올린다. temperature 0에서는
         # 같은 프롬프트에 같은 실수를 그대로 반복하는 게 실제로 재현됐다 —
         # 지시문을 더 붙여도(`_coverage_repair_instruction` 등) 모델이
         # 같은 패턴을 고수했다. 재시도는 애초에 "1차와는 다른 결과"를
         # 바라는 것이므로, 결정론을 깨는 편이 목적에 맞는다.
-        retry_llm = get_experience_map_llm(timeout=get_settings().timeouts.llm, temperature=0.4)
+        retry_llm = get_structure_llm(timeout=get_settings().timeouts.llm, temperature=0.4)
         retry_chain = structure_prompt | retry_llm.with_structured_output(StructureOutput)
         base_instruction = _gap_instruction(state)
         base_prompt_vars = {
@@ -937,6 +937,15 @@ def _align_explicit_troubleshooting_slots(
     문서 구획 제목에서 얻은 slot hint가 더 강한 근거이므로 해당 source는 건드리지
     않는다. 채팅 문장 중에서도 "분석 결과 … 원인이었다"처럼 의미가 명백한
     경우만 보정하며, 다른 문제해결 템플릿에는 적용하지 않는다.
+
+    **원문 item을 2개 이상 병합한 블록은 건드리지 않는다.** 이 휴리스틱은 원문
+    하나가 통째로 다른 단계(문제·원인·해결·검증) 표현인 단일 문장을 가정한다.
+    실제로 재현된 경우다: 서로 다른 두 문제해결 에피소드가 한 블록으로
+    병합되면(프롬프트가 "같은 슬롯 주제면 합치라"고 지시하므로 정상적인
+    결과다), 병합된 텍스트에 "원인은"(CAUSE)·"도입하여"(SOLUTION) 같은 여러
+    단계 키워드가 동시에 들어있어 우선순위상 앞선 키워드 하나가 모델이 이미
+    올바르게 고른 slot_id(예: PROBLEM)를 덮어써 버렸다 — 그 결과 실제 PROBLEM
+    슬롯은 비고, 서로 다른 에피소드의 원인·해결 문장이 한 블록에 뒤섞였다.
     """
     aligned: list[StructureLlmItem] = []
     prefix = "PROBLEM_SOLVING.TROUBLESHOOTING."
@@ -947,7 +956,11 @@ def _align_explicit_troubleshooting_slots(
             aligned.append(item)
             continue
         source_ids = [source_id for source_id in item.source_item_ids if source_id in source_text]
-        if not source_ids or any(source_id in protected_source_ids for source_id in source_ids):
+        if (
+            not source_ids
+            or len(source_ids) > 1
+            or any(source_id in protected_source_ids for source_id in source_ids)
+        ):
             aligned.append(item)
             continue
         text = " ".join(source_text[source_id] for source_id in source_ids)

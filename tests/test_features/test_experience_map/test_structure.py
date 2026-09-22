@@ -129,7 +129,7 @@ def fake_dependencies(monkeypatch):
                 assert schema is StructureOutput
                 return RunnableLambda(_handle)
 
-        monkeypatch.setattr(structure_node, "get_experience_map_llm", lambda **kw: _FakeLlm())
+        monkeypatch.setattr(structure_node, "get_structure_llm", lambda **kw: _FakeLlm())
         return prompts
 
     return _set
@@ -2006,6 +2006,35 @@ def test_explicit_problem_text_is_moved_out_of_task_template():
         source_item_ids=["it_1"],
     )
     source_text = {"it_1": "요청이 몰리면서 알림이 지연되는 문제가 발생했습니다."}
+
+    result = structure_node._align_explicit_troubleshooting_slots(
+        [raw], source_text, protected_source_ids=set()
+    )
+
+    assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM"
+
+
+def test_merged_multi_source_item_is_not_reassigned_by_explicit_keyword():
+    """원문 item을 2개 이상 병합한 블록은 키워드 보정 대상에서 제외한다.
+
+    실제로 재현된 경우다. 서로 다른 두 문제해결 에피소드가 한 블록으로
+    병합되면 그 텍스트에 "원인은"(CAUSE)·"도입하여"(SOLUTION) 같은 여러 단계
+    키워드가 동시에 들어있어, 모델이 이미 올바르게 고른 slot_id(PROBLEM)를
+    이 휴리스틱이 엉뚱하게 덮어써 버렸다 — 그 결과 실제 PROBLEM 내용이 CAUSE로
+    잘못 옮겨져 PROBLEM 슬롯이 비었다.
+    """
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_2",
+        slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        text="모델 출력은 이후 원문으로 재조립된다",
+        source_item_ids=["it_1", "it_2"],
+    )
+    source_text = {
+        "it_1": "주문 폭주 시 서버가 자주 다운되는 문제가 있었다.",
+        "it_2": "원인은 DB 커넥션 풀 고갈이었고, 재시도 로직을 도입하여 해결했다.",
+    }
 
     result = structure_node._align_explicit_troubleshooting_slots(
         [raw], source_text, protected_source_ids=set()
