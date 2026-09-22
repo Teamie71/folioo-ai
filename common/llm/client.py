@@ -20,7 +20,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv()
 
-DEFAULT_MODEL_NAME = "gemini-3.1-flash-lite"
+DEFAULT_MODEL_NAME = "gemini-3.6-flash"
 
 
 def _build_llm(
