@@ -906,6 +906,12 @@ def _apply_document_slot_hints(
     return aligned
 
 
+_TROUBLESHOOTING_KEYWORD_MAX_CHARS = 45
+"""이 길이를 넘는 원문에는 `_align_explicit_troubleshooting_slots`의 키워드
+보정을 적용하지 않는다. 동기가 된 사례(`test_explicit_cause_text_is_reassigned_
+to_troubleshooting_cause`)의 원문 길이 기준이다 — 그보다 긴 문장은 여러 단계가
+한 문장에 섞여 있을 가능성이 높아, 스치듯 등장하는 키워드로 판단하면 안 된다."""
+
 _TROUBLESHOOTING_SLOT_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
@@ -964,6 +970,17 @@ def _align_explicit_troubleshooting_slots(
             aligned.append(item)
             continue
         text = " ".join(source_text[source_id] for source_id in source_ids)
+        # "~문제였는데, 원인은 ~이고 ~로 해결했다"처럼 문제·원인·해결이 한
+        # 문장에 흘러가듯 섞인 긴 복합 서술문(한국어에 흔하다)은, 실제 요지와
+        # 무관하게 스치듯 등장하는 키워드 하나 때문에 모델이 이미 올바르게
+        # 고른 slot_id를 이 휴리스틱이 오히려 덮어써 버린다 — 실제로 재현된
+        # 경우다. 이 휴리스틱이 원래 잡으려던 사례(예: "로그 분석 결과 …가
+        # 원인이었습니다")는 한 단계만 짧고 명확하게 서술하는 문장이었다.
+        # 그 길이(약 40자) 밖의 긴 문장은 여러 단계가 섞여 있을 가능성이 높아
+        # 건드리지 않고 모델의 판단을 신뢰한다.
+        if len(text) > _TROUBLESHOOTING_KEYWORD_MAX_CHARS:
+            aligned.append(item)
+            continue
         destination = next(
             (
                 slot_id

@@ -2043,6 +2043,39 @@ def test_merged_multi_source_item_is_not_reassigned_by_explicit_keyword():
     assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM"
 
 
+def test_long_compound_sentence_single_source_is_not_reassigned_by_explicit_keyword():
+    """긴 복합 서술문(원문 하나)은 스치듯 등장하는 키워드로 보정하지 않는다.
+
+    실제로 재현된 경우다. "~문제였는데, 원인은 ~이고 ~로 해결했다"처럼 문제·
+    원인·해결이 한 문장에 흘러가듯 섞인 긴 서술문은 원문 item 하나(병합 아님)
+    로 들어와도, 그 안에 스치듯 등장하는 "원인은"(CAUSE 키워드) 때문에 모델이
+    이미 올바르게 고른 PROBLEM slot_id를 이 휴리스틱이 CAUSE로 잘못 덮어썼다.
+    이 휴리스틱이 원래 잡으려던 사례는 한 단계만 짧고 명확하게 서술하는
+    문장(`test_explicit_cause_text_is_reassigned_to_troubleshooting_cause`,
+    약 40자)이었다 — 그보다 훨씬 긴 문장은 건드리지 않는다.
+    """
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_2",
+        slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        text="모델 출력은 이후 원문으로 재조립된다",
+        source_item_ids=["it_1"],
+    )
+    source_text = {
+        "it_1": (
+            "첫 번째 문제는 대량 입고 처리 시 재고 수량이 이중으로 반영되는 버그였는데, "
+            "원인은 트랜잭션 격리 수준 설정 실수였고 격리 수준을 SERIALIZABLE로 바꿔 해결했다."
+        )
+    }
+
+    result = structure_node._align_explicit_troubleshooting_slots(
+        [raw], source_text, protected_source_ids=set()
+    )
+
+    assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM"
+
+
 def test_task_basic_process_alias_is_normalized_to_execution():
     """모델이 만든 PROCESS 별칭은 카탈로그의 EXECUTION 슬롯으로 정규화한다."""
     payload = catalog_payload()
