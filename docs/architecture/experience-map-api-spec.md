@@ -128,7 +128,7 @@ gap 답변 여부는 Router가 아니라 반영 내용 필터링 노드가 판�
 서명 키를 분리하는 이유는 두 키의 회전 주기가 다르고, API 키가 유출되면 티켓 위조까지
 가능해지기 때문입니다.
 
-TTL을 연결 시점에만 보는 이유는 파일처리 120초 + LLM 60초 + gap 30초로 스트림이
+TTL을 연결 시점에만 보는 이유는 파일처리 120초 + LLM 120초 + gap 30초로 스트림이
 TTL보다 오래 살 수 있기 때문입니다. 재시도 TTL(30분)이 티켓 TTL(5분)보다 길어
 재시도 시점에는 티켓이 만료돼 있는 것이 정상입니다.
 
@@ -199,8 +199,8 @@ LLM에는 실제 block ID를 전달하지 않고 요청 안에서만 유효한 `
 | 사용자 재시도 | 실패 후 30분 |
 | 텍스트 추출 실패 파일 | 업로드 후 1시간 |
 
-OpenRouter 클라이언트의 내장 retry는 0으로 설정합니다. 자동 재시도 횟수는 LangGraph
-`RetryPolicy` 한 곳에서만 관리합니다. 일반 LLM 노드는 60초, 파일처리는 120초,
+Gemini 클라이언트의 내장 retry는 0으로 설정합니다. 자동 재시도 횟수는 LangGraph
+`RetryPolicy` 한 곳에서만 관리합니다. 일반 LLM 노드는 120초, 파일처리는 120초,
 gap 분석과 제안 생성은 각각 30초를 제한 시간으로 사용합니다.
 
 ### 2-5. 멱등성
@@ -1285,7 +1285,7 @@ COMMIT
 | `EXPMAP_RETRY_TTL_SECONDS` | 기본값 `1800` |
 | `EXPMAP_FILE_TTL_SECONDS` | 기본값 `3600` |
 | `EXPMAP_REQUEST_LEASE_SECONDS` | 기본값 `300` |
-| `EXPMAP_LLM_TIMEOUT_SECONDS` | 기본값 `60` |
+| `EXPMAP_LLM_TIMEOUT_SECONDS` | 기본값 `120` |
 | `EXPMAP_FILE_TIMEOUT_SECONDS` | 파일처리(파서·OCR) 기본값 `120` |
 | `EXPMAP_GAP_TIMEOUT_SECONDS` | 기본값 `30` |
 

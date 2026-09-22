@@ -155,7 +155,7 @@ def _env_positive_int(name: str, default: int) -> int:
 class NodeTimeouts(BaseModel):
     """노드별 제한 시간 (초)"""
 
-    llm: int = Field(60, description="일반 LLM 노드")
+    llm: int = Field(120, description="일반 LLM 노드")
     file: int = Field(120, description="파일처리 (파서·OCR)")
     gap: int = Field(30, description="gap 분석과 제안 생성")
 
@@ -230,7 +230,7 @@ def load_settings() -> ExperienceMapSettings:
             "EXPMAP_RATE_LIMIT_PER_MINUTE", DEFAULT_MAX_REQUESTS
         ),
         timeouts=NodeTimeouts(
-            llm=_env_int("EXPMAP_LLM_TIMEOUT_SECONDS", 60),
+            llm=_env_int("EXPMAP_LLM_TIMEOUT_SECONDS", 120),
             file=_env_int("EXPMAP_FILE_TIMEOUT_SECONDS", 120),
             gap=_env_int("EXPMAP_GAP_TIMEOUT_SECONDS", 30),
         ),

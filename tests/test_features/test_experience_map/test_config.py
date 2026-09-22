@@ -39,7 +39,7 @@ def test_defaults_match_api_spec():
     assert settings.retry_ttl_seconds == 1800
     assert settings.file_ttl_seconds == 3600
     assert settings.request_lease_seconds == 300
-    assert settings.timeouts.llm == 60
+    assert settings.timeouts.llm == 120
     assert settings.timeouts.file == 120
     assert settings.timeouts.gap == 30
 
