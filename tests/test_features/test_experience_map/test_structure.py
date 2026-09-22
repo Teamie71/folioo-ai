@@ -167,6 +167,44 @@ async def test_new_category_expands_all_section_slots_and_preserves_source(fake_
 
 
 @pytest.mark.asyncio
+async def test_merged_container_and_anchor_item_is_split(fake_dependencies):
+    """카테고리 컨테이너와 앵커를 한 item에 합쳐 내도(자기참조 포함) 코드가 둘로 나눈다.
+
+    실제로 재현된 경우다. "카테고리를 만들 땐 컨테이너+앵커 최소 두 item이
+    필요하다"는 규칙에도 불구하고, 모델이 `section_kind`와 `slot_id`를 한
+    item에 같이 내고 자기 자신을 `parent_item_id`로 가리켰다. 그대로면
+    "카테고리 컨테이너에는 text나 slot_id를 둘 수 없습니다"로 요청 전체가
+    거부된다.
+    """
+    prompts = fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="blk_1",
+                    section_kind="DETAIL",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+            ]
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    items_by_slot = {
+        item["slot_id"]: item for item in result["structured_items"] if item["slot_id"]
+    }
+    assert items_by_slot["DETAIL.MOTIVATION"]["text"] == "결제 오류를 해결했다"
+    container_items = [item for item in result["structured_items"] if item["slot_id"] is None]
+    assert len(container_items) == 1
+    assert container_items[0]["section_kind"] == "DETAIL"
+    assert prompts  # 요청 자체는 정상적으로 나갔다
+
+
+@pytest.mark.asyncio
 async def test_template_expands_empty_slots(fake_dependencies):
     """템플릿을 사용하면 정보 없는 level 5 슬롯도 text 없이 남긴다."""
     fake_dependencies(

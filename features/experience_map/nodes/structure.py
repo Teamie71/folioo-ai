@@ -730,7 +730,8 @@ def _apply_structuring_fixups(
     같다 — 병합된 item의 `source_item_ids`가 재조립 단계에 그대로
     들어가야 최종 text가 원문을 빠짐없이 담는다.
     """
-    normalized_slots = _normalize_known_slot_aliases(raw_items, catalog)
+    split_merged = _split_merged_container_anchor_items(raw_items)
+    normalized_slots = _normalize_known_slot_aliases(split_merged, catalog)
     source_sanitized = _remove_unknown_source_references(normalized_slots, source_text)
     ungrounded_cleared = _clear_ungrounded_text(source_sanitized)
     context_aligned = _apply_document_slot_hints(
@@ -772,6 +773,72 @@ def _apply_structuring_fixups(
     deduped = _dedupe_anchor_matching_child_source(rebuilt, catalog)
     pruned = _prune_extra_templates(deduped)
     return _redirect_leaf_add_to_existing_empty_slot(pruned, catalog, state)
+
+
+def _split_merged_container_anchor_items(
+    items: list[StructureLlmItem],
+) -> list[StructureLlmItem]:
+    """모델이 카테고리 컨테이너와 앵커를 한 item에 합쳐 내면 둘로 나눈다.
+
+    프롬프트가 "새 카테고리를 만들 때는 반드시 최소 두 개의 item이 필요하다
+    (컨테이너 하나 + 앵커 하나)"고 명시하는데도, 실제로 재현된 경우다 —
+    `section_kind`와 `slot_id`(때로 `text`까지)를 한 item에 같이 내고, 종종
+    자기 자신을 `parent_item_id`로 가리키는 자기참조까지 낸다. 그대로 두면
+    최종 검증에서 "카테고리 컨테이너에는 text나 slot_id를 둘 수 없습니다"로
+    거부돼, 다른 모든 item이 정상이어도 요청 전체가 실패한다.
+
+    이 하나의 item을 코드로 컨테이너(원래 item_id, section_kind만) + 앵커
+    (새 item_id, slot_id·text·source_item_ids만, parent_item_id로 컨테이너를
+    가리킴)로 나눈다. 자기참조 `parent_item_id`는 지운다 — 이후
+    `_fix_new_section_parent`가 컨테이너를 선택 활동 바로 아래로 재배치한다.
+    이 합쳐진 item을 `parent_item_id`로 가리키던 level 5 자식들은 새 앵커
+    id로 다시 연결한다 — 컨테이너가 아니라 앵커 밑에 있어야 하기 때문이다.
+    """
+    merged_ids = {
+        item.item_id
+        for item in items
+        if item.section_kind is not None and (item.slot_id is not None or item.text is not None)
+    }
+    if not merged_ids:
+        return items
+
+    anchor_id_by_original = {item_id: f"{item_id}_anchor" for item_id in merged_ids}
+    result: list[StructureLlmItem] = []
+    for item in items:
+        if item.item_id in merged_ids:
+            container_parent_item_id = (
+                None if item.parent_item_id == item.item_id else item.parent_item_id
+            )
+            result.append(
+                item.model_copy(
+                    update={
+                        "slot_id": None,
+                        "text": None,
+                        "source_item_ids": [],
+                        "parent_item_id": container_parent_item_id,
+                    }
+                )
+            )
+            result.append(
+                item.model_copy(
+                    update={
+                        "item_id": anchor_id_by_original[item.item_id],
+                        "section_kind": None,
+                        "parent_ref": None,
+                        "parent_item_id": item.item_id,
+                    }
+                )
+            )
+            continue
+        if item.parent_item_id in anchor_id_by_original:
+            result.append(
+                item.model_copy(
+                    update={"parent_item_id": anchor_id_by_original[item.parent_item_id]}
+                )
+            )
+            continue
+        result.append(item)
+    return result
 
 
 def _normalize_known_slot_aliases(
