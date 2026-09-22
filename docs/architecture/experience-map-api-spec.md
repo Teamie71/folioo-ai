@@ -199,9 +199,14 @@ LLM에는 실제 block ID를 전달하지 않고 요청 안에서만 유효한 `
 | 사용자 재시도 | 실패 후 30분 |
 | 텍스트 추출 실패 파일 | 업로드 후 1시간 |
 
-Gemini 클라이언트의 내장 retry는 0으로 설정합니다. 자동 재시도 횟수는 LangGraph
-`RetryPolicy` 한 곳에서만 관리합니다. 일반 LLM 노드는 120초, 파일처리는 120초,
-gap 분석과 제안 생성은 각각 30초를 제한 시간으로 사용합니다.
+LLM 클라이언트의 내장 retry는 (Gemini·OpenRouter 어느 쪽이든) 0으로 설정합니다.
+`structure` 노드만 OpenRouter(`gpt-4.1-mini`)를 쓰고 나머지 노드는 전부
+Gemini를 쓴다(`common/llm/client.py`의 `STRUCTURE_MODEL_NAME` 주석 참고).
+자동 재시도 횟수는 LangGraph `RetryPolicy` 한 곳에서만 관리합니다 — 다만
+`structure` 노드는 배치 복구 재시도·자기모순 재시도처럼 노드 내부에서만 완결되는
+추가 재시도를 그 위에 둔다(`structure.py`의 관련 주석 참고). 일반 LLM 노드는
+120초, 파일처리는 120초, gap 분석과 제안 생성은 각각 30초를 제한 시간으로
+사용합니다.
 
 ### 2-5. 멱등성
 
