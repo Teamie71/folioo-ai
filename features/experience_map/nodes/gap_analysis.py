@@ -29,6 +29,14 @@ async def analyze_gap(state: ExperienceMapState) -> ExperienceMapState:
     items = list(state.get("commit_items", []))
     anchors = _anchor_refs(items)
     if not items or not anchors:
+        # LLM을 호출하지 않고 조기 리턴한다 — "LLM 실패로 gap이 없음"과
+        # 구분되는 로그를 남겨야 QA에서 원인을 판별할 수 있다 (QA 2026-09-22 #1-c).
+        logger.info(
+            "gap_analysis: anchor 없어 스킵 (request_id=%s, commit_items=%d개, item_id 목록=%s)",
+            state.get("request_id"),
+            len(items),
+            [item.get("item_id") for item in items],
+        )
         updated["gap_candidate"] = None
         updated["gap_message"] = NO_GAP_MESSAGE
         return updated  # type: ignore[return-value]

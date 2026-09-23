@@ -132,6 +132,25 @@ async def test_no_gap_uses_fixed_message_and_does_not_keep_previous_gap(fake_llm
 
 
 @pytest.mark.asyncio
+async def test_skip_without_anchor_logs_distinctly_from_llm_failure(fake_llm, caplog):
+    """anchor 없어 LLM을 안 부르고 스킵할 때는 그 이유가 로그에 남아야 한다.
+
+    QA 2026-09-22 #1-c: "LLM 실패로 gap이 없음"과 "애초에 후보가 없어 LLM을
+    안 부름"이 로그로 구분되지 않아 원인 판별이 불가능했다.
+    """
+    prompts = fake_llm(GapOutput(gap=None, message="호출되면 안 된다"))
+
+    with caplog.at_level("INFO", logger="features.experience_map.nodes.gap_analysis"):
+        analyzed = await analyze_gap(
+            make_state(commit_items=[{"item_id": "it_1", "action": "add", "parent_ref": "b_1"}])
+        )
+
+    assert analyzed["gap_message"] == NO_GAP_MESSAGE
+    assert prompts == []
+    assert any("anchor 없어 스킵" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_invalid_indirect_anchor_is_gap_analysis_failure(fake_llm):
     """이번 커밋과 직접 연결되지 않은 블록을 질문 기준으로 쓰지 못한다."""
     fake_llm(
