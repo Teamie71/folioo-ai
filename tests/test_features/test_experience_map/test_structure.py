@@ -1297,6 +1297,39 @@ P99를 320ms로 낮춰 검증했다.
     }
 
 
+def test_document_headings_without_spacing_still_match():
+    """실제 사용자 문서는 "담당 업무"가 아니라 "담당업무"처럼 붙여 쓴다.
+
+    띄어쓰기·"경험" 접미사를 정확히 요구하던 예전 매칭은 QA 리포터의 실제
+    문서("상세정보"/"담당업무"/"문제해결")를 거의 하나도 못 걸러 문서 제목
+    힌트가 사실상 비어, 배치가 나뉘며 문제해결 에피소드 경계와 카테고리
+    소속을 모델이 완전히 잃어버렸다 (QA 2026-09-22 #5-2, 실제 LLM 호출로
+    재현·검증됨).
+    """
+    extracted_text = """
+담당업무
+- 결제 승인 API를 담당했다.
+문제해결
+상황
+응답 시간이 4초까지 치솟았다.
+전략
+Kafka로 비동기 전환했다.
+""".strip()
+    source_items = [
+        {"item_id": "it_1", "text": "결제 승인 API를 담당했다.", "source": "file"},
+        {"item_id": "it_2", "text": "응답 시간이 4초까지 치솟았다.", "source": "file"},
+        {"item_id": "it_3", "text": "Kafka로 비동기 전환했다.", "source": "file"},
+    ]
+
+    hints = structure_node._document_slot_hints(source_items, extracted_text)
+
+    assert hints == {
+        "it_1": "TASK.SUMMARY",
+        "it_2": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "it_3": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+    }
+
+
 @pytest.mark.asyncio
 async def test_batches_reusing_the_same_item_id_are_namespaced_apart(
     fake_dependencies, monkeypatch
