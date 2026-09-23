@@ -109,6 +109,32 @@ def test_activity_tree_renders_content_and_placeholder_separately(snapshot):
     )
 
 
+def test_empty_category_container_shows_its_section_label_not_empty_guide():
+    """level 3 컨테이너는 항상 content가 없다 — "아직 안 채운 빈 블록"이 아니라
+    구조적 분류이므로 "(빈 블록 — 가이드: ...)"로 감싸지 않고 라벨 그대로 보여준다.
+
+    QA 2026-09-22 #1-a: 담당업무 컨테이너가 "(빈 블록)"으로만 보이던 버그.
+    """
+    snapshot = build_map_snapshot(
+        [
+            row("1", None, 1, 1, "프로젝트"),
+            row("20", "1", 2, 1, "첫 번째 활동"),
+            row("40", "20", 3, 1, None, "담당업무"),
+            row("41", "40", 4, 1, None, "무슨 업무를 맡았나요?"),
+        ],
+        map_version=1,
+    )
+
+    context = snapshot.get_activity_context("exp_1")
+
+    assert context is not None
+    assert context.tree_text == (
+        "[exp_1] 첫 번째 활동\n"
+        "  [b_1] 담당업무\n"
+        "    [b_2] (빈 블록 — 가이드: 무슨 업무를 맡았나요?)"
+    )
+
+
 def test_unknown_alias_is_not_resolved(snapshot):
     """LLM이 지어낸 alias는 역변환되지 않는다."""
     context = snapshot.get_activity_context("exp_1")
