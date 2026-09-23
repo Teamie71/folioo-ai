@@ -129,7 +129,7 @@ def fake_dependencies(monkeypatch):
                 assert schema is StructureOutput
                 return RunnableLambda(_handle)
 
-        monkeypatch.setattr(structure_node, "get_experience_map_llm", lambda **kw: _FakeLlm())
+        monkeypatch.setattr(structure_node, "get_structure_llm", lambda **kw: _FakeLlm())
         return prompts
 
     return _set
@@ -164,6 +164,44 @@ async def test_new_category_expands_all_section_slots_and_preserves_source(fake_
     assert "source_item_ids" not in result["structured_items"][1]
     assert "[exp_1] 교내 커머스 리뉴얼" in prompts[0]
     assert "[DETAIL.MOTIVATION]" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_merged_container_and_anchor_item_is_split(fake_dependencies):
+    """카테고리 컨테이너와 앵커를 한 item에 합쳐 내도(자기참조 포함) 코드가 둘로 나눈다.
+
+    실제로 재현된 경우다. "카테고리를 만들 땐 컨테이너+앵커 최소 두 item이
+    필요하다"는 규칙에도 불구하고, 모델이 `section_kind`와 `slot_id`를 한
+    item에 같이 내고 자기 자신을 `parent_item_id`로 가리켰다. 그대로면
+    "카테고리 컨테이너에는 text나 slot_id를 둘 수 없습니다"로 요청 전체가
+    거부된다.
+    """
+    prompts = fake_dependencies(
+        StructureOutput(
+            items=[
+                StructureLlmItem(
+                    item_id="blk_1",
+                    action="add",
+                    parent_item_id="blk_1",
+                    section_kind="DETAIL",
+                    slot_id="DETAIL.MOTIVATION",
+                    text="결제 오류를 해결했다",
+                    source_item_ids=["it_1"],
+                ),
+            ]
+        )
+    )
+
+    result = await structure_blocks(make_state())
+
+    items_by_slot = {
+        item["slot_id"]: item for item in result["structured_items"] if item["slot_id"]
+    }
+    assert items_by_slot["DETAIL.MOTIVATION"]["text"] == "결제 오류를 해결했다"
+    container_items = [item for item in result["structured_items"] if item["slot_id"] is None]
+    assert len(container_items) == 1
+    assert container_items[0]["section_kind"] == "DETAIL"
+    assert prompts  # 요청 자체는 정상적으로 나갔다
 
 
 @pytest.mark.asyncio
@@ -763,6 +801,70 @@ async def test_self_contradiction_retries_whole_batch_with_higher_temperature(fa
     items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
     assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "결제 오류를 해결했다"
     assert len(prompts) == 2
+
+
+@pytest.mark.asyncio
+async def test_batch_repair_exhaustion_retries_whole_batch_with_higher_temperature(
+    fake_dependencies,
+):
+    """배치 내부 복구 재시도(좁힌 원문, 온도 0.4)까지 원문을 빠뜨리면, 그래프
+    재시도를 기다리지 않고 노드 안에서 온도를 올려 배치 루프 전체를 한 번 더
+    시도한다.
+
+    실제 Gemini 호출로 재현된 경우다 — 1차 시도에서 원문 하나를 통째로
+    빠뜨리고, 좁혀서 그 원문만 다시 맡긴 복구 재시도에서도 똑같이 빠뜨렸다.
+    이전에는 이 실패를 조용히 다음 배치로 넘기고 훨씬 나중에(모든 배치가
+    끝난 뒤) 최종 검증에서야 잡아, 자기모순처럼 온도를 올린 전체 재시도
+    기회를 못 받았다.
+    """
+    first_attempt = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="전환율 개선을 목표로 했다",
+                source_item_ids=["it_1"],
+            ),
+            # it_2 는 빠뜨렸다.
+        ]
+    )
+    repair_attempt_still_missing = StructureOutput(items=[])  # 복구 재시도도 it_2를 또 빠뜨림
+    full_retry = StructureOutput(
+        items=[
+            StructureLlmItem(
+                item_id="blk_1",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.PURPOSE",
+                text="전환율 개선을 목표로 했다",
+                source_item_ids=["it_1"],
+            ),
+            StructureLlmItem(
+                item_id="blk_2",
+                action="add",
+                parent_ref="b_1",
+                slot_id="TASK.BASIC.RESULT",
+                text="전환율이 올랐다",
+                source_item_ids=["it_2"],
+            ),
+        ]
+    )
+    prompts = fake_dependencies([first_attempt, repair_attempt_still_missing, full_retry])
+    state = make_state(
+        new_items=[
+            {"item_id": "it_1", "text": "전환율 개선을 목표로 했다", "source": "file"},
+            {"item_id": "it_2", "text": "전환율이 올랐다", "source": "file"},
+        ]
+    )
+
+    result = await structure_blocks(state)
+
+    items_by_slot = {item["slot_id"]: item for item in result["structured_items"]}
+    assert items_by_slot["TASK.BASIC.PURPOSE"]["text"] == "전환율 개선을 목표로 했다"
+    assert items_by_slot["TASK.BASIC.RESULT"]["text"] == "전환율이 올랐다"
+    assert len(prompts) == 3
 
 
 def test_deterministic_anchor_conflict_is_not_a_self_contradiction_error():
@@ -1942,6 +2044,68 @@ def test_explicit_problem_text_is_moved_out_of_task_template():
         source_item_ids=["it_1"],
     )
     source_text = {"it_1": "요청이 몰리면서 알림이 지연되는 문제가 발생했습니다."}
+
+    result = structure_node._align_explicit_troubleshooting_slots(
+        [raw], source_text, protected_source_ids=set()
+    )
+
+    assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM"
+
+
+def test_merged_multi_source_item_is_not_reassigned_by_explicit_keyword():
+    """원문 item을 2개 이상 병합한 블록은 키워드 보정 대상에서 제외한다.
+
+    실제로 재현된 경우다. 서로 다른 두 문제해결 에피소드가 한 블록으로
+    병합되면 그 텍스트에 "원인은"(CAUSE)·"도입하여"(SOLUTION) 같은 여러 단계
+    키워드가 동시에 들어있어, 모델이 이미 올바르게 고른 slot_id(PROBLEM)를
+    이 휴리스틱이 엉뚱하게 덮어써 버렸다 — 그 결과 실제 PROBLEM 내용이 CAUSE로
+    잘못 옮겨져 PROBLEM 슬롯이 비었다.
+    """
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_2",
+        slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        text="모델 출력은 이후 원문으로 재조립된다",
+        source_item_ids=["it_1", "it_2"],
+    )
+    source_text = {
+        "it_1": "주문 폭주 시 서버가 자주 다운되는 문제가 있었다.",
+        "it_2": "원인은 DB 커넥션 풀 고갈이었고, 재시도 로직을 도입하여 해결했다.",
+    }
+
+    result = structure_node._align_explicit_troubleshooting_slots(
+        [raw], source_text, protected_source_ids=set()
+    )
+
+    assert result[0].slot_id == "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM"
+
+
+def test_long_compound_sentence_single_source_is_not_reassigned_by_explicit_keyword():
+    """긴 복합 서술문(원문 하나)은 스치듯 등장하는 키워드로 보정하지 않는다.
+
+    실제로 재현된 경우다. "~문제였는데, 원인은 ~이고 ~로 해결했다"처럼 문제·
+    원인·해결이 한 문장에 흘러가듯 섞인 긴 서술문은 원문 item 하나(병합 아님)
+    로 들어와도, 그 안에 스치듯 등장하는 "원인은"(CAUSE 키워드) 때문에 모델이
+    이미 올바르게 고른 PROBLEM slot_id를 이 휴리스틱이 CAUSE로 잘못 덮어썼다.
+    이 휴리스틱이 원래 잡으려던 사례는 한 단계만 짧고 명확하게 서술하는
+    문장(`test_explicit_cause_text_is_reassigned_to_troubleshooting_cause`,
+    약 40자)이었다 — 그보다 훨씬 긴 문장은 건드리지 않는다.
+    """
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_2",
+        slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        text="모델 출력은 이후 원문으로 재조립된다",
+        source_item_ids=["it_1"],
+    )
+    source_text = {
+        "it_1": (
+            "첫 번째 문제는 대량 입고 처리 시 재고 수량이 이중으로 반영되는 버그였는데, "
+            "원인은 트랜잭션 격리 수준 설정 실수였고 격리 수준을 SERIALIZABLE로 바꿔 해결했다."
+        )
+    }
 
     result = structure_node._align_explicit_troubleshooting_slots(
         [raw], source_text, protected_source_ids=set()

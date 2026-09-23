@@ -35,8 +35,6 @@ def test_build_pdf_extraction_messages_includes_filename_and_pdf_data_url():
     assert isinstance(human_content, list)
     assert human_content[0]["type"] == "text"
     assert filename in human_content[0]["text"]
-    assert human_content[1]["type"] == "file"
-    assert human_content[1]["file"]["filename"] == filename
-    assert human_content[1]["file"]["file_data"] == (
-        "data:application/pdf;base64," + base64.b64encode(file_bytes).decode("utf-8")
-    )
+    assert human_content[1]["type"] == "media"
+    assert human_content[1]["mime_type"] == "application/pdf"
+    assert human_content[1]["data"] == base64.b64encode(file_bytes).decode("utf-8")

@@ -640,8 +640,22 @@ class TestUiGraphRunner(GraphRunner):
             )
             return
         if state.get("commit_items"):
-            async for event in coordinate(state, commit_runner=self._store.commit):
+            async for event in coordinate(
+                state, commit_runner=self._store.commit, save_active_gap=self._save_active_gap
+            ):
                 yield event
+
+    async def _save_active_gap(self, user_id: str, session_id: str, gap: dict | None) -> None:
+        """운영 경로(`graph_runner.py`)와 동일하게 실제 repository에 active_gap을 저장한다.
+
+        테스트 UI도 세션·active_gap은 진짜 Postgres(`ai_experience_session`)를
+        쓴다 — 맵(블록)만 in-memory로 바꾼다(모듈 docstring). 이 저장을 빼먹으면
+        gap 질문에 아무리 답해도 다음 턴에 `active_gap`이 항상 비어 있어
+        "새 내용"으로만 처리된다 — 실제로 재현된 경우다.
+        """
+        from features.experience_map.repository import get_repository
+
+        await get_repository().save_active_gap(user_id, session_id, gap)
 
 
 _store = InMemoryTestMapStore(initial_rows_factory=_blank_initial_rows)

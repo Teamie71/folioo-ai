@@ -141,7 +141,7 @@ class _SlideDraftOutput(BaseModel):
 
 
 class LlmSlideDraftGenerator:
-    """OpenRouter LLM 기반 Source Slide 의미 필드 초안 생성기."""
+    """Gemini LLM 기반 Source Slide 의미 필드 초안 생성기."""
 
     def __init__(self, *, model: str | None = None, temperature: float = 0.1) -> None:
         self.model = model

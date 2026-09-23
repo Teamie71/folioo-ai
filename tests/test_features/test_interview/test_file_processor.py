@@ -67,11 +67,9 @@ def test_file_processor_run_reads_temp_path_and_clears_current_turn_files(tmp_pa
     assert result["file_contexts"] == ["[파일: portfolio.pdf]\n추출된 PDF 텍스트"]
 
     human_content = fake_llm.invocations[0][1].content
-    assert human_content[1]["type"] == "file"
-    assert human_content[1]["file"]["filename"] == "portfolio.pdf"
-    assert human_content[1]["file"]["file_data"] == (
-        "data:application/pdf;base64," + base64.b64encode(file_bytes).decode("utf-8")
-    )
+    assert human_content[1]["type"] == "media"
+    assert human_content[1]["mime_type"] == "application/pdf"
+    assert human_content[1]["data"] == base64.b64encode(file_bytes).decode("utf-8")
 
 
 def test_file_processor_run_extracts_image_text(tmp_path, monkeypatch):
@@ -294,23 +292,22 @@ def test_file_processor_run_marks_last_context_when_total_budget_exactly_exhaust
 
 def test_get_file_processor_llm_uses_dedicated_configuration(monkeypatch):
     """FileProcessor 전용 LLM helper는 Vision 추출용 설정을 사용한다."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://example.test")
-    monkeypatch.setenv("FILE_PROCESSOR_MODEL_NAME", "google/gemini-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("FILE_PROCESSOR_MODEL_NAME", "gemini-test")
     llm_client.get_file_processor_llm.cache_clear()
 
     captured = {}
 
-    class _FakeChatOpenAI:
+    class _FakeChatGoogleGenerativeAI:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr(llm_client, "ChatOpenAI", _FakeChatOpenAI)
+    monkeypatch.setattr(llm_client, "ChatGoogleGenerativeAI", _FakeChatGoogleGenerativeAI)
 
     result = llm_client.get_file_processor_llm()
 
-    assert isinstance(result, _FakeChatOpenAI)
-    assert captured["model"] == "google/gemini-test"
+    assert isinstance(result, _FakeChatGoogleGenerativeAI)
+    assert captured["model"] == "gemini-test"
     assert captured["temperature"] == 0.0
     assert captured["request_timeout"] == 120
     assert captured["disable_streaming"] is True
@@ -323,22 +320,21 @@ def test_get_file_processor_llm_uses_dedicated_configuration(monkeypatch):
 
 def test_get_file_processor_llm_uncached_returns_new_instances(monkeypatch):
     """캐시 없는 FileProcessor LLM helper는 호출마다 새 클라이언트를 만든다."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://example.test")
-    monkeypatch.setenv("FILE_PROCESSOR_MODEL_NAME", "google/gemini-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("FILE_PROCESSOR_MODEL_NAME", "gemini-test")
 
     captured: list[dict[str, object]] = []
 
-    class _FakeChatOpenAI:
+    class _FakeChatGoogleGenerativeAI:
         def __init__(self, **kwargs):
             captured.append(kwargs)
 
-    monkeypatch.setattr(llm_client, "ChatOpenAI", _FakeChatOpenAI)
+    monkeypatch.setattr(llm_client, "ChatGoogleGenerativeAI", _FakeChatGoogleGenerativeAI)
 
     first = llm_client.get_file_processor_llm_uncached()
     second = llm_client.get_file_processor_llm_uncached()
 
-    assert isinstance(first, _FakeChatOpenAI)
-    assert isinstance(second, _FakeChatOpenAI)
+    assert isinstance(first, _FakeChatGoogleGenerativeAI)
+    assert isinstance(second, _FakeChatGoogleGenerativeAI)
     assert first is not second
-    assert [item["model"] for item in captured] == ["google/gemini-test", "google/gemini-test"]
+    assert [item["model"] for item in captured] == ["gemini-test", "gemini-test"]

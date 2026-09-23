@@ -5,6 +5,7 @@ from .client import (
     get_experience_map_llm,
     get_llm,
     get_llm_uncached,
+    get_structure_llm,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "get_experience_map_llm",
     "get_llm",
     "get_llm_uncached",
+    "get_structure_llm",
 ]

@@ -16,7 +16,7 @@ Folioo AI는 사용자의 프로젝트 경험을 인터뷰로 구조화하고, �
 - Python 3.12+
 - FastAPI, Uvicorn
 - LangGraph, LangChain
-- OpenRouter 호환 ChatOpenAI 클라이언트
+- Gemini (langchain-google-genai, Gemini Developer API / Vertex AI 겸용)
 - PostgreSQL checkpointer
 - uv, Ruff, pytest
 
@@ -43,7 +43,7 @@ langgraph dev
 
 | 변수 | 설명 |
 |---|---|
-| `OPENROUTER_API_KEY` | OpenRouter LLM API 키 |
+| `GEMINI_API_KEY` | Gemini LLM API 키 (Vertex AI 전환 시 `GOOGLE_GENAI_USE_VERTEXAI`/`GOOGLE_CLOUD_PROJECT`로 대체) |
 | `LLM_MODEL_NAME` | 기본 LLM 모델명 |
 | `PDF_EXTRACTION_MODEL_NAME` | PDF 추출용 LLM 모델명 |
 | `FILE_PROCESSOR_MODEL_NAME` | 업로드 파일 처리용 LLM 모델명 |

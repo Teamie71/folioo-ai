@@ -179,4 +179,4 @@ def test_extract_uses_preview_model_by_default(monkeypatch: pytest.MonkeyPatch):
 
     PdfExtractionGenerator().extract(b"%PDF", "resume.pdf")
 
-    assert llm_calls == [{"model": "google/gemini-3.1-pro-preview", "temperature": 0.0}]
+    assert llm_calls == [{"model": "gemini-3.1-pro-preview", "temperature": 0.0}]

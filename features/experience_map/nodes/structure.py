@@ -3,7 +3,7 @@
 import logging
 import re
 
-from common.llm import get_experience_map_llm
+from common.llm import get_structure_llm
 from features.experience_map.config import (
     MAX_FILE_SOURCE_CHARS_PER_STRUCTURE_BATCH,
     MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH,
@@ -39,6 +39,21 @@ class _SelfContradictionError(ValueError):
     바뀌면 조용히 틀린 쪽으로 분류된다 — 자기모순 전용 재시도(구조화 노드의
     온도 상향 + 정정 지시문)를 그 신고 자체가 없었던 실패에도 잘못 적용하지
     않도록, 그 두 검증만 이 타입으로 던진다.
+    """
+
+
+class _BatchCoverageError(ValueError):
+    """배치 내부 복구 재시도(온도 0.4, 좁힌 원문)까지 실패했을 때만 쓴다.
+
+    한 배치가 1차 시도에서 원문을 누락·중복하면, 그 배치만 좁혀서 온도를 올려
+    재시도한다(`attempt == 1`). 이 재시도까지 실패하면 예전에는 그 사실을
+    무시하고 다음 배치로 조용히 넘어갔다 — 실패가 훨씬 나중에(모든 배치가 끝난
+    뒤) 최종 `_validate_source_coverage`에서야 드러나 `_SelfContradictionError`가
+    받는 것과 같은 전체 재시도 기회를 못 받았다. 실제로 재현된 경우다: 배치
+    하나의 원문 전체를 1차 시도와 좁힌 재시도 모두에서 통째로 빠뜨려, 그래프
+    레벨의 1회 자동 재시도(같은 prompt, 같은 temperature=0)도 똑같이
+    실패했다. 이 타입으로 던지면 `_SelfContradictionError`와 같은 경로로
+    온도를 올려 처음부터 다시 시도한다.
     """
 
 
@@ -103,14 +118,14 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
 
     try:
         catalog = await get_template_catalog_client().get_catalog()
-        llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
+        llm = get_structure_llm(timeout=get_settings().timeouts.llm)
         chain = structure_prompt | llm.with_structured_output(StructureOutput)
         # 재시도 전용 체인은 temperature를 살짝 올린다. temperature 0에서는
         # 같은 프롬프트에 같은 실수를 그대로 반복하는 게 실제로 재현됐다 —
         # 지시문을 더 붙여도(`_coverage_repair_instruction` 등) 모델이
         # 같은 패턴을 고수했다. 재시도는 애초에 "1차와는 다른 결과"를
         # 바라는 것이므로, 결정론을 깨는 편이 목적에 맞는다.
-        retry_llm = get_experience_map_llm(timeout=get_settings().timeouts.llm, temperature=0.4)
+        retry_llm = get_structure_llm(timeout=get_settings().timeouts.llm, temperature=0.4)
         retry_chain = structure_prompt | retry_llm.with_structured_output(StructureOutput)
         base_instruction = _gap_instruction(state)
         base_prompt_vars = {
@@ -282,6 +297,16 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                             repair_ids=repair_ids,
                             source_items=batch,
                         )
+                if missing or duplicated:
+                    # 좁혀서 온도를 올린 복구 재시도(attempt == 1)까지 실패했다.
+                    # 다음 배치로 조용히 넘어가면 이 배치가 통째로 깨진 채
+                    # 남아, 모든 배치가 끝난 뒤 최종 검증에서야 훨씬 늦게
+                    # 드러난다 — 여기서 바로 잡아 전체 재시도로 넘긴다.
+                    raise _BatchCoverageError(
+                        f"배치 {batch_index + 1}/{len(batches)}에서 복구 재시도까지 "
+                        f"원문 coverage 오류가 남았습니다 (누락 {sorted(missing)} · "
+                        f"중복 {sorted(duplicated)})."
+                    )
                 items = batch_items
 
             # 배치를 다 처리한 뒤 딱 한 번만 빈 슬롯을 채운다 — 배치마다 채우면
@@ -338,11 +363,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
             # 정정 지시문("신고한 기존 카테고리·앵커와...")이 안 맞는다 — 그래서
             # 이 재시도는 `_SelfContradictionError`에만 반응한다.
             #
-            # 다른 배치 내부 재시도(파싱 실패·coverage 오류·timeout)는 온도를
-            # 올리고 지시문을 보강해 다시 시도하는데, 이 교차-배치 최종 검증
-            # 실패만은 그런 다양성 없이 그래프 레벨의 1회 자동 재시도(완전히
-            # 같은 프롬프트, 같은 temperature=0)에만 맡겨져 있었다 — 실제로
-            # 재현된 경우다: 활동에 템플릿 이전에 만들어진 자유 형식 블록만
+            # 실제로 재현된 경우다: 활동에 템플릿 이전에 만들어진 자유 형식 블록만
             # 있으면(메인 서버 GET 응답에는 slot_id가 없어 AI에게는 흔한
             # 모양이다) 모델이 "기존 앵커가 있다"고 신고하면서도 동시에 새
             # 템플릿 앵커를 만드는 자기모순을 결정론적으로 반복해, 재시도해도
@@ -355,6 +376,20 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                 f"{exc} 이번에는 신고한 기존 카테고리·앵커와 실제로 만드는 블록의 "
                 "parent_ref를 반드시 일치시키세요. 확신이 없으면 새 카테고리·앵커를 "
                 "만들지 말고 신고한 기존 별칭 아래에 형제 블록으로만 추가하세요.\n\n"
+            )
+            validated = await _run_batches_and_validate(corrective_instruction, retry_chain)
+        except _BatchCoverageError as exc:
+            # 배치 내부 복구 재시도(온도 0.4, 좁힌 원문)까지 실패한 경우다.
+            # 조용히 다음 배치로 넘어가면 그래프 레벨의 1회 자동 재시도(같은
+            # prompt, 같은 temperature=0)만 남는데, 실제로 그 재시도도 같은
+            # 배치의 같은 원문을 또 통째로 빠뜨리는 게 재현됐다 — 여기서 바로
+            # 온도를 올려 처음부터 다시 시도한다.
+            logger.warning("structure: 배치 복구 재시도까지 실패, 온도를 올려 전체 재시도: %s", exc)
+            corrective_instruction = base_instruction + (
+                "\n\n**주의: 이전 시도에서 일부 원문 item을 빠뜨리거나 중복 배정했습니다.** "
+                "'반영할 원문 item' 목록의 모든 it_N을 정확히 하나의 출력 블록에만 "
+                "배정하세요. 애매하면 가장 가까운 slot 하나에라도 반드시 배정하고, "
+                "절대 누락하지 마세요.\n\n"
             )
             validated = await _run_batches_and_validate(corrective_instruction, retry_chain)
     except LlmError:
@@ -695,7 +730,8 @@ def _apply_structuring_fixups(
     같다 — 병합된 item의 `source_item_ids`가 재조립 단계에 그대로
     들어가야 최종 text가 원문을 빠짐없이 담는다.
     """
-    normalized_slots = _normalize_known_slot_aliases(raw_items, catalog)
+    split_merged = _split_merged_container_anchor_items(raw_items)
+    normalized_slots = _normalize_known_slot_aliases(split_merged, catalog)
     source_sanitized = _remove_unknown_source_references(normalized_slots, source_text)
     ungrounded_cleared = _clear_ungrounded_text(source_sanitized)
     context_aligned = _apply_document_slot_hints(
@@ -737,6 +773,72 @@ def _apply_structuring_fixups(
     deduped = _dedupe_anchor_matching_child_source(rebuilt, catalog)
     pruned = _prune_extra_templates(deduped)
     return _redirect_leaf_add_to_existing_empty_slot(pruned, catalog, state)
+
+
+def _split_merged_container_anchor_items(
+    items: list[StructureLlmItem],
+) -> list[StructureLlmItem]:
+    """모델이 카테고리 컨테이너와 앵커를 한 item에 합쳐 내면 둘로 나눈다.
+
+    프롬프트가 "새 카테고리를 만들 때는 반드시 최소 두 개의 item이 필요하다
+    (컨테이너 하나 + 앵커 하나)"고 명시하는데도, 실제로 재현된 경우다 —
+    `section_kind`와 `slot_id`(때로 `text`까지)를 한 item에 같이 내고, 종종
+    자기 자신을 `parent_item_id`로 가리키는 자기참조까지 낸다. 그대로 두면
+    최종 검증에서 "카테고리 컨테이너에는 text나 slot_id를 둘 수 없습니다"로
+    거부돼, 다른 모든 item이 정상이어도 요청 전체가 실패한다.
+
+    이 하나의 item을 코드로 컨테이너(원래 item_id, section_kind만) + 앵커
+    (새 item_id, slot_id·text·source_item_ids만, parent_item_id로 컨테이너를
+    가리킴)로 나눈다. 자기참조 `parent_item_id`는 지운다 — 이후
+    `_fix_new_section_parent`가 컨테이너를 선택 활동 바로 아래로 재배치한다.
+    이 합쳐진 item을 `parent_item_id`로 가리키던 level 5 자식들은 새 앵커
+    id로 다시 연결한다 — 컨테이너가 아니라 앵커 밑에 있어야 하기 때문이다.
+    """
+    merged_ids = {
+        item.item_id
+        for item in items
+        if item.section_kind is not None and (item.slot_id is not None or item.text is not None)
+    }
+    if not merged_ids:
+        return items
+
+    anchor_id_by_original = {item_id: f"{item_id}_anchor" for item_id in merged_ids}
+    result: list[StructureLlmItem] = []
+    for item in items:
+        if item.item_id in merged_ids:
+            container_parent_item_id = (
+                None if item.parent_item_id == item.item_id else item.parent_item_id
+            )
+            result.append(
+                item.model_copy(
+                    update={
+                        "slot_id": None,
+                        "text": None,
+                        "source_item_ids": [],
+                        "parent_item_id": container_parent_item_id,
+                    }
+                )
+            )
+            result.append(
+                item.model_copy(
+                    update={
+                        "item_id": anchor_id_by_original[item.item_id],
+                        "section_kind": None,
+                        "parent_ref": None,
+                        "parent_item_id": item.item_id,
+                    }
+                )
+            )
+            continue
+        if item.parent_item_id in anchor_id_by_original:
+            result.append(
+                item.model_copy(
+                    update={"parent_item_id": anchor_id_by_original[item.parent_item_id]}
+                )
+            )
+            continue
+        result.append(item)
+    return result
 
 
 def _normalize_known_slot_aliases(
@@ -871,6 +973,12 @@ def _apply_document_slot_hints(
     return aligned
 
 
+_TROUBLESHOOTING_KEYWORD_MAX_CHARS = 45
+"""이 길이를 넘는 원문에는 `_align_explicit_troubleshooting_slots`의 키워드
+보정을 적용하지 않는다. 동기가 된 사례(`test_explicit_cause_text_is_reassigned_
+to_troubleshooting_cause`)의 원문 길이 기준이다 — 그보다 긴 문장은 여러 단계가
+한 문장에 섞여 있을 가능성이 높아, 스치듯 등장하는 키워드로 판단하면 안 된다."""
+
 _TROUBLESHOOTING_SLOT_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
@@ -902,6 +1010,15 @@ def _align_explicit_troubleshooting_slots(
     문서 구획 제목에서 얻은 slot hint가 더 강한 근거이므로 해당 source는 건드리지
     않는다. 채팅 문장 중에서도 "분석 결과 … 원인이었다"처럼 의미가 명백한
     경우만 보정하며, 다른 문제해결 템플릿에는 적용하지 않는다.
+
+    **원문 item을 2개 이상 병합한 블록은 건드리지 않는다.** 이 휴리스틱은 원문
+    하나가 통째로 다른 단계(문제·원인·해결·검증) 표현인 단일 문장을 가정한다.
+    실제로 재현된 경우다: 서로 다른 두 문제해결 에피소드가 한 블록으로
+    병합되면(프롬프트가 "같은 슬롯 주제면 합치라"고 지시하므로 정상적인
+    결과다), 병합된 텍스트에 "원인은"(CAUSE)·"도입하여"(SOLUTION) 같은 여러
+    단계 키워드가 동시에 들어있어 우선순위상 앞선 키워드 하나가 모델이 이미
+    올바르게 고른 slot_id(예: PROBLEM)를 덮어써 버렸다 — 그 결과 실제 PROBLEM
+    슬롯은 비고, 서로 다른 에피소드의 원인·해결 문장이 한 블록에 뒤섞였다.
     """
     aligned: list[StructureLlmItem] = []
     prefix = "PROBLEM_SOLVING.TROUBLESHOOTING."
@@ -912,10 +1029,25 @@ def _align_explicit_troubleshooting_slots(
             aligned.append(item)
             continue
         source_ids = [source_id for source_id in item.source_item_ids if source_id in source_text]
-        if not source_ids or any(source_id in protected_source_ids for source_id in source_ids):
+        if (
+            not source_ids
+            or len(source_ids) > 1
+            or any(source_id in protected_source_ids for source_id in source_ids)
+        ):
             aligned.append(item)
             continue
         text = " ".join(source_text[source_id] for source_id in source_ids)
+        # "~문제였는데, 원인은 ~이고 ~로 해결했다"처럼 문제·원인·해결이 한
+        # 문장에 흘러가듯 섞인 긴 복합 서술문(한국어에 흔하다)은, 실제 요지와
+        # 무관하게 스치듯 등장하는 키워드 하나 때문에 모델이 이미 올바르게
+        # 고른 slot_id를 이 휴리스틱이 오히려 덮어써 버린다 — 실제로 재현된
+        # 경우다. 이 휴리스틱이 원래 잡으려던 사례(예: "로그 분석 결과 …가
+        # 원인이었습니다")는 한 단계만 짧고 명확하게 서술하는 문장이었다.
+        # 그 길이(약 40자) 밖의 긴 문장은 여러 단계가 섞여 있을 가능성이 높아
+        # 건드리지 않고 모델의 판단을 신뢰한다.
+        if len(text) > _TROUBLESHOOTING_KEYWORD_MAX_CHARS:
+            aligned.append(item)
+            continue
         destination = next(
             (
                 slot_id
