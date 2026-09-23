@@ -1098,6 +1098,18 @@ def _align_explicit_learning_slots(
         if not source_ids or any(source_id in protected_source_ids for source_id in source_ids):
             aligned.append(item)
             continue
+        # TASK.BASIC.RESULT·PROBLEM_SOLVING.*.RESULT 같은 슬롯은 자체 placeholder가
+        # 이미 "이 과정을 통해 배운 점은 무엇인가요?"를 묻는다. 모델이 이미 그런
+        # 구체적인 슬롯에 정확히 배정해 놓은 걸, "배웠다"류 표현이 스친다는
+        # 이유만으로 통째로 뜯어 새 LEARNING 카테고리로 옮기면 원래 있던 업무·
+        # 에피소드 맥락(어느 업무의 결과인지)을 잃는다 — 실제로 재현된 사고다
+        # (QA 2026-09-22 #1-b). 이미 "배운 점"을 다루는 슬롯이면 손대지 않는다.
+        current_slot = catalog.get_slot(item.slot_id) if item.slot_id else None
+        if current_slot is not None and any(
+            marker in current_slot.placeholder for marker in ("배운 점", "교훈", "배우거나")
+        ):
+            aligned.append(item)
+            continue
         text = " ".join(source_text[source_id] for source_id in source_ids)
         if not any(marker in text for marker in learning_markers):
             aligned.append(item)

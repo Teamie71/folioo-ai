@@ -2404,6 +2404,47 @@ def test_explicit_learning_text_is_rehomed_from_existing_task_anchor():
     assert learning.parent_item_id == category.item_id
 
 
+def test_explicit_learning_text_stays_in_result_slot_that_already_asks_for_it():
+    """RESULT 슬롯 placeholder가 이미 "배운 점"을 묻으면 LEARNING으로 안 옮긴다.
+
+    실제 카탈로그의 TASK.BASIC.RESULT placeholder는 "업무 완료 후 나타난
+    결과는 무엇이며, 이 과정을 통해 배운 점은 무엇인가요?"다. 모델이 이미
+    이 슬롯에 정확히 배정한 걸 "배웠다"류 표현이 있다는 이유만으로 통째로
+    뜯어 새 LEARNING 카테고리로 옮기면, 어느 업무의 결과인지 맥락을 잃는다
+    — QA 2026-09-22 #1-b에서 실제 LLM 호출로 재현된 사고다.
+    """
+    payload = catalog_payload()
+    for section in payload["sections"]:
+        if section["section_id"] != "TASK":
+            continue
+        for template in section["templates"]:
+            for slot in template["slots"]:
+                if slot["slot_id"] == "TASK.BASIC.RESULT":
+                    slot["placeholder"] = (
+                        "업무 완료 후 나타난 결과는 무엇이며, 이 과정을 통해 배운 점은 무엇인가요?"
+                    )
+    catalog = TemplateCatalog.model_validate(payload)
+    raw = StructureLlmItem(
+        item_id="result_1",
+        action="add",
+        parent_ref="anchor_1",
+        slot_id="TASK.BASIC.RESULT",
+        text="한 달 만에 목표를 조기 달성했고 영상 도입부 3초가 체류시간에 미치는 영향을 배웠다.",
+        source_item_ids=["it_1"],
+    )
+    state = make_state(alias_metadata={})
+
+    aligned = structure_node._align_explicit_learning_slots(
+        [raw],
+        {"it_1": raw.text},
+        catalog,
+        state,
+        protected_source_ids=set(),
+    )
+
+    assert aligned == [raw]
+
+
 def test_document_hint_rehomes_direct_slot_under_matching_section():
     """문서 구획으로 슬롯이 바뀌면 level 4의 카테고리도 함께 바뀌어야 한다."""
     payload = catalog_payload()
