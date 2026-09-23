@@ -488,26 +488,39 @@ def _document_heading_slot(line: str, current_section: str | None) -> tuple[str,
     """
     heading = _DOCUMENT_HEADING_PREFIX.sub("", line).strip(" *_`:：")
     compact = re.sub(r"\s+", " ", heading)
+    # 띄어쓰기 유무로 실제 사용자 문서 제목을 놓치지 않는다 — 예전엔 "담당 업무"·
+    # "문제 해결 경험"처럼 띄어쓰기와 "경험" 접미사까지 정확히 일치해야 했는데,
+    # 실제 QA 리포터의 문서는 "담당업무"·"문제해결"처럼 붙여 쓰고 "경험"도 없었다
+    # (QA 2026-09-22 #5-2). 그 결과 문서 제목 힌트가 거의 하나도 안 걸려, 배치가
+    # 나뉘면서 문제해결 에피소드 경계·카테고리 소속을 모델이 완전히 잃어버렸다.
+    no_space = re.sub(r"\s+", "", compact)
 
-    if compact == "담당 업무":
+    if no_space == "담당업무":
         return "TASK", "TASK.SUMMARY"
-    if compact == "주요 성과":
+    if no_space == "주요성과":
         return "ACHIEVEMENT", "ACHIEVEMENT.QUANTITATIVE"
-    if compact == "배운 점":
+    if no_space == "배운점":
         return "LEARNING", "LEARNING.GROWTH"
-    if compact == "문제 해결 경험" or re.match(r"^문제\s*해결\s*경험\s*[—:\-]", compact):
+    if no_space in {"문제해결", "문제해결경험"} or re.match(
+        r"^문제\s*해결(\s*경험)?\s*[—:\-]", compact
+    ):
         return "PROBLEM_SOLVING", "PROBLEM_SOLVING.SUMMARY"
 
     if current_section != "PROBLEM_SOLVING":
         return None
     problem_slots = {
         "상황": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
-        "상황 설명": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
-        "원인 분석": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
-        "해결 과정": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        "상황설명": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "문제": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "원인": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+        "원인분석": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+        "해결과정": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        "전략": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        "해결책": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
         "결과": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+        "검증": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
     }
-    slot_id = problem_slots.get(compact)
+    slot_id = problem_slots.get(no_space)
     return (current_section, slot_id) if slot_id else None
 
 
