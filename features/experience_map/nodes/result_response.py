@@ -116,13 +116,25 @@ def _path_parts(path: str) -> tuple[str, str]:
     서버 path는 현재 블록을 제외한 부모 체인이므로 level 5 블록이면
     `활동 > 카테고리 > 앵커`가 된다. 마지막 조각을 쓰면 앵커 문구로 잘못
     그룹화되므로 항상 활동 바로 아래 조각을 카테고리로 사용한다.
+
+    **빈 조각을 걸러내지 않는다.** 3단계 카테고리 컨테이너는 설계상 항상
+    `content`가 없으므로(다른 곳 여러 번 확인됨), 재사용된 기존 카테고리
+    밑에 블록을 추가하면 서버가 돌려준 path의 카테고리 자리가 빈 문자열일
+    수 있다. 예전에는 `if part.strip()`로 빈 조각을 걸러내서 그 뒤(레벨
+    5·앵커 텍스트)가 인덱스 하나씩 앞으로 밀려 카테고리 라벨 자리에 들어가
+    버렸다 — 실제로 QA에서 "카테고리명 대신 4단계 블록 텍스트가 뜬다"로
+    재현됐다. 카테고리 자리가 비어 있으면(재사용된 기존 카테고리의 진짜
+    라벨은 이 함수가 알 방법이 없다 — `structure` 노드가 그 턴에만 판단하고
+    `state`에 남기지 않는다) 다른 블록의 텍스트를 잘못 끌어오는 대신
+    `"정리 항목"`으로 안전하게 대체한다.
     """
-    parts = [part.strip() for part in path.split(">") if part.strip()]
-    if not parts:
+    raw_parts = [part.strip() for part in path.split(">")]
+    if not raw_parts or not raw_parts[0]:
         return "경험", "정리 항목"
-    if len(parts) == 1:
-        return parts[0], "정리 항목"
-    return parts[0], parts[1]
+    activity = raw_parts[0]
+    if len(raw_parts) < 2 or not raw_parts[1]:
+        return activity, "정리 항목"
+    return activity, raw_parts[1]
 
 
 __all__ = [

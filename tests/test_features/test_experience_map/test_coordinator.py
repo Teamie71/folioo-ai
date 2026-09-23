@@ -117,6 +117,28 @@ def test_result_response_groups_deep_server_path_by_section():
     )
 
 
+def test_result_response_falls_back_when_reused_category_segment_is_empty():
+    """재사용된 카테고리는 content가 없어 path의 카테고리 자리가 빈 문자열일 수 있다.
+
+    빈 조각을 걸러내던 예전 로직은 그 뒤 조각(레벨 5 텍스트)이 인덱스가
+    당겨져 카테고리 라벨 자리로 잘못 들어갔다. 지금은 그 자리가 비어 있으면
+    다른 블록 텍스트를 끌어오지 않고 "정리 항목"으로 안전하게 대체해야 한다.
+    """
+    commit_result = result(
+        applied=[
+            AppliedItem(
+                item_id="add_1",
+                block_id="401",
+                path="커머스 리뉴얼 >  > 팔로워 500명에서 1200명으로 늘렸다",
+            )
+        ]
+    )
+
+    assert build_result_response(state(), commit_result) == (
+        "내용을 분석하여 경험을 정리했어요.\n- 정리 항목 아래 1개의 블록 생성"
+    )
+
+
 def test_result_response_notes_truncated_file_content():
     """파일 페이지·글자 수 상한으로 일부를 버렸으면 결과 문구에 알린다.
 
