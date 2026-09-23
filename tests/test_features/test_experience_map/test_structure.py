@@ -1330,6 +1330,39 @@ Kafka로 비동기 전환했다.
     }
 
 
+def test_inline_bullet_labels_provide_slot_hints_within_a_single_line():
+    """ "상황"이 독립된 제목 줄이 아니라 "- 상황: 내용"처럼 불릿 하나에
+    라벨과 본문이 같이 있는 문서도 있다 (QA 2026-09-22 #5-2, 실제 리포터
+    문서). 라벨이 그 줄 자신의 내용이므로, 그 줄 자신에게도 힌트가 걸려야
+    한다.
+    """
+    extracted_text = """
+문제해결
+1) 타깃 광범위화로 인한 메시지 소구력 저하
+- 상황: 20대 전체를 타깃으로 설정하여 소구력이 떨어지는 문제 발생
+- 전략: 취업준비생으로 핵심 타깃을 축소하는 전략 수립
+""".strip()
+    source_items = [
+        {
+            "item_id": "it_1",
+            "text": "- 상황: 20대 전체를 타깃으로 설정하여 소구력이 떨어지는 문제 발생",
+            "source": "file",
+        },
+        {
+            "item_id": "it_2",
+            "text": "- 전략: 취업준비생으로 핵심 타깃을 축소하는 전략 수립",
+            "source": "file",
+        },
+    ]
+
+    hints = structure_node._document_slot_hints(source_items, extracted_text)
+
+    assert hints == {
+        "it_1": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "it_2": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+    }
+
+
 @pytest.mark.asyncio
 async def test_batches_reusing_the_same_item_id_are_namespaced_apart(
     fake_dependencies, monkeypatch

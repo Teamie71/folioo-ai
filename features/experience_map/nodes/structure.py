@@ -521,7 +521,19 @@ def _document_heading_slot(line: str, current_section: str | None) -> tuple[str,
         "검증": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
     }
     slot_id = problem_slots.get(no_space)
-    return (current_section, slot_id) if slot_id else None
+    if slot_id is not None:
+        return (current_section, slot_id)
+    # 독립된 제목 줄이 아니라 "- 상황: 20대 전체를 타깃으로..."처럼 불릿 하나에
+    # 라벨과 본문이 같이 있는 문서도 실제로 있다 (QA 2026-09-22 #5-2). 그 줄
+    # 자체가 이 슬롯의 내용이므로, 그 줄에서 시작하는 마커로도 잡아준다 —
+    # 마커 위치가 그 줄 자신의 위치와 같아 아래 매칭 루프에서 자기 자신에게도
+    # 적용된다.
+    inline_match = re.match(r"^([가-힣]{1,6})\s*[:：]", compact)
+    if inline_match:
+        inline_slot_id = problem_slots.get(inline_match.group(1))
+        if inline_slot_id is not None:
+            return (current_section, inline_slot_id)
+    return None
 
 
 def _document_slot_hints(source_items: list[dict], extracted_text: str | None) -> dict[str, str]:
