@@ -134,8 +134,10 @@ async def test_test_map_store_gives_empty_blocks_a_placeholder_guide():
     snapshot = await store.snapshot("9000005")
     context = snapshot.get_activity_context("exp_1")
 
-    # 카테고리 컨테이너(slot_id 없음)는 그대로 "(빈 블록)" — 정상이다.
-    # 빈 슬롯(TASK.BASIC.RESULT)만 가이드 문구를 받아야 한다.
+    # 카테고리 컨테이너(slot_id 없음)는 section_kind의 라벨을 그대로 보여준다
+    # (QA 2026-09-22 #1-a 수정 이후) — "(빈 블록)"이 아니다.
+    # 빈 슬롯(TASK.BASIC.RESULT)만 "(빈 블록 — 가이드: ...)"를 받아야 한다.
+    assert "] 담당업무\n" in context.tree_text
     assert "가이드: 업무 완료 후 나타난 결과는" in context.tree_text
 
 

@@ -192,14 +192,23 @@ def _block_alias(index: int) -> str:
 
 
 def _label(node: MapBlock) -> str:
-    """사용자 작성 내용과 빈 블록 가이드를 절대 같은 값으로 취급하지 않는다."""
+    """사용자 작성 내용과 빈 블록 가이드를 절대 같은 값으로 취급하지 않는다.
+
+    level 3 카테고리 컨테이너는 설계상 `content`를 절대 갖지 않는다 —
+    "아직 안 채운 빈 블록"이 아니라 담당업무·주요성과 같은 구조적 분류다.
+    커밋 시점에 `placeholder`에 그 분류 라벨(`SECTION_LABELS`)을 실어두므로,
+    "(빈 블록 — 가이드: ...)" 문구로 감싸지 않고 라벨 그대로 보여준다
+    (QA 2026-09-22 #1-a).
+    """
     content = (node.row.content or "").strip()
     if content:
         return content
     placeholder = (node.row.placeholder or "").strip()
-    if placeholder:
-        return f"(빈 블록 — 가이드: {placeholder})"
-    return "(빈 블록)"
+    if not placeholder:
+        return "(빈 블록)"
+    if node.row.level == 3:
+        return placeholder
+    return f"(빈 블록 — 가이드: {placeholder})"
 
 
 def _walk(root: MapBlock):

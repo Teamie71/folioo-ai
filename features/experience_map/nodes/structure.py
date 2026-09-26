@@ -488,27 +488,52 @@ def _document_heading_slot(line: str, current_section: str | None) -> tuple[str,
     """
     heading = _DOCUMENT_HEADING_PREFIX.sub("", line).strip(" *_`:：")
     compact = re.sub(r"\s+", " ", heading)
+    # 띄어쓰기 유무로 실제 사용자 문서 제목을 놓치지 않는다 — 예전엔 "담당 업무"·
+    # "문제 해결 경험"처럼 띄어쓰기와 "경험" 접미사까지 정확히 일치해야 했는데,
+    # 실제 QA 리포터의 문서는 "담당업무"·"문제해결"처럼 붙여 쓰고 "경험"도 없었다
+    # (QA 2026-09-22 #5-2). 그 결과 문서 제목 힌트가 거의 하나도 안 걸려, 배치가
+    # 나뉘면서 문제해결 에피소드 경계·카테고리 소속을 모델이 완전히 잃어버렸다.
+    no_space = re.sub(r"\s+", "", compact)
 
-    if compact == "담당 업무":
+    if no_space == "담당업무":
         return "TASK", "TASK.SUMMARY"
-    if compact == "주요 성과":
+    if no_space == "주요성과":
         return "ACHIEVEMENT", "ACHIEVEMENT.QUANTITATIVE"
-    if compact == "배운 점":
+    if no_space == "배운점":
         return "LEARNING", "LEARNING.GROWTH"
-    if compact == "문제 해결 경험" or re.match(r"^문제\s*해결\s*경험\s*[—:\-]", compact):
+    if no_space in {"문제해결", "문제해결경험"} or re.match(
+        r"^문제\s*해결(\s*경험)?\s*[—:\-]", compact
+    ):
         return "PROBLEM_SOLVING", "PROBLEM_SOLVING.SUMMARY"
 
     if current_section != "PROBLEM_SOLVING":
         return None
     problem_slots = {
         "상황": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
-        "상황 설명": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
-        "원인 분석": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
-        "해결 과정": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        "상황설명": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "문제": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
+        "원인": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+        "원인분석": "PROBLEM_SOLVING.TROUBLESHOOTING.CAUSE",
+        "해결과정": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        "전략": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        "해결책": "PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
         "결과": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
+        "검증": "PROBLEM_SOLVING.TROUBLESHOOTING.VERIFICATION",
     }
-    slot_id = problem_slots.get(compact)
-    return (current_section, slot_id) if slot_id else None
+    slot_id = problem_slots.get(no_space)
+    if slot_id is not None:
+        return (current_section, slot_id)
+    # 독립된 제목 줄이 아니라 "- 상황: 20대 전체를 타깃으로..."처럼 불릿 하나에
+    # 라벨과 본문이 같이 있는 문서도 실제로 있다 (QA 2026-09-22 #5-2). 그 줄
+    # 자체가 이 슬롯의 내용이므로, 그 줄에서 시작하는 마커로도 잡아준다 —
+    # 마커 위치가 그 줄 자신의 위치와 같아 아래 매칭 루프에서 자기 자신에게도
+    # 적용된다.
+    inline_match = re.match(r"^([가-힣]{1,6})\s*[:：]", compact)
+    if inline_match:
+        inline_slot_id = problem_slots.get(inline_match.group(1))
+        if inline_slot_id is not None:
+            return (current_section, inline_slot_id)
+    return None
 
 
 def _document_slot_hints(source_items: list[dict], extracted_text: str | None) -> dict[str, str]:
@@ -1096,6 +1121,18 @@ def _align_explicit_learning_slots(
     for item in items:
         source_ids = [source_id for source_id in item.source_item_ids if source_id in source_text]
         if not source_ids or any(source_id in protected_source_ids for source_id in source_ids):
+            aligned.append(item)
+            continue
+        # TASK.BASIC.RESULT·PROBLEM_SOLVING.*.RESULT 같은 슬롯은 자체 placeholder가
+        # 이미 "이 과정을 통해 배운 점은 무엇인가요?"를 묻는다. 모델이 이미 그런
+        # 구체적인 슬롯에 정확히 배정해 놓은 걸, "배웠다"류 표현이 스친다는
+        # 이유만으로 통째로 뜯어 새 LEARNING 카테고리로 옮기면 원래 있던 업무·
+        # 에피소드 맥락(어느 업무의 결과인지)을 잃는다 — 실제로 재현된 사고다
+        # (QA 2026-09-22 #1-b). 이미 "배운 점"을 다루는 슬롯이면 손대지 않는다.
+        current_slot = catalog.get_slot(item.slot_id) if item.slot_id else None
+        if current_slot is not None and any(
+            marker in current_slot.placeholder for marker in ("배운 점", "교훈", "배우거나")
+        ):
             aligned.append(item)
             continue
         text = " ".join(source_text[source_id] for source_id in source_ids)

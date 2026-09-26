@@ -23,7 +23,12 @@ from features.experience_map.map_context import (
     build_map_snapshot,
 )
 from features.experience_map.nodes.fallback import fallback_message
-from features.experience_map.schemas import AppliedItem, CommitResult, StructuredItem
+from features.experience_map.schemas import (
+    SECTION_LABELS,
+    AppliedItem,
+    CommitResult,
+    StructuredItem,
+)
 from features.experience_map.state import ExperienceMapState
 from features.experience_map.templates import TemplateCatalogClient
 
@@ -554,6 +559,9 @@ class InMemoryTestMapStore:
                     + 1
                 )
                 slot = catalog.get_slot(item.slot_id) if item.slot_id else None
+                container_label = (
+                    SECTION_LABELS.get(item.section_kind) if item.section_kind else None
+                )
                 added = MapBlockRow(
                     block_id=new_id,
                     parent_id=parent_id,
@@ -561,7 +569,7 @@ class InMemoryTestMapStore:
                     kind="CONTENT",
                     position=position,
                     content=item.text,
-                    placeholder=slot.placeholder if slot else None,
+                    placeholder=container_label or (slot.placeholder if slot else None),
                     is_text_editable=True,
                     is_deletable=True,
                 )
