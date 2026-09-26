@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS experience_map (
 -- 사용자라도 활동마다 세션이 따로 있다. LangGraph thread_id = session_id.
 CREATE TABLE IF NOT EXISTS ai_experience_session (
   user_id      bigint NOT NULL,
-  block_id     text NOT NULL,
+  block_id     bigint NOT NULL,
   session_id   uuid NOT NULL UNIQUE,
   active_gap   jsonb,
   created_at   timestamptz NOT NULL DEFAULT now(),
@@ -156,7 +156,12 @@ CREATE INDEX IF NOT EXISTS idx_ai_experience_message_session
 -- 기록을 함께 지운다 — 의존 테이블이 이 시점에는 이미 만들어져 있어야
 -- FOREIGN KEY 위반 없이 지울 수 있다.
 ALTER TABLE ai_experience_session
-  ADD COLUMN IF NOT EXISTS block_id text;
+  ADD COLUMN IF NOT EXISTS block_id bigint;
+
+-- 운영 DB의 block_id는 메인 서버가 만든 정수 컬럼이다. 예전 로컬 스키마가
+-- text로 만들어 뒀다면 맞춘다.
+ALTER TABLE ai_experience_session
+  ALTER COLUMN block_id TYPE bigint USING block_id::bigint;
 
 DELETE FROM ai_experience_message
  WHERE session_id IN (SELECT session_id FROM ai_experience_session WHERE block_id IS NULL);
