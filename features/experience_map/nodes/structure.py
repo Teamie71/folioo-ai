@@ -3,7 +3,7 @@
 import logging
 import re
 
-from common.llm import get_structure_llm
+from common.llm import get_experience_map_llm, get_structure_llm
 from features.experience_map.config import (
     MAX_FILE_SOURCE_CHARS_PER_STRUCTURE_BATCH,
     MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH,
@@ -12,6 +12,7 @@ from features.experience_map.config import (
     get_settings,
 )
 from features.experience_map.errors import LlmError, NodeTimeoutError
+from features.experience_map.prompts.episode_match import episode_match_prompt
 from features.experience_map.prompts.structure import (
     render_catalog,
     render_previous_batch_note,
@@ -19,6 +20,7 @@ from features.experience_map.prompts.structure import (
     structure_prompt,
 )
 from features.experience_map.schemas import (
+    EpisodeMatchOutput,
     ExistingCategoryClassification,
     StructureLlmItem,
     StructureOutput,
@@ -30,15 +32,11 @@ logger = logging.getLogger(__name__)
 
 
 class _SelfContradictionError(ValueError):
-    """모델이 `existing_categories`로 스스로 신고한 내용과 실제 출력이 모순될 때만 쓴다.
+    """모델이 스스로 신고했거나 지시받은 기존 카테고리·앵커와 실제 출력이 모순될 때만 쓴다.
 
-    `_validate_anchor_reuse_deterministic`도 "이미 있으니 재사용하라"는 같은
-    취지의 `ValueError`를 던지지만, 그건 모델의 자기 신고와 무관하게 활동
-    트리(빈 슬롯 가이드 문구)만 보고 결정론적으로 판정한 것이다. 두 실패를
-    메시지 문자열로 구분하면(예: 끝 문구 대조) 문구가 우연히 겹치거나 나중에
-    바뀌면 조용히 틀린 쪽으로 분류된다 — 자기모순 전용 재시도(구조화 노드의
-    온도 상향 + 정정 지시문)를 그 신고 자체가 없었던 실패에도 잘못 적용하지
-    않도록, 그 두 검증만 이 타입으로 던진다.
+    자기모순 전용 재시도(구조화 노드의 온도 상향 + 정정 지시문)를 신고 자체가
+    없었던 다른 검증 실패에 잘못 적용하지 않도록, 메시지 문자열이 아니라 타입으로
+    구분한다.
     """
 
 
@@ -127,10 +125,19 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         # 바라는 것이므로, 결정론을 깨는 편이 목적에 맞는다.
         retry_llm = get_structure_llm(timeout=get_settings().timeouts.llm, temperature=0.4)
         retry_chain = structure_prompt | retry_llm.with_structured_output(StructureOutput)
-        base_instruction = _gap_instruction(state)
+        episode_anchors = _existing_episode_anchors(state, catalog)
+        continued_anchor = await _match_continued_episode(
+            state, catalog, source_items, episode_anchors
+        )
+        continued_anchors = (
+            {episode_anchors[continued_anchor]: continued_anchor} if continued_anchor else {}
+        )
+        base_instruction = _gap_instruction(state) + _episode_instruction(
+            continued_anchor, has_episodes=bool(episode_anchors)
+        )
         base_prompt_vars = {
             "target_alias": state["target_experience_alias"],
-            "activity_tree": state["activity_tree_text"],
+            "activity_tree": _mark_episode_anchors(state, catalog),
             "catalog": render_catalog(catalog),
         }
         document_slot_hints = _document_slot_hints(source_items, state.get("extracted_text"))
@@ -252,15 +259,18 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                         else result.items
                     )
                     call_index += 1
+                    for category in result.existing_categories:
+                        existing_categories_by_alias[category.alias] = category
                     candidate = _apply_structuring_fixups(
                         round_note_items + namespaced,
                         cumulative_source_text,
                         state,
                         catalog,
                         document_slot_hints,
+                        existing_categories=list(existing_categories_by_alias.values()),
+                        continued_anchors=continued_anchors,
+                        earlier_item_ids=frozenset(item.item_id for item in round_note_items),
                     )
-                    for category in result.existing_categories:
-                        existing_categories_by_alias[category.alias] = category
                     missing = _missing_source_ids(candidate, batch_source_text)
                     duplicated = _duplicate_source_ids(candidate) & set(batch_source_text)
                     batch_items = candidate
@@ -320,7 +330,9 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
             # 추가된다. 모델이 기존 section 아래 새 앵커를 또 만든 경우, 최종 슬롯
             # 전개까지 끝난 상태에서 한 번 더 재사용을 시도해야 정확한 기존 빈 슬롯을
             # target_ref로 확정할 수 있다.
-            reused_existing = _reuse_existing_filled_anchor(filled_items, catalog, state)
+            reused_existing = _reuse_existing_filled_anchor(
+                filled_items, catalog, state, continued_anchors
+            )
             redirected_existing = _redirect_leaf_add_to_existing_empty_slot(
                 reused_existing, catalog, state
             )
@@ -332,6 +344,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                     catalog=catalog,
                     state=state,
                     existing_categories=list(existing_categories_by_alias.values()),
+                    continued_anchors=continued_anchors,
                 )
             except Exception:
                 logger.error(
@@ -355,13 +368,9 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         try:
             validated = await _run_batches_and_validate(base_instruction, chain)
         except _SelfContradictionError as exc:
-            # `_validate_category_reuse`/`_validate_anchor_reuse`는 모델이 스스로
-            # "이미 있다"고 신고해 놓고도 그것과 모순되게 새 카테고리·앵커를 또
-            # 만들면 이 타입으로 거부한다(자기모순). `_validate_anchor_reuse_deterministic`
-            # 도 비슷한 취지의 평범한 `ValueError`를 던지지만, 그건 모델의 자기
-            # 신고와 무관하게 활동 트리만 보고 결정론적으로 판정한 것이라 아래
-            # 정정 지시문("신고한 기존 카테고리·앵커와...")이 안 맞는다 — 그래서
-            # 이 재시도는 `_SelfContradictionError`에만 반응한다.
+            # `_validate_category_reuse`/`_validate_continued_episode`는 모델이
+            # "이미 있다"고 신고했거나 "이어서 보강하라"고 지시받고도 그것과
+            # 모순되게 새 카테고리·앵커를 또 만들면 이 타입으로 거부한다(자기모순).
             #
             # 실제로 재현된 경우다: 활동에 템플릿 이전에 만들어진 자유 형식 블록만
             # 있으면(메인 서버 GET 응답에는 slot_id가 없어 AI에게는 흔한
@@ -373,9 +382,9 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
             )
             corrective_instruction = base_instruction + (
                 "\n\n**주의: 이전 시도에서 자기모순이 있었습니다.** "
-                f"{exc} 이번에는 신고한 기존 카테고리·앵커와 실제로 만드는 블록의 "
+                f"{exc} 이번에는 신고했거나 지시받은 기존 카테고리·앵커와 실제로 만드는 블록의 "
                 "parent_ref를 반드시 일치시키세요. 확신이 없으면 새 카테고리·앵커를 "
-                "만들지 말고 신고한 기존 별칭 아래에 형제 블록으로만 추가하세요.\n\n"
+                "만들지 말고 그 기존 별칭 아래에 형제 블록으로만 추가하세요.\n\n"
             )
             validated = await _run_batches_and_validate(corrective_instruction, retry_chain)
         except _BatchCoverageError as exc:
@@ -630,7 +639,9 @@ def _gap_instruction(state: ExperienceMapState) -> str:
     return f"gap 답변 item은 반드시 기존 [{anchor_alias}] 바로 아래에 추가하세요.\n\n"
 
 
-def _merge_duplicate_slot_items(items: list[StructureLlmItem]) -> list[StructureLlmItem]:
+def _merge_duplicate_slot_items(
+    items: list[StructureLlmItem], catalog: TemplateCatalog
+) -> list[StructureLlmItem]:
     """같은 부모 아래 같은 slot_id를 두 번 이상 만들면 하나로 합친다.
 
     실제로 모델이 같은 template slot(예: TASK.BASIC.PURPOSE)을 같은 부모
@@ -640,11 +651,14 @@ def _merge_duplicate_slot_items(items: list[StructureLlmItem]) -> list[Structure
     담고 있을 수 있다) — 그래서 버리지 않고 `source_item_ids`를 합쳐
     첫 item 하나로 만든다. 이미 있는 "여러 원문이 한 슬롯에 합쳐질 수
     있다"는 규칙의 연장이다.
+
+    **앵커는 합치지 않는다.** 앵커 하나가 업무·에피소드 하나라 같은 컨테이너
+    아래 여러 개가 나란히 오는 게 명세상 정상이다(명세 "반복 가능").
     """
     order: list[tuple[str, str]] = []
     groups: dict[tuple[str, str], list[StructureLlmItem]] = {}
     for item in items:
-        if not item.slot_id:
+        if not item.slot_id or _is_anchor_slot(item.slot_id, catalog):
             continue
         key = (item.parent_ref or item.parent_item_id or "", item.slot_id)
         if key not in groups:
@@ -734,8 +748,19 @@ def _apply_structuring_fixups(
     state: ExperienceMapState,
     catalog: TemplateCatalog,
     document_slot_hints: dict[str, str] | None = None,
+    existing_categories: list[ExistingCategoryClassification] | None = None,
+    continued_anchors: dict[str, str] | None = None,
+    earlier_item_ids: frozenset[str] | None = None,
 ) -> list[StructureLlmItem]:
     """LLM 원시 출력에 결정론적 보정을 순서대로 적용한다.
+
+    `continued_anchors`는 에피소드 판정(`_match_continued_episode`)이 "이번 입력은
+    이 기존 에피소드를 이어서 보강한다"고 본 컨테이너 별칭 → 앵커 별칭이다. 새
+    앵커를 기존 앵커로 되돌리는 보정은 이 판정이 있을 때만 한다 — 같은 section이라는
+    것만으로는 같은 에피소드인지 알 수 없다.
+
+    `earlier_item_ids`는 이번 요청의 앞 배치(또는 같은 배치의 앞 시도)가 이미 만든
+    item이다. 배치 경계를 넘어 같은 자리에 앵커를 또 만들면 앞 앵커로 합친다.
 
     순서가 중요하다. 프루닝은 "같은 부모 밑 여러 템플릿 중 내용 있는 것만
     남긴다"는 판단을 parent_item_id 기준으로 한다. 앵커를 건너뛴 level 5가
@@ -757,7 +782,8 @@ def _apply_structuring_fixups(
     """
     split_merged = _split_merged_container_anchor_items(raw_items)
     normalized_slots = _normalize_known_slot_aliases(split_merged, catalog)
-    source_sanitized = _remove_unknown_source_references(normalized_slots, source_text)
+    summaries_folded = _fold_invented_template_summary(normalized_slots, catalog)
+    source_sanitized = _remove_unknown_source_references(summaries_folded, source_text)
     ungrounded_cleared = _clear_ungrounded_text(source_sanitized)
     context_aligned = _apply_document_slot_hints(
         ungrounded_cleared, catalog, document_slot_hints or {}
@@ -775,7 +801,7 @@ def _apply_structuring_fixups(
         protected_source_ids=set(document_slot_hints or {}),
     )
     merged_sections = _merge_duplicate_section_items(learning_aligned)
-    merged = _merge_duplicate_slot_items(merged_sections)
+    merged = _merge_duplicate_slot_items(merged_sections, catalog)
     pruned_junk = _drop_empty_invalid_slot_items(merged, catalog)
     reconstructed = _reconstruct_verbatim_text(pruned_junk, source_text)
     deredundanted = _resolve_redundant_target_activity_parent_ref(reconstructed, state)
@@ -783,17 +809,22 @@ def _apply_structuring_fixups(
     repaired_refs = _repair_unknown_slot_parent_refs(rerefed, state)
     dereffed = _clear_invalid_after_ref(repaired_refs, state)
     rerooted = _fix_new_section_parent(dereffed, state)
-    normalized_hierarchy = _normalize_new_hierarchy(rerooted, catalog, state)
-    reparented = _reparent_orphan_level5_items(normalized_hierarchy, catalog)
-    metadata_reused = _reuse_existing_anchor_from_metadata(reparented, catalog, state)
-    # `_reuse_existing_filled_anchor`는 반드시 `_reparent_orphan_level5_items`
-    # 뒤에 와야 한다. 앞서 두면, 이게 앵커를 level 5로 바꿔 기존 앵커에
-    # `parent_ref`로 직접 붙인 결과를 `_reparent_orphan_level5_items`가
-    # "앵커를 건너뛴 level 5"로 오해해 가짜 앵커를 또 만들어 버린다 —
-    # `parent_ref`가 실제로 앵커를 가리키는지는 그 함수가 알 방법이 없다.
-    reused = _reuse_existing_filled_anchor(metadata_reused, catalog, state)
+    normalized_hierarchy = _normalize_new_hierarchy(
+        rerooted, catalog, state, _reported_container_sections(existing_categories or [], state)
+    )
+    continued = continued_anchors or {}
+    reparented = _reparent_orphan_level5_items(
+        normalized_hierarchy, catalog, state=state, continued_anchors=continued
+    )
+    continued_redirected = _redirect_empty_anchor_to_continued_episode(
+        reparented, catalog, continued
+    )
+    batch_merged = _merge_anchors_repeated_across_batches(
+        continued_redirected, earlier_item_ids or frozenset(), catalog
+    )
+    reused = _reuse_existing_filled_anchor(batch_merged, catalog, state, continued)
     collapsed = _collapse_basic_troubleshooting_templates(reused)
-    remerged = _merge_duplicate_slot_items(collapsed)
+    remerged = _merge_duplicate_slot_items(collapsed, catalog)
     rebuilt = _reconstruct_verbatim_text(remerged, source_text)
     deduped = _dedupe_anchor_matching_child_source(rebuilt, catalog)
     pruned = _prune_extra_templates(deduped)
@@ -900,6 +931,60 @@ def _normalize_known_slot_aliases(
         else:
             normalized.append(item)
     return normalized
+
+
+def _fold_invented_template_summary(
+    items: list[StructureLlmItem], catalog: TemplateCatalog
+) -> list[StructureLlmItem]:
+    """모델이 지어낸 `{섹션}.{템플릿}.SUMMARY` 슬롯을 그 섹션의 앵커 요약으로 되돌린다.
+
+    실제 LLM 호출로 재현됐다. 에피소드 요약을 앵커(`PROBLEM_SOLVING.SUMMARY`)에
+    넣지 않고 템플릿 슬롯처럼 `PROBLEM_SOLVING.TROUBLESHOOTING.SUMMARY`로
+    만들었다. 부모가 내용 없는 같은 섹션 앵커면 그 앵커로 내용을 옮기고, 아니면 이
+    item 자체를 앵커로 바꾼다 — 형제 슬롯은 이후 계층 보정이 이 앵커 아래로 모은다.
+    """
+    by_id = {item.item_id: item for item in items}
+    absorbed_by_anchor: dict[str, StructureLlmItem] = {}
+    renamed: dict[str, str] = {}
+    for item in items:
+        parts = (item.slot_id or "").split(".")
+        if len(parts) != 3 or parts[2] != "SUMMARY" or catalog.get_slot(item.slot_id) is not None:
+            continue
+        anchor_slot_id = f"{parts[0]}.SUMMARY"
+        if not _is_anchor_slot(anchor_slot_id, catalog):
+            continue
+        parent = by_id.get(item.parent_item_id or "")
+        if (
+            parent is not None
+            and parent.slot_id == anchor_slot_id
+            and parent.text is None
+            and not parent.source_item_ids
+            and parent.item_id not in absorbed_by_anchor
+        ):
+            absorbed_by_anchor[parent.item_id] = item
+        else:
+            renamed[item.item_id] = anchor_slot_id
+    if not absorbed_by_anchor and not renamed:
+        return items
+
+    logger.warning(
+        "structure: 템플릿 아래 지어낸 SUMMARY 슬롯을 앵커 요약으로 되돌립니다 (%d개)",
+        len(absorbed_by_anchor) + len(renamed),
+    )
+    absorbed_ids = {summary.item_id for summary in absorbed_by_anchor.values()}
+    result: list[StructureLlmItem] = []
+    for item in items:
+        if item.item_id in absorbed_ids:
+            continue
+        summary = absorbed_by_anchor.get(item.item_id)
+        if summary is not None:
+            item = item.model_copy(
+                update={"text": summary.text, "source_item_ids": summary.source_item_ids}
+            )
+        elif item.item_id in renamed:
+            item = item.model_copy(update={"slot_id": renamed[item.item_id]})
+        result.append(item)
+    return result
 
 
 def _remove_unknown_source_references(
@@ -1426,12 +1511,32 @@ def _resolve_redundant_target_activity_parent_ref(
     그걸 바로 최종 부모로 취급한다), 둘 다 남겨두면 그 함수들이 어느 게
     모델의 진짜 의도인지 짐작해 조용히 하나를 버려 버린다. 그래서 여기서
     가능한 한 일찍(다른 보정이 손대기 전에) 걸러 재시도를 유도해야 한다.
+
+    단, `parent_ref`가 `parent_item_id` 자신이거나 그 조상(새 item이든 기존 별칭이든)이면
+    두 값은 같은 계보를 두 번 적은 것이라 모순이 아니다 — 더 구체적인
+    `parent_item_id`를 남긴다. 실제 LLM 호출로 반복 재현됐다: 뒤 배치가 앞 배치의 새
+    앵커를 두 필드에 똑같이 적거나, 세부 슬롯에 컨테이너(`parent_ref`)와 그 아래 새
+    앵커(`parent_item_id`)를 함께 적었다.
     """
     target_alias = state.get("target_experience_alias")
+    by_id = {item.item_id: item for item in items}
+
+    def roots_at(item_id: str, ref: str) -> bool:
+        seen: set[str] = set()
+        current = by_id.get(item_id)
+        while current is not None and current.item_id not in seen:
+            seen.add(current.item_id)
+            if current.item_id == ref or current.parent_ref == ref:
+                return True
+            if current.parent_ref is not None:
+                return False
+            current = by_id.get(current.parent_item_id or "")
+        return item_id == ref
+
     resolved: list[StructureLlmItem] = []
     for item in items:
         if item.parent_ref is not None and item.parent_item_id is not None:
-            if item.parent_ref == target_alias:
+            if item.parent_ref == target_alias or roots_at(item.parent_item_id, item.parent_ref):
                 item = item.model_copy(update={"parent_ref": None})
             else:
                 raise ValueError(
@@ -1518,6 +1623,7 @@ def _normalize_new_hierarchy(
     items: list[StructureLlmItem],
     catalog: TemplateCatalog,
     state: ExperienceMapState,
+    container_sections: dict[str, str] | None = None,
 ) -> list[StructureLlmItem]:
     """신규 블록의 카테고리·앵커·level 5 부모 계층을 복구한다.
 
@@ -1528,10 +1634,18 @@ def _normalize_new_hierarchy(
     명시하므로 올바른 부모는 결정적이다. 기존 블록 별칭의 실제 level은 이
     응답만으로 알 수 없으므로, 신규 item 체인 또는 선택 활동 별칭까지 연결된
     경우만 보정한다.
+
+    `container_sections`는 모델이 신고한 기존 카테고리 컨테이너 별칭 → section이다.
+    다른 section 카테고리에 잘못 놓인 level 4 슬롯을 알아보고, 옮길 때 같은 section
+    카테고리가 이미 있으면 새로 만들지 않고 그 컨테이너로 보낸다.
     """
     target_alias = state.get("target_experience_alias")
     if not target_alias:
         return items
+    container_sections = container_sections or {}
+    container_by_section: dict[str, str] = {}
+    for alias, section_id in container_sections.items():
+        container_by_section.setdefault(section_id, alias)
 
     anchor_slot_by_section = {
         section.section_id: slot.slot_id
@@ -1635,6 +1749,30 @@ def _normalize_new_hierarchy(
             result[index] = item.model_copy(
                 update={"parent_ref": None, "parent_item_id": category.item_id}
             )
+            continue
+        # level 4 슬롯이 다른 슬롯 item 아래에 있으면 체인이 어디서 시작하든
+        # 위치가 확실히 틀렸다. 실제 LLM 호출로 재현됐다 — 모델이 지어낸
+        # `PROBLEM_SOLVING.TROUBLESHOOTING.LEARNING`이 `LEARNING.GROWTH`로
+        # 정규화된 뒤에도 기존 카테고리에서 시작한 문제해결 앵커 아래 그대로
+        # 남아 level 5 위치에서 검증에 걸렸다.
+        # 모델이 다른 section이라고 스스로 신고한 기존 카테고리 바로 아래에 붙은
+        # level 4 슬롯도 위치가 틀렸다. 실제 LLM 호출로 재현됐다 — "배운 점"
+        # 문장을 문제해결 템플릿 슬롯처럼 문제해결 컨테이너에 바로 붙여, 정규화 뒤
+        # `LEARNING.GROWTH`가 문제해결 카테고리 안에 남았다.
+        misplaced_under_slot = direct_parent is not None and direct_parent.slot_id is not None
+        reported_section = container_sections.get(item.parent_ref or "")
+        misplaced_under_container = (
+            item.parent_ref is not None
+            and reported_section is not None
+            and reported_section != section_id
+        )
+        if misplaced_under_slot or misplaced_under_container:
+            existing_container = container_by_section.get(section_id)
+            if existing_container is not None:
+                update = {"parent_ref": existing_container, "parent_item_id": None}
+            else:
+                update = {"parent_ref": None, "parent_item_id": category_for(section_id).item_id}
+            result[index] = item.model_copy(update=update)
 
     def anchor_for(section_id: str, child: StructureLlmItem) -> StructureLlmItem | None:
         anchor_slot_id = anchor_slot_by_section.get(section_id)
@@ -1650,14 +1788,11 @@ def _normalize_new_hierarchy(
             matching_category = category_for(section_id)
 
         if matching_category is not None:
-            existing = next(
-                (
-                    item
-                    for item in result
-                    if item.slot_id == anchor_slot_id
-                    and item.parent_item_id == matching_category.item_id
-                ),
-                None,
+            existing = _nearest_preceding(
+                result,
+                child.item_id,
+                lambda item: item.slot_id == anchor_slot_id
+                and item.parent_item_id == matching_category.item_id,
             )
             if existing is not None:
                 return existing
@@ -1697,7 +1832,11 @@ def _normalize_new_hierarchy(
 
 
 def _reparent_orphan_level5_items(
-    items: list[StructureLlmItem], catalog: TemplateCatalog
+    items: list[StructureLlmItem],
+    catalog: TemplateCatalog,
+    *,
+    state: ExperienceMapState | None = None,
+    continued_anchors: dict[str, str] | None = None,
 ) -> list[StructureLlmItem]:
     """level 5 슬롯이 앵커를 안 거치고 컨테이너에 닿으면 코드가 바로잡는다.
 
@@ -1707,8 +1846,20 @@ def _reparent_orphan_level5_items(
     level 5 중 하나를 마치 앵커인 것처럼 `parent_item_id`로 가리킨다 — 그
     "가짜 앵커"도 결국 컨테이너 별칭에 직접 붙어 있다. 두 경우 다 각 item의
     부모 체인을 위로 따라가며 **진짜 앵커를 거치지 않고** 컨테이너 별칭에
-    닿는지로 판별한다. 같은 컨테이너·section에 이미 진짜 앵커가 있으면
-    거기로 연결하고, 없으면 코드가 빈 앵커를 새로 만들어 끼워 넣는다.
+    닿는지로 판별한다.
+
+    어느 앵커에 붙일지는 에피소드 판단이다. 한 컨테이너에 앵커(에피소드)가
+    여러 개일 수 있으므로 section이 같다는 이유로 기존 앵커에 붙이지 않는다.
+
+    1. 에피소드 판정이 그 컨테이너의 기존 에피소드를 이어서 보강한다고 봤으면
+       (`continued_anchors`) 그 기존 앵커에 붙인다.
+    2. 이번 응답에서 같은 컨테이너 아래 새로 만든 앵커가 있으면, item 순서상
+       가장 가까운 앞 앵커에 붙인다 — 모델은 에피소드별로 앵커와 슬롯을
+       차례대로 나열한다.
+    3. 둘 다 없으면 새 에피소드로 보고 빈 앵커를 새로 만든다.
+
+    `parent_ref`가 이미 **기존 앵커(level 4)**를 가리키면 정상이다. 컨테이너로
+    오해해 그 아래 앵커를 또 만들면 level 6이 된다.
     """
     anchor_slot_by_section: dict[str, str] = {
         section.section_id: slot.slot_id
@@ -1716,6 +1867,14 @@ def _reparent_orphan_level5_items(
         for slot in section.slots
         if slot.is_anchor
     }
+    continued = continued_anchors or {}
+    existing_anchor_aliases = set(continued.values())
+    if state is not None:
+        existing_anchor_aliases.update(
+            item.parent_ref
+            for item in items
+            if item.parent_ref is not None and _existing_block_level(item.parent_ref, state) == 4
+        )
     by_id = {item.item_id: item for item in items}
 
     def resolve_container_alias(item: StructureLlmItem) -> str | None:
@@ -1744,6 +1903,8 @@ def _reparent_orphan_level5_items(
                 return None  # 순환 참조 — 다른 검증이 잡는다.
             seen.add(current.item_id)
             if current.parent_ref is not None:
+                if current.parent_ref in existing_anchor_aliases:
+                    return None  # 정상 — 기존 앵커에 붙였다.
                 return current.parent_ref
             if current.parent_item_id is None:
                 return None
@@ -1754,7 +1915,7 @@ def _reparent_orphan_level5_items(
                 return None  # 정상 — 앵커를 거쳤다.
             current = parent
 
-    orphan_groups: dict[str, list[StructureLlmItem]] = {}
+    orphans: list[tuple[StructureLlmItem, str, str]] = []  # (item, 컨테이너 별칭, section)
     for item in items:
         if not item.slot_id or item.slot_id.count(".") != 2:
             continue
@@ -1764,51 +1925,245 @@ def _reparent_orphan_level5_items(
         alias = find_broken_container_alias(item)
         if alias is None:
             continue
-        orphan_groups.setdefault(f"{alias}::{section_id}", []).append(item)
+        orphans.append((item, alias, section_id))
 
-    if not orphan_groups:
+    if not orphans:
         return items
 
     new_anchors: list[StructureLlmItem] = []
-    reparent_to: dict[str, str] = {}  # orphan item_id -> anchor item_id
-    counter = 0
-    for key, group in orphan_groups.items():
-        parent_ref, section_id = key.split("::", 1)
+    auto_anchor_by_group: dict[tuple[str, str], str] = {}
+    reparent_to: dict[str, dict] = {}  # orphan item_id -> 부모 필드
+    for orphan, parent_ref, section_id in orphans:
+        if parent_ref in continued:
+            reparent_to[orphan.item_id] = {
+                "parent_ref": continued[parent_ref],
+                "parent_item_id": None,
+            }
+            continue
         anchor_slot_id = anchor_slot_by_section[section_id]
-        existing_anchor = next(
-            (
-                it
-                for it in items
-                if it.slot_id == anchor_slot_id and resolve_container_alias(it) == parent_ref
+        new_anchor = _nearest_preceding(
+            items,
+            orphan.item_id,
+            lambda it, parent_ref=parent_ref, anchor_slot_id=anchor_slot_id: (
+                it.slot_id == anchor_slot_id and resolve_container_alias(it) == parent_ref
             ),
-            None,
         )
-        if existing_anchor is not None:
-            anchor_id = existing_anchor.item_id
+        if new_anchor is not None:
+            anchor_id = new_anchor.item_id
         else:
-            counter += 1
-            anchor_id = f"auto_anchor_{section_id}_{counter}"
-            new_anchors.append(
-                StructureLlmItem(
-                    item_id=anchor_id,
-                    action="add",
-                    slot_id=anchor_slot_id,
-                    text=None,
-                    source_item_ids=[],
-                    parent_ref=parent_ref,
+            anchor_id = auto_anchor_by_group.get((parent_ref, section_id))
+            if anchor_id is None:
+                anchor_id = f"auto_anchor_{section_id}_{len(new_anchors) + 1}"
+                auto_anchor_by_group[(parent_ref, section_id)] = anchor_id
+                new_anchors.append(
+                    StructureLlmItem(
+                        item_id=anchor_id,
+                        action="add",
+                        slot_id=anchor_slot_id,
+                        text=None,
+                        source_item_ids=[],
+                        parent_ref=parent_ref,
+                    )
                 )
-            )
-        for orphan in group:
-            reparent_to[orphan.item_id] = anchor_id
+        reparent_to[orphan.item_id] = {"parent_ref": None, "parent_item_id": anchor_id}
 
     result = [
-        item.model_copy(update={"parent_ref": None, "parent_item_id": reparent_to[item.item_id]})
-        if item.item_id in reparent_to
-        else item
+        item.model_copy(update=reparent_to[item.item_id]) if item.item_id in reparent_to else item
         for item in items
     ]
     result.extend(new_anchors)
     return result
+
+
+def _nearest_preceding(
+    items: list[StructureLlmItem], item_id: str, predicate
+) -> StructureLlmItem | None:
+    """`item_id`보다 앞에 나온 것 중 가장 가까운 후보, 없으면 가장 앞 후보.
+
+    모델은 에피소드마다 앵커와 그 슬롯을 차례대로 나열하므로, 앵커를 잘못
+    가리킨 슬롯은 바로 앞 앵커의 에피소드일 가능성이 가장 높다.
+    """
+    position = next((i for i, item in enumerate(items) if item.item_id == item_id), len(items))
+    candidates = [(i, item) for i, item in enumerate(items) if predicate(item)]
+    if not candidates:
+        return None
+    preceding = [candidate for candidate in candidates if candidate[0] < position]
+    return (preceding[-1] if preceding else candidates[0])[1]
+
+
+def _existing_block_level(alias: str, state: ExperienceMapState) -> int | None:
+    """기존 블록 별칭의 level. 메타데이터가 없으면 활동 트리 들여쓰기로 계산한다."""
+    metadata = state.get("alias_metadata", {}).get(alias)
+    if metadata and metadata.get("level") is not None:
+        return int(metadata["level"])
+    for depth, tree_alias, _ in _parse_tree_lines(state.get("activity_tree_text") or ""):
+        if tree_alias == alias:
+            return depth + 2  # 활동 트리의 루트는 level 2 활동이다.
+    return None
+
+
+ANCHOR_MARK = "〔앵커〕"
+
+
+def _mark_episode_anchors(state: ExperienceMapState, catalog: TemplateCatalog) -> str:
+    """구조화 프롬프트용 활동 트리에서 기존 앵커(업무·에피소드) 블록에 표시를 붙인다.
+
+    실제 LLM 호출로 재현됐다 — 채워진 앵커는 트리에 내용만 보여서, 모델이 어느
+    블록이 에피소드 앵커인지 구분하지 못하고 그 아래 세부 슬롯들을 앵커로
+    신고했다. 같은 에피소드를 이어서 보강하는지 판단하려면 에피소드 단위가 먼저
+    보여야 한다. 앵커는 내용이 채워져도 메타데이터의 placeholder가 남아 있다.
+    """
+    tree_text = state.get("activity_tree_text") or ""
+    placeholder_to_slot = _placeholder_to_slot_map(catalog)
+    anchor_aliases = {
+        alias
+        for alias, block in state.get("alias_metadata", {}).items()
+        if _is_anchor_slot(
+            placeholder_to_slot.get(str(block.get("placeholder") or "").strip()), catalog
+        )
+    }
+    if not anchor_aliases:
+        return tree_text
+    lines = []
+    for line in tree_text.splitlines():
+        match = _TREE_LINE_RE.match(line)
+        if match and match.group(2) in anchor_aliases:
+            indent, alias, label = match.groups()
+            line = f"{indent}[{alias}] {ANCHOR_MARK} {label}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _reported_container_sections(
+    existing_categories: list[ExistingCategoryClassification], state: ExperienceMapState
+) -> dict[str, str]:
+    """모델이 신고한 기존 카테고리 컨테이너 별칭 → section.
+
+    활동 트리에 없거나 level 3 카테고리가 아닌 별칭, 활동 자신을 적은 신고는 버린다.
+    """
+    target_alias = state.get("target_experience_alias")
+    known_aliases = state.get("alias_to_block_id", {})
+    return {
+        category.alias: category.section_kind
+        for category in existing_categories
+        if category.alias in known_aliases
+        and category.alias != target_alias
+        and _existing_block_level(category.alias, state) == 3
+    }
+
+
+def _existing_episode_anchors(
+    state: ExperienceMapState, catalog: TemplateCatalog
+) -> dict[str, str]:
+    """선택 활동에 이미 있는 앵커(업무·에피소드) 별칭 → 그 카테고리 컨테이너 별칭.
+
+    앵커는 내용이 채워져도 메타데이터에 카탈로그 placeholder가 남아 있어 알아볼 수 있다.
+    활동 트리 순서를 유지한다.
+    """
+    placeholder_to_slot = _placeholder_to_slot_map(catalog)
+    metadata = state.get("alias_metadata", {})
+    anchors: dict[str, str] = {}
+    for _, alias, _ in _parse_tree_lines(state.get("activity_tree_text") or ""):
+        block = metadata.get(alias) or {}
+        slot_id = placeholder_to_slot.get(str(block.get("placeholder") or "").strip())
+        parent_alias = block.get("parent_alias")
+        if _is_anchor_slot(slot_id, catalog) and isinstance(parent_alias, str):
+            anchors[alias] = parent_alias
+    return anchors
+
+
+def _render_episodes(
+    anchors: dict[str, str], state: ExperienceMapState, catalog: TemplateCatalog
+) -> str:
+    """에피소드 판정 프롬프트용으로 기존 앵커와 그 바로 아래 채워진 슬롯을 나열한다."""
+    tree_lines = _parse_tree_lines(state.get("activity_tree_text") or "")
+    metadata = state.get("alias_metadata", {})
+    placeholder_to_slot = _placeholder_to_slot_map(catalog)
+    section_labels = {section.section_id: section.label for section in catalog.sections}
+    lines: list[str] = []
+    for index, (depth, alias, label) in enumerate(tree_lines):
+        if alias not in anchors:
+            continue
+        slot_id = placeholder_to_slot.get(
+            str((metadata.get(alias) or {}).get("placeholder") or "").strip(), ""
+        )
+        section_label = section_labels.get(slot_id.split(".")[0], "")
+        summary = "(요약 없음)" if _EMPTY_SLOT_GUIDE_RE.match(label) else label
+        lines.append(f"[{alias}] ({section_label}) {summary}")
+        for child_depth, _, child_label in tree_lines[index + 1 :]:
+            if child_depth <= depth:
+                break
+            if child_depth == depth + 1 and not _EMPTY_SLOT_GUIDE_RE.match(child_label):
+                lines.append(f"  - {child_label}")
+    return "\n".join(lines)
+
+
+async def _match_continued_episode(
+    state: ExperienceMapState,
+    catalog: TemplateCatalog,
+    source_items: list[dict],
+    anchors: dict[str, str],
+) -> str | None:
+    """이번 입력이 이어서 보강하는 기존 에피소드의 앵커 별칭. 새 에피소드면 None.
+
+    구조화 프롬프트 안에서 모델이 스스로 신고하게 했을 때는 실제 LLM 호출로
+    반복 실패했다 — 긴 배정 작업 중에 곁가지로 묻는 판단이라, 같은 에피소드의
+    원인만 보강하는 입력도 새 에피소드로 신고했다. 그래서 이 판단만 따로 묻는다.
+    기존 앵커가 없으면 판정할 게 없으므로 호출하지 않는다.
+
+    gap 답변은 gap이 가리키는 블록이 이미 정해져 있으므로 LLM을 부르지 않는다.
+    판정 호출이 실패하면 새 에피소드로 본다 — 합쳐진 두 에피소드는 사용자가 되돌리기
+    어렵지만, 나뉜 에피소드는 나중에 합치기 쉽다.
+    """
+    if not anchors:
+        return None
+    active_gap = state.get("active_gap") or {}
+    if active_gap.get("gap_type") == "new_child_block" and state.get("gap_answer_items"):
+        gap_block_id = active_gap.get("anchor_block_id")
+        return next(
+            (
+                alias
+                for alias, block_id in state.get("alias_to_block_id", {}).items()
+                if block_id == gap_block_id and alias in anchors
+            ),
+            None,
+        )
+
+    try:
+        llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
+        chain = episode_match_prompt | llm.with_structured_output(EpisodeMatchOutput)
+        result: EpisodeMatchOutput = await chain.ainvoke(
+            {
+                "episodes": _render_episodes(anchors, state, catalog),
+                "source_items": render_source_items(source_items),
+            }
+        )
+    except Exception:
+        logger.warning("structure: 에피소드 판정 실패, 새 에피소드로 봅니다", exc_info=True)
+        return None
+
+    alias = result.continued_anchor_alias
+    if alias is not None and alias not in anchors:
+        logger.warning("structure: 에피소드 판정이 기존 앵커가 아닌 별칭을 골랐습니다: %s", alias)
+        alias = None
+    logger.info("structure: 에피소드 판정 continued=%s (%s)", alias, result.reason)
+    return alias
+
+
+def _episode_instruction(continued_anchor: str | None, *, has_episodes: bool) -> str:
+    """에피소드 판정 결과를 구조화 프롬프트 지시문으로 바꾼다."""
+    if not has_episodes:
+        return ""
+    if continued_anchor is None:
+        return (
+            "에피소드 판정: 이번 입력의 업무·문제해결 내용은 기존 앵커와 **별개의 새 "
+            "업무·에피소드**입니다. 기존 앵커 아래에 붙이지 말고 앵커부터 새로 만드세요.\n\n"
+        )
+    return (
+        f"에피소드 판정: 이번 입력은 기존 앵커 [{continued_anchor}]의 업무·에피소드를 "
+        f"**이어서 보강**합니다. 그 section에 새 앵커를 만들지 말고, 세부 슬롯을 "
+        f'parent_ref="{continued_anchor}"로 바로 다세요.\n\n'
+    )
 
 
 def _dedupe_anchor_matching_child_source(
@@ -2116,6 +2471,7 @@ def _validate_output(
     catalog: TemplateCatalog,
     state: ExperienceMapState,
     existing_categories: list[ExistingCategoryClassification] | None = None,
+    continued_anchors: dict[str, str] | None = None,
 ) -> list[StructureLlmItem]:
     """원문·slot·템플릿 전개 계약을 코드로 검증한다.
 
@@ -2178,8 +2534,7 @@ def _validate_output(
     _validate_template_slots(items, catalog, state)
     _validate_new_sections(items, catalog, state)
     _validate_category_reuse(items, existing_categories or [], state)
-    _validate_anchor_reuse(items, existing_categories or [], catalog, state)
-    _validate_anchor_reuse_deterministic(items, catalog, state)
+    _validate_continued_episode(items, continued_anchors or {}, catalog)
     _validate_non_empty_subtrees(items, catalog)
     _validate_gap_parent(items, state)
     return items
@@ -2228,43 +2583,25 @@ def _validate_category_reuse(
             )
 
 
-def _validate_anchor_reuse(
-    items: list[StructureLlmItem],
-    existing_categories: list[ExistingCategoryClassification],
-    catalog: TemplateCatalog,
-    state: ExperienceMapState,
+def _validate_continued_episode(
+    items: list[StructureLlmItem], continued_anchors: dict[str, str], catalog: TemplateCatalog
 ) -> None:
-    """기존 컨테이너를 재사용하면서 그 안에 이미 있는 앵커를 또 새로 만들면 거부한다.
+    """기존 에피소드를 이어서 보강하라고 지시받고도 그 컨테이너에 새 앵커를 만들면 거부한다.
 
-    카테고리 컨테이너는 제대로 재사용해도(`section_kind`를 또 안 만들어도),
-    그 아래 앵커(level 4)는 매 턴 새로 하나씩 또 만드는 사고가 있었다 — 같은
-    컨테이너 밑에 "문제해결 요약" 앵커가 두 개씩 생기는 식이다. 앵커도
-    `existing_categories.existing_anchor_alias`로 미리 신고하게 해서, 이미
-    있다고 신고한 컨테이너에 새 앵커를 또 붙이면 코드가 걸러 재시도를 유도한다.
-
-    `_validate_category_reuse`와 같은 이유로, 활동 별칭 자체를 컨테이너로
-    신고한 항목은 무시한다 — 카테고리 컨테이너는 활동의 하위일 뿐 활동 자신일
-    수 없다.
+    한 컨테이너에 앵커(에피소드)가 여러 개인 건 정상이다. 막는 건 에피소드 판정과
+    행동이 어긋나는 경우뿐이다 — 같은 에피소드를 여러 메시지로 나눠 입력할 때 매 턴
+    앵커가 하나씩 늘어나던 사고를 막는다. 내용 없는 새 앵커는
+    `_redirect_empty_anchor_to_continued_episode`가 이미 되돌렸으므로, 여기 걸리는 건
+    요약 원문까지 새로 만든 경우다.
     """
-    target_alias = state.get("target_experience_alias")
-    known_aliases = state.get("alias_to_block_id", {})
-    anchor_alias_by_container = {
-        category.alias: category.existing_anchor_alias
-        for category in existing_categories
-        if category.alias in known_aliases
-        and category.existing_anchor_alias in known_aliases
-        and category.alias != target_alias
-    }
     for item in items:
-        if item.parent_ref is None or not _is_anchor_slot(item.slot_id, catalog):
+        if item.parent_ref not in continued_anchors or not _is_anchor_slot(item.slot_id, catalog):
             continue
-        existing_anchor = anchor_alias_by_container.get(item.parent_ref)
-        if existing_anchor is not None:
-            raise _SelfContradictionError(
-                f"[{item.parent_ref}] 아래에는 이미 앵커 [{existing_anchor}]가 있다고 "
-                "신고하고도 새 앵커를 또 만들었습니다. 새로 만들지 말고 그 별칭을 "
-                "parent_ref로 재사용하세요."
-            )
+        raise _SelfContradictionError(
+            f"[{item.parent_ref}] 아래 앵커 [{continued_anchors[item.parent_ref]}]의 에피소드를 "
+            "이어서 보강하라는 판정을 받고도 새 앵커를 또 만들었습니다. 새 앵커를 만들지 말고 "
+            "그 앵커 별칭을 parent_ref로 쓰세요."
+        )
 
 
 _TREE_LINE_RE = re.compile(r"^( *)\[(\w+)\] (.*)$")
@@ -2298,47 +2635,14 @@ def _placeholder_to_slot_map(catalog: TemplateCatalog) -> dict[str, str]:
     }
 
 
-def _subtree_known_slot_ids(
-    tree_lines: list[tuple[int, str, str]], root_alias: str, placeholder_to_slot: dict[str, str]
-) -> set[str]:
-    """root_alias 서브트리 안에서, 빈 슬롯 가이드 문구로 알아낼 수 있는 slot_id들.
-
-    한 번이라도 커밋된 빈 슬롯은 카탈로그의 placeholder 문구를 그대로 달고
-    있다(명세 3-7). 그 문구를 거꾸로 slot_id에 매핑하면 "이 서브트리가 이미
-    어느 section의 템플릿을 갖고 있는지"를 LLM 자기 신고 없이도 코드가
-    독립적으로 판별할 수 있다 — `existing_categories` 자기 신고 자체를
-    빠뜨리는 사고까지 잡기 위한 이중 방어다.
-    """
-    depth_by_alias = {alias: depth for depth, alias, _ in tree_lines}
-    if root_alias not in depth_by_alias:
-        return set()
-    root_depth = depth_by_alias[root_alias]
-
-    slot_ids: set[str] = set()
-    in_subtree = False
-    for depth, alias, label in tree_lines:
-        if alias == root_alias:
-            in_subtree = True
-            continue
-        if not in_subtree:
-            continue
-        if depth <= root_depth:
-            break
-        match = _EMPTY_SLOT_GUIDE_RE.match(label)
-        if match:
-            slot_id = placeholder_to_slot.get(match.group(1))
-            if slot_id:
-                slot_ids.add(slot_id)
-    return slot_ids
-
-
 def _subtree_known_slots_with_parent(
     tree_lines: list[tuple[int, str, str]], root_alias: str, placeholder_to_slot: dict[str, str]
 ) -> list[tuple[str, str, str]]:
-    """`_subtree_known_slot_ids`와 같지만, 슬롯을 아는 블록의 별칭·부모 별칭도 같이 낸다.
+    """root_alias 서브트리의 빈 슬롯을 (slot_id, 별칭, 부모 별칭)으로 낸다.
 
-    빈 슬롯의 부모가 곧 그 템플릿의 진짜 앵커다 — 이 정보가 있어야 "이미 있는
-    앵커의 별칭이 무엇인지"까지 알아내 새 앵커를 그 별칭으로 되돌릴 수 있다.
+    한 번이라도 커밋된 빈 슬롯은 카탈로그의 placeholder 문구를 그대로 달고
+    있다(명세 3-7). 그 문구를 거꾸로 slot_id에 매핑한다. 빈 슬롯의 부모가 곧
+    그 템플릿의 진짜 앵커다.
     """
     depth_by_alias = {alias: depth for depth, alias, _ in tree_lines}
     if root_alias not in depth_by_alias:
@@ -2368,77 +2672,107 @@ def _subtree_known_slots_with_parent(
     return results
 
 
-def _reuse_existing_anchor_from_metadata(
-    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
+def _merge_anchors_repeated_across_batches(
+    items: list[StructureLlmItem], earlier_item_ids: frozenset[str], catalog: TemplateCatalog
 ) -> list[StructureLlmItem]:
-    """placeholder 메타데이터로 확인한 기존 앵커를 재사용한다.
+    """앞 배치가 만든 앵커와 같은 부모·같은 앵커 슬롯의 새 앵커를 뒤 배치가 또 만들면 합친다.
 
-    채워진 블록은 tree text에서 placeholder가 보이지 않아 기존 코드는 앵커인지
-    판별할 수 없었다. map context에는 원래 블록의 placeholder가 남아 있으므로,
-    같은 컨테이너의 직속 자식 중 새 앵커와 slot_id가 같은 블록이 정확히 하나면
-    새 앵커를 없애고 그 자식들을 기존 앵커 아래로 옮긴다.
+    원문은 문장 2개(파일은 1개)씩 배치로 나눠 구조화한다. 입력 하나에 담긴 한
+    에피소드가 여러 배치로 나뉘면, 뒤 배치가 앞 배치의 앵커를 재사용하지 않고 새로
+    만드는 게 실제 LLM 호출로 재현됐다 — 해결 방법만 별도 에피소드로 떨어져 나갔다.
+    배치 경계는 에피소드 경계가 아니므로 합친다. 한 호출 안에서 모델이 직접 나눈
+    앵커는 서로 다른 에피소드로 보고 그대로 둔다.
+
+    한계: 서로 다른 에피소드가 서로 다른 배치로 나뉘어 들어오면 합쳐진다.
     """
-    placeholder_to_slot = _placeholder_to_slot_map(catalog)
-    metadata = state.get("alias_metadata", {})
-    existing_by_parent_and_slot: dict[tuple[str, str], list[str]] = {}
-    for alias, block in metadata.items():
-        placeholder = str(block.get("placeholder") or "").strip()
-        slot_id = placeholder_to_slot.get(placeholder)
-        parent_alias = block.get("parent_alias")
-        if not slot_id or not isinstance(parent_alias, str):
-            continue
-        existing_by_parent_and_slot.setdefault((parent_alias, slot_id), []).append(alias)
-
-    anchor_redirects: dict[str, str] = {}
+    earliest: dict[tuple[str, str], str] = {}
     for item in items:
-        if item.parent_ref is None or not _is_anchor_slot(item.slot_id, catalog):
+        if item.item_id in earlier_item_ids and _is_anchor_slot(item.slot_id, catalog):
+            key = (item.parent_ref or item.parent_item_id or "", item.slot_id or "")
+            earliest.setdefault(key, item.item_id)
+    redirects: dict[str, str] = {}
+    for item in items:
+        if item.item_id in earlier_item_ids or not _is_anchor_slot(item.slot_id, catalog):
             continue
-        candidates = existing_by_parent_and_slot.get((item.parent_ref, item.slot_id or ""), [])
-        if len(candidates) == 1:
-            anchor_redirects[item.item_id] = candidates[0]
-    if not anchor_redirects:
+        target = earliest.get((item.parent_ref or item.parent_item_id or "", item.slot_id or ""))
+        if target is not None:
+            redirects[item.item_id] = target
+    if not redirects:
+        return items
+
+    extra_sources: dict[str, list[str]] = {}
+    for item_id, target in redirects.items():
+        dropped = next(item for item in items if item.item_id == item_id)
+        extra_sources.setdefault(target, []).extend(dropped.source_item_ids)
+
+    result: list[StructureLlmItem] = []
+    for item in items:
+        if item.item_id in redirects:
+            continue
+        if item.item_id in extra_sources:
+            sources = list(item.source_item_ids)
+            sources += [s for s in extra_sources[item.item_id] if s not in sources]
+            item = item.model_copy(update={"source_item_ids": sources})
+        target = redirects.get(item.parent_item_id or "")
+        if target is not None:
+            item = item.model_copy(update={"parent_item_id": target})
+        result.append(item)
+    return result
+
+
+def _redirect_empty_anchor_to_continued_episode(
+    items: list[StructureLlmItem], catalog: TemplateCatalog, continued_anchors: dict[str, str]
+) -> list[StructureLlmItem]:
+    """이어서 보강한다고 판정한 컨테이너에 빈 새 앵커를 만들면 그 기존 앵커로 되돌린다.
+
+    같은 에피소드를 여러 메시지로 나눠 입력하면(문제 → 원인 → 해결) 모델이
+    지시를 받고도 앵커를 습관적으로 새로 만드는 경우가 있다. 내용 없는 새 앵커는
+    슬롯을 담는 틀일 뿐이라 없애고, 내용 있는 자식만 기존 앵커 아래로 옮긴다.
+    내용 없는 자식은 버린다 — 기존 에피소드에는 이미 자기 템플릿이 있다.
+
+    요약 원문이 있는 새 앵커는 건드리지 않는다. 같은 입력에 별개 에피소드가 함께
+    있는 경우일 수 있어서, 판정과 모순되면 `_validate_continued_episode`가 재시도로
+    넘긴다.
+    """
+    redirects = {
+        item.item_id: continued_anchors[item.parent_ref]
+        for item in items
+        if item.parent_ref in continued_anchors
+        and _is_anchor_slot(item.slot_id, catalog)
+        and item.text is None
+        and not item.source_item_ids
+    }
+    if not redirects:
         return items
 
     result: list[StructureLlmItem] = []
     for item in items:
-        existing_anchor = anchor_redirects.get(item.item_id)
+        if item.item_id in redirects:
+            continue
+        existing_anchor = redirects.get(item.parent_item_id or "")
         if existing_anchor is not None:
             if item.text is None and not item.source_item_ids:
                 continue
-            # 기존 앵커 자체는 수정하지 않는다. 새 요약 원문이 함께 있었다면
-            # 기존 앵커 아래의 일반 세부 블록으로 보존한다.
-            result.append(
-                item.model_copy(
-                    update={
-                        "parent_ref": existing_anchor,
-                        "parent_item_id": None,
-                        "slot_id": None,
-                    }
-                )
-            )
-            continue
-        redirected_parent = anchor_redirects.get(item.parent_item_id or "")
-        if redirected_parent is not None:
-            result.append(
-                item.model_copy(update={"parent_ref": redirected_parent, "parent_item_id": None})
-            )
-            continue
+            item = item.model_copy(update={"parent_ref": existing_anchor, "parent_item_id": None})
         result.append(item)
     return result
 
 
 def _reuse_existing_filled_anchor(
-    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
+    items: list[StructureLlmItem],
+    catalog: TemplateCatalog,
+    state: ExperienceMapState,
+    continued_anchors: dict[str, str] | None = None,
 ) -> list[StructureLlmItem]:
-    """활동 트리에 이미 채워진 앵커가 있는데 새 앵커를 또 만들면, 가능하면 코드가 되돌린다.
+    """이어서 보강한다고 판정한 에피소드 옆에 새 앵커를 또 만들면, 가능하면 코드가 되돌린다.
 
-    `_validate_anchor_reuse`(자기 신고 대조)와 `existing_categories`
-    안내만으로는, 컨테이너 안의 앵커가 **이미 실제 내용으로 채워져 있는**
-    경우까지 모델이 놓치는 사고가 있었다 — 빈 슬롯 안내문(명세 3-7)이 없는
-    채워진 블록은 지금까지의 결정론적 검사(`_subtree_known_slot_ids`)로도
-    안 잡혔다. 실제로 재현된 경우다: 이미 채워진 앵커 옆에 새 앵커 +
-    빈 템플릿 전체를 또 만들었는데, 그 서브트리에 남은 진짜 빈 슬롯은 이번에
-    반영하려는 내용과 정확히 하나만 일치했다 — 그렇다면 새 앵커가 아니라
+    **에피소드 판정이 그 컨테이너의 기존 앵커를 이어서 보강한다고 봤을 때만** 하고,
+    그 앵커의 서브트리에서만 빈 슬롯을 찾는다. 한 컨테이너에 에피소드가 여러 개일 수
+    있어서, 판정 없이 새로 만든 앵커는 새 에피소드다.
+
+    실제로 재현된 경우다(gap 질문에 답하는 흐름): 이미 채워진 앵커 옆에 새 앵커
+    + 빈 템플릿 전체를 또 만들었는데, 그 앵커 서브트리에 남은 진짜 빈 슬롯은
+    이번에 반영하려는 내용과 정확히 하나만 일치했다 — 그렇다면 새 앵커가 아니라
     그 빈 슬롯을 채우려던 의도가 명백하다.
 
     **`add`로 앵커에 다시 붙이면 안 된다.** 빈 슬롯(예: `b_5`)은 이미
@@ -2450,6 +2784,9 @@ def _reuse_existing_filled_anchor(
     바꿔야 진짜로 그 블록을 채운다. 일치가 하나가 아니면(0개 또는 여러 개)
     모호해서 그대로 두고 이후 검증이 에러로 보고하게 한다.
     """
+    continued = continued_anchors or {}
+    if not continued:
+        return items
     tree_lines = _parse_tree_lines(state.get("activity_tree_text") or "")
     placeholder_to_slot = _placeholder_to_slot_map(catalog)
     by_id = {item.item_id: item for item in items}
@@ -2457,13 +2794,13 @@ def _reuse_existing_filled_anchor(
     changed = False
 
     for item in items:
-        if item.parent_ref is None or not _is_anchor_slot(item.slot_id, catalog):
+        if item.parent_ref not in continued or not _is_anchor_slot(item.slot_id, catalog):
             continue
         section = item.slot_id.split(".")[0]
         known_by_slot = {
             slot_id: (alias, parent_alias)
             for slot_id, alias, parent_alias in _subtree_known_slots_with_parent(
-                tree_lines, item.parent_ref, placeholder_to_slot
+                tree_lines, continued[item.parent_ref], placeholder_to_slot
             )
             if slot_id.split(".")[0] == section
         }
@@ -2541,7 +2878,7 @@ def _redirect_leaf_add_to_existing_empty_slot(
 ) -> list[StructureLlmItem]:
     """이미 있는 앵커에 슬롯을 새로 add할 때, 그 slot이 이미 빈 블록으로 있으면 update로 바꾼다.
 
-    실제로 재현된 경우다(gap 질문에 답하는 흐름). 모델이 `existing_anchor_alias`를
+    실제로 재현된 경우다(gap 질문에 답하는 흐름). 모델이 이어서 보강할 앵커를
     올바르게 골라 기존 앵커(예: `b_2`)에 직접 `add`로 level 5 슬롯을 붙였다
     — 앵커 자체는 정확히 재사용했다. 하지만 그 슬롯(예: "목적")은 이미
     빈 블록(`b_3`)으로 트리에 있었는데, `add`는 항상 새 블록을 만들므로
@@ -2591,32 +2928,6 @@ def _redirect_leaf_add_to_existing_empty_slot(
                 continue
         result.append(item)
     return result if changed else items
-
-
-def _validate_anchor_reuse_deterministic(
-    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
-) -> None:
-    """활동 트리에 이미 있는 빈 슬롯 가이드 문구로, 자기 신고 없이도 앵커 중복을 잡는다.
-
-    `_reuse_existing_filled_anchor`가 확신할 수 있는 경우(겹치는 빈 슬롯이
-    정확히 하나)는 이미 고쳤다 — 여기는 그 마지막 방어선이다. 고칠 수
-    없을 만큼 모호했던 경우(겹치는 빈 슬롯이 0개 또는 여러 개)만 여기
-    걸려 재시도를 유도한다.
-    """
-    tree_lines = _parse_tree_lines(state.get("activity_tree_text") or "")
-    placeholder_to_slot = _placeholder_to_slot_map(catalog)
-    for item in items:
-        if item.parent_ref is None or not _is_anchor_slot(item.slot_id, catalog):
-            continue
-        section = item.slot_id.split(".")[0]
-        existing_slot_ids = _subtree_known_slot_ids(
-            tree_lines, item.parent_ref, placeholder_to_slot
-        )
-        if any(slot_id.split(".")[0] == section for slot_id in existing_slot_ids):
-            raise ValueError(
-                f"[{item.parent_ref}] 아래에는 이미 {section} section의 앵커·하위 템플릿이 "
-                "있습니다. 새 앵커를 또 만들지 말고 기존 구조를 재사용하세요."
-            )
 
 
 def _validate_non_empty_subtrees(items: list[StructureLlmItem], catalog: TemplateCatalog) -> None:
