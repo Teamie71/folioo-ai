@@ -291,7 +291,7 @@ class ExperienceMapRepository:
               RETURNING user_id, session_id, block_id, active_gap
             """,
             int(user_id),
-            block_id,
+            int(block_id),
             uuid.uuid4(),
         )
         return SessionRow.from_record(record)

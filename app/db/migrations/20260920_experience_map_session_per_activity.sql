@@ -8,7 +8,7 @@
 BEGIN;
 
 ALTER TABLE ai_experience_session
-  ADD COLUMN IF NOT EXISTS block_id text;
+  ADD COLUMN IF NOT EXISTS block_id bigint;
 
 -- 기존 유저 단위 세션은 활동에 묶여 있지 않아 새 모델에서 의미가 없다.
 -- 메인 서버도 같은 배포에서 유저 단위 세션을 전부 폐기하므로 함께 지운다.
