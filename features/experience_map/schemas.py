@@ -111,11 +111,17 @@ class ExistingCategoryClassification(BaseModel):
     section_kind: SectionKind = Field(
         ..., description="그 컨테이너 자식 내용을 보고 판단한 section"
     )
-    existing_anchor_alias: str | None = Field(
+
+
+class EpisodeMatchOutput(BaseModel):
+    """새 입력이 기존 업무·문제해결 에피소드 중 하나를 이어서 보강하는지 판정한 결과."""
+
+    reason: str = Field(..., description="판단 근거 한두 문장")
+    continued_anchor_alias: str | None = Field(
         None,
         description=(
-            "그 컨테이너 아래에 이미 앵커(level 4) 블록이 있으면 그 블록의 별칭. "
-            "컨테이너만 있고 앵커가 아직 없으면 null."
+            "새 입력이 이어서 보강하는 기존 에피소드의 앵커 별칭. 별개의 새 업무·에피소드"
+            "이거나 어느 에피소드와도 이어지지 않으면 null."
         ),
     )
 
