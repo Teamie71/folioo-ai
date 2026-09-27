@@ -2,12 +2,12 @@
 
 from .extraction import (
     build_pdf_extraction_messages,
-    encode_pdf_base64,
+    encode_pdf_data_url,
     load_pdf_classification_criteria,
 )
 
 __all__ = [
     "build_pdf_extraction_messages",
-    "encode_pdf_base64",
+    "encode_pdf_data_url",
     "load_pdf_classification_criteria",
 ]

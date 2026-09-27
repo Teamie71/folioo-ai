@@ -785,21 +785,22 @@ def test_calculate_overall_completion_uses_protected_invoke_helper(monkeypatch):
 
 def test_get_analyst_llm_uses_dedicated_configuration(monkeypatch):
     """Analyst 전용 LLM helper는 스트리밍 비활성화와 긴 타임아웃을 사용한다."""
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://example.test")
     monkeypatch.setenv("LLM_MODEL_NAME", "test-model")
     llm_client.get_analyst_llm.cache_clear()
 
     captured = {}
 
-    class _FakeChatGoogleGenerativeAI:
+    class _FakeChatOpenAI:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr(llm_client, "ChatGoogleGenerativeAI", _FakeChatGoogleGenerativeAI)
+    monkeypatch.setattr(llm_client, "ChatOpenAI", _FakeChatOpenAI)
 
     result = get_analyst_llm(temperature=0.2)
 
-    assert isinstance(result, _FakeChatGoogleGenerativeAI)
+    assert isinstance(result, _FakeChatOpenAI)
     assert captured["model"] == "test-model"
     assert captured["temperature"] == 0.2
     assert captured["request_timeout"] == 120
@@ -810,21 +811,22 @@ def test_get_analyst_llm_uses_dedicated_configuration(monkeypatch):
 
 def test_get_llm_omits_max_retries_when_unset(monkeypatch):
     """기본 LLM helper는 max_retries를 명시하지 않아 provider 기본값을 유지한다."""
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://example.test")
     monkeypatch.setenv("LLM_MODEL_NAME", "test-model")
     llm_client.get_llm.cache_clear()
 
     captured = {}
 
-    class _FakeChatGoogleGenerativeAI:
+    class _FakeChatOpenAI:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr(llm_client, "ChatGoogleGenerativeAI", _FakeChatGoogleGenerativeAI)
+    monkeypatch.setattr(llm_client, "ChatOpenAI", _FakeChatOpenAI)
 
     result = llm_client.get_llm(temperature=0.6)
 
-    assert isinstance(result, _FakeChatGoogleGenerativeAI)
+    assert isinstance(result, _FakeChatOpenAI)
     assert captured["model"] == "test-model"
     assert captured["temperature"] == 0.6
     assert captured["request_timeout"] is None
