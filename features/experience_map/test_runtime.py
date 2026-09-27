@@ -595,6 +595,7 @@ class InMemoryTestMapStore:
 
 # 경로는 level 2 활동부터 시작한다. level 1 은 전체 맵의 루트라 자리 정보가 없다.
 _PATH_MIN_LEVEL = 2
+_CATEGORY_LEVEL = 3
 
 
 def _path(rows: dict[str, MapBlockRow], block_id: str) -> str:
@@ -606,13 +607,25 @@ def _path(rows: dict[str, MapBlockRow], block_id: str) -> str:
 
     level 1 최상위 루트도 뺀다. 남기면 `_path_parts` 가 그걸 활동명으로 읽어
     `"프로젝트 경험 > 성과"` 가 된다. 경로의 시작은 언제나 level 2 활동이다.
+
+    level 3 카테고리 컨테이너는 설계상 `content`가 항상 없다 — `content`만
+    보면 그 조상 자체가 통째로 경로에서 빠져 `_path_parts`가 활동명 바로
+    다음 조각을 카테고리로 잘못 읽는다("정리 항목" 폴백, 에이전트 QA 3차
+    #5 재현). 커밋 시점에 카테고리 라벨을 `placeholder`에 심어두므로
+    (`SECTION_LABELS`), level 3에 한해 `content`가 없으면 `placeholder`로
+    대신한다. level 4/5의 빈 `placeholder`는 사용자용 안내 질문이라 그대로
+    쓰면 안 된다 — 이 폴백은 카테고리 레이블에만 적용한다.
     """
     labels: list[str] = []
     parent_id = rows[block_id].parent_id
     while parent_id is not None:
         current = rows[parent_id]
-        if current.level >= _PATH_MIN_LEVEL and current.content:
-            labels.append(current.content)
+        if current.level >= _PATH_MIN_LEVEL:
+            label = current.content
+            if not label and current.level == _CATEGORY_LEVEL:
+                label = current.placeholder
+            if label:
+                labels.append(label)
         parent_id = current.parent_id
     labels.reverse()
     return " > ".join(labels)
