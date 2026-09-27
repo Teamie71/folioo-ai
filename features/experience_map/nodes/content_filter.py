@@ -152,6 +152,34 @@ def _is_sentence_covered(normalized: str, accepted_texts: list[str]) -> bool:
     return coverage_ratio >= _MIN_SENTENCE_COVERAGE_RATIO
 
 
+_REQUEST_PHRASE = re.compile(
+    r"(정리|저장|기록|작성|반영|추가|생성)[^.!?]{0,20}(해\s*주(세요|십시오|시겠)?|해\s*줘)[.!?]?$"
+)
+_META_NOTE = re.compile(r"^[\[(].{0,120}[\])]$|^[※\*]\s*(참고|예시|주|팁|tip)\s*[:：]")
+
+
+def _is_request_phrase(sentence: str) -> bool:
+    """ "이 경험을 정리해 주세요" 같은 작업 요청 문장인지 확인한다.
+
+    이런 문장은 사용자가 겪은 사실이 아니라 에이전트에게 보내는 지시라
+    `new_items`·`gap_answer_items` 어디에도 안 담기는 게 정상이다. LLM이
+    이를 올바르게 제외하고도 `excluded_reasons`에 그 사실을 적는 걸 잊는
+    경우가 있어, 그 실수 하나 때문에 정상 분류 전체를 `llm_error`로
+    실패시키지 않도록 여기서 미리 걸러낸다(QA 3차 #1).
+    """
+    return bool(_REQUEST_PHRASE.search(_normalize(sentence)))
+
+
+def _is_meta_note(sentence: str) -> bool:
+    """대괄호·"※ 참고:" 처럼 파일 안의 작성 안내·주석인지 확인한다.
+
+    "[작성자 주: ...]", "※ 이 부분은 예시입니다" 같은 문장은 경험 사실이
+    아니라 문서 작성용 메모다. 요구사항 텍스트와 마찬가지로 LLM이 올바르게
+    제외하고도 `excluded_reasons`를 비우는 경우가 있다(QA 3차 #2).
+    """
+    return bool(_META_NOTE.match(_normalize(sentence)))
+
+
 def _is_structural_heading(item: FilteredItem) -> bool:
     """문서 구조를 알리는 제목만 있는 item인지 판별한다.
 
@@ -333,6 +361,8 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
         result, active_gap=active_gap, user_message=user_message, extracted_text=extracted_text
     )
 
+    found_request_phrase = False
+    found_meta_note = False
     if not result.excluded_reasons:
         # LLM이 "제외한 게 없다"고 자체 신고했는데도 원문에 분류되지 않은
         # 의미 있는 문장이 남아 있으면, 그건 제외가 아니라 누락이다 —
@@ -343,11 +373,18 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
         missing = _uncovered_sentences(
             f"{user_message or ''}\n{extracted_text or ''}", gap_items + new_items
         )
-        if missing:
+        # "이 경험을 정리해 주세요" 같은 작업 요청 문장이나 "[작성자 주: ...]"
+        # 같은 문서 작성 메모는 LLM이 올바르게 제외해 놓고도
+        # `excluded_reasons`에 적는 걸 잊을 수 있다. 그 누락 하나로 정상
+        # 분류 전체를 실패시키지 않는다(QA 3차 #1·#2).
+        genuine_missing = [s for s in missing if not (_is_request_phrase(s) or _is_meta_note(s))]
+        found_request_phrase = any(_is_request_phrase(s) for s in missing)
+        found_meta_note = any(_is_meta_note(s) for s in missing)
+        if genuine_missing:
             logger.warning(
                 "content_filter: 원문 일부가 분류되지 않았습니다 (%d개 문장, 예: %r)",
-                len(missing),
-                missing[0][:80],
+                len(genuine_missing),
+                genuine_missing[0][:80],
             )
             raise LlmError("입력 내용 일부를 분류하지 못했습니다.", failed_node="content_filter")
 
@@ -358,6 +395,10 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
     excluded_reasons = list(result.excluded_reasons)
     if dropped_headings:
         excluded_reasons.append("문서 제목·구획 제목")
+    if found_request_phrase and "요구사항 텍스트" not in excluded_reasons:
+        excluded_reasons.append("요구사항 텍스트")
+    if found_meta_note and "문서 작성 메모" not in excluded_reasons:
+        excluded_reasons.append("문서 작성 메모")
 
     updated["gap_answer_items"] = [item.model_dump() for item in gap_items]
     updated["new_items"] = [item.model_dump() for item in new_items]

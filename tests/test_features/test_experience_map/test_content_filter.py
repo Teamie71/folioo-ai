@@ -385,6 +385,55 @@ async def test_dropped_sentence_with_no_excluded_reason_is_rejected(fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_dropped_request_phrase_with_no_excluded_reason_is_tolerated(fake_llm):
+    """ "~정리해 주세요" 같은 요구사항 텍스트를 빠뜨려도 실패시키지 않는다.
+
+    QA 3차 #1 재현: LLM이 사실 문장은 올바르게 `new_items`로 분류하고
+    작업 요청 문장("이 경험을 정리해 주세요.")은 올바르게 제외했지만
+    `excluded_reasons`에 그 사실을 적는 걸 잊었다. 이 경우는 진짜 누락이
+    아니므로 `llm_error`로 실패시키지 않고, 요구사항 텍스트가 제외됐다는
+    사유를 자동으로 보강한다.
+    """
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", "카드뉴스 6개를 제작했습니다.")]))
+
+    result = await filter_content(
+        make_state(user_message="카드뉴스 6개를 제작했습니다. 이 경험을 정리해 주세요.")
+    )
+
+    assert [entry["text"] for entry in result["new_items"]] == ["카드뉴스 6개를 제작했습니다."]
+    assert "요구사항 텍스트" in result["excluded_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_dropped_meta_note_with_no_excluded_reason_is_tolerated(fake_llm):
+    """ "[작성자 주: ...]" 같은 문서 작성 메모를 빠뜨려도 실패시키지 않는다.
+
+    QA 3차 #2 재현: PDF에서 추출된 텍스트에 "이 부분은 예시입니다" 같은
+    주석이 섞여 있고, LLM이 이를 올바르게 제외하고도 `excluded_reasons`에
+    적는 걸 잊었다.
+    """
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", "설문 200건을 분석했습니다.")]))
+
+    result = await filter_content(
+        make_state(user_message=("[작성자 주: 아래는 예시입니다.] 설문 200건을 분석했습니다."))
+    )
+
+    assert [entry["text"] for entry in result["new_items"]] == ["설문 200건을 분석했습니다."]
+    assert "문서 작성 메모" in result["excluded_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_dropped_non_request_sentence_still_rejected_alongside_request_phrase(fake_llm):
+    """요구사항 문장 말고 진짜 누락된 사실 문장이 섞여 있으면 여전히 실패시킨다."""
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", "첫 문장입니다.")]))
+
+    with pytest.raises(LlmError):
+        await filter_content(
+            make_state(user_message="첫 문장입니다. 둘째 문장입니다. 이 내용을 정리해 주세요.")
+        )
+
+
+@pytest.mark.asyncio
 async def test_excluded_reason_present_skips_coverage_check(fake_llm):
     """LLM이 제외를 신고했으면 나머지 원문을 못 찾아도 통과시킨다(오탐 방지).
 
