@@ -24,13 +24,28 @@ OTHER_SESSION_ID = "11111111-2222-3333-4444-555555555555"
 STREAM_PATH = f"/api/v1/experience-map/sessions/{SESSION_ID}/chat/stream"
 
 
-def make_ticket(*, sub="123", sid=SESSION_ID, bid="200", secret=SECRET, expires_in=300) -> str:
+def make_ticket(
+    *,
+    sub="123",
+    sid=SESSION_ID,
+    bid="200",
+    scope="turn",
+    rid="550e8400-e29b-41d4-a716-446655440000",
+    secret=SECRET,
+    expires_in=300,
+) -> str:
     now = int(time.time())
-    return jwt.encode(
-        {"sub": sub, "sid": sid, "bid": bid, "iat": now, "exp": now + expires_in},
-        secret,
-        algorithm="HS256",
-    )
+    claims = {
+        "sub": sub,
+        "sid": sid,
+        "bid": bid,
+        "scope": scope,
+        "iat": now,
+        "exp": now + expires_in,
+    }
+    if scope == "turn" and rid is not None:
+        claims["rid"] = rid
+    return jwt.encode(claims, secret, algorithm="HS256")
 
 
 async def _echo(request: Request) -> JSONResponse:
@@ -206,6 +221,56 @@ def test_rejects_without_reading_body():
 
     assert response.status_code == 401
     assert response.json()["code"] == "ticket_invalid"
+
+
+# ===== scope (2026-09-27 메인 서버 변경) =====
+
+
+def test_read_scope_ticket_is_rejected_on_turn_path():
+    """조회 전용 티켓으로는 턴을 실행할 수 없다."""
+    client = build_client()
+
+    response = client.post(
+        STREAM_PATH,
+        headers={"Authorization": f"Bearer {make_ticket(scope='read', rid=None)}"},
+        content=b"payload",
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "ticket_scope_forbidden"
+
+
+def test_read_scope_ticket_passes_on_non_turn_path():
+    """조회 전용 경로는 read 티켓으로도 통과한다."""
+    app = Starlette(
+        routes=[
+            Route(f"/api/v1/experience-map/sessions/{SESSION_ID}/state", _echo, methods=["POST"]),
+        ]
+    )
+    app.add_middleware(
+        ExperienceMapTicketMiddleware, secret_provider=lambda: SECRET, rate_limiter=None
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/experience-map/sessions/{SESSION_ID}/state",
+        headers={"Authorization": f"Bearer {make_ticket(scope='read', rid=None)}"},
+        content=b"payload",
+    )
+
+    assert response.status_code == 200
+
+
+def test_turn_scope_ticket_passes_on_turn_path():
+    client = build_client()
+
+    response = client.post(
+        STREAM_PATH,
+        headers={"Authorization": f"Bearer {make_ticket(scope='turn')}"},
+        content=b"payload",
+    )
+
+    assert response.status_code == 200
 
 
 # ===== rate limit =====

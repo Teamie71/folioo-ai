@@ -27,13 +27,24 @@ def make_ticket(
     sub: str = "123",
     sid: str = SESSION_ID,
     bid: str = "200",
+    scope: str = "turn",
+    rid: str | None = "550e8400-e29b-41d4-a716-446655440000",
     secret: str = SECRET,
     expires_in: int = 300,
     algorithm: str = "HS256",
     **overrides,
 ) -> str:
     now = int(time.time())
-    payload = {"sub": sub, "sid": sid, "bid": bid, "iat": now, "exp": now + expires_in}
+    payload = {
+        "sub": sub,
+        "sid": sid,
+        "bid": bid,
+        "scope": scope,
+        "iat": now,
+        "exp": now + expires_in,
+    }
+    if scope == "turn" and rid is not None:
+        payload["rid"] = rid
     payload.update(overrides)
     return jwt.encode(payload, secret, algorithm=algorithm)
 
@@ -134,10 +145,18 @@ def test_verify_rejects_other_hmac_algorithm():
 # ===== payload 형식 =====
 
 
-@pytest.mark.parametrize("missing", ["sub", "sid", "exp"])
+@pytest.mark.parametrize("missing", ["sub", "sid", "exp", "scope"])
 def test_verify_rejects_incomplete_payload(missing):
     now = int(time.time())
-    claims = {"sub": "123", "sid": SESSION_ID, "iat": now, "exp": now + 300}
+    claims = {
+        "sub": "123",
+        "sid": SESSION_ID,
+        "bid": "200",
+        "scope": "turn",
+        "rid": "550e8400-e29b-41d4-a716-446655440000",
+        "iat": now,
+        "exp": now + 300,
+    }
     claims.pop(missing)
     token = jwt.encode(claims, SECRET, algorithm="HS256")
 
@@ -148,3 +167,44 @@ def test_verify_rejects_incomplete_payload(missing):
 def test_verify_rejects_garbage_token():
     with pytest.raises(TicketInvalidError):
         verify_ticket("not-a-jwt", SECRET, SESSION_ID)
+
+
+# ===== scope·rid (2026-09-27 메인 서버 변경) =====
+
+
+def test_verify_returns_scope_and_rid_for_turn_ticket():
+    payload = verify_ticket(make_ticket(), SECRET, SESSION_ID)
+
+    assert payload.scope == "turn"
+    assert payload.rid == "550e8400-e29b-41d4-a716-446655440000"
+
+
+def test_verify_returns_read_scope_without_rid():
+    payload = verify_ticket(make_ticket(scope="read", rid=None), SECRET, SESSION_ID)
+
+    assert payload.scope == "read"
+    assert payload.rid is None
+
+
+def test_verify_rejects_turn_ticket_without_rid():
+    """scope=turn인데 rid가 없으면(발급 실수) 거부한다."""
+    with pytest.raises(TicketInvalidError):
+        verify_ticket(make_ticket(scope="turn", rid=None), SECRET, SESSION_ID)
+
+
+def test_verify_rejects_read_ticket_with_rid():
+    """scope=read에 rid가 있으면(발급 실수) 거부한다."""
+    now = int(time.time())
+    claims = {
+        "sub": "123",
+        "sid": SESSION_ID,
+        "bid": "200",
+        "scope": "read",
+        "rid": "550e8400-e29b-41d4-a716-446655440000",
+        "iat": now,
+        "exp": now + 300,
+    }
+    token = jwt.encode(claims, SECRET, algorithm="HS256")
+
+    with pytest.raises(TicketInvalidError):
+        verify_ticket(token, SECRET, SESSION_ID)

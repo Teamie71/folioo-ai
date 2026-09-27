@@ -15,9 +15,6 @@ from features.experience_map.schemas import (
 )
 
 DECIMAL_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
-UUID_PATTERN = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
 
 SessionStatus = Literal["ready", "running", "failed"]
 RequestStatus = Literal["running", "completed", "failed"]
@@ -27,12 +24,6 @@ ViewKind = Literal["map", "list"]
 MAX_USER_MESSAGE_LENGTH = 500
 """프론트 요청(2026-09-20)으로 추가된 채팅 입력 상한. 블록 content 상한
 (`MAX_CONTENT_LENGTH`, 정제된 결과물 기준)과는 별개 개념이라 따로 둔다."""
-
-
-def _require_uuid(value: str, field: str) -> str:
-    if not UUID_PATTERN.match(value):
-        raise ValueError(f"{field}는 UUID 문자열이어야 합니다.")
-    return value
 
 
 def _require_decimal_id(value: str, field: str) -> str:
@@ -87,19 +78,20 @@ class SessionStateResponse(BaseModel):
 
 
 class ChatStreamRequest(BaseModel):
-    """multipart의 `request` part에 담기는 JSON"""
+    """multipart의 `request` part에 담기는 JSON
 
-    request_id: str = Field(..., description="티켓과 함께 받은 UUID")
+    `request_id`는 더 이상 여기 없다 — 메인 서버 2026-09-27 변경으로 턴의
+    request_id는 항상 티켓의 `rid` claim을 쓰고, 클라이언트가 보낸 값은
+    신뢰하지 않는다(스푸핑 방지). 실제 request_id는
+    `request.state.experience_map_request_id`(티켓 미들웨어가 채움)에서
+    읽는다.
+    """
+
     user_message: str | None = Field(None, description="파일이 없으면 필수")
     context_experience_id: str | None = Field(
         None, description="현재 보고 있는 level 2 활동 block ID"
     )
     view: ViewKind | None = None
-
-    @field_validator("request_id")
-    @classmethod
-    def _check_request_id(cls, v: str) -> str:
-        return _require_uuid(v, "request_id")
 
     @field_validator("context_experience_id")
     @classmethod
@@ -123,18 +115,6 @@ class ChatStreamRequest(BaseModel):
         """
         if file_count == 0 and not (self.user_message or "").strip():
             raise ValueError("메시지와 파일 중 하나 이상이 필요합니다.")
-
-
-# ===== POST /sessions/{session_id}/retry/stream =====
-
-
-class RetryStreamRequest(BaseModel):
-    request_id: str
-
-    @field_validator("request_id")
-    @classmethod
-    def _check_request_id(cls, v: str) -> str:
-        return _require_uuid(v, "request_id")
 
 
 # ===== GET /sessions/{session_id}/requests/{request_id} =====

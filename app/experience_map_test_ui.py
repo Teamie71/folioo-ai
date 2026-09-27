@@ -8,10 +8,12 @@
 import os
 import secrets
 import time
+import uuid
 
 import jwt
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from app.schemas.experience_map import CreateSessionRequest
 from features.experience_map.service import get_service
@@ -30,8 +32,22 @@ def _require_api_key(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
 
-def _issue_test_ticket(user_id: str, session_id: str, block_id: str) -> str:
-    """테스트 UI에서만 쓰는 짧은 세션 티켓을 발급한다."""
+def _issue_test_ticket(
+    user_id: str,
+    session_id: str,
+    block_id: str,
+    *,
+    scope: str = "read",
+    request_id: str | None = None,
+) -> str:
+    """테스트 UI에서만 쓰는 짧은 티켓을 발급한다.
+
+    메인 서버 2026-09-27 변경(`scope`·`rid`) 반영 — `scope="turn"`인 티켓만
+    새 턴(chat/stream·retry/stream)을 실행할 수 있고, 그 턴의 request_id는
+    이 티켓의 `rid`를 그대로 쓴다. 세션 생성 시 내려주는 기본 티켓은
+    `scope="read"`(조회 전용)이고, 턴을 실행하려면 `/test/ticket`에서 그때
+    그때 turn 티켓을 새로 받아야 한다.
+    """
     secret = os.getenv("EXPMAP_TICKET_SECRET", "")
     if not secret:
         raise HTTPException(
@@ -40,17 +56,17 @@ def _issue_test_ticket(user_id: str, session_id: str, block_id: str) -> str:
         )
 
     now = int(time.time())
-    return jwt.encode(
-        {
-            "sub": user_id,
-            "sid": session_id,
-            "bid": block_id,
-            "iat": now,
-            "exp": now + _TICKET_TTL_SECONDS,
-        },
-        secret,
-        algorithm="HS256",
-    )
+    claims = {
+        "sub": user_id,
+        "sid": session_id,
+        "bid": block_id,
+        "scope": scope,
+        "iat": now,
+        "exp": now + _TICKET_TTL_SECONDS,
+    }
+    if scope == "turn":
+        claims["rid"] = request_id or str(uuid.uuid4())
+    return jwt.encode(claims, secret, algorithm="HS256")
 
 
 @router.get("", include_in_schema=False, response_class=HTMLResponse)
@@ -68,7 +84,12 @@ async def test_page() -> HTMLResponse:
 
 @router.post("/session")
 async def create_test_session(payload: CreateSessionRequest, request: Request) -> dict:
-    """테스트 페이지 전용 세션과 티켓을 만든다."""
+    """테스트 페이지 전용 세션과 조회용(scope=read) 티켓을 만든다.
+
+    턴 실행에는 이 티켓을 못 쓴다(`403 ticket_scope_forbidden`) — 턴마다
+    `/experience-map/test/ticket`에서 그 턴의 request_id를 실은 turn
+    티켓을 새로 받아야 한다 (메인 서버 2026-09-27 변경).
+    """
     _require_api_key(request)
     await get_test_map_store().reset(payload.user_id)
     session_id, session_status = await get_service().create_session(
@@ -77,7 +98,37 @@ async def create_test_session(payload: CreateSessionRequest, request: Request) -
     return {
         "session_id": session_id,
         "status": session_status,
-        "ticket": _issue_test_ticket(payload.user_id, session_id, payload.block_id),
+        "ticket": _issue_test_ticket(payload.user_id, session_id, payload.block_id, scope="read"),
+        "expires_in_seconds": str(_TICKET_TTL_SECONDS),
+    }
+
+
+class _TurnTicketRequest(BaseModel):
+    user_id: str
+    session_id: str
+    block_id: str
+    request_id: str | None = None
+
+
+@router.post("/ticket")
+async def create_test_turn_ticket(payload: _TurnTicketRequest, request: Request) -> dict:
+    """새 턴(chat/stream·retry/stream) 하나를 실행할 turn 티켓을 발급한다.
+
+    `request_id`를 생략하면 새로 만들고, 실패한 턴을 재시도할 때는 그 턴의
+    request_id를 그대로 넘긴다 — retry/stream도 티켓의 rid로 request_id를
+    판단하므로 재시도 대상과 rid가 일치해야 한다.
+    """
+    _require_api_key(request)
+    request_id = payload.request_id or str(uuid.uuid4())
+    return {
+        "ticket": _issue_test_ticket(
+            payload.user_id,
+            payload.session_id,
+            payload.block_id,
+            scope="turn",
+            request_id=request_id,
+        ),
+        "request_id": request_id,
         "expires_in_seconds": str(_TICKET_TTL_SECONDS),
     }
 
@@ -181,16 +232,17 @@ const addMessage = (role, value) => { const bubble = document.createElement('div
 const setChatStatus = value => { chatStatus.textContent = `● ${value}`; };
 const setBusy = busy => buttons.forEach(button => { button.disabled = busy || !state.sessionId; });
 const authHeaders = () => ({ Authorization: `Bearer ${state.ticket}` });
-const newRequestId = () => {
-  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  // Tailscale IP를 HTTP로 열면 일부 브라우저에서 Web Crypto가 비활성화된다.
-  // API가 요구하는 UUID 형식을 보장하는 대체값을 사용한다.
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, char => {
-    const random = Math.floor(Math.random() * 16);
-    const value = char === 'x' ? random : (random & 0x3) | 0x8;
-    return value.toString(16);
+// 턴(chat/stream·retry/stream)마다 그 턴의 request_id를 실은 turn 티켓을 새로
+// 받는다 (메인 서버 2026-09-27 변경) — 세션 생성 때 받은 티켓은 조회 전용
+// (scope=read)이라 턴 실행에 못 쓴다.
+async function mintTurnTicket(requestId) {
+  const response = await fetch('/experience-map/test/ticket', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': document.querySelector('#apiKey').value },
+    body: JSON.stringify({ user_id: document.querySelector('#userId').value, session_id: state.sessionId, block_id: state.blockId, request_id: requestId }),
   });
-};
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
 const setRuntime = (message, className = '') => { runtime.textContent = message; runtime.className = `runtime ${className}`; };
 
 async function refreshMap() {
@@ -254,7 +306,7 @@ document.querySelector('#createSession').onclick = async () => {
       body: JSON.stringify({ user_id: document.querySelector('#userId').value, block_id: '200' })
     });
     if (!response.ok) throw new Error(await response.text());
-    const data = await response.json(); state.sessionId = data.session_id; state.ticket = data.ticket; state.requestId = null;
+    const data = await response.json(); state.sessionId = data.session_id; state.ticket = data.ticket; state.blockId = '200'; state.requestId = null;
     chatHistory.textContent = ''; document.querySelector('#message').value = ''; document.querySelector('#files').value = '';
     await refreshMap();
     document.querySelector('#session').textContent = `세션 준비됨: ${data.session_id} (티켓 ${data.expires_in_seconds}초)`;
@@ -265,14 +317,16 @@ document.querySelector('#createSession').onclick = async () => {
 };
 
 document.querySelector('#send').onclick = async () => {
-  state.requestId = newRequestId(); setBusy(true); setChatStatus('에이전트가 생각 중'); setRuntime(`실제 LLM 요청 진행 중 · request_id: ${state.requestId}`); log(`요청 시작: ${state.requestId}`, 'ok');
+  setBusy(true); setChatStatus('턴 티켓 발급 중');
   let streamSucceeded = false;
   try {
+    const turn = await mintTurnTicket(null); state.requestId = turn.request_id;
+    setChatStatus('에이전트가 생각 중'); setRuntime(`실제 LLM 요청 진행 중 · request_id: ${state.requestId}`); log(`요청 시작: ${state.requestId}`, 'ok');
     const selected = blockSelect.selectedOptions[0];
     const prompt = document.querySelector('#message').value;
-    addMessage('user', prompt); const form = new FormData(); form.append('request', JSON.stringify({ request_id: state.requestId, user_message: prompt, context_experience_id: selected?.dataset.activityId, view: document.querySelector('#view').value }));
+    addMessage('user', prompt); const form = new FormData(); form.append('request', JSON.stringify({ user_message: prompt, context_experience_id: selected?.dataset.activityId, view: document.querySelector('#view').value }));
     for (const file of document.querySelector('#files').files) form.append('files', file);
-    await readSse(await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/chat/stream`, { method: 'POST', headers: authHeaders(), body: form }));
+    await readSse(await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/chat/stream`, { method: 'POST', headers: { Authorization: `Bearer ${turn.ticket}` }, body: form }));
     streamSucceeded = true;
   } catch (error) { log(`오류: ${error.message}`, 'error'); addMessage('error', `요청 실패: ${error.message}`); setChatStatus('오류 발생'); setRuntime(`LLM 요청 실패: ${error.message}`, 'error'); }
   finally { setBusy(false); if (streamSucceeded) { await refreshMap(); setChatStatus('대화 준비됨'); setRuntime(`요청 스트림 종료 · request_id: ${state.requestId} · 경험 맵을 갱신했습니다.`, 'ok'); } }
@@ -286,7 +340,12 @@ document.querySelector('#message').addEventListener('keydown', event => {
 
 document.querySelector('#retry').onclick = async () => {
   if (!state.requestId) return log('재시도할 요청이 없습니다.', 'error'); setBusy(true); log(`재시도: ${state.requestId}`, 'ok');
-  try { await readSse(await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/retry/stream`, { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ request_id: state.requestId }) })); }
+  try {
+    // 재시도 대상 턴과 같은 request_id를 rid로 실은 turn 티켓이 있어야 한다 —
+    // retry/stream도 이제 그 rid로 재시도 대상을 판단한다.
+    const turn = await mintTurnTicket(state.requestId);
+    await readSse(await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/retry/stream`, { method: 'POST', headers: { Authorization: `Bearer ${turn.ticket}` } }));
+  }
   catch (error) { log(`오류: ${error.message}`, 'error'); } finally { setBusy(false); }
 };
 

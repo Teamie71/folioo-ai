@@ -5,12 +5,15 @@
 서버가 없으므로 같은 키로 직접 서명해 API 를 호출할 수 있게 한다.
 
 사용법:
-    uv run python scripts/experience_map/make_ticket.py --user-id 1
-    uv run python scripts/experience_map/make_ticket.py --user-id 1 --curl
+    uv run python scripts/experience_map/make_ticket.py --user-id 1 --block-id 200
+    uv run python scripts/experience_map/make_ticket.py --user-id 1 --block-id 200 --curl
+
+    # 조회 전용 티켓 (턴 실행 엔드포인트에선 403)
+    uv run python scripts/experience_map/make_ticket.py --user-id 1 --block-id 200 --scope read
 
     # 만료·위조 테스트
-    uv run python scripts/experience_map/make_ticket.py --user-id 1 --expires-in -1
-    uv run python scripts/experience_map/make_ticket.py --user-id 1 --secret wrong-secret
+    uv run python scripts/experience_map/make_ticket.py --user-id 1 --block-id 200 --expires-in -1
+    uv run python scripts/experience_map/make_ticket.py --user-id 1 --block-id 200 --secret wrong-secret
 """
 
 import argparse
@@ -41,7 +44,11 @@ def main() -> int:
     )
     parser.add_argument("--user-id", default="1", help="티켓 sub (십진 문자열)")
     parser.add_argument("--session-id", help="티켓 sid. 생략하면 새로 만든다")
-    parser.add_argument("--request-id", help="요청 UUID. 생략하면 새로 만든다")
+    parser.add_argument("--block-id", default="200", help="티켓 bid (세션이 묶인 활동 block_id)")
+    parser.add_argument(
+        "--scope", choices=["turn", "read"], default="turn", help="티켓 scope (기본 turn)"
+    )
+    parser.add_argument("--request-id", help="scope=turn일 때 rid. 생략하면 새로 만든다")
     parser.add_argument(
         "--expires-in", type=int, default=300, help="만료까지 초. 음수면 만료된 티켓"
     )
@@ -55,18 +62,24 @@ def main() -> int:
         sys.exit("EXPMAP_TICKET_SECRET 이 설정되지 않았습니다. .env 를 확인하세요.")
 
     session_id = args.session_id or str(uuid.uuid4())
-    request_id = args.request_id or str(uuid.uuid4())
+    request_id = args.request_id or str(uuid.uuid4()) if args.scope == "turn" else None
 
     now = int(time.time())
-    ticket = jwt.encode(
-        {"sub": args.user_id, "sid": session_id, "iat": now, "exp": now + args.expires_in},
-        secret,
-        algorithm="HS256",
-    )
+    claims = {
+        "sub": args.user_id,
+        "sid": session_id,
+        "bid": args.block_id,
+        "scope": args.scope,
+        "iat": now,
+        "exp": now + args.expires_in,
+    }
+    if request_id is not None:
+        claims["rid"] = request_id
+    ticket = jwt.encode(claims, secret, algorithm="HS256")
 
     if args.curl:
         body = json.dumps(
-            {"request_id": request_id, "user_message": "결제 실패 문제를 해결한 내용을 정리해줘"},
+            {"user_message": "결제 실패 문제를 해결한 내용을 정리해줘"},
             ensure_ascii=False,
         )
         print(
@@ -82,6 +95,8 @@ def main() -> int:
             {
                 "ticket": ticket,
                 "session_id": session_id,
+                "block_id": args.block_id,
+                "scope": args.scope,
                 "request_id": request_id,
                 "expires_in": args.expires_in,
             },

@@ -31,14 +31,37 @@ USER_ID_BASE = 9_600_000
 
 
 def make_ticket(
-    user_id: str, session_id: str, *, block_id: str = "200", expires_in: int = 300
+    user_id: str,
+    session_id: str,
+    *,
+    block_id: str = "200",
+    scope: str = "turn",
+    request_id: str | None = None,
+    expires_in: int = 300,
 ) -> str:
+    """티켓 발급 (메인 서버 2026-09-27 변경: scope·rid 포함).
+
+    `scope="turn"`이면 `request_id`(없으면 새로 만든 UUID)를 `rid`로 싣는다.
+    턴 실행(chat/stream·retry/stream)의 request_id는 이제 body가 아니라
+    이 `rid`에서 온다.
+    """
     now = int(time.time())
-    return jwt.encode(
-        {"sub": user_id, "sid": session_id, "bid": block_id, "iat": now, "exp": now + expires_in},
-        SECRET,
-        algorithm="HS256",
-    )
+    claims = {
+        "sub": user_id,
+        "sid": session_id,
+        "bid": block_id,
+        "scope": scope,
+        "iat": now,
+        "exp": now + expires_in,
+    }
+    if scope == "turn":
+        claims["rid"] = request_id or str(uuid.uuid4())
+    return jwt.encode(claims, SECRET, algorithm="HS256")
+
+
+def turn_headers(user_id: str, session_id: str, request_id: str) -> dict:
+    """특정 request_id를 rid로 싣은 턴 티켓 Authorization 헤더."""
+    return {"Authorization": f"Bearer {make_ticket(user_id, session_id, request_id=request_id)}"}
 
 
 @pytest.fixture(autouse=True)
@@ -100,8 +123,8 @@ def read_events(response) -> list[dict]:
     return events
 
 
-def chat_form(request_id: str, message: str = "결제 실패 문제를 해결한 내용을 정리해줘") -> dict:
-    return {"request": json.dumps({"request_id": request_id, "user_message": message})}
+def chat_form(message: str = "결제 실패 문제를 해결한 내용을 정리해줘") -> dict:
+    return {"request": json.dumps({"user_message": message})}
 
 
 @pytest.mark.asyncio
@@ -208,7 +231,7 @@ async def test_stream_requires_ticket(client, session):
 
     response = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(str(uuid.uuid4())),
+        data=chat_form(),
     )
 
     assert response.status_code == 401
@@ -223,7 +246,7 @@ async def test_stream_rejects_other_session_ticket(client, session, api_user_id)
 
     response = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(str(uuid.uuid4())),
+        data=chat_form(),
         headers={"Authorization": other},
     )
 
@@ -240,7 +263,7 @@ async def test_chat_stream_event_order(client, session):
 
     response = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(str(uuid.uuid4())),
+        data=chat_form(),
         headers={"Authorization": auth},
     )
 
@@ -269,7 +292,7 @@ async def test_message_complete_kinds(client, session):
 
     response = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(str(uuid.uuid4())),
+        data=chat_form(),
         headers={"Authorization": auth},
     )
 
@@ -287,7 +310,7 @@ async def test_sse_headers(client, session):
 
     response = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(str(uuid.uuid4())),
+        data=chat_form(),
         headers={"Authorization": auth},
     )
 
@@ -306,7 +329,7 @@ async def test_missing_message_and_files_is_json_error(client, session):
 
     response = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data={"request": json.dumps({"request_id": str(uuid.uuid4())})},
+        data={"request": json.dumps({})},
         headers={"Authorization": auth},
     )
 
@@ -316,12 +339,12 @@ async def test_missing_message_and_files_is_json_error(client, session):
 
 
 @pytest.mark.asyncio
-async def test_bad_request_id_is_json_error(client, session):
+async def test_bad_context_experience_id_is_json_error(client, session):
     session_id, auth = session
 
     response = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data={"request": json.dumps({"request_id": "not-a-uuid", "user_message": "안녕"})},
+        data={"request": json.dumps({"user_message": "안녕", "context_experience_id": "exp_101"})},
         headers={"Authorization": auth},
     )
 
@@ -336,7 +359,7 @@ async def test_error_response_shape(client, session):
 
     response = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data={"request": json.dumps({"request_id": str(uuid.uuid4())})},
+        data={"request": json.dumps({})},
         headers={"Authorization": auth},
     )
 
@@ -347,23 +370,24 @@ async def test_error_response_shape(client, session):
 
 
 @pytest.mark.asyncio
-async def test_completed_request_replays_stored_events(client, session):
+async def test_completed_request_replays_stored_events(client, session, api_user_id):
     """완료된 요청에 다시 붙으면 저장 결과를 재전송한다."""
-    session_id, auth = session
+    session_id, _ = session
     request_id = str(uuid.uuid4())
-    form = chat_form(request_id)
+    form = chat_form()
+    headers = turn_headers(api_user_id, session_id, request_id)
 
     first = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
         data=form,
-        headers={"Authorization": auth},
+        headers=headers,
     )
     assert first.status_code == 200
 
     second = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
         data=form,
-        headers={"Authorization": auth},
+        headers=headers,
     )
 
     assert second.status_code == 200
@@ -380,19 +404,20 @@ async def test_completed_request_replays_stored_events(client, session):
 
 
 @pytest.mark.asyncio
-async def test_same_request_id_different_input_conflicts(client, session):
-    session_id, auth = session
+async def test_same_request_id_different_input_conflicts(client, session, api_user_id):
+    session_id, _ = session
     request_id = str(uuid.uuid4())
+    headers = turn_headers(api_user_id, session_id, request_id)
 
     await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(request_id, "첫 번째 내용"),
-        headers={"Authorization": auth},
+        data=chat_form("첫 번째 내용"),
+        headers=headers,
     )
     response = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(request_id, "다른 내용"),
-        headers={"Authorization": auth},
+        data=chat_form("다른 내용"),
+        headers=headers,
     )
 
     assert response.status_code == 409
@@ -403,13 +428,13 @@ async def test_same_request_id_different_input_conflicts(client, session):
 
 
 @pytest.mark.asyncio
-async def test_session_state_after_completion(client, session):
+async def test_session_state_after_completion(client, session, api_user_id):
     session_id, auth = session
     request_id = str(uuid.uuid4())
     await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(request_id),
-        headers={"Authorization": auth},
+        data=chat_form(),
+        headers=turn_headers(api_user_id, session_id, request_id),
     )
 
     response = await client.get(
@@ -424,14 +449,14 @@ async def test_session_state_after_completion(client, session):
 
 
 @pytest.mark.asyncio
-async def test_request_state_recovers_stored_result(client, session):
+async def test_request_state_recovers_stored_result(client, session, api_user_id):
     """SSE 가 끊겨도 결과를 다시 가져올 수 있다."""
     session_id, auth = session
     request_id = str(uuid.uuid4())
     await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(request_id),
-        headers={"Authorization": auth},
+        data=chat_form(),
+        headers=turn_headers(api_user_id, session_id, request_id),
     )
 
     response = await client.get(
@@ -460,14 +485,14 @@ async def test_unknown_request_is_404(client, session):
 
 
 @pytest.mark.asyncio
-async def test_get_messages_after_completion(client, session):
+async def test_get_messages_after_completion(client, session, api_user_id):
     """완료된 턴이 user_message·ai_responses와 함께 조회된다."""
     session_id, auth = session
     request_id = str(uuid.uuid4())
     await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(request_id, "결제 오류를 해결했다."),
-        headers={"Authorization": auth},
+        data=chat_form("결제 오류를 해결했다."),
+        headers=turn_headers(api_user_id, session_id, request_id),
     )
 
     response = await client.get(
@@ -491,14 +516,14 @@ async def test_get_messages_after_completion(client, session):
 
 
 @pytest.mark.asyncio
-async def test_get_messages_paginates_with_cursor(client, session):
+async def test_get_messages_paginates_with_cursor(client, session, api_user_id):
     """limit보다 메시지가 많으면 next_cursor로 이어서 조회한다."""
     session_id, auth = session
     for text in ("첫 번째 내용", "두 번째 내용"):
         await client.post(
             f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-            data=chat_form(str(uuid.uuid4()), text),
-            headers={"Authorization": auth},
+            data=chat_form(text),
+            headers=turn_headers(api_user_id, session_id, str(uuid.uuid4())),
         )
 
     first_page = await client.get(
@@ -569,14 +594,14 @@ async def test_cancel_unknown_request_is_404(client, session):
 
 
 @pytest.mark.asyncio
-async def test_cancel_already_completed_request_is_404(client, session):
+async def test_cancel_already_completed_request_is_404(client, session, api_user_id):
     """이미 끝난 요청은 중지 대상이 아니다."""
     session_id, auth = session
     request_id = str(uuid.uuid4())
     await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(request_id),
-        headers={"Authorization": auth},
+        data=chat_form(),
+        headers=turn_headers(api_user_id, session_id, request_id),
     )
 
     response = await client.post(
@@ -604,20 +629,20 @@ async def test_cancel_rejects_other_session_ticket(client, session, api_user_id)
 
 
 @pytest.mark.asyncio
-async def test_retry_rejects_completed_request_as_replay(client, session):
+async def test_retry_rejects_completed_request_as_replay(client, session, api_user_id):
     """완료된 요청을 재시도하면 저장 결과를 돌려준다."""
-    session_id, auth = session
+    session_id, _ = session
     request_id = str(uuid.uuid4())
+    headers = turn_headers(api_user_id, session_id, request_id)
     await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/chat/stream",
-        data=chat_form(request_id),
-        headers={"Authorization": auth},
+        data=chat_form(),
+        headers=headers,
     )
 
     response = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/retry/stream",
-        json={"request_id": request_id},
-        headers={"Authorization": auth},
+        headers=headers,
     )
 
     assert response.status_code == 200
@@ -625,13 +650,12 @@ async def test_retry_rejects_completed_request_as_replay(client, session):
 
 
 @pytest.mark.asyncio
-async def test_retry_unknown_request_is_404(client, session):
-    session_id, auth = session
+async def test_retry_unknown_request_is_404(client, session, api_user_id):
+    session_id, _ = session
 
     response = await client.post(
         f"/api/v1/experience-map/sessions/{session_id}/retry/stream",
-        json={"request_id": str(uuid.uuid4())},
-        headers={"Authorization": auth},
+        headers=turn_headers(api_user_id, session_id, str(uuid.uuid4())),
     )
 
     assert response.status_code == 404

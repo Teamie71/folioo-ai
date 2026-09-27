@@ -86,21 +86,35 @@ gap 답변 여부는 Router가 아니라 반영 내용 필터링 노드가 판�
 #### 티켓 발급 흐름
 
 ```
-① 프론트 → 메인   POST /api/v1/experience-map/ticket   (기존 로그인 인증)
+① 프론트 → 메인   POST /api/v1/experience-map/ticket        (턴 실행용, 기존 로그인 인증)
+                  POST /api/v1/experience-map/ticket/read   (조회 전용)
 ② 메인            사용자 인증 → user_id 확보
                   세션 없으면 AI에 POST /sessions [X-API-Key]
-                  request_id UUID 생성 → 티켓 서명
-③ 메인 → 프론트   { ticket, session_id, request_id, expires_in }
+                  턴 티켓만 request_id UUID 생성 → 티켓 서명
+③ 메인 → 프론트   { ticket, session_id, request_id?, expires_in }
 ④ 프론트 → AI     Authorization: Bearer {ticket}  → SSE 직결
 ```
 
-티켓 payload:
+티켓 payload (메인 서버 2026-09-27 변경):
 
 ```json
+// 턴 티켓 (scope=turn) — chat/stream, retry/stream 전용
 {
   "sub": "123",
   "sid": "d9428888-122b-11e1-b85c-61cd3cbb3210",
   "bid": "3021",
+  "scope": "turn",
+  "rid": "0e6f1a9e-...",
+  "iat": 1754400000,
+  "exp": 1754400300
+}
+
+// 조회용 티켓 (scope=read) — state, messages, requests/{rid}, cancel
+{
+  "sub": "123",
+  "sid": "d9428888-122b-11e1-b85c-61cd3cbb3210",
+  "bid": "3021",
+  "scope": "read",
   "iat": 1754400000,
   "exp": 1754400300
 }
@@ -110,7 +124,16 @@ gap 답변 여부는 Router가 아니라 반영 내용 필터링 노드가 판�
 (2026-09-20)으로 세션이 사용자 단위가 아니라 **활동 단위**로 바뀌면서
 추가됐습니다 — 같은 사용자라도 활동마다 세션이 따로 있습니다.
 
-**AI 서버 검증 3단계: 서명 → 만료 → `sid` == path `{session_id}`**
+`scope`·`rid`는 2026-09-27 변경으로 추가됐습니다. **턴의 `request_id`는
+더 이상 클라이언트가 body로 보내지 않고, 항상 턴 티켓의 `rid`를 씁니다** —
+클라이언트가 임의의 `request_id`를 보낼 수 있던 구멍을 막고, 같은 `rid`
+재요청 시 새 턴을 실행하지 않는 재처리 판단을 메인 서버가 발급 시점에
+통제합니다. `chat/stream`·`retry/stream`은 `scope=turn` 티켓만 허용하고,
+`scope=read` 티켓으로 호출하면 `403 ticket_scope_forbidden`입니다. 나머지
+(조회·취소) 엔드포인트는 두 scope 다 허용합니다.
+
+**AI 서버 검증 4단계: 서명 → 만료 → `sid` == path `{session_id}` → (턴 실행
+엔드포인트면) `scope == turn`**
 
 세 번째가 세션 탈취를 막습니다. `sub`로 `user_id`를 신뢰할 수 있으므로 AI 서버는
 세션 테이블을 역조회하지 않고 바로 `block WHERE user_id = ?`를 사용합니다.
@@ -121,8 +144,8 @@ gap 답변 여부는 Router가 아니라 반영 내용 필터링 노드가 판�
 | --- | --- |
 | 서명 | HS256, 키는 `EXPMAP_TICKET_SECRET`. **`AI_SERVICE_API_KEY`를 재사용하지 않습니다** |
 | TTL | 5분. **연결 수립 시점에만** 검사하고 스트림 진행 중에는 재검사하지 않습니다 |
-| 단위 | 티켓 1개 = 한 턴. `request_id`를 발급 응답에 동봉합니다 (2-5) |
-| 만료 시 재시도 | 재발급 후 **실패한 요청의 `request_id`를 그대로** 사용합니다 |
+| 단위 | 턴 티켓 1개 = 한 턴. `rid`(request_id)가 티켓 자체에 실립니다 (2-5) |
+| 만료 시 재시도 | 재발급 후 **실패한 요청의 `rid`를 그대로** 실은 턴 티켓을 새로 받습니다 |
 | 검증 시점 | **요청 body를 읽기 전** |
 
 서명 키를 분리하는 이유는 두 키의 회전 주기가 다르고, API 키가 유출되면 티켓 위조까지
@@ -174,7 +197,7 @@ LLM에는 실제 block ID를 전달하지 않고 요청 안에서만 유효한 `
 | --- | --- |
 | `401` | `unauthorized` (X-API-Key 실패) |
 | `401` | `ticket_invalid` (서명 불일치), `ticket_expired` |
-| `403` | `session_forbidden` (티켓 `sid` ≠ path `session_id`) |
+| `403` | `session_forbidden` (티켓 `sid` ≠ path `session_id`), `ticket_scope_forbidden` (조회용 티켓으로 턴 실행 시도) |
 | `404` | `session_not_found`, `request_not_found`, `map_not_initialized` |
 | `409` | `session_busy`, `idempotency_key_reused`, `retry_not_allowed` |
 | `410` | `retry_expired` |
@@ -210,7 +233,8 @@ Gemini를 쓴다(`common/llm/client.py`의 `STRUCTURE_MODEL_NAME` 주석 참고)
 
 ### 2-5. 멱등성
 
-- 메인 서버가 요청마다 UUID `request_id`를 생성해 티켓과 함께 내려줍니다.
+- 메인 서버가 요청마다 UUID `request_id`를 생성해 **턴 티켓의 `rid` claim에 실어**
+내려줍니다. 클라이언트가 body로 보낸 값은 신뢰하지 않습니다(2026-09-27 변경) —
 프론트가 생성하면 멱등성 보장이 클라이언트로 넘어갑니다.
 - AI 서버는 사용자 메시지, 화면 context, view, 파일 SHA-256을 정규화해
 `request_hash`를 계산합니다.
@@ -1088,6 +1112,7 @@ gap 제안 문구입니다. **gap이 없을 때와 제안 문구 생성에 실�
 | 메서드 | 경로 | 호출자 | 인증 |
 | --- | --- | --- | --- |
 | `POST` | `/api/v1/experience-map/ticket` | 프론트 | 로그인 세션 |
+| `POST` | `/api/v1/experience-map/ticket/read` | 프론트 | 로그인 세션 |
 | `POST` | `/api/v1/experience-map/commit` | AI 서버 | `X-API-Key` |
 | `GET` | `/api/v1/experience-map/commit/{request_id}` | AI 서버 | `X-API-Key` |
 | `GET` | `/api/v1/experience-map/templates` | AI 서버 | `X-API-Key` |
@@ -1095,7 +1120,9 @@ gap 제안 문구입니다. **gap이 없을 때와 제안 문구 생성에 실�
 
 ### `POST /ticket`
 
-프론트가 AI 서버에 직결하기 전에 신원을 발급받습니다 (2-1).
+프론트가 새 턴을 실행하기 전에 턴 티켓(`scope=turn`)을 발급받습니다 (2-1,
+2026-09-27 변경). AI 서버는 이 티켓의 `rid`를 그 턴의 `request_id`로 그대로
+씁니다.
 
 **Response `200 OK`**
 
@@ -1109,6 +1136,22 @@ gap 제안 문구입니다. **gap이 없을 때와 제안 문구 생성에 실�
 ```
 
 세션이 없으면 AI 서버 `POST /sessions`를 먼저 호출해 만든 뒤 발급합니다.
+
+### `POST /ticket/read`
+
+화면 조회(상태·대화 내역·요청 결과 복구·취소)에만 쓰는 조회 전용 티켓
+(`scope=read`)을 발급합니다. `request_id`가 없습니다 — 새 턴을 실행할 수
+없습니다(`chat/stream`·`retry/stream`에 쓰면 `403 ticket_scope_forbidden`).
+
+**Response `200 OK`**
+
+```json
+{
+  "ticket": "eyJhbGciOiJIUzI1NiJ9...",
+  "session_id": "d9428888-122b-11e1-b85c-61cd3cbb3210",
+  "expires_in": 300
+}
+```
 
 ### `POST /commit`
 

@@ -13,7 +13,6 @@ from app.schemas.experience_map import (
     ProcessingCompleteEvent,
     ProcessingStartedEvent,
     RequestStateResponse,
-    RetryStreamRequest,
     SessionStateResponse,
     SuggestionReadyEvent,
 )
@@ -37,22 +36,16 @@ def test_create_session_requires_decimal_block_id():
         CreateSessionRequest(user_id="123", block_id="block-abc")
 
 
-def test_chat_request_requires_uuid_request_id():
-    with pytest.raises(ValidationError, match="UUID"):
-        ChatStreamRequest(request_id="not-a-uuid", user_message="안녕")
-
-
 def test_chat_request_requires_decimal_experience_id():
     with pytest.raises(ValidationError, match="십진 문자열"):
         ChatStreamRequest(
-            request_id=REQUEST_ID,
             user_message="안녕",
             context_experience_id="exp_101",
         )
 
 
 def test_chat_request_allows_null_experience_id():
-    request = ChatStreamRequest(request_id=REQUEST_ID, user_message="안녕")
+    request = ChatStreamRequest(user_message="안녕")
 
     assert request.context_experience_id is None
     assert request.view is None
@@ -62,28 +55,21 @@ def test_chat_request_allows_message_up_to_500_chars():
     """프론트 요청(2026-09-20)으로 추가된 상한 — 정확히 500자는 통과한다."""
     message = "가" * MAX_USER_MESSAGE_LENGTH
 
-    request = ChatStreamRequest(request_id=REQUEST_ID, user_message=message)
+    request = ChatStreamRequest(user_message=message)
 
     assert request.user_message == message
 
 
 def test_chat_request_rejects_message_over_500_chars():
     with pytest.raises(ValidationError, match="500자"):
-        ChatStreamRequest(request_id=REQUEST_ID, user_message="가" * (MAX_USER_MESSAGE_LENGTH + 1))
-
-
-def test_retry_request_requires_uuid():
-    assert RetryStreamRequest(request_id=REQUEST_ID).request_id == REQUEST_ID
-
-    with pytest.raises(ValidationError):
-        RetryStreamRequest(request_id="1")
+        ChatStreamRequest(user_message="가" * (MAX_USER_MESSAGE_LENGTH + 1))
 
 
 # ===== 조건부 필수: 메시지와 파일 =====
 
 
 def test_chat_request_requires_message_when_no_files():
-    request = ChatStreamRequest(request_id=REQUEST_ID)
+    request = ChatStreamRequest()
 
     with pytest.raises(ValueError, match="하나 이상"):
         request.require_message_or_files(file_count=0)
@@ -91,13 +77,13 @@ def test_chat_request_requires_message_when_no_files():
 
 def test_chat_request_allows_empty_message_with_files():
     """파일만 올리는 것도 허용한다."""
-    request = ChatStreamRequest(request_id=REQUEST_ID)
+    request = ChatStreamRequest()
 
     request.require_message_or_files(file_count=1)
 
 
 def test_chat_request_rejects_whitespace_only_message():
-    request = ChatStreamRequest(request_id=REQUEST_ID, user_message="   ")
+    request = ChatStreamRequest(user_message="   ")
 
     with pytest.raises(ValueError, match="하나 이상"):
         request.require_message_or_files(file_count=0)
