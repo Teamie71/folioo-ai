@@ -31,7 +31,6 @@ from app.schemas.experience_map import (
     MessagesResponse,
     PingEvent,
     RequestStateResponse,
-    RetryStreamRequest,
     SessionStateResponse,
 )
 from features.experience_map.config import SSE_HEARTBEAT_INTERVAL_SECONDS
@@ -67,6 +66,22 @@ def _ticket_user_id(request: Request) -> str:
         logger.error("티켓 검증 없이 경험정리 API 에 도달했습니다: %s", request.url.path)
         raise TicketInvalidError()
     return user_id
+
+
+def _ticket_request_id(request: Request) -> str:
+    """티켓의 `rid`(request_id).
+
+    메인 서버 2026-09-27 변경으로, 턴의 request_id는 클라이언트가 body로
+    보낸 값 대신 항상 이 값을 쓴다 — 스푸핑을 막고, 재처리 여부 판단(같은
+    rid 재요청 시 새 턴을 안 만드는 것)을 티켓 발급자인 메인 서버가
+    통제한다. `scope=turn` 티켓만 여기 도달한다 — 미들웨어가 그 외에는
+    `TicketScopeForbiddenError`로 먼저 막는다.
+    """
+    request_id = request.scope.get("state", {}).get("experience_map_request_id")
+    if not request_id:
+        logger.error("scope=turn 티켓 없이 턴 실행 엔드포인트에 도달했습니다: %s", request.url.path)
+        raise TicketInvalidError()
+    return request_id
 
 
 def _require_session_owner(request: Request, session_id: str) -> None:
@@ -282,6 +297,7 @@ async def chat_stream(
     try:
         user_id = _ticket_user_id(request)
         _require_session_owner(request, session_id)
+        request_id = _ticket_request_id(request)
 
         try:
             payload = ChatStreamRequest.model_validate_json(request_body)
@@ -294,13 +310,13 @@ async def chat_stream(
             raise InvalidRequestError(str(exc)) from exc
 
         # 업로드 검증은 스트림을 열기 전에 끝낸다.
-        stored = await _collect_uploads(user_id, payload.request_id, files)
+        stored = await _collect_uploads(user_id, request_id, files)
 
         service = get_service()
         prepared = await service.prepare_chat(
             user_id,
             session_id,
-            payload.request_id,
+            request_id,
             user_message=payload.user_message,
             context_experience_id=payload.context_experience_id,
             view=payload.view,
@@ -323,12 +339,13 @@ async def chat_stream(
     summary="재시도 스트림",
     description="세션의 마지막 실패 요청을 실패 지점부터 재실행합니다.",
 )
-async def retry_stream(request: Request, session_id: str, payload: RetryStreamRequest):
+async def retry_stream(request: Request, session_id: str):
     try:
         user_id = _ticket_user_id(request)
         _require_session_owner(request, session_id)
+        request_id = _ticket_request_id(request)
         service = get_service()
-        prepared = await service.prepare_retry(user_id, session_id, payload.request_id)
+        prepared = await service.prepare_retry(user_id, session_id, request_id)
     except ExperienceMapError as exc:
         return _error_response(exc)
 

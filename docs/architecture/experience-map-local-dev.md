@@ -141,17 +141,22 @@ LLM 을 쓰는 테스트는 전부 mock 입니다.
 메인 서버가 없으므로 티켓을 직접 만들어 씁니다.
 
 ```bash
-uv run python scripts/experience_map/make_ticket.py --user-id 1
-uv run python scripts/experience_map/make_ticket.py --user-id 1 --curl   # curl 명령 그대로 출력
+uv run python scripts/experience_map/make_ticket.py --user-id 1 --block-id 200
+uv run python scripts/experience_map/make_ticket.py --user-id 1 --block-id 200 --curl   # curl 명령 그대로 출력
 ```
 
 거부 경로도 만들 수 있습니다.
 
 ```bash
---expires-in -1        # 만료된 티켓        → 401 ticket_expired
---secret wrong-secret  # 위조 서명          → 401 ticket_invalid
---session-id <다른값>  # 다른 세션의 티켓   → 403 session_forbidden
+--expires-in -1        # 만료된 티켓             → 401 ticket_expired
+--secret wrong-secret  # 위조 서명               → 401 ticket_invalid
+--session-id <다른값>  # 다른 세션의 티켓        → 403 session_forbidden
+--scope read           # 조회 전용 티켓으로 턴 실행 → 403 ticket_scope_forbidden
 ```
+
+턴의 `request_id`는 더 이상 body가 아니라 티켓의 `rid`에서 옵니다
+(메인 서버 2026-09-27 변경) — `--request-id`로 직접 지정하거나, 생략하면
+스크립트가 새로 만듭니다.
 
 ---
 

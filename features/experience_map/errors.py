@@ -126,6 +126,19 @@ class SessionForbiddenError(ExperienceMapError):
     message = "해당 세션에 접근할 수 없습니다."
 
 
+class TicketScopeForbiddenError(ExperienceMapError):
+    """조회 전용(`scope=read`) 티켓으로 턴 실행 엔드포인트를 호출했다.
+
+    턴 티켓(`scope=turn`)만 새 턴을 시작할 수 있다 — 조회용 티켓이 턴을 실행할
+    수 있으면 조회 목적으로 발급한 짧은 수명 자격증명이 상태 변경까지 허용하는
+    셈이라, 발급 목적과 실제 권한이 어긋난다 (메인 서버 2026-09-27 변경).
+    """
+
+    status_code = 403
+    code = "ticket_scope_forbidden"
+    message = "이 티켓으로는 턴을 실행할 수 없습니다."
+
+
 # ===== 404 =====
 
 

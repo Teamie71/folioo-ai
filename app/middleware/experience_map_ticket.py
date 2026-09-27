@@ -17,6 +17,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from features.experience_map.errors import (
     ExperienceMapError,
     TicketInvalidError,
+    TicketScopeForbiddenError,
 )
 from features.experience_map.rate_limit import SlidingWindowRateLimiter
 from features.experience_map.ticket import extract_bearer_token, verify_ticket
@@ -27,6 +28,12 @@ logger = logging.getLogger(__name__)
 # `POST /api/v1/experience-map/sessions`(끝에 슬래시 없음)는 포함되지 않는다.
 TICKET_PATH_PREFIX = "/api/v1/experience-map/sessions/"
 
+# 새 턴을 시작하는 엔드포인트만 scope=turn을 요구한다 (메인 서버 2026-09-27
+# 변경). 나머지(조회·취소 등)는 turn·read 티켓 둘 다 허용한다 — 조회 전용
+# 동작이라 read 티켓으로 충분하고, 프론트가 상태 폴링에 read 티켓을 쓰는
+# 흐름을 막을 이유가 없다.
+TURN_PATH_SUFFIXES = ("/chat/stream", "/retry/stream")
+
 RATE_LIMIT_STATUS = 429
 RATE_LIMIT_CODE = "rate_limited"
 
@@ -34,6 +41,11 @@ RATE_LIMIT_CODE = "rate_limited"
 def requires_ticket(path: str) -> bool:
     """티켓 검증 대상 경로인지 판정한다."""
     return path.startswith(TICKET_PATH_PREFIX)
+
+
+def requires_turn_scope(path: str) -> bool:
+    """새 턴을 실행하는 경로인지 판정한다."""
+    return path.endswith(TURN_PATH_SUFFIXES)
 
 
 def extract_session_id(path: str) -> str | None:
@@ -93,6 +105,8 @@ class ExperienceMapTicketMiddleware:
             authorization = _header(scope, b"authorization")
             token = extract_bearer_token(authorization)
             payload = verify_ticket(token, secret, session_id)
+            if payload.scope != "turn" and requires_turn_scope(path):
+                raise TicketScopeForbiddenError()
         except ExperienceMapError as exc:
             await self._send_error(
                 scope,
@@ -131,6 +145,8 @@ class ExperienceMapTicketMiddleware:
         scope["state"]["experience_map_user_id"] = payload.sub
         scope["state"]["experience_map_session_id"] = payload.sid
         scope["state"]["experience_map_block_id"] = payload.bid
+        scope["state"]["experience_map_ticket_scope"] = payload.scope
+        scope["state"]["experience_map_request_id"] = payload.rid
 
         await self.app(scope, receive, send)
 

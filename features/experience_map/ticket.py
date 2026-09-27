@@ -19,9 +19,10 @@
 """
 
 import logging
+from typing import Literal
 
 import jwt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from features.experience_map.errors import (
     SessionForbiddenError,
@@ -34,20 +35,39 @@ logger = logging.getLogger(__name__)
 ALGORITHM = "HS256"
 BEARER_PREFIX = "bearer "
 
+TicketScope = Literal["turn", "read"]
+
 
 class TicketPayload(BaseModel):
-    """티켓 payload (API 명세 2-1)
+    """티켓 payload (API 명세 2-1, 메인 서버 2026-09-27 티켓 변경 반영)
 
     `bid`(활동 block ID)는 메인 서버 변경사항(2026-09-20)으로 추가됐다 —
     세션이 활동 단위로 분리되면서, 그 세션이 어느 활동에 묶였는지를 티켓
     자체에도 싣는다.
+
+    `scope`·`rid`는 2026-09-27 변경으로 추가됐다. `scope="turn"`인 턴
+    티켓만 `rid`(request_id)를 싣고, 이 티켓만 새 턴을 실행할 수 있다.
+    `scope="read"`인 조회용 티켓은 `rid`가 없고 조회 전용이다 — 클라이언트가
+    body로 보내는 request_id는 더 이상 신뢰하지 않고, 턴 실행 시 항상 이
+    `rid`를 request_id로 쓴다(스푸핑 방지 + 재처리 판단을 티켓 발급자인
+    메인 서버가 통제한다).
     """
 
     sub: str = Field(..., description="사용자 ID (십진 문자열)")
     sid: str = Field(..., description="세션 UUID")
     bid: str = Field(..., description="세션이 묶인 활동 block ID (십진 문자열)")
+    scope: TicketScope = Field(..., description="turn(턴 실행) 또는 read(조회 전용)")
+    rid: str | None = Field(None, description="scope=turn일 때만 있는 request_id")
     iat: int = Field(..., description="발급 시각")
     exp: int = Field(..., description="만료 시각")
+
+    @model_validator(mode="after")
+    def _check_rid_matches_scope(self) -> "TicketPayload":
+        if self.scope == "turn" and not self.rid:
+            raise ValueError("scope=turn 티켓에는 rid가 있어야 합니다.")
+        if self.scope == "read" and self.rid:
+            raise ValueError("scope=read 티켓에는 rid가 있으면 안 됩니다.")
+        return self
 
 
 def extract_bearer_token(authorization: str | None) -> str:
