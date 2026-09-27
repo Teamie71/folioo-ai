@@ -576,6 +576,41 @@ async def test_failed_turn_saves_message_with_failed_status(user_id, repo):
 
 
 @pytest.mark.asyncio
+async def test_failed_turn_reports_usage_failed_with_ticket_ids(user_id, repo):
+    """턴 실패 시 메인 서버에 usage/failed를 알려 선차감을 되돌리게 한다.
+
+    user_id·request_id는 티켓 검증(sub·rid)을 통과한 PreparedRequest 값을
+    그대로 전달해야 한다 — 다르면 메인 서버가 200을 줘도 실제로 바뀌는 행이
+    0개가 된다 (메인 서버 안내).
+    """
+    calls: list[tuple[str, str]] = []
+
+    class _FakeMainClient:
+        async def report_failed_usage(self, *, user_id: str, request_id: str) -> None:
+            calls.append((user_id, request_id))
+
+    failing_service = ExperienceMapService(
+        repository=repo, runner=_FailingRunner(), main_client=_FakeMainClient()
+    )
+    session = await repo.get_or_create_session(user_id, "200")
+    request_id = new_request_id()
+    prepared = await failing_service.prepare_chat(
+        user_id=user_id,
+        session_id=session.session_id,
+        request_id=request_id,
+        user_message="결제 오류를 해결했다.",
+        context_experience_id=None,
+        view=None,
+        stored_files=[],
+    )
+
+    async for _ in failing_service.stream(prepared):
+        pass
+
+    assert calls == [(user_id, request_id)]
+
+
+@pytest.mark.asyncio
 async def test_replaying_completed_request_does_not_duplicate_message(service, repo, user_id):
     """같은 request_id를 멱등 재생해도 대화 메시지는 한 번만 남는다."""
     session = await repo.get_or_create_session(user_id, "200")

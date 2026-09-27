@@ -585,6 +585,9 @@ class ExperienceMapService:
         )
         if failed is not None:
             await self._save_message(prepared, None, None, payload.message, status="failed")
+            await self.main_client.report_failed_usage(
+                user_id=prepared.user_id, request_id=prepared.request_id
+            )
         return ErrorEvent(error=payload.model_dump())
 
     async def _reconcile_stale_requests(self, session_id: str | None = None) -> None:
