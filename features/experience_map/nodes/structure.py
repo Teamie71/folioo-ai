@@ -3,7 +3,7 @@
 import logging
 import re
 
-from common.llm import get_experience_map_llm, get_structure_llm
+from common.llm import get_experience_map_llm
 from features.experience_map.config import (
     MAX_FILE_SOURCE_CHARS_PER_STRUCTURE_BATCH,
     MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH,
@@ -116,14 +116,14 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
 
     try:
         catalog = await get_template_catalog_client().get_catalog()
-        llm = get_structure_llm(timeout=get_settings().timeouts.llm)
+        llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
         chain = structure_prompt | llm.with_structured_output(StructureOutput)
         # 재시도 전용 체인은 temperature를 살짝 올린다. temperature 0에서는
         # 같은 프롬프트에 같은 실수를 그대로 반복하는 게 실제로 재현됐다 —
         # 지시문을 더 붙여도(`_coverage_repair_instruction` 등) 모델이
         # 같은 패턴을 고수했다. 재시도는 애초에 "1차와는 다른 결과"를
         # 바라는 것이므로, 결정론을 깨는 편이 목적에 맞는다.
-        retry_llm = get_structure_llm(timeout=get_settings().timeouts.llm, temperature=0.4)
+        retry_llm = get_experience_map_llm(timeout=get_settings().timeouts.llm, temperature=0.4)
         retry_chain = structure_prompt | retry_llm.with_structured_output(StructureOutput)
         episode_anchors = _existing_episode_anchors(state, catalog)
         continued_anchor = await _match_continued_episode(

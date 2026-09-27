@@ -142,24 +142,17 @@ def fake_dependencies(monkeypatch):
                 raise current
             return current
 
-        class _FakeLlm:
-            def with_structured_output(self, schema):
-                assert schema is StructureOutput
-                return RunnableLambda(_handle)
-
-        monkeypatch.setattr(structure_node, "get_structure_llm", lambda **kw: _FakeLlm())
-
         async def _match(_prompt_value) -> EpisodeMatchOutput:
             return EpisodeMatchOutput(reason="테스트", continued_anchor_alias=episode_match)
 
-        class _FakeEpisodeLlm:
+        class _FakeLlm:
             def with_structured_output(self, schema):
+                if schema is StructureOutput:
+                    return RunnableLambda(_handle)
                 assert schema is EpisodeMatchOutput
                 return RunnableLambda(_match)
 
-        monkeypatch.setattr(
-            structure_node, "get_experience_map_llm", lambda **kw: _FakeEpisodeLlm()
-        )
+        monkeypatch.setattr(structure_node, "get_experience_map_llm", lambda **kw: _FakeLlm())
         return prompts
 
     return _set
