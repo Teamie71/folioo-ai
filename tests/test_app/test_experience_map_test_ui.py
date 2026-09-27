@@ -45,8 +45,9 @@ def test_test_ui_mints_turn_ticket_before_send_and_retry():
     assert "authHeaders()" not in retry_body
 
 
-def test_issue_test_ticket_defaults_to_read_scope_without_rid():
+def test_issue_test_ticket_defaults_to_read_scope_without_rid(monkeypatch):
     """세션 생성용 기본 티켓은 조회 전용이라 턴을 실행할 수 없다."""
+    monkeypatch.setenv("EXPMAP_TICKET_SECRET", "test-secret-with-32plus-bytes!!!")
     token = _issue_test_ticket("1", "sid", "200")
     claims = jwt.decode(token, options={"verify_signature": False})
 
@@ -54,7 +55,8 @@ def test_issue_test_ticket_defaults_to_read_scope_without_rid():
     assert "rid" not in claims
 
 
-def test_issue_test_ticket_turn_scope_carries_given_request_id():
+def test_issue_test_ticket_turn_scope_carries_given_request_id(monkeypatch):
+    monkeypatch.setenv("EXPMAP_TICKET_SECRET", "test-secret-with-32plus-bytes!!!")
     token = _issue_test_ticket("1", "sid", "200", scope="turn", request_id="req-123")
     claims = jwt.decode(token, options={"verify_signature": False})
 
