@@ -1115,6 +1115,7 @@ gap 제안 문구입니다. **gap이 없을 때와 제안 문구 생성에 실�
 | `GET` | `/api/v1/experience-map/commit/{request_id}` | AI 서버 | `X-API-Key` |
 | `GET` | `/api/v1/experience-map/templates` | AI 서버 | `X-API-Key` |
 | `POST` | `/api/v1/experience-map/revert` | 프론트 | 로그인 세션 |
+| `POST` | `/api/v1/experience-map/usage/failed` | AI 서버 | `X-API-Key` |
 
 ### `POST /ticket`
 
@@ -1150,6 +1151,30 @@ gap 제안 문구입니다. **gap이 없을 때와 제안 문구 생성에 실�
   "expires_in": 300
 }
 ```
+
+### `POST /usage/failed`
+
+메인 서버는 턴 티켓(`scope=turn`) 발급 시점에 사용량을 1회 선차감하고,
+스스로는 턴의 성공·실패를 감지하지 않습니다. AI 서버가 턴을 실패로 확정할
+때마다(`ExperienceMapService._fail()`, 소유권을 실제로 갖고 있어 실패 처리에
+성공한 경우만 — lease를 이미 잃은 경우는 제외) 이 API로 알려 선차감을
+되돌립니다. 멱등이라 여러 번 불러도 안전합니다(메인 서버 안내, 2026-09-27).
+
+**Request**
+
+```json
+{ "user_id": "123", "request_id": "550e8400-e29b-41d4-a716-446655440000" }
+```
+
+`request_id`는 그 턴 티켓의 `rid`, `user_id`는 티켓의 `sub`와 반드시
+같아야 합니다 — 다르면 메인 서버가 `200`을 줘도 실제로 바뀌는 행이
+0개입니다. AI 서버는 이 값을 직접 만들지 않고 `PreparedRequest`(티켓
+검증을 통과한 값)에서 그대로 가져다 씁니다(`main_client.py`의
+`report_failed_usage`).
+
+실패 보고 자체가 실패해도(네트워크 오류·5xx 등) 예외를 올리지 않고 로그만
+남깁니다 — 사용자에게 보여줄 오류 이벤트를 이 호출 하나 때문에 놓치면
+안 되기 때문입니다.
 
 ### `POST /commit`
 

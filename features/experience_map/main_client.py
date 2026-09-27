@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 COMMIT_PATH = "/api/v1/experience-map/commit"
 COMMIT_RECOVERY_PATH = "/api/v1/experience-map/commit/{request_id}"
+USAGE_FAILED_PATH = "/api/v1/experience-map/usage/failed"
 
 HttpRequest = Callable[..., Awaitable[httpx.Response]]
 
@@ -86,6 +87,38 @@ class ExperienceMapMainClient:
             logger.warning("unknown_slot_id 수신 - 템플릿 카탈로그 강제 갱신")
             await self._catalog_client.refresh()
             return await self._commit_once(payload)
+
+    async def report_failed_usage(self, *, user_id: str, request_id: str) -> None:
+        """턴 실패를 메인 서버에 알려 티켓 발급 시점에 미리 차감한 사용량을 되돌린다.
+
+        메인 서버는 티켓 발급 시점에 1회 선차감하고, 턴이 실패하면 이 API로
+        알려줘야만 되돌린다 — 실패를 자체 감지하지 않는다. 멱등이라 여러 번
+        불러도 안전하다.
+
+        응답 본문 형식을 계약으로 삼지 않는다 — 성공(2xx)인지만 본다. 실패
+        보고 자체가 실패해도 예외를 올리지 않는다 — 사용자에게 보여줄 오류
+        이벤트(`_fail`)를 이 호출 하나 때문에 놓치면 안 된다. 대신 로그만
+        남긴다.
+        """
+        try:
+            request = self._request or get_http_client().request
+            response = await request(
+                "POST",
+                USAGE_FAILED_PATH,
+                json={"user_id": user_id, "request_id": request_id},
+            )
+            if not response.is_success:
+                raise MainServerError(
+                    response.status_code,
+                    f"실패 사용량 보고 응답이 실패입니다: {response.text[:300]!r}",
+                )
+        except Exception:
+            logger.exception(
+                "실패 사용량 보고 실패 (user_id=%s, request_id=%s) — "
+                "메인 서버 티켓 차감이 되돌려지지 않았을 수 있습니다.",
+                user_id,
+                request_id,
+            )
 
     async def get_commit(self, request_id: str) -> CommitRecoveryResult:
         """응답 유실 뒤 request_id의 실제 커밋 여부를 조회한다."""

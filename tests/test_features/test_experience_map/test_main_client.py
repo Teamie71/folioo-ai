@@ -12,6 +12,7 @@ from features.experience_map.errors import (
 from features.experience_map.main_client import (
     COMMIT_PATH,
     COMMIT_RECOVERY_PATH,
+    USAGE_FAILED_PATH,
     ExperienceMapMainClient,
 )
 from features.experience_map.schemas import CommitAddItem
@@ -275,6 +276,34 @@ async def test_get_commit_reports_not_committed():
 
     assert result.committed is False
     assert result.result is None
+
+
+@pytest.mark.asyncio
+async def test_report_failed_usage_posts_user_id_and_request_id():
+    """메인 서버가 티켓 발급 시 선차감한 사용량을 되돌릴 수 있게 rid·sub를 그대로 보낸다."""
+    calls: list[tuple[str, str, dict]] = []
+
+    async def request(method, path, **kwargs):
+        calls.append((method, path, kwargs["json"]))
+        return response(200, {})
+
+    client = ExperienceMapMainClient(request=request, catalog_client=CatalogStub())
+
+    await client.report_failed_usage(user_id="123", request_id="req-1")
+
+    assert calls == [("POST", USAGE_FAILED_PATH, {"user_id": "123", "request_id": "req-1"})]
+
+
+@pytest.mark.asyncio
+async def test_report_failed_usage_swallows_errors():
+    """실패 보고 자체가 실패해도 예외를 올리지 않는다 — 사용자 오류 이벤트를 놓치면 안 된다."""
+
+    async def request(method, path, **kwargs):
+        return response(500, {"message": "메인 서버 오류"})
+
+    client = ExperienceMapMainClient(request=request, catalog_client=CatalogStub())
+
+    await client.report_failed_usage(user_id="123", request_id="req-1")  # 예외 없이 끝나야 한다
 
 
 @pytest.mark.asyncio
