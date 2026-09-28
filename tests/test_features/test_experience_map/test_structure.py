@@ -3844,6 +3844,72 @@ def test_anchors_split_within_one_call_stay_separate_episodes():
     assert result == items
 
 
+def test_separate_group_label_anchors_splits_mismatched_child_into_new_anchor():
+    """다른 제목 그룹의 내용이 앵커 밑에 자식으로 붙으면 새 형제 앵커로 갈라놓는다.
+
+    QA 스크린샷 재현: 배치를 제목별로 나눠도(`_source_batches`), 뒤 배치의
+    내용이 앞 배치가 만든 다른 제목의 앵커 밑에 자식으로 잘못 붙는 경우가
+    실제 LLM 호출로 재현됐다.
+    """
+    container = StructureLlmItem(
+        item_id="blk_1", action="add", parent_ref="b_6", section_kind="TASK"
+    )
+    anchor = StructureLlmItem(
+        item_id="blk_2",
+        action="add",
+        parent_item_id="blk_1",
+        slot_id="TASK.SUMMARY",
+        text="SNS 채널 운영 및 관리 담당",
+        source_item_ids=["it_1"],
+    )
+    mismatched_child = StructureLlmItem(
+        item_id="blk_3",
+        action="add",
+        parent_item_id="blk_2",
+        slot_id="TASK.BASIC.EXECUTION",
+        text="카드뉴스 제작",
+        source_item_ids=["it_3"],
+    )
+    items = [container, anchor, mismatched_child]
+    group_labels = {"it_1": "SNS 채널 운영 및 관리", "it_3": "홍보 콘텐츠 디자인"}
+
+    result = structure_node._separate_group_label_anchors(items, group_labels)
+
+    by_id = {item.item_id: item for item in result}
+    assert len(result) == 4
+    new_anchor_id = by_id["blk_3"].parent_item_id
+    assert new_anchor_id != "blk_2"
+    new_anchor = by_id[new_anchor_id]
+    assert new_anchor.slot_id == "TASK.SUMMARY"
+    assert new_anchor.parent_item_id == "blk_1"
+    assert by_id["blk_2"].text == "SNS 채널 운영 및 관리 담당"
+
+
+def test_separate_group_label_anchors_leaves_matching_children_untouched():
+    """같은 제목 그룹이면 그대로 둔다."""
+    anchor = StructureLlmItem(
+        item_id="blk_2",
+        action="add",
+        parent_ref="b_6",
+        slot_id="TASK.SUMMARY",
+        source_item_ids=["it_1"],
+    )
+    child = StructureLlmItem(
+        item_id="blk_3",
+        action="add",
+        parent_item_id="blk_2",
+        slot_id="TASK.BASIC.EXECUTION",
+        text="같은 제목 내용",
+        source_item_ids=["it_2"],
+    )
+    items = [anchor, child]
+    group_labels = {"it_1": "SNS 채널 운영 및 관리", "it_2": "SNS 채널 운영 및 관리"}
+
+    result = structure_node._separate_group_label_anchors(items, group_labels)
+
+    assert result == items
+
+
 def test_both_parents_on_same_lineage_keep_the_more_specific_new_parent():
     """컨테이너 별칭과 그 아래 새 앵커를 함께 적으면 같은 계보라 새 앵커를 남긴다."""
     anchor = StructureLlmItem(
