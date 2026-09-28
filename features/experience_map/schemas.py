@@ -277,12 +277,6 @@ class RefinementOutput(BaseModel):
     items: list[RefinedItem] = Field(default_factory=list)
 
 
-class AnchorSummaryOutput(BaseModel):
-    """앵커(TASK.SUMMARY·PROBLEM_SOLVING.SUMMARY) 요약 생성 노드 출력."""
-
-    summary: str = Field(..., min_length=1, max_length=100, description="앵커 한 줄 요약")
-
-
 class GapCandidate(BaseModel):
     """gap 분석 노드가 고른 gap. commit item_id 기준이며 실제 ID 변환 전이다."""
 
