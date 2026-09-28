@@ -26,7 +26,11 @@ from features.experience_map.schemas import (
     StructureOutput,
 )
 from features.experience_map.state import ExperienceMapState
-from features.experience_map.templates import TemplateCatalog, get_template_catalog_client
+from features.experience_map.templates import (
+    ANCHOR_SLOT_IDS,
+    TemplateCatalog,
+    get_template_catalog_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +145,9 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
             "catalog": render_catalog(catalog),
         }
         document_slot_hints = _document_slot_hints(source_items, state.get("extracted_text"))
+        group_labels = _source_item_group_labels(
+            source_items, state.get("user_message"), state.get("extracted_text")
+        )
 
         async def _run_batches_and_validate(
             run_instruction: str, first_attempt_chain
@@ -167,7 +174,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
             existing_categories_by_alias: dict[str, ExistingCategoryClassification] = {}
             cumulative_source_text: dict[str, str] = {}
             call_index = 0
-            batches = _source_batches(source_items)
+            batches = _source_batches(source_items, group_labels)
             for batch_index, batch in enumerate(batches):
                 batch_source_text = {item["item_id"]: item["text"] for item in batch}
                 cumulative_source_text.update(batch_source_text)
@@ -194,8 +201,9 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                         "previous_batch_note": render_previous_batch_note(
                             _render_previous_batch_lines(round_note_items, catalog)
                         ),
-                        "document_context": _render_document_context(
-                            round_source_items, document_slot_hints
+                        "document_context": (
+                            _render_group_label_note(round_source_items, group_labels)
+                            + _render_document_context(round_source_items, document_slot_hints)
                         ),
                         "source_items": render_source_items(round_source_items),
                     }
@@ -270,6 +278,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                         existing_categories=list(existing_categories_by_alias.values()),
                         continued_anchors=continued_anchors,
                         earlier_item_ids=frozenset(item.item_id for item in round_note_items),
+                        group_labels=group_labels,
                     )
                     missing = _missing_source_ids(candidate, batch_source_text)
                     duplicated = _duplicate_source_ids(candidate) & set(batch_source_text)
@@ -450,13 +459,22 @@ def _source_items(state: ExperienceMapState) -> list[dict]:
     return items
 
 
-def _source_batches(source_items: list[dict]) -> list[list[dict]]:
+def _source_batches(
+    source_items: list[dict], group_labels: dict[str, str] | None = None
+) -> list[list[dict]]:
     """원문 item 수와 총 글자 수를 함께 제한해 구조화 배치를 만든다.
 
     정상 경로에서는 content_filter가 item 하나를 먼저 제한한다. 이 글자 수 제한은
     체크포인트 복구나 직접 노드 호출처럼 그 단계를 우회한 입력도 한 번의 LLM
     호출에 과도하게 합쳐지지 않도록 하는 방어선이다.
+
+    `group_labels`가 있으면(입력이 대괄호 제목으로 나뉜 경우) 제목이 다른
+    item은 크기 제한과 무관하게 항상 다른 배치로 나눈다 — 프롬프트 규칙만
+    으로는 서로 다른 제목의 내용을 한 앵커에 섞는 실수가 재현됐다(QA 스크린샷
+    제보). 배치 자체를 나눠 한 LLM 호출이 한 제목만 보게 만들면 이 실수가
+    구조적으로 불가능해진다.
     """
+    group_labels = group_labels or {}
     has_file_source = any(item.get("source") == "file" for item in source_items)
     max_items = (
         MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH
@@ -472,17 +490,21 @@ def _source_batches(source_items: list[dict]) -> list[list[dict]]:
     batches: list[list[dict]] = []
     current: list[dict] = []
     current_chars = 0
+    current_label: str | None = None
 
     for item in source_items:
         item_chars = len(str(item.get("text") or ""))
+        label = group_labels.get(str(item.get("item_id")))
         exceeds_count = len(current) >= max_items
         exceeds_chars = current and current_chars + item_chars > max_chars
-        if exceeds_count or exceeds_chars:
+        exceeds_label = bool(current) and label != current_label
+        if exceeds_count or exceeds_chars or exceeds_label:
             batches.append(current)
             current = []
             current_chars = 0
         current.append(item)
         current_chars += item_chars
+        current_label = label
 
     if current:
         batches.append(current)
@@ -619,6 +641,88 @@ def _render_document_context(source_items: list[dict], hints: dict[str, str]) ->
     return "문서 내 위치 힌트(배정 판단에만 사용, text에 복사 금지):\n" + "\n".join(lines) + "\n\n"
 
 
+_BRACKET_HEADER_LINE = re.compile(r"^\[([^\[\]]{1,60})\]$")
+
+
+def _source_item_group_labels(
+    source_items: list[dict], user_message: str | None, extracted_text: str | None
+) -> dict[str, str]:
+    """ "[SNS 채널 운영]"처럼 대괄호로만 된 줄을 제목 삼아 item을 그룹핑한다.
+
+    프롬프트 규칙(제목 경계를 존중하라)만으로는 서로 다른 제목의 내용을 한
+    앵커·슬롯에 섞는 실수가 실제로 재현됐다(QA 스크린샷 제보). 이 함수가
+    돌려주는 라벨은 `_source_batches`가 배치 자체를 제목별로 강제로 나누는
+    데 쓰인다 — 프롬프트가 아니라 코드로 섞임을 막는다. 제목이 2개 미만이면
+    (평범한 입력을 장식 삼아 대괄호 한 번 쓴 경우 등) 아무것도 강제하지
+    않도록 빈 dict를 돌려준다.
+    """
+    labels: dict[str, str] = {}
+    for source_key, raw_text in (("message", user_message), ("file", extracted_text)):
+        if not raw_text:
+            continue
+        markers: list[tuple[int, str]] = []
+        parts: list[str] = []
+        offset = 0
+        for raw_line in raw_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if parts:
+                offset += 1
+            start = offset
+            parts.append(line)
+            offset += len(line)
+            match = _BRACKET_HEADER_LINE.match(line)
+            if match:
+                markers.append((start, match.group(1).strip()))
+        if not markers:
+            continue
+
+        document = " ".join(parts)
+        search_from = 0
+        for item in source_items:
+            item_source = item.get("source", "message")
+            if item_source != source_key or item.get("item_id") in labels:
+                continue
+            text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
+            if not text:
+                continue
+            position = document.find(text, search_from)
+            if position < 0:
+                position = document.find(text)
+            if position < 0:
+                continue
+            search_from = position + len(text)
+            preceding = [marker for marker in markers if marker[0] <= position]
+            if preceding:
+                labels[str(item["item_id"])] = preceding[-1][1]
+
+    if len({*labels.values()}) < 2:
+        return {}
+    return labels
+
+
+def _render_group_label_note(batch: list[dict], group_labels: dict[str, str]) -> str:
+    """배치 전체가 같은 제목 그룹이면, 그 제목을 앵커 단위로 쓰라고 명시한다."""
+    batch_labels = {
+        group_labels[str(item["item_id"])]
+        for item in batch
+        if str(item.get("item_id")) in group_labels
+    }
+    if len(batch_labels) != 1:
+        return ""
+    label = next(iter(batch_labels))
+    return (
+        f"이번 배치 원문은 모두 입력의 '[{label}]' 제목 아래에 있습니다. "
+        "이 배치 전체를 하나의 업무·에피소드로 보고 앵커 하나로 묶으세요. "
+        f"**'[{label}]'과 다른 제목으로 이미 만들어진 앵커(활동 트리나 이전 "
+        "배치 안내에 있는 것)에는 절대 붙이지 마세요** — 슬롯 주제가 비슷해 "
+        f"보여도 제목이 다르면 별개의 업무입니다. 정확히 '[{label}]' 제목으로 "
+        "이미 만든 앵커가 있을 때만 그걸 재사용하고, 없으면 새 앵커를 "
+        "만드세요.\n\n"
+    )
+
+
 def _gap_instruction(state: ExperienceMapState) -> str:
     """new_child gap 답변의 부모를 고정하는 프롬프트 지시문."""
     active_gap = state.get("active_gap") or {}
@@ -742,6 +846,89 @@ def _drop_empty_invalid_slot_items(
     ]
 
 
+def _separate_group_label_anchors(
+    items: list[StructureLlmItem], group_labels: dict[str, str]
+) -> list[StructureLlmItem]:
+    """서로 다른 대괄호 제목 그룹의 내용이 한 앵커 아래 섞이면 갈라놓는다.
+
+    입력을 제목별로 배치를 나눠 LLM에 보내도(`_source_batches`), 모델이 새
+    배치의 내용을 이전 배치가 만든 **다른 제목**의 앵커 밑에 자식으로 붙이는
+    경우가 실제로 재현됐다 — 프롬프트 지시(`_render_group_label_note`)만으로는
+    막히지 않았다. 앵커 자신의 `source_item_ids`(또는 그 자식들)로 그 앵커가
+    속한 제목을 알아내고, 그 밑에 다른 제목의 내용이 붙어 있으면 새 형제
+    앵커를 만들어 그 내용을 옮긴다.
+    """
+    if not group_labels:
+        return items
+
+    by_id = {item.item_id: item for item in items}
+
+    def label_of(item: StructureLlmItem) -> str | None:
+        for source_id in item.source_item_ids:
+            label = group_labels.get(source_id)
+            if label is not None:
+                return label
+        return None
+
+    anchor_label: dict[str, str | None] = {
+        item.item_id: label_of(item)
+        for item in items
+        if item.slot_id in ANCHOR_SLOT_IDS and item.action == "add"
+    }
+    # 앵커 자신에 text가 없으면(요약을 못 만든 경우) 자식의 라벨로 유추한다.
+    changed = True
+    while changed:
+        changed = False
+        for item in items:
+            parent_id = item.parent_item_id
+            if parent_id in anchor_label and anchor_label[parent_id] is None:
+                label = label_of(item)
+                if label is not None:
+                    anchor_label[parent_id] = label
+                    changed = True
+
+    mismatched: dict[tuple[str, str], list[StructureLlmItem]] = {}
+    for item in items:
+        parent_id = item.parent_item_id
+        if parent_id not in anchor_label:
+            continue
+        anchor_lbl = anchor_label[parent_id]
+        own_lbl = label_of(item)
+        if anchor_lbl is None or own_lbl is None or own_lbl == anchor_lbl:
+            continue
+        mismatched.setdefault((parent_id, own_lbl), []).append(item)
+
+    if not mismatched:
+        return items
+
+    new_anchors: list[StructureLlmItem] = []
+    reparent_to: dict[str, str] = {}
+    for counter, ((wrong_parent_id, _label), group_items) in enumerate(mismatched.items(), start=1):
+        wrong_anchor = by_id[wrong_parent_id]
+        new_anchor_id = f"{wrong_anchor.item_id}_split_{counter}"
+        new_anchors.append(
+            StructureLlmItem(
+                item_id=new_anchor_id,
+                action="add",
+                parent_ref=wrong_anchor.parent_ref,
+                parent_item_id=wrong_anchor.parent_item_id,
+                slot_id=wrong_anchor.slot_id,
+                text=None,
+                source_item_ids=[],
+            )
+        )
+        for item in group_items:
+            reparent_to[item.item_id] = new_anchor_id
+
+    result = [
+        item.model_copy(update={"parent_item_id": reparent_to[item.item_id], "parent_ref": None})
+        if item.item_id in reparent_to
+        else item
+        for item in items
+    ]
+    return new_anchors + result
+
+
 def _apply_structuring_fixups(
     raw_items: list[StructureLlmItem],
     source_text: dict[str, str],
@@ -751,6 +938,7 @@ def _apply_structuring_fixups(
     existing_categories: list[ExistingCategoryClassification] | None = None,
     continued_anchors: dict[str, str] | None = None,
     earlier_item_ids: frozenset[str] | None = None,
+    group_labels: dict[str, str] | None = None,
 ) -> list[StructureLlmItem]:
     """LLM 원시 출력에 결정론적 보정을 순서대로 적용한다.
 
@@ -810,7 +998,10 @@ def _apply_structuring_fixups(
     dereffed = _clear_invalid_after_ref(repaired_refs, state)
     rerooted = _fix_new_section_parent(dereffed, state)
     normalized_hierarchy = _normalize_new_hierarchy(
-        rerooted, catalog, state, _reported_container_sections(existing_categories or [], state)
+        rerooted,
+        catalog,
+        state,
+        _reported_container_sections(existing_categories or [], state),
     )
     continued = continued_anchors or {}
     reparented = _reparent_orphan_level5_items(
@@ -828,7 +1019,11 @@ def _apply_structuring_fixups(
     rebuilt = _reconstruct_verbatim_text(remerged, source_text)
     deduped = _dedupe_anchor_matching_child_source(rebuilt, catalog)
     pruned = _prune_extra_templates(deduped)
-    return _redirect_leaf_add_to_existing_empty_slot(pruned, catalog, state)
+    redirected = _redirect_leaf_add_to_existing_empty_slot(pruned, catalog, state)
+    # 다른 제목 그룹으로 갈라놔야 할 앵커가 위의 배치 간 병합 단계들에서 다시
+    # 합쳐질 수 있으므로(같은 부모·같은 슬롯이면 "같은 에피소드"로 보고 합친다는
+    # 일반 규칙과 충돌한다), 이 함수의 가장 마지막에 한 번 더 갈라놓는다.
+    return _separate_group_label_anchors(redirected, group_labels or {})
 
 
 def _split_merged_container_anchor_items(
