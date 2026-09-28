@@ -430,60 +430,6 @@ async def test_llm_failure_is_retryable(fake_llm):
     assert exc_info.value.retryable is True
 
 
-@pytest.mark.asyncio
-async def test_fills_empty_anchor_summary_from_filled_children(monkeypatch):
-    """앵커 요약이 비어 있어도 자식 슬롯이 채워졌으면 요약을 새로 만들어 채운다.
-
-    QA 3차 #9(문제해결 요약 4단계 블록이 빈 상태로 저장됨) 재현: `structure`가
-    앵커에 요약할 원문 문장이 없어 SUMMARY를 비워 뒀지만, 그 아래 세부 슬롯은
-    실제 내용으로 채워졌다. 이 경우 세부 내용을 근거로 앵커 요약을 생성해야
-    한다.
-    """
-    from features.experience_map.schemas import AnchorSummaryOutput
-
-    state = make_state(
-        structured_items=[
-            {
-                "item_id": "anchor_1",
-                "action": "add",
-                "parent_ref": "b_1",
-                "slot_id": "TASK.SUMMARY",
-                "text": None,
-            },
-            {
-                "item_id": "detail_1",
-                "action": "add",
-                "parent_item_id": "anchor_1",
-                "slot_id": "TASK.BASIC.EXECUTION",
-                "text": "카드뉴스 6개를 제작해 게시했다.",
-            },
-        ]
-    )
-
-    async def _handle_refinement(_prompt_value) -> RefinementOutput:
-        return RefinementOutput(
-            items=[RefinedItem(item_id="detail_1", refined_text="카드뉴스 6개를 제작해 게시했다.")]
-        )
-
-    async def _handle_summary(_prompt_value) -> AnchorSummaryOutput:
-        return AnchorSummaryOutput(summary="카드뉴스 제작·게시 업무 수행")
-
-    class _FakeLlm:
-        def with_structured_output(self, schema):
-            if schema is RefinementOutput:
-                return RunnableLambda(_handle_refinement)
-            assert schema is AnchorSummaryOutput
-            return RunnableLambda(_handle_summary)
-
-    monkeypatch.setattr(refine_node, "get_experience_map_llm", lambda **kw: _FakeLlm())
-
-    result = await refine_text(state)
-
-    refined = {item["item_id"]: item["refined_text"] for item in result["refined_items"]}
-    assert refined["anchor_1"] == "카드뉴스 제작·게시 업무 수행"
-    assert refined["detail_1"] == "카드뉴스 6개를 제작해 게시했다."
-
-
 def test_next_node_uses_validate_only_with_result():
     assert next_node({"refined_items": [{"item_id": "it_1"}]}) == "validate"
     assert next_node({"refined_items": []}) == "fallback"

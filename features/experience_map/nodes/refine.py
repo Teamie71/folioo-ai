@@ -6,14 +6,9 @@ import re
 from common.llm import get_experience_map_llm
 from features.experience_map.config import MAX_CONTENT_LENGTH, get_settings
 from features.experience_map.errors import LlmError
-from features.experience_map.prompts.anchor_summary import (
-    anchor_summary_prompt,
-    render_anchor_details,
-)
 from features.experience_map.prompts.refine import refine_prompt, render_refinement_items
-from features.experience_map.schemas import AnchorSummaryOutput, RefinedItem, RefinementOutput
+from features.experience_map.schemas import RefinedItem, RefinementOutput
 from features.experience_map.state import ExperienceMapState
-from features.experience_map.templates import ANCHOR_SLOT_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -113,8 +108,6 @@ async def refine_text(state: ExperienceMapState) -> ExperienceMapState:
         logger.exception("refine: 문장 정제 실패")
         raise LlmError("문장을 정제하지 못했습니다.", failed_node="refine") from exc
 
-    refined_items = await _fill_empty_anchor_summaries(state, refined_items)
-
     updated["refined_items"] = [item.model_dump() for item in refined_items]
     updated["gap_update_item"] = gap_update
     logger.info(
@@ -123,65 +116,6 @@ async def refine_text(state: ExperienceMapState) -> ExperienceMapState:
         len(reusable_ids),
     )
     return updated  # type: ignore[return-value]
-
-
-async def _fill_empty_anchor_summaries(
-    state: ExperienceMapState, refined_items: list[RefinedItem]
-) -> list[RefinedItem]:
-    """세부 슬롯은 채워졌는데 앵커 요약만 빈 경우, 그 내용으로 한 줄 요약을 만든다.
-
-    `structure` 노드는 원문에 요약할 별도 문장이 없으면 앵커(`TASK.SUMMARY`·
-    `PROBLEM_SOLVING.SUMMARY`)를 일부러 비워 둔다. 그런데 이 노드는 배정된
-    slot 문장만 다듬을 뿐 요약을 새로 만들지는 않아서, 세부 슬롯이 실제로
-    다 채워져도 앵커는 "(빈 블록 — 가이드: ...)"로 영원히 남았다(QA 3차 #9,
-    담당업무에서도 동일하게 재현). 자식 슬롯 내용이 있으면 그걸로 요약을
-    생성해 채운다. 요약 생성이 실패해도 기존처럼 빈 채로 두고 턴 전체를
-    실패시키지 않는다 — 이미 감내하던 상태로 되돌아갈 뿐이다.
-    """
-    structured_items = state.get("structured_items", [])
-    refined_by_id = {item.item_id: item for item in refined_items}
-
-    children_by_parent: dict[str, list[str]] = {}
-    for item in structured_items:
-        parent_id = item.get("parent_item_id")
-        if not parent_id:
-            continue
-        refined_child = refined_by_id.get(item["item_id"])
-        text = (refined_child.refined_text if refined_child else None) or item.get("text")
-        if text:
-            children_by_parent.setdefault(parent_id, []).append(text)
-
-    def _is_empty_anchor(item: dict) -> bool:
-        refined = refined_by_id.get(item["item_id"])
-        return item.get("slot_id") in ANCHOR_SLOT_IDS and not (refined and refined.refined_text)
-
-    anchors_to_fill = [
-        item
-        for item in structured_items
-        if _is_empty_anchor(item) and children_by_parent.get(item["item_id"])
-    ]
-    if not anchors_to_fill:
-        return refined_items
-
-    llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
-    chain = anchor_summary_prompt | llm.with_structured_output(AnchorSummaryOutput)
-
-    updated_by_id = dict(refined_by_id)
-    for anchor in anchors_to_fill:
-        item_id = anchor["item_id"]
-        try:
-            result: AnchorSummaryOutput = await chain.ainvoke(
-                {"details": render_anchor_details(children_by_parent[item_id])}
-            )
-            summary = result.summary.strip()
-        except Exception:
-            logger.exception("refine: 앵커 요약 생성 실패 (item_id=%s)", item_id)
-            continue
-        if not summary or len(summary) > MAX_CONTENT_LENGTH:
-            continue
-        updated_by_id[item_id] = RefinedItem(item_id=item_id, refined_text=summary)
-
-    return [updated_by_id[item.item_id] for item in refined_items]
 
 
 def _reusable_refined_item_ids(
