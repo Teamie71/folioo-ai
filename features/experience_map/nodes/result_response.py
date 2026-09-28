@@ -30,12 +30,12 @@ def build_result_response(state: ExperienceMapState, result: CommitResult) -> st
     context = build_result_context(state, result)
     lines = ["내용을 분석하여 경험을 정리했어요."]
     for category in context.categories:
+        if category.label in context.new_categories:
+            lines.append(f"- {category.label} 생성")
         if category.updated_count:
             lines.append(f"- {category.label} 아래 {category.updated_count}개의 블록 수정")
         if category.added_count:
             lines.append(f"- {category.label} 아래 {category.added_count}개의 블록 생성")
-        if category.label in context.new_categories:
-            lines.append(f"- {category.label} 생성")
     message = "\n".join(lines)
     if context.dropped_count:
         message = f"{message}\n\n{context.dropped_count}개는 글자 수 제한(500자)을 넘어 넣지 못했어요. 나눠서 입력해 주세요."

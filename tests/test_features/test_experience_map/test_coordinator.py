@@ -187,7 +187,7 @@ def test_result_response_marks_newly_created_category():
     message = build_result_response(commit_state, commit_result)
 
     assert message == (
-        "내용을 분석하여 경험을 정리했어요.\n- 담당업무 아래 2개의 블록 생성\n- 담당업무 생성"
+        "내용을 분석하여 경험을 정리했어요.\n- 담당업무 생성\n- 담당업무 아래 2개의 블록 생성"
     )
 
 
