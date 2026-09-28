@@ -38,16 +38,26 @@ CREATE TABLE IF NOT EXISTS experience_map (
 -- ===== 3-2. ai_experience_session =====
 -- 세션은 활동(block_id) 단위다 — 메인 서버 변경사항(2026-09-20)으로 같은
 -- 사용자라도 활동마다 세션이 따로 있다. LangGraph thread_id = session_id.
+--
+-- ⚠️ 메인 서버가 활동 상태 아이콘 API(folioo-server #455)에서 이 테이블과
+-- ai_experience_request 를 직접 읽는다. block_id·session_id, 그리고 요청
+-- 테이블의 status·lease_expires_at·error.code·created_at 의 의미를 바꾸면
+-- 메인 서버에 먼저 공유한다.
 CREATE TABLE IF NOT EXISTS ai_experience_session (
   user_id      bigint NOT NULL,
   block_id     bigint NOT NULL,
   session_id   uuid NOT NULL UNIQUE,
   active_gap   jsonb,
+  -- 메인 서버만 쓴다 (활동 결과 "확인함" 기록). AI 서버는 읽지도 쓰지도 않는다.
+  last_seen_request_id uuid,
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, block_id),
   UNIQUE (user_id, session_id)
 );
+
+-- 이미 만들어진 로컬 DB 에도 반영한다 (CREATE TABLE IF NOT EXISTS 는 컬럼을 추가하지 않는다).
+ALTER TABLE ai_experience_session ADD COLUMN IF NOT EXISTS last_seen_request_id uuid;
 
 -- ===== 3-3. ai_experience_request =====
 -- API 상태의 유일한 기준. checkpoint status 를 상태로 쓰지 않는다.
