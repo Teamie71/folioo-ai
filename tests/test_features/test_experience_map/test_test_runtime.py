@@ -171,6 +171,70 @@ async def test_test_map_store_applies_update_to_selected_block():
 
 
 @pytest.mark.asyncio
+async def test_result_path_uses_category_placeholder_when_content_is_empty():
+    """카테고리 컨테이너는 content가 없어도 경로에서 통째로 빠지면 안 된다.
+
+    level 3 카테고리는 설계상 content가 항상 없다. `_path()`가 content만
+    보고 조상을 골랐다면, 카테고리 자체가 경로에서 사라져 `_path_parts`가
+    활동명 바로 다음 조각을 카테고리로 잘못 읽어 "정리 항목"으로 폴백한다
+    — 에이전트 QA 3차 #5(재현), 테스트 콘솔에서 기존 카테고리 블록을
+    수정할 때 실제로 나던 버그다.
+    """
+    store = InMemoryTestMapStore(initial_rows_factory=_blank_initial_rows)
+
+    created = await store.commit(
+        {
+            "user_id": "9000010",
+            "request_id": "550e8400-e29b-41d4-a716-446655440010",
+            "alias_to_block_id": {"exp_1": "200"},
+            "commit_items": [
+                {
+                    "item_id": "blk_1",
+                    "action": "add",
+                    "parent_ref": "exp_1",
+                    "section_kind": "DETAIL",
+                },
+                {
+                    "item_id": "blk_2",
+                    "action": "add",
+                    "parent_item_id": "blk_1",
+                    "slot_id": "DETAIL.ROLE",
+                    "text": "고객 설문 120건을 수집하고 엑셀로 분석했다.",
+                },
+            ],
+        }
+    )
+    role_block_id = next(
+        item["block_id"]
+        for item in created["commit_result"]["applied"]
+        if item["item_id"] == "blk_2"
+    )
+
+    updated = await store.commit(
+        {
+            "user_id": "9000010",
+            "request_id": "550e8400-e29b-41d4-a716-446655440011",
+            "alias_to_block_id": {"b_2": role_block_id},
+            "commit_items": [
+                {
+                    "item_id": "update_1",
+                    "action": "update",
+                    "target_ref": "b_2",
+                    "text": "고객 설문 120건을 피벗 테이블로 연령대별 좌석 선호를 분석했다.",
+                }
+            ],
+        }
+    )
+
+    path = next(
+        item["path"]
+        for item in updated["commit_result"]["applied"]
+        if item["item_id"] == "update_1"
+    )
+    assert _path_parts(path) == ("새 경험", "상세정보")
+
+
+@pytest.mark.asyncio
 async def test_test_map_store_resolves_parent_item_id_chain_within_one_commit():
     """새 카테고리(컨테이너 → 앵커 → level 5)는 같은 커밋 배치 안에서 서로를
     parent_item_id로 가리킨다. 이 배치 안에서 방금 만든 블록이라
@@ -208,8 +272,10 @@ async def test_test_map_store_resolves_parent_item_id_chain_within_one_commit():
     assert contents[applied["blk_2"]] == "백엔드 API 설계를 담당했다."
     # 컨테이너(blk_1) 밑에 실제로 붙었는지 path로 확인한다 — parent_item_id가
     # 안 풀리면 애초에 commit()이 ValueError를 던져서 여기까지 오지 못한다.
+    # 카테고리 컨테이너(blk_1, section_kind=TASK)는 content가 없어도 라벨이
+    # 경로에 남아야 한다 (placeholder 폴백, 에이전트 QA 3차 #5).
     applied_path = {item["item_id"]: item["path"] for item in updated["commit_result"]["applied"]}
-    assert applied_path["blk_2"] == "교내 커머스 리뉴얼"
+    assert applied_path["blk_2"] == "교내 커머스 리뉴얼 > 담당업무"
 
 
 @pytest.mark.asyncio
