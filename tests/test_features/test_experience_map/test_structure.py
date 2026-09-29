@@ -4143,3 +4143,21 @@ def test_auto_anchor_id_does_not_collide_with_earlier_batch():
     assert len(ids) == len(set(ids))
     new_anchor_id = next(item for item in result if item.item_id == "batch18_blk_1").parent_item_id
     assert new_anchor_id not in (None, "auto_anchor_PROBLEM_SOLVING_1")
+
+
+def test_detail_slot_invented_under_other_section_is_normalized():
+    """다른 섹션 밑에 지어낸 상세정보 슬롯(TASK.BASIC.PERIOD 류)을 DETAIL로 되돌린다."""
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    raw = StructureLlmItem(
+        item_id="blk_1",
+        action="add",
+        parent_ref="b_1",
+        slot_id="TASK.BASIC.MOTIVATION",
+        text="교내 행사 신청 과정을 개선하고 싶었다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._normalize_known_slot_aliases([raw], catalog)
+
+    assert result[0].slot_id == "DETAIL.MOTIVATION"
+    assert result[0].text == "교내 행사 신청 과정을 개선하고 싶었다"

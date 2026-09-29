@@ -71,6 +71,8 @@ _KNOWN_SLOT_ALIASES = {
     "TASK.BASIC.PROCESS": "TASK.BASIC.EXECUTION",
 }
 
+_DETAIL_SECTION_PREFIX = "DETAIL."
+
 _LEARNING_SLOT_SUFFIXES = frozenset({"LEARNING", "LESSON", "LESSONS"})
 _LEARNING_DESTINATION_SLOT = "LEARNING.GROWTH"
 _LEARNING_FALLBACK_SLOT = "TASK.BASIC.RESULT"
@@ -1123,6 +1125,22 @@ def _normalize_known_slot_aliases(
             and catalog.get_slot(learning_destination) is not None
         ):
             official = learning_destination
+        # 모델이 상세정보 항목(진행 기간 등)을 다른 섹션 템플릿 밑 슬롯처럼
+        # `TASK.BASIC.PERIOD`로 지어낸 게 실제 PDF에서 재현됐다. 끝 이름이
+        # 상세정보 슬롯과 같으면 그 공식 `DETAIL.*` 슬롯으로 귀속한다.
+        detail_candidate = (
+            _DETAIL_SECTION_PREFIX + item.slot_id.rsplit(".", maxsplit=1)[-1]
+            if item.slot_id is not None
+            else None
+        )
+        if (
+            official is None
+            and detail_candidate is not None
+            and not item.slot_id.startswith(_DETAIL_SECTION_PREFIX)
+            and catalog.get_slot(item.slot_id) is None
+            and catalog.get_slot(detail_candidate) is not None
+        ):
+            official = detail_candidate
         if official is not None and catalog.get_slot(official) is not None:
             logger.warning(
                 "structure: 비공식 slot_id를 정규화합니다 (%s -> %s)",
