@@ -1006,11 +1006,10 @@ def _apply_structuring_fixups(
     repaired_refs = _repair_unknown_slot_parent_refs(rerefed, state)
     dereffed = _clear_invalid_after_ref(repaired_refs, state)
     rerooted = _fix_new_section_parent(dereffed, state)
-    normalized_hierarchy = _normalize_new_hierarchy(
-        rerooted,
-        catalog,
-        state,
-        _reported_container_sections(existing_categories or [], state),
+    reported_containers = _reported_container_sections(existing_categories or [], state)
+    normalized_hierarchy = _merge_new_sections_into_reported_containers(
+        _normalize_new_hierarchy(rerooted, catalog, state, reported_containers),
+        reported_containers,
     )
     continued = continued_anchors or {}
     reparented = _reparent_orphan_level5_items(
@@ -1033,6 +1032,49 @@ def _apply_structuring_fixups(
     # 합쳐질 수 있으므로(같은 부모·같은 슬롯이면 "같은 에피소드"로 보고 합친다는
     # 일반 규칙과 충돌한다), 이 함수의 가장 마지막에 한 번 더 갈라놓는다.
     return _separate_group_label_anchors(redirected, group_labels or {})
+
+
+def _merge_new_sections_into_reported_containers(
+    items: list[StructureLlmItem], container_sections: dict[str, str]
+) -> list[StructureLlmItem]:
+    """모델이 기존에 있다고 신고한 section의 새 카테고리는 그 기존 카테고리로 합친다.
+
+    dev에서 실제 PDF로 재현됐다. 모델이 상세정보·담당업무를 활동 트리의
+    기존 카테고리(`b_1`, `b_10`)로 신고해 놓고도, 여러 배치 중 한 배치에서
+    같은 section 컨테이너를 새로 만들거나 계층 보정이 그 section 카테고리를
+    새로 끼워 넣어 `_validate_category_reuse`의 자기모순 검증에 걸렸다.
+    온도를 올린 재시도에서도 똑같이 반복돼 요청 전체가 실패했다. 모델이
+    스스로 신고한 기존 컨테이너가 있으면 새 컨테이너를 버리고, 그 아래
+    자식들은 기존 컨테이너 별칭을 `parent_ref`로 가리키게 옮긴다.
+    """
+    existing_by_section: dict[str, str] = {}
+    for alias, section_id in container_sections.items():
+        existing_by_section.setdefault(section_id, alias)
+    replaced = {
+        item.item_id: existing_by_section[item.section_kind]
+        for item in items
+        if item.action == "add"
+        and item.section_kind is not None
+        and item.section_kind in existing_by_section
+    }
+    if not replaced:
+        return items
+    for item_id, alias in replaced.items():
+        logger.warning(
+            "structure: 신고된 기존 카테고리와 같은 새 카테고리를 합칩니다 (%s -> %s)",
+            item_id,
+            alias,
+        )
+    result: list[StructureLlmItem] = []
+    for item in items:
+        if item.item_id in replaced:
+            continue
+        if item.parent_item_id in replaced:
+            item = item.model_copy(
+                update={"parent_ref": replaced[item.parent_item_id], "parent_item_id": None}
+            )
+        result.append(item)
+    return result
 
 
 def _split_merged_container_anchor_items(
