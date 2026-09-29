@@ -1258,6 +1258,13 @@ def _apply_document_slot_hints(
     """
     aligned: list[StructureLlmItem] = []
     for item in items:
+        # 앞 배치에서 기존 빈 블록 채우기(update)로 바뀐 item 은 slot 을 갖지
+        # 않는다. 여기서 slot 을 다시 넣으면 StructuredItem 검증이 턴 전체를
+        # 실패시킨다(dev 재현: 파일 17배치 구조화 끝에 "update는 slot_id를
+        # 가질 수 없습니다").
+        if item.action != "add":
+            aligned.append(item)
+            continue
         hinted_slots = {
             hints[source_id] for source_id in item.source_item_ids if source_id in hints
         }
@@ -1399,6 +1406,10 @@ def _align_explicit_learning_slots(
 
     aligned: list[StructureLlmItem] = []
     for item in items:
+        if item.action != "add":
+            # update 는 slot·parent 를 가질 수 없다 (`_apply_document_slot_hints` 참고).
+            aligned.append(item)
+            continue
         source_ids = [source_id for source_id in item.source_item_ids if source_id in source_text]
         if not source_ids or any(source_id in protected_source_ids for source_id in source_ids):
             aligned.append(item)

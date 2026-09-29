@@ -2866,6 +2866,53 @@ def test_document_hint_rehomes_direct_slot_under_matching_section():
     assert learning_item.parent_item_id == learning_category.item_id
 
 
+def test_slot_alignment_leaves_update_items_alone():
+    """앞 배치에서 update 로 바뀐 item 에 slot 을 다시 넣지 않는다.
+
+    dev 재현: 파일을 17배치로 구조화하다가, 기존 빈 블록 채우기(update)로 바뀐
+    item 에 문서 구획 보정이 slot_id 를 다시 넣어 "update는 slot_id·after_ref를
+    가질 수 없습니다"로 턴 전체가 실패했다.
+    """
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "LEARNING",
+            "label": "배운 점",
+            "slots": [
+                {
+                    "slot_id": "LEARNING.GROWTH",
+                    "level": 4,
+                    "placeholder": "배운 점",
+                    "example": "원인을 구조적으로 분리해야 한다.",
+                }
+            ],
+            "templates": [],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    update = StructureLlmItem(
+        item_id="batch17_blk_1",
+        action="update",
+        target_ref="b_5",
+        text="고객 반응을 보며 콘텐츠를 바꾸는 법을 배웠다",
+        source_item_ids=["it_1"],
+    )
+
+    hinted = structure_node._apply_document_slot_hints(
+        [update], catalog, {"it_1": "LEARNING.GROWTH"}
+    )
+    learned = structure_node._align_explicit_learning_slots(
+        hinted,
+        {"it_1": update.text},
+        catalog,
+        make_state(alias_metadata={}),
+        protected_source_ids=set(),
+    )
+
+    assert learned == [update]
+    learned[0].to_structured_item()  # 커밋용 스키마 검증을 통과한다.
+
+
 def test_missing_new_section_level4_slots_are_auto_filled():
     """새 카테고리의 결정 가능한 빈 level 4 슬롯은 코드가 전부 만든다."""
     payload = catalog_payload()
