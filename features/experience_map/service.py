@@ -61,6 +61,19 @@ logger = logging.getLogger(__name__)
 
 _STREAM_END = object()
 
+# 연결과 분리해 돌리는 턴 실행 task. event loop 는 task 를 약한 참조로만 들고
+# 있어서, 참조를 따로 잡아 두지 않으면 실행 도중 GC 될 수 있다.
+_RUNNING_TURNS: set[asyncio.Task[None]] = set()
+
+
+def _on_turn_done(task: asyncio.Task[None]) -> None:
+    """끝난 턴 task 를 정리하고, 처리되지 않은 예외가 있으면 로그로 남긴다."""
+    _RUNNING_TURNS.discard(task)
+    if task.cancelled():
+        return
+    if (exc := task.exception()) is not None:
+        logger.error("경험정리 턴 실행 task 예외", exc_info=exc)
+
 
 def compute_request_hash(
     user_message: str | None,
@@ -389,8 +402,26 @@ class ExperienceMapService:
                 yield event
             return
 
-        async for event in self._execute(prepared):
+        # 실행은 SSE 연결과 분리된 task 에서 돈다. 이 generator 안에서 직접
+        # 돌리면 새로고침·탭 닫기로 연결이 끊길 때 generator 가 닫히면서
+        # (GeneratorExit) 그래프 실행도 같이 멈춘다 — 실제로 structure·refine
+        # 까지 간 턴이 새로고침 한 번에 중단됐다. 연결이 끊겨도 task 는 끝까지
+        # 돌아 결과를 DB 에 남기고, 프론트는 `/state`·`/requests/{id}` 로 받는다.
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        task = asyncio.create_task(self._execute_into(prepared, queue))
+        _RUNNING_TURNS.add(task)
+        task.add_done_callback(_on_turn_done)
+
+        while (event := await queue.get()) is not _STREAM_END:
             yield event
+
+    async def _execute_into(self, prepared: PreparedRequest, queue: asyncio.Queue[Any]) -> None:
+        """`_execute` 의 이벤트를 큐에 넣는다. 구독자가 떠나도 끝까지 돈다."""
+        try:
+            async for event in self._execute(prepared):
+                queue.put_nowait(event)
+        finally:
+            queue.put_nowait(_STREAM_END)
 
     async def _replay(self, row: RequestRow) -> AsyncIterator[ExperienceMapEvent]:
         """완료된 요청의 저장 결과를 같은 순서로 재전송한다 (API 명세 2-5)."""
