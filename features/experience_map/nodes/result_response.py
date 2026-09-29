@@ -78,6 +78,37 @@ def build_result_context(state: ExperienceMapState, result: CommitResult) -> Res
             current_id = items_by_id[current_id].get("parent_item_id")
         return None
 
+    alias_metadata = state.get("alias_metadata", {})
+
+    def existing_category_label(item_id: str | None) -> str | None:
+        """기존 블록 아래에 붙은 item이면 그 카테고리의 section 라벨을 찾는다.
+
+        메인 서버가 새 활동에 미리 깔아 두는 카테고리는 내용 칸에 안내 문구
+        ("내용을 입력해 주세요")가 있어, path로는 "내용을 입력해 주세요 아래 12개의
+        블록 수정"처럼 안내 문구가 카테고리 이름 자리에 떴다(로컬 재현). 블록 kind
+        (`SECTION_DETAIL` 등)로 정확한 라벨을 알 수 있다.
+        """
+        seen: set[str] = set()
+        current_id = item_id
+        alias: str | None = None
+        while current_id is not None and current_id in items_by_id and current_id not in seen:
+            seen.add(current_id)
+            item = items_by_id[current_id]
+            alias = item.get("parent_ref") or item.get("target_ref")
+            if alias:
+                break
+            current_id = item.get("parent_item_id")
+        visited: set[str] = set()
+        while alias and alias not in visited:
+            visited.add(alias)
+            block = alias_metadata.get(alias) or {}
+            kind = str(block.get("kind") or "")
+            section = kind.removeprefix("SECTION_") if kind.startswith("SECTION_") else None
+            if section in SECTION_LABELS:
+                return SECTION_LABELS[section]
+            alias = block.get("parent_alias")
+        return None
+
     grouped: dict[str, CategorySummary] = {}
     new_categories: set[str] = set()
     experience_name = "경험"
@@ -92,7 +123,11 @@ def build_result_context(state: ExperienceMapState, result: CommitResult) -> Res
             new_categories.add(label)
             continue
 
-        label = new_category_label(applied.item_id) or path_category
+        label = (
+            new_category_label(applied.item_id)
+            or existing_category_label(applied.item_id)
+            or path_category
+        )
         if label in new_container_labels.values():
             new_categories.add(label)
 

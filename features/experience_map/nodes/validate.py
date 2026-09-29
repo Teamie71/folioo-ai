@@ -1,5 +1,7 @@
 """구조화·정제 결과 검증과 보정 loop 제어 (에이전트 문서 5-7)."""
 
+import logging
+
 from pydantic import ValidationError as PydanticValidationError
 
 from features.experience_map.config import (
@@ -10,6 +12,8 @@ from features.experience_map.config import (
 from features.experience_map.errors import ValidationFailedError
 from features.experience_map.schemas import StructuredItem
 from features.experience_map.state import ExperienceMapState, ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 def validate_operations(state: ExperienceMapState) -> ExperienceMapState:
@@ -28,6 +32,13 @@ def validate_operations(state: ExperienceMapState) -> ExperienceMapState:
         updated["commit_items"] = operations
         return updated  # type: ignore[return-value]
 
+    # 실패 사유가 로그에 전혀 남지 않아 dev 장애 원인을 LangSmith로만 볼 수 있었다.
+    logger.warning(
+        "validate: 검증 오류 %d건 (repair_count=%d): %s",
+        len(errors),
+        state.get("repair_count", 0),
+        [(error["item_id"], error["code"]) for error in errors],
+    )
     if state.get("repair_count", 0) >= MAX_VALIDATION_REPAIRS:
         raise ValidationFailedError(failed_node="validate")
 

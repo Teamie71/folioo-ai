@@ -236,6 +236,26 @@ def _restore_meaningful_heading_summaries(
     return restored
 
 
+_LIST_MARKER_LINE = re.compile(r"^\s*(?:[-•·*▪◦]\s|\d+[.)]\s|\[[^\[\]]{1,60}\]\s*$)")
+
+
+def _split_at_list_markers(text: str) -> list[str]:
+    """불릿·번호·대괄호 제목으로 시작하는 줄마다 나눈다. 이어지는 줄은 앞 줄에 붙인다.
+
+    PDF는 긴 불릿을 줄바꿈으로 감싸므로("…합의를 이끌어\n내는 데 효과적"), 표지가
+    없는 줄은 새 조각이 아니라 앞 조각의 연속으로 본다.
+    """
+    chunks: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if not chunks or _LIST_MARKER_LINE.match(line):
+            chunks.append(line.strip())
+        else:
+            chunks[-1] = f"{chunks[-1]}\n{line.strip()}"
+    return chunks
+
+
 def _split_long_item(item: FilteredItem) -> list[FilteredItem]:
     """긴 원문 item을 수정 없이 구조화 가능한 크기로 나눈다.
 
@@ -245,6 +265,16 @@ def _split_long_item(item: FilteredItem) -> list[FilteredItem]:
     자른다. 경계의 공백 외에는 원문 문자를 추가하거나 고치지 않는다.
     """
     text = item.text.strip()
+    bullet_chunks = _split_at_list_markers(text) if item.source == "file" else []
+    if len(bullet_chunks) > 1:
+        # 파일 문서의 불릿 목록 여러 줄을 LLM이 한 조각으로 묶어 오면, "상세정보"의
+        # 기간·목적·구성·대상·기술 줄이 한 블록에 통째로 들어갔다(로컬 재현). 불릿
+        # 하나가 한 내용 단위이므로 불릿 경계에서 나눈다.
+        split_items: list[FilteredItem] = []
+        for index, chunk in enumerate(bullet_chunks, start=1):
+            child = item.model_copy(update={"item_id": f"{item.item_id}_{index}", "text": chunk})
+            split_items.extend(_split_long_item(child))
+        return split_items
     sentence_ends = [
         match
         for match in _SENTENCE_END.finditer(text)
@@ -450,6 +480,27 @@ def _comparison_tree(
     return "\n\n".join(trees) or None
 
 
+def _salvage_traceable_parts(item: FilteredItem, haystack: str) -> list[FilteredItem]:
+    """원문과 통째로 일치하지 않는 조각에서 원문에 그대로 있는 줄·문장만 뽑는다."""
+    parts: list[str] = []
+    for line in item.text.splitlines():
+        if _normalize(line) and _normalize(line) in haystack:
+            parts.append(line.strip())
+            continue
+        parts.extend(
+            sentence
+            for sentence in _split_into_sentences(line)
+            if len(_normalize(sentence)) >= _MIN_MEANINGFUL_SENTENCE_CHARS
+            and _normalize(sentence) in haystack
+        )
+    if len(parts) == 1 and _normalize(parts[0]) == _normalize(item.text):
+        return []
+    return [
+        FilteredItem(item_id=f"{item.item_id}_{index}", text=text, source=item.source)
+        for index, text in enumerate(parts, start=1)
+    ]
+
+
 def _sanitize(
     result: ContentFilterOutput,
     *,
@@ -472,6 +523,20 @@ def _sanitize(
     def _accept(item: FilteredItem, bucket: list[FilteredItem]) -> None:
         nonlocal dropped
         if not _traceable(item, haystack):
+            salvaged = _salvage_traceable_parts(item, haystack)
+            if salvaged:
+                # 여러 줄을 한 조각으로 묶어 온 LLM이 한 글자만 바꿔도 조각 전체가
+                # 버려져, 담당업무·문제해결 여러 구획이 통째로 조용히 사라졌다(로컬
+                # 재현). 원문에 그대로 있는 줄·문장만 살린다.
+                logger.warning(
+                    "content_filter: 원문과 다른 조각에서 원문 그대로인 부분 %d개만 살립니다 "
+                    "(item_id=%s)",
+                    len(salvaged),
+                    item.item_id,
+                )
+                for part in salvaged:
+                    _accept(part, bucket)
+                return
             # 원문에 없는 문장이다. 지어낸 것이므로 버린다.
             logger.warning("content_filter: 원문에 없는 조각을 버립니다 (item_id=%s)", item.item_id)
             dropped += 1

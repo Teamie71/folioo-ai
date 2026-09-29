@@ -438,3 +438,30 @@ async def test_first_map_conflict_reprocesses_and_restarts_gap_from_recovered_st
         "suggestion_ready",
         "message_complete",
     ]
+
+
+def test_result_response_uses_section_kind_for_prefilled_category():
+    """미리 깔린 카테고리의 안내 문구 대신 블록 kind로 카테고리 이름을 쓴다."""
+    commit_state = state() | {
+        "commit_items": [
+            {"item_id": "update_1", "action": "update", "target_ref": "b_3"},
+            {"item_id": "add_1", "action": "add", "parent_ref": "b_1"},
+        ],
+        "alias_metadata": {
+            "exp_1": {"kind": "EXPERIENCE", "parent_alias": None},
+            "b_1": {"kind": "SECTION_DETAIL", "parent_alias": "exp_1"},
+            "b_3": {"kind": "CONTENT", "parent_alias": "b_1"},
+        },
+    }
+    commit_result = result(
+        applied=[
+            AppliedItem(item_id="update_1", block_id="1", path="활동 > 내용을 입력해 주세요"),
+            AppliedItem(item_id="add_1", block_id="2", path="활동 > 내용을 입력해 주세요"),
+        ]
+    )
+
+    assert build_result_response(commit_state, commit_result) == (
+        "내용을 분석하여 경험을 정리했어요.\n"
+        "- 상세정보 아래 1개의 블록 수정\n"
+        "- 상세정보 아래 1개의 블록 생성"
+    )

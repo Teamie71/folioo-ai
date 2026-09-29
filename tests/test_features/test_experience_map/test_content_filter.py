@@ -595,3 +595,46 @@ def test_next_node_refine_gap_plus_new():
 
 def test_next_node_nothing_to_apply():
     assert next_node({"gap_answer_items": [], "new_items": []}) == "fallback"
+
+
+def test_untraceable_multiline_chunk_keeps_verbatim_lines():
+    """여러 줄 조각이 원문과 한 글자라도 다르면, 원문 그대로인 줄은 살린다."""
+    extracted = (
+        "담당업무\n- 설문조사 수행\n- 데이터 분석 결과 정리\n\n배운 점\n- 설득 역량이 성장했다"
+    )
+    result = ContentFilterOutput.model_validate(
+        {
+            "new_items": [
+                {
+                    "item_id": "it_1",
+                    # 마지막 줄을 모델이 살짝 바꿨다.
+                    "text": "- 설문조사 수행\n- 데이터 분석 결과 정리\n- 설득 역량이 크게 성장했다",
+                    "source": "file",
+                }
+            ]
+        }
+    )
+
+    _, new_items, dropped = filter_node._sanitize(
+        result, active_gap=None, user_message=None, extracted_text=extracted
+    )
+
+    assert [item.text for item in new_items] == ["- 설문조사 수행", "- 데이터 분석 결과 정리"]
+    assert dropped == 0
+
+
+def test_file_bullet_chunk_is_split_per_bullet():
+    """파일 불릿 여러 줄이 한 조각으로 오면 불릿마다 나누고, 감싼 줄은 앞 불릿에 붙인다."""
+    item = filter_node.FilteredItem(
+        item_id="it_1",
+        text="- 진행 기간: 2023.03 ~ 2023.06\n- 대상: 20대 대학생\n- 근거: 합의를 이끌어\n내는 데 효과적",
+        source="file",
+    )
+
+    parts = filter_node._split_long_item(item)
+
+    assert [part.text for part in parts] == [
+        "- 진행 기간: 2023.03 ~ 2023.06",
+        "- 대상: 20대 대학생",
+        "- 근거: 합의를 이끌어\n내는 데 효과적",
+    ]
