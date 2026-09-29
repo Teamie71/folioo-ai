@@ -71,6 +71,8 @@ _KNOWN_SLOT_ALIASES = {
     "TASK.BASIC.PROCESS": "TASK.BASIC.EXECUTION",
 }
 
+_DETAIL_SECTION_PREFIX = "DETAIL."
+
 _LEARNING_SLOT_SUFFIXES = frozenset({"LEARNING", "LESSON", "LESSONS"})
 _LEARNING_DESTINATION_SLOT = "LEARNING.GROWTH"
 _LEARNING_FALLBACK_SLOT = "TASK.BASIC.RESULT"
@@ -1123,6 +1125,22 @@ def _normalize_known_slot_aliases(
             and catalog.get_slot(learning_destination) is not None
         ):
             official = learning_destination
+        # 모델이 상세정보 항목(진행 기간 등)을 다른 섹션 템플릿 밑 슬롯처럼
+        # `TASK.BASIC.PERIOD`로 지어낸 게 실제 PDF에서 재현됐다. 끝 이름이
+        # 상세정보 슬롯과 같으면 그 공식 `DETAIL.*` 슬롯으로 귀속한다.
+        detail_candidate = (
+            _DETAIL_SECTION_PREFIX + item.slot_id.rsplit(".", maxsplit=1)[-1]
+            if item.slot_id is not None
+            else None
+        )
+        if (
+            official is None
+            and detail_candidate is not None
+            and not item.slot_id.startswith(_DETAIL_SECTION_PREFIX)
+            and catalog.get_slot(item.slot_id) is None
+            and catalog.get_slot(detail_candidate) is not None
+        ):
+            official = detail_candidate
         if official is not None and catalog.get_slot(official) is not None:
             logger.warning(
                 "structure: 비공식 slot_id를 정규화합니다 (%s -> %s)",
@@ -2146,6 +2164,11 @@ def _reparent_orphan_level5_items(
     new_anchors: list[StructureLlmItem] = []
     auto_anchor_by_group: dict[tuple[str, str], str] = {}
     reparent_to: dict[str, dict] = {}  # orphan item_id -> 부모 필드
+    # 배치마다 이 함수가 앞 배치 결과까지 다시 받는다. 번호를 이번 호출 기준으로만
+    # 매기면 앞 배치가 만든 auto_anchor_*_1 과 겹쳐 "item_id가 중복"으로 턴 전체가
+    # 실패했다(dev 재현, 2026-09-29).
+    used_item_ids = {item.item_id for item in items}
+    anchor_counter = 0
     for orphan, parent_ref, section_id in orphans:
         if parent_ref in continued:
             reparent_to[orphan.item_id] = {
@@ -2166,7 +2189,12 @@ def _reparent_orphan_level5_items(
         else:
             anchor_id = auto_anchor_by_group.get((parent_ref, section_id))
             if anchor_id is None:
-                anchor_id = f"auto_anchor_{section_id}_{len(new_anchors) + 1}"
+                anchor_counter += 1
+                anchor_id = f"auto_anchor_{section_id}_{anchor_counter}"
+                while anchor_id in used_item_ids:
+                    anchor_counter += 1
+                    anchor_id = f"auto_anchor_{section_id}_{anchor_counter}"
+                used_item_ids.add(anchor_id)
                 auto_anchor_by_group[(parent_ref, section_id)] = anchor_id
                 new_anchors.append(
                     StructureLlmItem(
@@ -2518,6 +2546,7 @@ def _fill_missing_template_slots(
         groups.setdefault((parent, prefix), []).append(item)
 
     filled = list(items)
+    used_item_ids = {item.item_id for item in items}
     counter = 0
     for (parent, prefix), group_items in groups.items():
         if parent in known_aliases:
@@ -2532,9 +2561,14 @@ def _fill_missing_template_slots(
         anchor = group_items[0]
         for slot_id in missing:
             counter += 1
+            item_id = f"auto_{prefix}_{counter}"
+            while item_id in used_item_ids:
+                counter += 1
+                item_id = f"auto_{prefix}_{counter}"
+            used_item_ids.add(item_id)
             filled.append(
                 StructureLlmItem(
-                    item_id=f"auto_{prefix}_{counter}",
+                    item_id=item_id,
                     action="add",
                     slot_id=slot_id,
                     text=None,
