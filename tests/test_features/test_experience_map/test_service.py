@@ -246,6 +246,43 @@ async def test_lease_loss_interrupts_during_silence(repo, user_id):
 
 
 @pytest.mark.asyncio
+async def test_turn_keeps_running_after_client_disconnects(repo, user_id):
+    """SSE 연결이 끊겨도(새로고침·탭 닫기) 턴은 끝까지 돌아 완료로 저장된다.
+
+    실행이 SSE generator 안에서 돌면 연결이 끊길 때 generator 가 닫히면서
+    그래프도 같이 멈췄다 — dev 에서 structure·refine 까지 간 턴이 새로고침
+    한 번에 중단됐다.
+    """
+    service = ExperienceMapService(repository=repo, runner=_SlowRunner(gap_seconds=0.3))
+    session = await repo.get_or_create_session(user_id, "200")
+    request_id = new_request_id()
+    prepared = await service.prepare_chat(
+        user_id,
+        session.session_id,
+        request_id,
+        user_message="정리해줘",
+        context_experience_id=None,
+        view=None,
+        stored_files=[],
+    )
+
+    stream = service.stream(prepared)
+    async for event in stream:
+        if event.model_dump()["type"] == "node_status":
+            break
+    await stream.aclose()  # 클라이언트가 연결을 끊는다.
+
+    assert (await repo.get_request(user_id, request_id)).status == "running"
+
+    async def wait_until_finished() -> str:
+        while (status := (await repo.get_request(user_id, request_id)).status) == "running":
+            await asyncio.sleep(0.05)
+        return status
+
+    assert await asyncio.wait_for(wait_until_finished(), timeout=4) == "completed"
+
+
+@pytest.mark.asyncio
 async def test_cancel_request_interrupts_running_stream(repo, user_id):
     """작업 중지 API(2026-09-20)로 세운 플래그가 실행 중인 스트림을 끊는다.
 
