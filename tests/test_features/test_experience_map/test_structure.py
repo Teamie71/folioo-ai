@@ -1560,16 +1560,15 @@ async def test_duplicate_section_kind_is_merged(fake_dependencies):
 
 
 @pytest.mark.asyncio
-async def test_new_category_contradicting_self_reported_classification_is_rejected(
+async def test_new_category_contradicting_self_reported_classification_is_merged(
     fake_dependencies,
 ):
-    """existing_categories에서 이미 있다고 판단한 section을 또 새로 만들면 거부한다.
+    """existing_categories에서 이미 있다고 판단한 section을 또 새로 만들면 기존 것으로 합친다.
 
-    실제로 재현된 경우다. 활동 트리에 이미 TASK 컨테이너(자식이 자유 텍스트로만
-    있는)가 있는데, 이후 요청에서 모델이 그 컨테이너를 재사용하지 않고 같은
-    section의 새 카테고리를 또 만들었다 — "트리에 있으면 재사용하라"는 지시만
-    으로는 재발이 잦아, 모델이 스스로 분류한 결과와 실제 행동이 모순되면 코드가
-    바로 걸러 재시도를 유도한다.
+    실제로 재현된 경우다. 활동 트리에 이미 TASK 컨테이너가 있는데 모델이 그
+    컨테이너를 재사용하지 않고 같은 section의 새 카테고리를 또 만들었다. 거부해
+    재시도하게 하던 예전 방식은 재시도에서도 똑같이 반복돼 요청이 실패했으므로,
+    모델이 스스로 신고한 기존 컨테이너 아래로 코드가 옮긴다.
     """
     fake_dependencies(
         StructureOutput(
@@ -1590,8 +1589,12 @@ async def test_new_category_contradicting_self_reported_classification_is_reject
         )
     )
 
-    with pytest.raises(LlmError):
-        await structure_blocks(make_state())
+    result = await structure_blocks(make_state())
+
+    items = result["structured_items"]
+    assert not any(item.get("section_kind") == "TASK" for item in items)
+    summary = next(item for item in items if item["slot_id"] == "TASK.SUMMARY")
+    assert summary["parent_ref"] == "b_1"
 
 
 @pytest.mark.asyncio
@@ -4161,3 +4164,25 @@ def test_detail_slot_invented_under_other_section_is_normalized():
 
     assert result[0].slot_id == "DETAIL.MOTIVATION"
     assert result[0].text == "교내 행사 신청 과정을 개선하고 싶었다"
+
+
+def test_new_section_reported_as_existing_is_merged_into_existing_container():
+    """기존 카테고리로 신고한 section을 새로 만들면 기존 컨테이너로 합친다."""
+    items = [
+        StructureLlmItem(item_id="blk_1", action="add", parent_ref="exp_1", section_kind="DETAIL"),
+        StructureLlmItem(
+            item_id="blk_2",
+            action="add",
+            parent_item_id="blk_1",
+            slot_id="DETAIL.MOTIVATION",
+            text="행사 신청 과정을 개선하고 싶었다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(item_id="blk_3", action="add", parent_ref="exp_1", section_kind="TASK"),
+    ]
+
+    result = structure_node._merge_new_sections_into_reported_containers(items, {"b_1": "DETAIL"})
+
+    assert [item.item_id for item in result] == ["blk_2", "blk_3"]
+    assert result[0].parent_ref == "b_1"
+    assert result[0].parent_item_id is None
