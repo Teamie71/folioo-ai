@@ -655,9 +655,16 @@ def _source_item_group_labels(
     데 쓰인다 — 프롬프트가 아니라 코드로 섞임을 막는다. 제목이 2개 미만이면
     (평범한 입력을 장식 삼아 대괄호 한 번 쓴 경우 등) 아무것도 강제하지
     않도록 빈 dict를 돌려준다.
+
+    **채팅 메시지에만 적용한다.** 파일(PDF 등)의 대괄호 제목은 "[문제 상황]",
+    "[해결 방안]"처럼 한 에피소드 안의 구획인 경우가 많다. 파일에도 적용했더니
+    구획마다 빈 앵커를 따로 만들어 구조가 깨지고, 배치가 17개에서 26개로 늘어
+    처리도 느려졌다(dev 재현, 2026-09-29). 파일의 구획 제목은
+    `_document_slot_hints` 가 슬롯 힌트로 다룬다.
     """
+    del extracted_text  # 파일 텍스트는 의도적으로 보지 않는다 (위 설명).
     labels: dict[str, str] = {}
-    for source_key, raw_text in (("message", user_message), ("file", extracted_text)):
+    for source_key, raw_text in (("message", user_message),):
         if not raw_text:
             continue
         markers: list[tuple[int, str]] = []
