@@ -53,6 +53,7 @@ async def analyze_gap(state: ExperienceMapState) -> ExperienceMapState:
                 "anchor_aliases": render_anchor_aliases(anchors),
             }
         )
+        result = _normalize_message(result)
         _validate_output(result, anchors)
     except LlmError:
         raise
@@ -91,6 +92,33 @@ def _anchor_refs(items: list[dict]) -> list[str]:
     return candidates
 
 
+def _normalize_message(result: GapOutput) -> GapOutput:
+    """질문 앞뒤 군더더기를 떼고 첫 번째 질문 한 문장만 남긴다.
+
+    모델이 gap은 맞게 골라 놓고 "…했네요. 어떤 방법을 썼나요?"처럼 설명 문장을
+    붙이거나 질문을 두 개 이어 쓰면, 형식 검사 하나 때문에 제안 전체가 버려져
+    사용자에게 보완 질문이 아예 나가지 않았다(로컬 재현). 첫 질문 문장이 있으면
+    그 문장만 쓴다.
+    """
+    if result.gap is None:
+        return result
+    message = " ".join(result.message.split())
+    end = message.find("?")
+    if end < 0:
+        if not _is_single_request_sentence(message):
+            logger.warning("gap_analysis: 질문 형식이 아닌 제안 문구 (message=%r)", result.message)
+        return result.model_copy(update={"message": message})
+    start = max(message.rfind(mark, 0, end) for mark in (". ", "! "))
+    question = message[start + 2 if start >= 0 else 0 : end + 1].strip()
+    if question != result.message.strip():
+        logger.info(
+            "gap_analysis: 제안 문구를 질문 한 문장으로 줄입니다 (%r -> %r)",
+            result.message,
+            question,
+        )
+    return result.model_copy(update={"message": question})
+
+
 def _validate_output(result: GapOutput, anchors: list[str]) -> None:
     """gap 하나·허용 별칭·질문 형식을 강제한다."""
     if result.gap is None:
@@ -98,8 +126,22 @@ def _validate_output(result: GapOutput, anchors: list[str]) -> None:
     if result.gap.anchor_ref not in anchors:
         raise ValueError("이번에 내용이 커밋된 블록이 아닌 gap 기준입니다.")
     message = result.message.strip()
-    if not message or "\n" in message or message.count("?") != 1 or not message.endswith("?"):
+    if not message or "\n" in message:
         raise ValueError("gap 제안은 물음표로 끝나는 한 문장이어야 합니다.")
+    is_question = message.count("?") == 1 and message.endswith("?")
+    # "…어떤 기준을 사용했는지 설명해 주세요."처럼 한 문장 요청도 사용자가 바로 답할 수
+    # 있는 질문이다. 이것까지 거부하면 제안 전체가 사라졌다(로컬 재현).
+    is_request = "?" not in message and _is_single_request_sentence(message)
+    if not (is_question or is_request):
+        raise ValueError("gap 제안은 물음표로 끝나는 한 문장이어야 합니다.")
+
+
+def _is_single_request_sentence(message: str) -> bool:
+    """ "…해 주세요." 같은 한 문장 요청인지 본다."""
+    body = message.rstrip(".").rstrip()
+    return body.endswith(("주세요", "주시겠어요", "주실 수 있나요")) and not any(
+        mark in body for mark in (". ", "! ")
+    )
 
 
 __all__ = ["NO_GAP_MESSAGE", "analyze_gap"]

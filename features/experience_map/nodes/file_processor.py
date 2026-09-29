@@ -16,6 +16,7 @@
 """
 
 import logging
+import re
 
 from features.experience_map.config import MAX_TOTAL_TEXT_CHARS
 from features.experience_map.errors import LlmError
@@ -28,6 +29,29 @@ from features.experience_map.extractors import (
 )
 from features.experience_map.state import ExperienceMapState, ExtractedFile
 from features.experience_map.upload_store import get_upload_store
+
+_AUTHORING_NOTE = re.compile(r"(?:^|(?<=\s))//(?!/).*$", re.MULTILINE)
+"""`//항목명은 글꼴 크기 11`처럼 문서 작성자가 줄 끝이나 한 줄 전체에 남긴 편집 메모.
+
+`https://`처럼 콜론 뒤에 붙은 `//`는 공백·줄 시작 뒤가 아니므로 건드리지 않는다.
+"""
+
+
+def _strip_authoring_notes(text: str) -> str:
+    """파일 원문에서 `//` 편집 메모를 지우고, 메모만 있던 줄은 없앤다.
+
+    dev에서 실제 PDF로 재현됐다. 템플릿 양식 파일에 "//생성값은 글꼴 크기 10,
+    마크다운 렌더링" 같은 메모가 줄마다 붙어 있었는데, 문장 단위로 걸러내는
+    content_filter는 내용과 같은 줄에 붙은 메모를 떼어내지 못해 그대로 블록에
+    들어갔다.
+    """
+    lines = []
+    for line in text.splitlines():
+        stripped = _AUTHORING_NOTE.sub("", line).rstrip()
+        if stripped or not line.strip():
+            lines.append(stripped)
+    return "\n".join(lines)
+
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +88,9 @@ async def process_files(state: ExperienceMapState) -> ExperienceMapState:
 
         try:
             data = await store.read(reference["gcs_object"])
-            text = await extract(data, reference["filename"], reference["content_type"])
+            text = _strip_authoring_notes(
+                await extract(data, reference["filename"], reference["content_type"])
+            )
         except FileUnreadableError:
             # 품질 문제다. 재시도해도 같은 결과이므로 노드를 실패시키지 않는다.
             logger.info("file_processor: 읽을 수 없는 파일 (file_id=%s)", reference["file_id"])

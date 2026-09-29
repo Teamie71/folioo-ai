@@ -251,3 +251,45 @@ def test_suggestion_converts_new_commit_item_to_active_gap():
 
     assert result["active_gap"]["anchor_block_id"] == "401"
     assert result["suggestion"]["gap"]["path"].endswith("결제 개선")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "설문을 잘 정리했네요. 응답자는 몇 명이었나요? 기간도 알려주세요?",
+            "응답자는 몇 명이었나요?",
+        ),
+        ("어떤 툴을 썼나요?\n구체적으로요", "어떤 툴을 썼나요?"),
+        ("응답자 수는 몇 명이었나요?", "응답자 수는 몇 명이었나요?"),
+    ],
+)
+def test_gap_message_is_trimmed_to_first_question(raw, expected):
+    """gap은 맞게 골랐는데 문구 형식만 어긋나면 첫 질문 한 문장만 남긴다."""
+    from features.experience_map.nodes.gap_analysis import _normalize_message
+    from features.experience_map.schemas import GapOutput
+
+    result = _normalize_message(
+        GapOutput.model_validate(
+            {"gap": {"anchor_ref": "blk_1", "gap_type": "new_child_block"}, "message": raw}
+        )
+    )
+
+    assert result.message == expected
+
+
+def test_gap_request_sentence_without_question_mark_is_accepted():
+    """ "…설명해 주세요." 같은 한 문장 요청은 질문으로 받아들인다."""
+    from features.experience_map.nodes.gap_analysis import _normalize_message, _validate_output
+    from features.experience_map.schemas import GapOutput
+
+    result = _normalize_message(
+        GapOutput.model_validate(
+            {
+                "gap": {"anchor_ref": "blk_1", "gap_type": "new_child_block"},
+                "message": "팀원을 설득할 때 어떤 기준을 사용했는지 설명해 주세요.",
+            }
+        )
+    )
+
+    _validate_output(result, ["blk_1"])

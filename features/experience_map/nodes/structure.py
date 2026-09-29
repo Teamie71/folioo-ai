@@ -92,7 +92,38 @@ _DOCUMENT_SLOT_LABELS = {
     "ACHIEVEMENT.QUANTITATIVE": "주요성과 > 정량 성과",
     "ACHIEVEMENT.QUALITATIVE": "주요성과 > 정성 성과",
     "LEARNING.GROWTH": "배운 점 > 성장·활용",
+    "TASK.BASIC.EXECUTION": "담당 업무 > 실행 과정",
+    "DETAIL.MOTIVATION": "상세정보 > 계기·목표",
+    "DETAIL.PERIOD": "상세정보 > 진행 기간",
+    "DETAIL.ROLE": "상세정보 > 역할·구성",
+    "DETAIL.TARGET": "상세정보 > 대상·타깃",
+    "DETAIL.STACK": "상세정보 > 기술·방법론·툴",
 }
+
+_DETAIL_LABEL_SLOTS: tuple[tuple[str, str], ...] = (
+    ("기간", "DETAIL.PERIOD"),
+    ("배경", "DETAIL.MOTIVATION"),
+    ("목적", "DETAIL.MOTIVATION"),
+    ("계기", "DETAIL.MOTIVATION"),
+    ("목표", "DETAIL.MOTIVATION"),
+    ("구성", "DETAIL.ROLE"),
+    ("역할", "DETAIL.ROLE"),
+    ("인원", "DETAIL.ROLE"),
+    ("대상", "DETAIL.TARGET"),
+    ("타깃", "DETAIL.TARGET"),
+    ("고객", "DETAIL.TARGET"),
+    ("기술", "DETAIL.STACK"),
+    ("방법론", "DETAIL.STACK"),
+    ("툴", "DETAIL.STACK"),
+    ("성과", "ACHIEVEMENT"),
+)
+"""상세정보 구획의 "- 라벨: 내용" 줄에서 라벨에 들어 있는 단어로 슬롯을 고른다.
+
+앞쪽이 우선한다 — "프로젝트 범위 및 구성: ... 본인 역할"처럼 여러 단어가 섞이면
+라벨(콜론 앞)만 보므로 "구성"이 잡힌다.
+"""
+
+_TASK_GROUP_HEADER = re.compile(r"^\[[^\[\]]{1,60}\]$")
 
 _BASIC_TO_TROUBLESHOOTING_SLOTS = {
     "PROBLEM_SOLVING.BASIC.PROBLEM": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
@@ -346,8 +377,11 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
             reused_existing = _reuse_existing_filled_anchor(
                 filled_items, catalog, state, continued_anchors
             )
-            redirected_existing = _redirect_leaf_add_to_existing_empty_slot(
-                reused_existing, catalog, state
+            redirected_existing = _drop_empty_childless_new_containers(
+                _redirect_leaf_add_to_existing_empty_slot(
+                    _fill_blank_template_anchor(reused_existing, catalog, state), catalog, state
+                ),
+                catalog,
             )
             ordered_items = _order_parents_before_children(redirected_existing)
             try:
@@ -532,6 +566,19 @@ def _document_heading_slot(line: str, current_section: str | None) -> tuple[str,
 
     if no_space == "담당업무":
         return "TASK", "TASK.SUMMARY"
+    if no_space == "상세정보":
+        return "DETAIL", ""
+    if current_section == "TASK" and _TASK_GROUP_HEADER.match(compact):
+        return "TASK", "TASK.SUMMARY"
+    if current_section == "DETAIL":
+        label_match = re.match(r"^([^:：]{1,30})[:：]", compact)
+        if label_match is None:
+            return None
+        label = label_match.group(1)
+        return next(
+            (("DETAIL", slot_id) for word, slot_id in _DETAIL_LABEL_SLOTS if word in label),
+            ("DETAIL", ""),
+        )
     if no_space == "주요성과":
         return "ACHIEVEMENT", "ACHIEVEMENT.QUANTITATIVE"
     if no_space == "배운점":
@@ -543,6 +590,11 @@ def _document_heading_slot(line: str, current_section: str | None) -> tuple[str,
 
     if current_section != "PROBLEM_SOLVING":
         return None
+    if re.match(r"^\d+[.)]\s", line.strip()):
+        # "2) 기획 방향성 내부 합의 도출"처럼 번호로 시작하는 줄은 새 에피소드의 제목이다.
+        # 앞 에피소드 마지막 불릿("전략:")의 해결 과정 힌트를 이어받아 하위 슬롯에
+        # 들어가는 게 로컬에서 재현됐다.
+        return "PROBLEM_SOLVING", "PROBLEM_SOLVING.SUMMARY"
     problem_slots = {
         "상황": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
         "상황설명": "PROBLEM_SOLVING.TROUBLESHOOTING.PROBLEM",
@@ -599,6 +651,15 @@ def _document_slot_hints(source_items: list[dict], extracted_text: str | None) -
         if marker is not None:
             current_section, slot_id = marker
             markers.append((start, current_section, slot_id))
+            line_end = start + len(line)
+            if current_section == "TASK" and _TASK_GROUP_HEADER.match(line):
+                # "[시장 조사 및 데이터 분석]" 같은 업무 제목 줄 자체는 앵커(업무 요약)이고,
+                # 그 아래 불릿은 그 업무의 실행 내용이다. 예전엔 "담당업무" 아래 모든 줄이
+                # TASK.SUMMARY 힌트를 받아 원문 전체가 요약 블록 하나에 합쳐졌다.
+                markers.append((line_end, current_section, "TASK.BASIC.EXECUTION"))
+            elif current_section == "DETAIL":
+                # 상세정보 줄은 줄마다 라벨로 슬롯이 정해진다. 다음 줄로 번지지 않게 끊는다.
+                markers.append((line_end, current_section, ""))
 
     if not markers:
         return {}
@@ -622,7 +683,9 @@ def _document_slot_hints(source_items: list[dict], extracted_text: str | None) -
         if not preceding:
             continue
         _, section, slot_id = preceding[-1]
-        if section == "ACHIEVEMENT":
+        if not slot_id:
+            continue
+        if section == "ACHIEVEMENT" or slot_id == "ACHIEVEMENT":
             slot_id = (
                 "ACHIEVEMENT.QUANTITATIVE"
                 if _QUANTITATIVE_MARKER.search(text)
@@ -666,7 +729,8 @@ def _source_item_group_labels(
     처리도 느려졌다(dev 재현, 2026-09-29). 파일의 구획 제목은
     `_document_slot_hints` 가 슬롯 힌트로 다룬다.
     """
-    del extracted_text  # 파일 텍스트는 의도적으로 보지 않는다 (위 설명).
+    # 파일 텍스트의 일반 대괄호는 보지 않는다(위 설명). 파일은 업무·에피소드 제목 줄만
+    # `_file_anchor_group_labels`로 따로 묶는다.
     labels: dict[str, str] = {}
     for source_key, raw_text in (("message", user_message),):
         if not raw_text:
@@ -708,8 +772,72 @@ def _source_item_group_labels(
             if preceding:
                 labels[str(item["item_id"])] = preceding[-1][1]
 
+    labels.update(_file_anchor_group_labels(source_items, extracted_text))
     if len({*labels.values()}) < 2:
         return {}
+    return labels
+
+
+def _file_anchor_group_labels(
+    source_items: list[dict], extracted_text: str | None
+) -> dict[str, str]:
+    """파일에서 업무·에피소드 제목 줄 아래 item을 그 제목으로 묶는다.
+
+    일반 대괄호가 아니라 `_document_heading_slot`이 앵커 제목으로 확정한 줄만 쓴다 —
+    "담당업무" 아래 "[시장 조사 및 데이터 분석]", "문제해결" 아래 "1) …"·"2) …".
+    파일의 모든 대괄호를 그룹으로 보면 "[문제 상황]" 같은 에피소드 안 구획까지
+    나뉘어 구조가 깨졌다(#419). 제목 없이 이런 그룹을 쓰지 않으면, 서로 다른 업무·
+    에피소드가 배치 경계를 넘어 한 앵커로 합쳐졌다(로컬 재현).
+    """
+    if not extracted_text or not any(item.get("source") == "file" for item in source_items):
+        return {}
+    parts: list[str] = []
+    markers: list[tuple[int, str | None]] = []
+    offset = 0
+    current_section: str | None = None
+    for raw_line in extracted_text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+        if parts:
+            offset += 1
+        start = offset
+        parts.append(line)
+        offset += len(line)
+        previous_section = current_section
+        marker = _document_heading_slot(line, current_section)
+        if marker is None:
+            continue
+        current_section, slot_id = marker
+        is_anchor_title = slot_id in ANCHOR_SLOT_IDS and (
+            (current_section == "TASK" and _TASK_GROUP_HEADER.match(line))
+            or (current_section == "PROBLEM_SOLVING" and re.match(r"^\d+[.)]\s", line))
+        )
+        if is_anchor_title:
+            markers.append((start, line))
+        elif current_section != previous_section:
+            markers.append((start, None))
+    if not any(label for _, label in markers):
+        return {}
+
+    document = " ".join(parts)
+    labels: dict[str, str] = {}
+    search_from = 0
+    for item in source_items:
+        if item.get("source") != "file":
+            continue
+        text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
+        if not text:
+            continue
+        position = document.find(text, search_from)
+        if position < 0:
+            position = document.find(text)
+        if position < 0:
+            continue
+        search_from = position + len(text)
+        preceding = [label for start, label in markers if start <= position]
+        if preceding and preceding[-1]:
+            labels[str(item["item_id"])] = preceding[-1]
     return labels
 
 
@@ -1019,11 +1147,16 @@ def _apply_structuring_fixups(
     reparented = _reparent_orphan_level5_items(
         normalized_hierarchy, catalog, state=state, continued_anchors=continued
     )
+    # 계층 보정·고아 level 5 보정이 모델이 잘못 고른 기존 카테고리(예: 담당업무 `b_10`)
+    # 아래 새 앵커를 만들 수 있다. 배치 간 앵커 병합은 부모가 같아야 하므로, 병합 전에
+    # 한 번 더 제 section 카테고리로 옮긴다 — 안 그러면 다음 배치에서야 옮겨져 이미
+    # "앞 배치 앵커"가 된 뒤라 같은 에피소드인데도 합쳐지지 않았다(로컬 재현).
+    rerouted_again = _reroute_slots_misplaced_under_existing_blocks(reparented, catalog, state)
     continued_redirected = _redirect_empty_anchor_to_continued_episode(
-        reparented, catalog, continued
+        rerouted_again, catalog, continued
     )
     batch_merged = _merge_anchors_repeated_across_batches(
-        continued_redirected, earlier_item_ids or frozenset(), catalog
+        continued_redirected, earlier_item_ids or frozenset(), catalog, group_labels or {}
     )
     reused = _reuse_existing_filled_anchor(batch_merged, catalog, state, continued)
     collapsed = _collapse_basic_troubleshooting_templates(reused)
@@ -3062,7 +3195,10 @@ def _subtree_known_slots_with_parent(
 
 
 def _merge_anchors_repeated_across_batches(
-    items: list[StructureLlmItem], earlier_item_ids: frozenset[str], catalog: TemplateCatalog
+    items: list[StructureLlmItem],
+    earlier_item_ids: frozenset[str],
+    catalog: TemplateCatalog,
+    group_labels: dict[str, str] | None = None,
 ) -> list[StructureLlmItem]:
     """앞 배치가 만든 앵커와 같은 부모·같은 앵커 슬롯의 새 앵커를 뒤 배치가 또 만들면 합친다.
 
@@ -3072,20 +3208,45 @@ def _merge_anchors_repeated_across_batches(
     배치 경계는 에피소드 경계가 아니므로 합친다. 한 호출 안에서 모델이 직접 나눈
     앵커는 서로 다른 에피소드로 보고 그대로 둔다.
 
-    한계: 서로 다른 에피소드가 서로 다른 배치로 나뉘어 들어오면 합쳐진다.
+    `group_labels`(업무·에피소드 제목 그룹)가 있으면 같은 그룹의 앵커끼리만 합친다 —
+    "[시장 조사]"와 "[마케팅 전략]" 두 업무가 배치 경계 때문에 한 앵커로 합쳐지는
+    게 로컬에서 재현됐다. 그룹을 모르는 경우엔 예전처럼 합친다(한계: 제목 없이 서로
+    다른 에피소드가 서로 다른 배치로 나뉘어 들어오면 합쳐진다).
     """
-    earliest: dict[tuple[str, str], str] = {}
+    group_labels = group_labels or {}
+
+    def label_of(item: StructureLlmItem) -> str | None:
+        sources = list(item.source_item_ids) + [
+            source_id
+            for child in items
+            if child.parent_item_id == item.item_id
+            for source_id in child.source_item_ids
+        ]
+        return next((group_labels[s] for s in sources if s in group_labels), None)
+
+    earliest: dict[tuple[str, str], list[tuple[str | None, str]]] = {}
     for item in items:
         if item.item_id in earlier_item_ids and _is_anchor_slot(item.slot_id, catalog):
             key = (item.parent_ref or item.parent_item_id or "", item.slot_id or "")
-            earliest.setdefault(key, item.item_id)
+            earliest.setdefault(key, []).append((label_of(item), item.item_id))
     redirects: dict[str, str] = {}
     for item in items:
         if item.item_id in earlier_item_ids or not _is_anchor_slot(item.slot_id, catalog):
             continue
-        target = earliest.get((item.parent_ref or item.parent_item_id or "", item.slot_id or ""))
-        if target is not None:
-            redirects[item.item_id] = target
+        candidates = earliest.get(
+            (item.parent_ref or item.parent_item_id or "", item.slot_id or "")
+        )
+        if not candidates:
+            continue
+        label = label_of(item)
+        if label is None:
+            redirects[item.item_id] = candidates[0][1]
+            continue
+        same_group = next((anchor_id for lbl, anchor_id in candidates if lbl == label), None)
+        if same_group is not None:
+            redirects[item.item_id] = same_group
+        elif all(lbl is None for lbl, _ in candidates):
+            redirects[item.item_id] = candidates[0][1]
     if not redirects:
         return items
 
@@ -3260,6 +3421,144 @@ def _reuse_existing_filled_anchor(
     if not changed:
         return items
     return [by_id[item.item_id] for item in items if item.item_id not in drop]
+
+
+def _drop_empty_childless_new_containers(
+    items: list[StructureLlmItem], catalog: TemplateCatalog
+) -> list[StructureLlmItem]:
+    """자식이 하나도 남지 않은 내용 없는 새 앵커·카테고리를 버린다.
+
+    기존 빈 블록을 채우는 보정들(`_reuse_existing_filled_anchor`,
+    `_fill_blank_template_anchor`, `_redirect_leaf_add_to_existing_empty_slot`)이
+    새 앵커의 자식을 전부 기존 블록 `update`로 바꾸면, 껍데기만 남은 새 앵커가
+    `_validate_non_empty_subtrees`에 걸려 요청 전체가 실패했다(로컬 재현). 내용도
+    자식도 없으니 버려도 잃는 정보가 없다. 앵커를 버리면 그 카테고리도 빌 수 있어
+    더 버릴 게 없을 때까지 반복한다.
+    """
+    while True:
+        parents = {item.parent_item_id for item in items if item.parent_item_id}
+        removable = {
+            item.item_id
+            for item in items
+            if item.action == "add"
+            and item.text is None
+            and not item.source_item_ids
+            and (item.section_kind is not None or _is_anchor_slot(item.slot_id, catalog))
+            and item.item_id not in parents
+        }
+        if not removable:
+            return items
+        items = [item for item in items if item.item_id not in removable]
+
+
+def _fill_blank_template_anchor(
+    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
+) -> list[StructureLlmItem]:
+    """새 앵커 대신, 같은 카테고리에 미리 깔린 빈 템플릿 앵커를 채운다.
+
+    메인 서버는 새 활동을 만들 때 앵커와 하위 템플릿 빈 블록을 미리 깔아 둔다.
+    모델은 그 빈 앵커를 두고 새 앵커를 또 만들어, 결과 화면에 빈 업무·에피소드
+    블록이 새 블록 옆에 그대로 남았다(dev 재현). 새 앵커의 부모가 빈 템플릿
+    앵커를 가진 기존 카테고리이고, 새 앵커 자식의 슬롯이 모두 그 빈 앵커의
+    하위 슬롯에 있으면(같은 템플릿), 새 앵커를 그 빈 앵커의 `update`로 바꾸고
+    자식은 빈 앵커 밑으로 옮긴다. 이어지는 `_redirect_leaf_add_to_existing_empty_slot`
+    이 자식들을 빈 하위 블록의 `update`로 바꾼다. 템플릿이 다르면 섞을 수 없으므로
+    건드리지 않는다.
+    """
+    anchors = _existing_episode_anchors(state, catalog)
+    non_blank = _drop_blank_template_anchors(anchors, state)
+    blank_by_container: dict[str, list[str]] = {}
+    for alias, container in anchors.items():
+        if alias not in non_blank:
+            blank_by_container.setdefault(container, []).append(alias)
+
+    # 앞 배치에서 이미 update로 바뀐 앵커를 가리키는 뒤 배치 자식은 그 앵커 밑으로 잇는다.
+    update_targets = {
+        item.item_id: item.target_ref
+        for item in items
+        if item.action == "update" and item.target_ref is not None
+    }
+    items = [
+        item.model_copy(
+            update={"parent_ref": update_targets[item.parent_item_id], "parent_item_id": None}
+        )
+        if item.parent_item_id in update_targets
+        else item
+        for item in items
+    ]
+    if not blank_by_container:
+        return items
+
+    claimed = {item.target_ref for item in items if item.action == "update"} | {
+        item.parent_ref for item in items if item.parent_ref is not None
+    }
+    tree_lines = _parse_tree_lines(state.get("activity_tree_text") or "")
+    placeholder_to_slot = _placeholder_to_slot_map(catalog)
+    replacements: dict[str, str] = {}
+    for item in items:
+        if (
+            item.action != "add"
+            or item.parent_ref not in blank_by_container
+            or item.parent_item_id is not None
+            or not _is_anchor_slot(item.slot_id, catalog)
+        ):
+            continue
+        blank = next(
+            (alias for alias in blank_by_container[item.parent_ref] if alias not in claimed),
+            None,
+        )
+        if blank is None:
+            continue
+        blank_slots = {
+            slot_id
+            for slot_id, _, parent_alias in _subtree_known_slots_with_parent(
+                tree_lines, blank, placeholder_to_slot
+            )
+            if parent_alias == blank
+        }
+        child_slots = {
+            child.slot_id
+            for child in items
+            if child.parent_item_id == item.item_id and child.slot_id is not None
+        }
+        if not child_slots <= blank_slots:
+            continue
+        claimed.add(blank)
+        replacements[item.item_id] = blank
+        logger.info(
+            "structure: 새 앵커 대신 미리 깔린 빈 앵커를 채웁니다 (%s -> %s)", item.item_id, blank
+        )
+
+    if not replacements:
+        return items
+    result: list[StructureLlmItem] = []
+    for item in items:
+        blank = replacements.get(item.item_id)
+        if blank is not None:
+            if item.text is None and not item.source_item_ids:
+                continue
+            result.append(
+                item.model_copy(
+                    update={
+                        "action": "update",
+                        "target_ref": blank,
+                        "parent_ref": None,
+                        "parent_item_id": None,
+                        "slot_id": None,
+                        "section_kind": None,
+                        "after_ref": None,
+                    }
+                )
+            )
+            continue
+        parent_blank = replacements.get(item.parent_item_id or "")
+        if parent_blank is not None:
+            if item.text is None and not item.source_item_ids:
+                # 빈 앵커에는 같은 템플릿의 빈 하위 블록이 이미 있다.
+                continue
+            item = item.model_copy(update={"parent_ref": parent_blank, "parent_item_id": None})
+        result.append(item)
+    return result
 
 
 def _redirect_leaf_add_to_existing_empty_slot(

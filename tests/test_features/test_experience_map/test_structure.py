@@ -3563,11 +3563,12 @@ def test_prune_extra_templates_leaves_ambiguous_multi_content_alone():
 
 
 @pytest.mark.asyncio
-async def test_entirely_empty_new_anchor_subtree_is_rejected(fake_dependencies):
-    """새 앵커 서브트리 전체가 비어 있으면(내용이 하나도 없으면) 거부한다.
+async def test_entirely_empty_new_anchor_subtree_is_dropped(fake_dependencies):
+    """새 앵커 서브트리 전체가 비어 있으면(내용이 하나도 없으면) 버리고 나머지는 반영한다.
 
     실제로 모델이 이번 입력과 무관한 **기존** 카테고리(예: 이미 내용이 있는
-    "성과") 밑에도 앵커 + 빈 하위 슬롯을 통째로 만들어버린 적이 있다.
+    "성과") 밑에도 앵커 + 빈 하위 슬롯을 통째로 만들어버린 적이 있다. 예전엔
+    거부해 재시도했지만, 내용이 하나도 없으니 버려도 잃는 정보가 없다.
     """
     fake_dependencies(
         StructureOutput(
@@ -3598,10 +3599,12 @@ async def test_entirely_empty_new_anchor_subtree_is_rejected(fake_dependencies):
         )
     )
 
-    with pytest.raises(LlmError):
-        await structure_blocks(
-            make_state(alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306"})
-        )
+    result = await structure_blocks(
+        make_state(alias_to_block_id={"exp_1": "101", "b_1": "305", "b_2": "306"})
+    )
+
+    item_ids = [item["item_id"] for item in result["structured_items"]]
+    assert item_ids == ["blk_1"]
 
 
 @pytest.mark.asyncio
@@ -4247,3 +4250,63 @@ def test_level4_slot_under_existing_anchor_is_moved_to_section_container():
     result = structure_node._reroute_slots_misplaced_under_existing_blocks(items, catalog, state)
 
     assert [item.parent_ref for item in result] == ["b_1", "b_16", "b_1"]
+
+
+def test_file_anchor_group_labels_use_task_and_episode_titles_only():
+    """파일은 담당업무 대괄호 제목·문제해결 번호 제목으로만 그룹을 나눈다."""
+    extracted = (
+        "담당업무\n[시장 조사]\n- 설문 수행\n[전략 수립]\n- 전략 기획\n"
+        "문제해결\n1) 타깃 문제\n- 상황: 타깃이 넓었다\n[문제 상황]\n- 전략: 타깃 축소\n"
+        "배운 점\n- 데이터로 설득하는 법을 배웠다"
+    )
+    source_items = [
+        {"item_id": f"it_{index}", "text": text, "source": "file"}
+        for index, text in enumerate(
+            [
+                "- 설문 수행",
+                "- 전략 기획",
+                "- 상황: 타깃이 넓었다",
+                "- 전략: 타깃 축소",
+                "- 데이터로 설득하는 법을 배웠다",
+            ],
+            start=1,
+        )
+    ]
+
+    labels = structure_node._file_anchor_group_labels(source_items, extracted)
+
+    assert labels == {
+        "it_1": "[시장 조사]",
+        "it_2": "[전략 수립]",
+        "it_3": "1) 타깃 문제",
+        "it_4": "1) 타깃 문제",
+    }
+
+
+def test_anchors_from_different_groups_are_not_merged_across_batches():
+    """다른 업무 제목 그룹의 앵커는 배치 경계를 넘어도 합치지 않는다."""
+    catalog = TemplateCatalog.model_validate(catalog_payload())
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="TASK.SUMMARY",
+            text="시장 조사",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="batch2_blk_1",
+            action="add",
+            parent_ref="b_1",
+            slot_id="TASK.SUMMARY",
+            text="전략 수립",
+            source_item_ids=["it_2"],
+        ),
+    ]
+
+    result = structure_node._merge_anchors_repeated_across_batches(
+        items, frozenset({"blk_1"}), catalog, {"it_1": "[시장 조사]", "it_2": "[전략 수립]"}
+    )
+
+    assert [item.item_id for item in result] == ["blk_1", "batch2_blk_1"]
