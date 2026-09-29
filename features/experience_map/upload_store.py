@@ -20,9 +20,12 @@ import asyncio
 import codecs
 import hashlib
 import logging
+import os
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal, Protocol
 
 from features.experience_map.config import (
@@ -205,6 +208,63 @@ class GcsObjectStore:
         def _created() -> datetime | None:
             blob = self._bucket().get_blob(object_name)
             return blob.time_created if blob else None
+
+        return await asyncio.to_thread(_created)
+
+
+class LocalDiskObjectStore:
+    """서버 로컬 디스크 구현. `EXPMAP_UPLOAD_BUCKET`이 없을 때 쓴다.
+
+    GCS 인증이 없는 환경(Render dev 등)에서 첨부 파일을 받기 위한 것이다.
+    **서버가 재시작·슬립되면 파일이 사라진다.** 처리 중이던 파일 요청은 그
+    경우 재시도할 수 없고, 인스턴스가 여러 대면 다른 인스턴스가 파일을 못
+    본다. 운영에서는 GCS 버킷을 설정한다.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = root.resolve()
+
+    def _path(self, object_name: str) -> Path:
+        path = (self._root / object_name).resolve()
+        if not path.is_relative_to(self._root):
+            raise ValueError("저장 경로가 업로드 루트를 벗어났습니다.")
+        return path
+
+    async def upload(self, object_name: str, data: bytes, content_type: str) -> None:
+        path = self._path(object_name)
+
+        def _write() -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+
+        await asyncio.to_thread(_write)
+
+    async def download(self, object_name: str) -> bytes:
+        return await asyncio.to_thread(self._path(object_name).read_bytes)
+
+    async def delete(self, object_name: str) -> None:
+        await asyncio.to_thread(self._path(object_name).unlink, missing_ok=True)
+
+    async def list_names(self, prefix: str) -> list[str]:
+        def _list() -> list[str]:
+            if not self._root.exists():
+                return []
+            names = (
+                path.relative_to(self._root).as_posix()
+                for path in self._root.rglob("*")
+                if path.is_file()
+            )
+            return [name for name in names if name.startswith(prefix)]
+
+        return await asyncio.to_thread(_list)
+
+    async def created_at(self, object_name: str) -> datetime | None:
+        path = self._path(object_name)
+
+        def _created() -> datetime | None:
+            if not path.exists():
+                return None
+            return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
 
         return await asyncio.to_thread(_created)
 
@@ -399,16 +459,26 @@ _upload_store: UploadStore | None = None
 def get_upload_store() -> UploadStore:
     """UploadStore 싱글톤 반환
 
-    Raises:
-        RuntimeError: `EXPMAP_UPLOAD_BUCKET`이 설정되지 않은 경우
+    `EXPMAP_UPLOAD_BUCKET`이 있으면 GCS, 없으면 서버 로컬 디스크
+    (`EXPMAP_UPLOAD_DIR`, 기본 시스템 임시 디렉터리)에 저장한다. 예전에는
+    버킷이 없으면 첨부 요청마다 `RuntimeError`로 500이 났다.
     """
     global _upload_store
 
     if _upload_store is None:
         bucket = get_settings().upload_bucket
-        if not bucket:
-            raise RuntimeError("EXPMAP_UPLOAD_BUCKET 환경변수가 설정되지 않았습니다.")
-        _upload_store = UploadStore(GcsObjectStore(bucket))
+        if bucket:
+            _upload_store = UploadStore(GcsObjectStore(bucket))
+        else:
+            root = Path(
+                os.getenv("EXPMAP_UPLOAD_DIR")
+                or Path(tempfile.gettempdir()) / "folioo-expmap-uploads"
+            )
+            logger.warning(
+                "EXPMAP_UPLOAD_BUCKET 이 없어 첨부 파일을 로컬 디스크에 저장합니다 "
+                "(재시작 시 사라짐, 운영에서는 GCS 버킷을 설정하세요)"
+            )
+            _upload_store = UploadStore(LocalDiskObjectStore(root))
     return _upload_store
 
 

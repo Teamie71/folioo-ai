@@ -149,7 +149,9 @@ async def test_lifespan_initializes_and_closes_http_client(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_lifespan_swaps_upload_store_for_test_ui(monkeypatch, clean_experience_map_settings):
+async def test_lifespan_swaps_upload_store_for_test_ui(
+    monkeypatch, clean_experience_map_settings, tmp_path
+):
     """테스트 UI 모드는 파일 업로드도 in-memory 로 바꾼다.
 
     그래프·경험 맵만 바꾸고 업로드를 그대로 두면, GCS 버킷·인증이 없는
@@ -213,8 +215,14 @@ async def test_lifespan_swaps_upload_store_for_test_ui(monkeypatch, clean_experi
         )
         assert stored[0].file_size == 5
 
-    with pytest.raises(RuntimeError, match="EXPMAP_UPLOAD_BUCKET"):
-        get_upload_store()
+    # 테스트 UI 가 끝나면 주입이 풀리고, 버킷이 없으니 로컬 디스크로 간다.
+    from features.experience_map.upload_store import LocalDiskObjectStore, set_upload_store
+
+    monkeypatch.setenv("EXPMAP_UPLOAD_DIR", str(tmp_path))
+    try:
+        assert isinstance(get_upload_store()._store, LocalDiskObjectStore)
+    finally:
+        set_upload_store(None)
 
 
 @pytest.mark.asyncio

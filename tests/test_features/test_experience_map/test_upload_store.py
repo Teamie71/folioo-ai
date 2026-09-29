@@ -380,3 +380,35 @@ def test_stored_file_reference_shape():
         "sha256",
         "gcs_object",
     }
+
+
+@pytest.mark.asyncio
+async def test_local_disk_store_round_trip(tmp_path):
+    """버킷이 없는 환경(Render dev)의 로컬 디스크 저장소가 GCS와 같은 계약을 지킨다."""
+    from features.experience_map.upload_store import LocalDiskObjectStore
+
+    store = LocalDiskObjectStore(tmp_path)
+    name = "expmap/1/req-1/f_abc"
+
+    await store.upload(name, b"hello", "text/plain")
+
+    assert await store.download(name) == b"hello"
+    assert await store.list_names("expmap/1/") == [name]
+    assert await store.list_names("expmap/2/") == []
+    assert await store.created_at(name) is not None
+
+    await store.delete(name)
+    await store.delete(name)  # 없어도 조용히 넘어간다.
+    assert await store.list_names("expmap/") == []
+    assert await store.created_at(name) is None
+
+
+@pytest.mark.asyncio
+async def test_local_disk_store_rejects_path_outside_root(tmp_path):
+    """object 이름으로 업로드 루트 밖을 쓰지 못한다."""
+    from features.experience_map.upload_store import LocalDiskObjectStore
+
+    store = LocalDiskObjectStore(tmp_path / "root")
+
+    with pytest.raises(ValueError):
+        await store.upload("../escape", b"x", "text/plain")
