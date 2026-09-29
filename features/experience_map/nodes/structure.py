@@ -2146,6 +2146,11 @@ def _reparent_orphan_level5_items(
     new_anchors: list[StructureLlmItem] = []
     auto_anchor_by_group: dict[tuple[str, str], str] = {}
     reparent_to: dict[str, dict] = {}  # orphan item_id -> 부모 필드
+    # 배치마다 이 함수가 앞 배치 결과까지 다시 받는다. 번호를 이번 호출 기준으로만
+    # 매기면 앞 배치가 만든 auto_anchor_*_1 과 겹쳐 "item_id가 중복"으로 턴 전체가
+    # 실패했다(dev 재현, 2026-09-29).
+    used_item_ids = {item.item_id for item in items}
+    anchor_counter = 0
     for orphan, parent_ref, section_id in orphans:
         if parent_ref in continued:
             reparent_to[orphan.item_id] = {
@@ -2166,7 +2171,12 @@ def _reparent_orphan_level5_items(
         else:
             anchor_id = auto_anchor_by_group.get((parent_ref, section_id))
             if anchor_id is None:
-                anchor_id = f"auto_anchor_{section_id}_{len(new_anchors) + 1}"
+                anchor_counter += 1
+                anchor_id = f"auto_anchor_{section_id}_{anchor_counter}"
+                while anchor_id in used_item_ids:
+                    anchor_counter += 1
+                    anchor_id = f"auto_anchor_{section_id}_{anchor_counter}"
+                used_item_ids.add(anchor_id)
                 auto_anchor_by_group[(parent_ref, section_id)] = anchor_id
                 new_anchors.append(
                     StructureLlmItem(
@@ -2518,6 +2528,7 @@ def _fill_missing_template_slots(
         groups.setdefault((parent, prefix), []).append(item)
 
     filled = list(items)
+    used_item_ids = {item.item_id for item in items}
     counter = 0
     for (parent, prefix), group_items in groups.items():
         if parent in known_aliases:
@@ -2532,9 +2543,14 @@ def _fill_missing_template_slots(
         anchor = group_items[0]
         for slot_id in missing:
             counter += 1
+            item_id = f"auto_{prefix}_{counter}"
+            while item_id in used_item_ids:
+                counter += 1
+                item_id = f"auto_{prefix}_{counter}"
+            used_item_ids.add(item_id)
             filled.append(
                 StructureLlmItem(
-                    item_id=f"auto_{prefix}_{counter}",
+                    item_id=item_id,
                     action="add",
                     slot_id=slot_id,
                     text=None,

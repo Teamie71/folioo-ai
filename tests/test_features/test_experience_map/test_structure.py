@@ -4112,3 +4112,34 @@ def test_group_labels_still_split_bracket_headers_in_chat_message():
         "it_1": "SNS 채널 운영",
         "it_2": "홍보 디자인",
     }
+
+
+def test_auto_anchor_id_does_not_collide_with_earlier_batch():
+    """앞 배치가 만든 auto_anchor_* 와 새 자동 앵커 ID 가 겹치지 않는다.
+
+    dev 재현: 파일을 여러 배치로 구조화하는데, 배치마다 자동 앵커 번호를 1 부터
+    다시 매겨 `auto_anchor_PROBLEM_SOLVING_1` 이 5개 생겼고 "구조화 결과
+    item_id가 중복되었습니다" 로 턴 전체가 실패했다.
+    """
+    catalog = _problem_solving_catalog()
+    earlier = StructureLlmItem(
+        item_id="auto_anchor_PROBLEM_SOLVING_1",
+        action="add",
+        parent_ref="b_99",
+        slot_id="PROBLEM_SOLVING.SUMMARY",
+    )
+    orphan = StructureLlmItem(
+        item_id="batch18_blk_1",
+        action="add",
+        parent_ref="b_16",
+        slot_id="PROBLEM_SOLVING.TROUBLESHOOTING.SOLUTION",
+        text="안내 문구를 바꿨다",
+        source_item_ids=["it_1"],
+    )
+
+    result = structure_node._reparent_orphan_level5_items([earlier, orphan], catalog)
+
+    ids = [item.item_id for item in result]
+    assert len(ids) == len(set(ids))
+    new_anchor_id = next(item for item in result if item.item_id == "batch18_blk_1").parent_item_id
+    assert new_anchor_id not in (None, "auto_anchor_PROBLEM_SOLVING_1")
