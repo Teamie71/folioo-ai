@@ -131,7 +131,9 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         # 바라는 것이므로, 결정론을 깨는 편이 목적에 맞는다.
         retry_llm = get_experience_map_llm(timeout=get_settings().timeouts.llm, temperature=0.4)
         retry_chain = structure_prompt | retry_llm.with_structured_output(StructureOutput)
-        episode_anchors = _existing_episode_anchors(state, catalog)
+        episode_anchors = _drop_blank_template_anchors(
+            _existing_episode_anchors(state, catalog), state
+        )
         continued_anchor = await _match_continued_episode(
             state, catalog, source_items, episode_anchors
         )
@@ -1005,7 +1007,9 @@ def _apply_structuring_fixups(
     rerefed = _fix_batch_local_parent_ref(deredundanted, state)
     repaired_refs = _repair_unknown_slot_parent_refs(rerefed, state)
     dereffed = _clear_invalid_after_ref(repaired_refs, state)
-    rerooted = _fix_new_section_parent(dereffed, state)
+    rerooted = _reroute_slots_misplaced_under_existing_blocks(
+        _fix_new_section_parent(dereffed, state), catalog, state
+    )
     reported_containers = _reported_container_sections(existing_categories or [], state)
     normalized_hierarchy = _merge_new_sections_into_reported_containers(
         _normalize_new_hierarchy(rerooted, catalog, state, reported_containers),
@@ -1870,6 +1874,76 @@ def _repair_unknown_slot_parent_refs(
     ]
 
 
+def _reroute_slots_misplaced_under_existing_blocks(
+    items: list[StructureLlmItem], catalog: TemplateCatalog, state: ExperienceMapState
+) -> list[StructureLlmItem]:
+    """기존 블록 아래 위계가 맞지 않게 붙은 level 4 슬롯을 같은 section 카테고리로 옮긴다.
+
+    dev에서 실제 PDF로 재현됐다. 템플릿 빈 블록이 미리 깔린 새 활동에서 에피소드
+    판정이 빈 문제해결 앵커(`b_17`, level 4)를 "이어서 보강"으로 판정하자, 모델이
+    상세정보·배운 점·에피소드 요약 같은 level 4 슬롯까지 전부 그 앵커 아래에
+    붙였다. 그러면 level 5가 되어 validate의 `slot_level_mismatch`로 거부되고,
+    구조화 재시도에서도 같은 배치를 반복해 요청이 실패했다.
+
+    기존 블록의 level·section은 `alias_metadata`로 알 수 있으므로, 부모 level이
+    슬롯 위계와 맞지 않거나 부모 section이 슬롯 section과 다르면 활동 트리에 있는
+    같은 section 카테고리(level 3)로 옮긴다. 그런 카테고리가 없으면 선택 활동
+    아래로 되돌려 `_normalize_new_hierarchy`가 카테고리를 만들게 한다.
+    """
+    target_alias = state.get("target_experience_alias")
+    metadata = state.get("alias_metadata", {})
+    if not target_alias or not metadata:
+        return items
+    level4_sections = {
+        slot.slot_id: section.section_id
+        for section in catalog.sections
+        for slot in section.slots
+        if slot.slot_id.count(".") == 1
+    }
+
+    def block_section(alias: str) -> str | None:
+        seen: set[str] = set()
+        current: str | None = alias
+        while current and current not in seen:
+            seen.add(current)
+            block = metadata.get(current) or {}
+            kind = str(block.get("kind") or "")
+            if kind.startswith("SECTION_"):
+                return kind.removeprefix("SECTION_")
+            current = block.get("parent_alias")
+        return None
+
+    container_by_section: dict[str, str] = {}
+    for alias, block in metadata.items():
+        section_id = block_section(alias)
+        if section_id and block.get("level") == 3:
+            container_by_section.setdefault(section_id, alias)
+
+    result: list[StructureLlmItem] = []
+    for item in items:
+        section_id = level4_sections.get(item.slot_id or "")
+        parent = metadata.get(item.parent_ref or "")
+        if item.action != "add" or section_id is None or parent is None:
+            result.append(item)
+            continue
+        parent_section = block_section(item.parent_ref or "")
+        level_ok = parent.get("level") in (2, 3)
+        section_ok = parent_section is None or parent_section == section_id
+        if level_ok and section_ok:
+            result.append(item)
+            continue
+        destination = container_by_section.get(section_id, target_alias)
+        logger.warning(
+            "structure: 기존 블록 아래 잘못 붙은 슬롯을 옮깁니다 ([%s] %s: %s -> %s)",
+            item.item_id,
+            item.slot_id,
+            item.parent_ref,
+            destination,
+        )
+        result.append(item.model_copy(update={"parent_ref": destination, "parent_item_id": None}))
+    return result
+
+
 def _fix_new_section_parent(
     items: list[StructureLlmItem], state: ExperienceMapState
 ) -> list[StructureLlmItem]:
@@ -2353,6 +2427,32 @@ def _existing_episode_anchors(
         if _is_anchor_slot(slot_id, catalog) and isinstance(parent_alias, str):
             anchors[alias] = parent_alias
     return anchors
+
+
+def _drop_blank_template_anchors(
+    anchors: dict[str, str], state: ExperienceMapState
+) -> dict[str, str]:
+    """자신과 하위 블록이 모두 빈 앵커는 이어서 보강할 에피소드 후보에서 뺀다.
+
+    메인 서버는 새 활동을 만들 때 카테고리·앵커·하위 템플릿 빈 블록을 미리
+    깔아 둔다. dev에서 실제 PDF로 재현됐다 — 에피소드 판정이 내용이 하나도 없는
+    빈 문제해결 앵커(`b_17`)를 "이어서 보강"으로 골랐고, 모델이 상세정보·배운 점
+    등 다른 섹션 내용까지 전부 그 앵커 아래에 붙이거나 자기모순(이어서 보강하라는데
+    새 앵커 생성)을 반복해 요청이 실패했다. 빈 템플릿에는 이어갈 에피소드가 없다.
+    """
+    tree_lines = _parse_tree_lines(state.get("activity_tree_text") or "")
+    kept: dict[str, str] = {}
+    for index, (depth, alias, label) in enumerate(tree_lines):
+        if alias not in anchors:
+            continue
+        has_content = not _EMPTY_SLOT_GUIDE_RE.match(label)
+        for child_depth, _, child_label in tree_lines[index + 1 :]:
+            if child_depth <= depth or has_content:
+                break
+            has_content = not _EMPTY_SLOT_GUIDE_RE.match(child_label)
+        if has_content:
+            kept[alias] = anchors[alias]
+    return kept
 
 
 def _render_episodes(

@@ -4186,3 +4186,64 @@ def test_new_section_reported_as_existing_is_merged_into_existing_container():
     assert [item.item_id for item in result] == ["blk_2", "blk_3"]
     assert result[0].parent_ref == "b_1"
     assert result[0].parent_item_id is None
+
+
+def test_level4_slot_under_existing_anchor_is_moved_to_section_container():
+    """빈 기존 앵커 아래 붙은 level 4 슬롯을 같은 section의 기존 카테고리로 옮긴다."""
+    payload = catalog_payload()
+    payload["sections"].append(
+        {
+            "section_id": "PROBLEM_SOLVING",
+            "label": "문제해결",
+            "slots": [
+                {
+                    "slot_id": "PROBLEM_SOLVING.SUMMARY",
+                    "level": 4,
+                    "placeholder": "문제해결 요약",
+                    "example": "알림 지연 문제 해결",
+                    "is_anchor": True,
+                }
+            ],
+            "templates": [],
+        }
+    )
+    catalog = TemplateCatalog.model_validate(payload)
+    state = {
+        "target_experience_alias": "exp_1",
+        "alias_metadata": {
+            "exp_1": {"level": 2, "kind": "EXPERIENCE", "parent_alias": None},
+            "b_1": {"level": 3, "kind": "SECTION_DETAIL", "parent_alias": "exp_1"},
+            "b_16": {"level": 3, "kind": "SECTION_PROBLEM_SOLVING", "parent_alias": "exp_1"},
+            "b_17": {"level": 4, "kind": "CONTENT", "parent_alias": "b_16"},
+        },
+    }
+    items = [
+        StructureLlmItem(
+            item_id="blk_1",
+            action="add",
+            parent_ref="b_17",
+            slot_id="DETAIL.MOTIVATION",
+            text="행사 신청 과정을 개선하고 싶었다",
+            source_item_ids=["it_1"],
+        ),
+        StructureLlmItem(
+            item_id="blk_2",
+            action="add",
+            parent_ref="b_17",
+            slot_id="PROBLEM_SOLVING.SUMMARY",
+            text="이탈률 문제 해결",
+            source_item_ids=["it_2"],
+        ),
+        StructureLlmItem(
+            item_id="blk_3",
+            action="add",
+            parent_ref="b_1",
+            slot_id="DETAIL.MOTIVATION",
+            text="그대로 둔다",
+            source_item_ids=["it_3"],
+        ),
+    ]
+
+    result = structure_node._reroute_slots_misplaced_under_existing_blocks(items, catalog, state)
+
+    assert [item.parent_ref for item in result] == ["b_1", "b_16", "b_1"]
