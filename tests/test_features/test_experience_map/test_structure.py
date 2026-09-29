@@ -4083,3 +4083,32 @@ def test_learning_slot_under_container_reported_as_other_section_moves(
         assert category.parent_ref == "exp_1"
     else:
         assert moved.parent_ref == "b_1"
+
+
+def test_group_labels_ignore_bracket_headers_in_file_text():
+    """파일의 대괄호 제목은 한 에피소드 안의 구획이라 업무 경계로 쓰지 않는다.
+
+    dev 재현: PDF 의 "[문제 상황]"·"[해결 방안]" 을 서로 다른 업무로 보고 빈
+    앵커를 따로 만들어 구조화가 실패했고, 배치도 17개에서 26개로 늘었다.
+    """
+    extracted = "[문제 상황]\n20대 인지도가 떨어졌다\n[해결 방안]\n숏폼 캠페인을 기획했다"
+    items = [
+        {"item_id": "it_1", "text": "20대 인지도가 떨어졌다", "source": "file"},
+        {"item_id": "it_2", "text": "숏폼 캠페인을 기획했다", "source": "file"},
+    ]
+
+    assert structure_node._source_item_group_labels(items, None, extracted) == {}
+
+
+def test_group_labels_still_split_bracket_headers_in_chat_message():
+    """채팅 메시지의 대괄호 제목은 여전히 업무 경계로 쓴다."""
+    message = "[SNS 채널 운영]\n- 업로드 일정 수립\n[홍보 디자인]\n- 카드뉴스 제작"
+    items = [
+        {"item_id": "it_1", "text": "- 업로드 일정 수립", "source": "message"},
+        {"item_id": "it_2", "text": "- 카드뉴스 제작", "source": "message"},
+    ]
+
+    assert structure_node._source_item_group_labels(items, message, None) == {
+        "it_1": "SNS 채널 운영",
+        "it_2": "홍보 디자인",
+    }
