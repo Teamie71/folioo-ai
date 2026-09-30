@@ -507,7 +507,17 @@ class ExperienceMapService:
             yield ErrorEvent(error=exc.to_sse_error().model_dump())
             return
         except ExperienceMapError as exc:
-            logger.warning("경험정리 요청 실패 (request_id=%s)", prepared.request_id)
+            # 사유 없이 request_id만 남겨, 프론트에서 실패를 제보받아도 로그로 원인을
+            # 찾을 수 없었다. SSE error 이벤트·요청 상태에 실리는 것과 같은 값을 남긴다.
+            error_payload = exc.to_sse_error()
+            logger.warning(
+                "경험정리 요청 실패 (request_id=%s, code=%s, failed_node=%s, retryable=%s): %s",
+                prepared.request_id,
+                error_payload.code,
+                error_payload.failed_node,
+                error_payload.retryable,
+                error_payload.message,
+            )
             yield await self._fail(prepared, exc)
             return
         except Exception:

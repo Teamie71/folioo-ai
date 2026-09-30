@@ -4,9 +4,9 @@
 """
 
 import re
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, RootModel, field_validator
 
 from features.experience_map.schemas import (
     CommitResult,
@@ -288,3 +288,14 @@ ExperienceMapEvent = (
     | ErrorEvent
     | PingEvent
 )
+
+
+class ExperienceMapStreamEvent(
+    RootModel[Annotated[ExperienceMapEvent, Field(discriminator="type")]]
+):
+    """SSE `data:` 한 줄에 실리는 JSON. `type`으로 이벤트 종류를 구분한다.
+
+    스트림 엔드포인트는 `text/event-stream`이라 FastAPI가 응답 스키마를 만들지 않았고,
+    그 결과 프론트 orval 생성 모델에 이벤트 타입(`NodeStatusEvent` 등)이 하나도 없었다.
+    OpenAPI 문서화 전용이다 — 실제 전송은 각 이벤트 모델을 그대로 직렬화한다.
+    """

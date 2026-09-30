@@ -28,6 +28,7 @@ from app.schemas.experience_map import (
     CreateSessionResponse,
     ErrorEvent,
     ExperienceMapEvent,
+    ExperienceMapStreamEvent,
     MessagesResponse,
     PingEvent,
     RequestStateResponse,
@@ -48,6 +49,30 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/experience-map", tags=["experience-map"])
 compatibility_router = APIRouter(tags=["experience-map"])
+
+
+class _EventStreamDocResponse(JSONResponse):
+    """OpenAPI에 스트림 응답의 media type을 `text/event-stream`으로 적기 위한 표시용 클래스.
+
+    핸들러는 항상 `EventSourceResponse`나 오류 `JSONResponse`를 직접 반환하므로 이 클래스로
+    실제 응답을 만들지 않는다.
+    """
+
+    media_type = "text/event-stream"
+
+
+_STREAM_RESPONSES = {
+    200: {
+        "model": ExperienceMapStreamEvent,
+        "description": (
+            "`text/event-stream`. 각 이벤트의 `event:` 줄은 `type`과 같고, `data:` 줄은 "
+            "`ExperienceMapStreamEvent` 중 하나의 JSON입니다. `node_status`는 노드 시작"
+            "(`running`, 처음 실행될 때만 `phrase` 포함)·완료(`completed`)·실패(`failed`)마다 "
+            "옵니다."
+        ),
+    }
+}
+
 
 _STREAM_END = object()
 
@@ -286,6 +311,8 @@ async def get_messages(
     "/sessions/{session_id}/chat/stream",
     summary="채팅 스트림",
     description="SSE 로 처리 과정과 결과를 보냅니다. multipart/form-data 입니다.",
+    responses=_STREAM_RESPONSES,
+    response_class=_EventStreamDocResponse,
 )
 async def chat_stream(
     request: Request,
@@ -338,6 +365,8 @@ async def chat_stream(
     "/sessions/{session_id}/retry/stream",
     summary="재시도 스트림",
     description="세션의 마지막 실패 요청을 실패 지점부터 재실행합니다.",
+    responses=_STREAM_RESPONSES,
+    response_class=_EventStreamDocResponse,
 )
 async def retry_stream(request: Request, session_id: str):
     try:
