@@ -21,7 +21,15 @@ from features.experience_map.nodes.validate import next_node as validate_next
 from features.experience_map.nodes.validate import validate_operations
 from features.experience_map.state import ExperienceMapState
 
-RETRY_POLICY = RetryPolicy(max_attempts=NODE_MAX_ATTEMPTS)
+_DEFAULT_RETRY_ON = RetryPolicy().retry_on
+
+
+def _should_retry(exc: Exception) -> bool:
+    """`graph_retry = False`로 표시한 오류(예: 구조화 전체 시간 초과)는 다시 돌리지 않는다."""
+    return getattr(exc, "graph_retry", True) and _DEFAULT_RETRY_ON(exc)
+
+
+RETRY_POLICY = RetryPolicy(max_attempts=NODE_MAX_ATTEMPTS, retry_on=_should_retry)
 
 
 def build_graph(checkpointer: BaseCheckpointSaver | None = None):

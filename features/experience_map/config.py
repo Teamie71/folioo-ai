@@ -80,11 +80,15 @@ MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 2
 빠뜨리는 빈도가 눈에 띄게 높았다(1차 시도와 좁힌 복구 재시도 모두 실패).
 파일 원문에서 이미 같은 이유로 1개까지 줄인 전례를 따라 2로 낮췄다."""
 
-MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 1
+MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH = 4
 """PDF·문서에서 추출한 원문을 구조화 LLM 한 번에 맡기는 최대 item 수.
 
-파일 원문을 2~3개씩 맡기면 서로 다른 카테고리·하위 템플릿 판단이 한 응답에
-섞이면서 60초 제한을 넘거나 계약을 어기는 경우가 반복돼 하나씩 처리한다."""
+예전엔 1이었다 — 파일 원문을 2~3개씩 맡기면 서로 다른 카테고리·하위 템플릿
+판단이 한 응답에 섞이면서 계약을 어기는 경우가 반복됐기 때문이다. 그러나 6쪽
+PDF가 조각 238개가 되자 LLM 호출이 238번 순차로 이어져 한 번 시도에 12분,
+재시도까지 28분이 걸렸다(dev 재현, 2026-09-30). 지금은 문서 구획(상세정보·
+담당업무·문제해결 등)과 업무·에피소드 제목 그룹이 바뀌면 배치를 끊으므로
+(`_source_batches`), 한 배치에는 같은 구획·같은 그룹의 불릿만 모인다."""
 
 MAX_SOURCE_ITEM_CHARS = MAX_CONTENT_LENGTH
 """구조화에 넘기는 원문 item 하나의 최대 글자 수.
@@ -97,8 +101,24 @@ PDF OCR 결과처럼 긴 문단 하나가 통째로 분류되면 item 개수 제
 MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH = 1_200
 """구조화 LLM 한 번에 전달하는 원문 text 총 글자 수 상한."""
 
-MAX_FILE_SOURCE_CHARS_PER_STRUCTURE_BATCH = MAX_SOURCE_ITEM_CHARS
+MAX_FILE_SOURCE_CHARS_PER_STRUCTURE_BATCH = 1_200
 """파일 원문 구조화 호출의 text 총 글자 수 상한."""
+
+STRUCTURE_MAX_OUTPUT_TOKENS = 8_192
+"""구조화 LLM 호출 한 번의 출력 토큰 상한.
+
+지정하지 않으면 provider 기본값(32,768)까지 생성한다. 실제로 한 배치 응답이 같은
+내용을 반복하다 32,768 토큰을 다 쓰고 잘려(LengthFinishReasonError) 파싱에 실패했는데,
+그 한 번에 몇 분이 걸렸다(dev 재현, 2026-09-30). 배치 하나의 정상 응답은 수천
+토큰을 넘지 않으므로 넉넉한 상한으로 폭주를 빨리 끊는다."""
+
+STRUCTURE_TIME_BUDGET_SECONDS = 360
+"""구조화 노드 한 번 실행(모든 배치·자체 복구 재시도 포함)의 전체 시간 상한.
+
+배치별 제한 시간만 있고 전체 상한이 없어, 조각이 많은 파일에서 한 번 시도에 12분,
+그래프 자동 재시도까지 28분 동안 돌았다(dev 재현, 2026-09-30). 넘으면 다음 배치를
+시작하지 않고 시간 초과로 끝내며, 그래프 자동 재시도도 하지 않는다 — 같은 입력을
+처음부터 다시 돌려도 같은 시간이 걸리기 때문이다."""
 
 MAX_VALIDATION_REPAIRS = 2
 """validate → structure/refine 회귀 최대 횟수."""

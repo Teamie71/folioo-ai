@@ -493,6 +493,17 @@ def _salvage_traceable_parts(item: FilteredItem, haystack: str) -> list[Filtered
             if len(_normalize(sentence)) >= _MIN_MEANINGFUL_SENTENCE_CHARS
             and _normalize(sentence) in haystack
         )
+    # 원문에서 바로 이어지는 조각은 다시 묶는다. 문장 단위로만 살리면 6쪽 PDF 한
+    # 조각이 221개가 되어, 구조화 LLM 호출이 수백 번으로 불어났다(dev 재현).
+    merged: list[str] = []
+    for part in parts:
+        if merged:
+            candidate = f"{merged[-1]}\n{part}"
+            if len(candidate) <= MAX_SOURCE_ITEM_CHARS and _normalize(candidate) in haystack:
+                merged[-1] = candidate
+                continue
+        merged.append(part)
+    parts = merged
     if len(parts) == 1 and _normalize(parts[0]) == _normalize(item.text):
         return []
     return [

@@ -18,7 +18,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
@@ -259,7 +259,7 @@ async def cancel_request(request: Request, session_id: str, request_id: str):
         await get_service().cancel_request(user_id, request_id)
     except ExperienceMapError as exc:
         return _error_response(exc)
-    return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(

@@ -4310,3 +4310,39 @@ def test_anchors_from_different_groups_are_not_merged_across_batches():
     )
 
     assert [item.item_id for item in result] == ["blk_1", "batch2_blk_1"]
+
+
+def test_file_items_are_batched_together_until_document_section_changes():
+    """파일 item은 여러 개씩 묶되, 문서 구획이 바뀌면 배치를 끊는다."""
+    items = [{"item_id": f"it_{index}", "text": "내용", "source": "file"} for index in range(1, 7)]
+    hints = {
+        "it_1": "DETAIL.PERIOD",
+        "it_2": "DETAIL.TARGET",
+        "it_3": "TASK.SUMMARY",
+        "it_4": "TASK.BASIC.EXECUTION",
+        "it_5": "TASK.BASIC.EXECUTION",
+        "it_6": "LEARNING.GROWTH",
+    }
+
+    batches = structure_node._source_batches(items, {}, hints)
+
+    assert [[item["item_id"] for item in batch] for batch in batches] == [
+        ["it_1", "it_2"],
+        ["it_3", "it_4", "it_5"],
+        ["it_6"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_structure_stops_when_time_budget_is_exceeded(fake_dependencies, monkeypatch):
+    """전체 시간 상한을 넘기면 다음 배치를 시작하지 않고 재시도 없는 시간 초과로 끝낸다."""
+    from features.experience_map.errors import StructureBudgetExceededError
+    from features.experience_map.graph import _should_retry
+
+    fake_dependencies(StructureOutput(items=[]))
+    monkeypatch.setattr(structure_node, "STRUCTURE_TIME_BUDGET_SECONDS", -1)
+
+    with pytest.raises(StructureBudgetExceededError) as exc_info:
+        await structure_blocks(make_state())
+
+    assert _should_retry(exc_info.value) is False

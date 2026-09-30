@@ -84,6 +84,7 @@ def get_experience_map_llm(
     model: str | None = None,
     temperature: float = 0.0,
     timeout: float = 60,
+    max_tokens: int | None = None,
 ) -> ChatOpenAI:
     """경험정리 노드 전용 LLM 클라이언트 반환
 
@@ -100,6 +101,7 @@ def get_experience_map_llm(
         timeout=timeout,
         disable_streaming=True,
         max_retries=0,
+        max_tokens=max_tokens,
     )
 
 

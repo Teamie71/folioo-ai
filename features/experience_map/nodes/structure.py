@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 
 from common.llm import get_experience_map_llm
 from features.experience_map.config import (
@@ -9,9 +10,15 @@ from features.experience_map.config import (
     MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH,
     MAX_SOURCE_CHARS_PER_STRUCTURE_BATCH,
     MAX_SOURCE_ITEMS_PER_STRUCTURE_BATCH,
+    STRUCTURE_MAX_OUTPUT_TOKENS,
+    STRUCTURE_TIME_BUDGET_SECONDS,
     get_settings,
 )
-from features.experience_map.errors import LlmError, NodeTimeoutError
+from features.experience_map.errors import (
+    LlmError,
+    NodeTimeoutError,
+    StructureBudgetExceededError,
+)
 from features.experience_map.prompts.episode_match import episode_match_prompt
 from features.experience_map.prompts.structure import (
     render_catalog,
@@ -153,14 +160,21 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
 
     try:
         catalog = await get_template_catalog_client().get_catalog()
-        llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
+        deadline = time.monotonic() + STRUCTURE_TIME_BUDGET_SECONDS
+        llm = get_experience_map_llm(
+            timeout=get_settings().timeouts.llm, max_tokens=STRUCTURE_MAX_OUTPUT_TOKENS
+        )
         chain = structure_prompt | llm.with_structured_output(StructureOutput)
         # 재시도 전용 체인은 temperature를 살짝 올린다. temperature 0에서는
         # 같은 프롬프트에 같은 실수를 그대로 반복하는 게 실제로 재현됐다 —
         # 지시문을 더 붙여도(`_coverage_repair_instruction` 등) 모델이
         # 같은 패턴을 고수했다. 재시도는 애초에 "1차와는 다른 결과"를
         # 바라는 것이므로, 결정론을 깨는 편이 목적에 맞는다.
-        retry_llm = get_experience_map_llm(timeout=get_settings().timeouts.llm, temperature=0.4)
+        retry_llm = get_experience_map_llm(
+            timeout=get_settings().timeouts.llm,
+            temperature=0.4,
+            max_tokens=STRUCTURE_MAX_OUTPUT_TOKENS,
+        )
         retry_chain = structure_prompt | retry_llm.with_structured_output(StructureOutput)
         episode_anchors = _drop_blank_template_anchors(
             _existing_episode_anchors(state, catalog), state
@@ -209,7 +223,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
             existing_categories_by_alias: dict[str, ExistingCategoryClassification] = {}
             cumulative_source_text: dict[str, str] = {}
             call_index = 0
-            batches = _source_batches(source_items, group_labels)
+            batches = _source_batches(source_items, group_labels, document_slot_hints)
             for batch_index, batch in enumerate(batches):
                 batch_source_text = {item["item_id"]: item["text"] for item in batch}
                 cumulative_source_text.update(batch_source_text)
@@ -243,6 +257,16 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                         "source_items": render_source_items(round_source_items),
                     }
                     active_chain = first_attempt_chain if attempt == 0 else retry_chain
+                    if time.monotonic() > deadline:
+                        logger.warning(
+                            "structure: 전체 시간 상한 %d초 초과, 배치 %d/%d에서 중단",
+                            STRUCTURE_TIME_BUDGET_SECONDS,
+                            batch_index + 1,
+                            len(batches),
+                        )
+                        raise StructureBudgetExceededError(
+                            "블록 구조화 시간이 초과되었습니다.", failed_node="structure"
+                        )
                     try:
                         result: StructureOutput = await active_chain.ainvoke(
                             {**prompt_vars, "gap_instruction": instruction}
@@ -448,7 +472,7 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
                 "절대 누락하지 마세요.\n\n"
             )
             validated = await _run_batches_and_validate(corrective_instruction, retry_chain)
-    except LlmError:
+    except (LlmError, StructureBudgetExceededError):
         raise
     except Exception as exc:
         if _is_timeout_exception(exc):
@@ -498,7 +522,9 @@ def _source_items(state: ExperienceMapState) -> list[dict]:
 
 
 def _source_batches(
-    source_items: list[dict], group_labels: dict[str, str] | None = None
+    source_items: list[dict],
+    group_labels: dict[str, str] | None = None,
+    document_slot_hints: dict[str, str] | None = None,
 ) -> list[list[dict]]:
     """원문 item 수와 총 글자 수를 함께 제한해 구조화 배치를 만든다.
 
@@ -513,6 +539,7 @@ def _source_batches(
     구조적으로 불가능해진다.
     """
     group_labels = group_labels or {}
+    document_slot_hints = document_slot_hints or {}
     has_file_source = any(item.get("source") == "file" for item in source_items)
     max_items = (
         MAX_FILE_SOURCE_ITEMS_PER_STRUCTURE_BATCH
@@ -529,20 +556,29 @@ def _source_batches(
     current: list[dict] = []
     current_chars = 0
     current_label: str | None = None
+    current_section: str | None = None
 
     for item in source_items:
+        item_id = str(item.get("item_id"))
         item_chars = len(str(item.get("text") or ""))
-        label = group_labels.get(str(item.get("item_id")))
+        label = group_labels.get(item_id)
+        # 파일은 한 배치에 여러 item을 맡기되, 문서 구획(상세정보·담당업무 등)이
+        # 바뀌면 끊는다. 서로 다른 카테고리 판단이 한 응답에 섞이면 계약 위반이
+        # 잦았던 게 파일 배치를 1개로 줄였던 이유다.
+        hint = document_slot_hints.get(item_id)
+        section = hint.split(".")[0] if hint else None
         exceeds_count = len(current) >= max_items
         exceeds_chars = current and current_chars + item_chars > max_chars
         exceeds_label = bool(current) and label != current_label
-        if exceeds_count or exceeds_chars or exceeds_label:
+        exceeds_section = bool(current) and section != current_section
+        if exceeds_count or exceeds_chars or exceeds_label or exceeds_section:
             batches.append(current)
             current = []
             current_chars = 0
         current.append(item)
         current_chars += item_chars
         current_label = label
+        current_section = section
 
     if current:
         batches.append(current)

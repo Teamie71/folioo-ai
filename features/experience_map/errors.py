@@ -285,6 +285,12 @@ class NodeTimeoutError(ExperienceMapError):
     message = "처리 시간이 초과되었습니다."
 
 
+class StructureBudgetExceededError(NodeTimeoutError):
+    """구조화 전체 시간 상한 초과. 같은 입력을 다시 돌려도 같으므로 그래프 재시도하지 않는다."""
+
+    graph_retry = False
+
+
 class StreamError(ExperienceMapError):
     """graph 밖 SSE 전달·직렬화 계층의 예기치 못한 실패"""
 
