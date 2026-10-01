@@ -40,8 +40,10 @@ _CODE_NOISE = (
     re.compile(r"\b01[016789][-\s.]?\d{3,4}[-\s.]?\d{4}\b"),  # 휴대폰 번호
     re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"),  # 이메일
     re.compile(r"(?i)confidential|무단\s*(?:배포|복제)"),  # 머리말·꼬리말 문구
-    re.compile(r"정리해\s*(?:주세요|줘|주라)|정리\s*부탁"),  # 작업 요청 문구
 )
+_REQUEST_PHRASE = re.compile(r"정리해\s*(?:주세요|줘|주라)|정리\s*부탁")
+"""파일 안의 작업 요청 문구("아래 경험을 정리해 주세요"). 채팅 메시지에서는 빼지 않는다 —
+"2번 프로젝트만 정리해줘"처럼 지시가 함께 들어 있어 칸 배정 LLM이 지시로 읽어야 한다."""
 
 
 @dataclass(frozen=True)
@@ -67,8 +69,10 @@ def is_section_name(line: str) -> bool:
     return re.sub(r"[^가-힣]", "", re.sub(r"^[\s#\d.)]*", "", line)) in SECTION_NAMES
 
 
-def is_code_noise(line: str) -> bool:
+def is_code_noise(line: str, *, request_phrases: bool = True) -> bool:
     """쪽 번호·연락처·머리말 문구·작업 요청처럼 모양만으로 확실한 노이즈인지 본다."""
+    if request_phrases and _REQUEST_PHRASE.search(line):
+        return True
     return any(pattern.search(line) for pattern in _CODE_NOISE)
 
 
@@ -119,7 +123,7 @@ def _joins_previous(previous: str, line: str) -> bool:
     return not heading_like(line) or bool(_MID_SENTENCE.search(previous))
 
 
-def split_document(text: str) -> SplitDocument:
+def split_document(text: str, *, drop_request_phrases: bool = True) -> SplitDocument:
     """원문을 배정 단위로 나누고 확실한 노이즈를 뺀다.
 
     여러 문장이 한 줄에 있으면 문장마다 나눈다("Q." 같은 두 글자 이하 조각은 다음
@@ -146,5 +150,6 @@ def split_document(text: str) -> SplitDocument:
                 merged.append(part)
         lines.extend(merged)
 
-    noise = [line for line in lines if is_code_noise(line)]
-    return SplitDocument(lines=[line for line in lines if not is_code_noise(line)], noise=noise)
+    noise = [line for line in lines if is_code_noise(line, request_phrases=drop_request_phrases)]
+    noise_set = set(noise)
+    return SplitDocument(lines=[line for line in lines if line not in noise_set], noise=noise)

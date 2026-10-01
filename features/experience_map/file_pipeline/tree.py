@@ -4,9 +4,11 @@
 활동에 미리 깔아 둔 빈 블록은 새로 만들지 않고 그 블록을 update로 채운다.
 """
 
+import re
 from collections import Counter
 
 from features.experience_map.config import MAX_CONTENT_LENGTH
+from features.experience_map.nodes.refine import _bigram_overlap_ratio
 from features.experience_map.nodes.structure import (
     _EMPTY_SLOT_GUIDE_RE,
     _parse_tree_lines,
@@ -19,6 +21,15 @@ from features.experience_map.templates import TemplateCatalog
 
 _SECTION_BY_TITLE = {label.replace(" ", ""): section for section, label in SECTION_LABELS.items()}
 _SECTION_BY_TITLE.update({"성과": "ACHIEVEMENT", "문제해결": "PROBLEM_SOLVING"})
+
+
+DUPLICATE_OVERLAP = 0.75
+_LEADING_LABEL = re.compile(r"^\s*(?:[-•·*▪◦▶]\s*|\d+[.)]\s*)?(?:[^:：]{1,12}[:：]\s*)?")
+"""원문 글자쌍이 기존 블록에 이 비율 이상 남아 있으면 같은 내용으로 보고 다시 넣지 않는다."""
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", "", text)
 
 
 def _join(texts: list[str]) -> list[str]:
@@ -224,12 +235,41 @@ class _TreeBuilder:
             if template_slots and slot_id not in template_slots:
                 self._place({"parent_item_id": anchor_id}, slot_id, texts, {})
 
+    def _existing_texts(self) -> set[str]:
+        """활동에 이미 들어 있는 블록 내용(공백 무시). 같은 파일을 다시 올려도 중복으로 넣지 않는다."""
+        return {
+            _normalize(label)
+            for _, _, label in self.tree
+            if label and not _EMPTY_SLOT_GUIDE_RE.match(label)
+        }
+
+    @staticmethod
+    def _duplicate(text: str, existing: set[str]) -> bool:
+        """이미 활동에 있는 블록과 같은 내용인지 본다.
+
+        활동의 블록은 정제(문장 다듬기)를 거친 문장이라 원문과 글자가 다르다. 같은 파일을
+        다시 올렸을 때 정확히 같은지만 보면 하나도 못 걸렀다(로컬 재현) — 원문 글자쌍이
+        기존 블록에 75% 이상 남아 있으면 같은 내용으로 본다.
+        """
+        if _normalize(text) in existing:
+            return True
+        # 정제는 불릿과 "성장한 부분:" 같은 앞 라벨을 떼므로 비교 전에 같이 뗀다.
+        body = _LEADING_LABEL.sub("", text)
+        return len(_normalize(body)) >= 8 and any(
+            _bigram_overlap_ratio(body, block) >= DUPLICATE_OVERLAP for block in existing
+        )
+
     def build(self, lines: dict[str, str], assignments: dict[str, dict]) -> list[dict]:
         flat: dict[str, dict[str, list[str]]] = {}
         episodes: dict[tuple[str, str], dict[str, list[str]]] = {}
+        existing = self._existing_texts()
+        skipped = 0
         for line_id, text in lines.items():
             assignment = assignments.get(line_id)
             if assignment is None:
+                continue
+            if self._duplicate(text, existing):
+                skipped += 1
                 continue
             slot_id = assignment["slot_id"]
             section = slot_id.split(".")[0]
@@ -246,6 +286,7 @@ class _TreeBuilder:
                 self._place(parent, slot_id, texts, existing)
         for (section, _episode), slots in episodes.items():
             self._place_episode(section, slots)
+        self.skipped_duplicates = skipped
         return self.items
 
 

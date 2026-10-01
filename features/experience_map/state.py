@@ -124,6 +124,7 @@ class ExperienceMapState(TypedDict, total=False):
     file_lines: dict[str, str]
     file_assignments: dict[str, dict[str, Any]]
     file_excluded_count: int
+    file_requested_excluded_count: int
 
     # ===== 중간 산출 =====
     structured_items: list[dict[str, Any]]
@@ -177,6 +178,7 @@ TURN_FIELD_DEFAULTS: dict[str, Any] = {
     "file_lines": {},
     "file_assignments": {},
     "file_excluded_count": 0,
+    "file_requested_excluded_count": 0,
     "structured_items": [],
     "refined_items": [],
     "gap_update_item": None,

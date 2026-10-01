@@ -46,6 +46,11 @@ def build_result_response(state: ExperienceMapState, result: CommitResult) -> st
             f"{message}\n\n첨부 파일에서 경험과 관련 없는 내용 "
             f"{state['file_excluded_count']}줄은 제외했어요."
         )
+    if state.get("file_requested_excluded_count"):
+        message = (
+            f"{message}\n\n요청하신 대로 첨부 파일 내용 "
+            f"{state['file_requested_excluded_count']}줄은 제외했어요."
+        )
     if state.get("file_content_truncated"):
         # 페이지 수(MAX_PDF_PAGES)나 전체 글자 수 상한으로 파일 내용 일부를
         # 조용히 버렸을 수 있다 — 로그에만 남기지 않고 사용자에게도 알린다.

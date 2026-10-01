@@ -224,6 +224,7 @@ def passthrough_prompts(monkeypatch):
         "reassign_prompt",
         "document_gate_prompt",
         "exclude_verify_prompt",
+        "requested_exclude_verify_prompt",
     ):
         monkeypatch.setattr(assign_module, name, RunnableLambda(lambda payload: payload))
 
@@ -293,7 +294,7 @@ async def test_assign_never_drops_content_line_left_unassigned(monkeypatch, pass
 
 @pytest.mark.asyncio
 async def test_content_filter_falls_back_for_non_experience_file(monkeypatch):
-    async def fake_assign(_lines, _catalog):
+    async def fake_assign(_lines, _catalog, _message_lines=None):
         return assign_module.FileAssignment(is_experience=False, doc_type="채용공고", lines={})
 
     class _Client:
@@ -315,7 +316,7 @@ async def test_content_filter_falls_back_for_non_experience_file(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_content_filter_and_structure_build_items_for_file(monkeypatch):
-    async def fake_assign(lines, _catalog):
+    async def fake_assign(lines, _catalog, _message_lines=None):
         return assign_module.FileAssignment(
             is_experience=True,
             doc_type="경험",
@@ -371,3 +372,147 @@ def test_garbled_text_layer_is_not_used():
     assert extractors._usable_text_layer("경험 정리 " * 10) is True
     assert extractors._usable_text_layer("(cid:12)" * 40 + "가" * 40) is False
     assert extractors._usable_text_layer("짧음") is False
+
+
+# ===== 파일 + 채팅 메시지 =====
+
+
+def test_message_split_keeps_request_phrase_for_instruction():
+    document = split_document("2번 프로젝트만 정리해줘", drop_request_phrases=False)
+
+    assert document.lines == ["2번 프로젝트만 정리해줘"]
+    assert document.noise == []
+
+
+@pytest.mark.asyncio
+async def test_assign_applies_message_instruction_with_verification(
+    monkeypatch, passthrough_prompts
+):
+    """메시지 지시는 INSTRUCTION, 범위 밖 파일 줄은 지시 확인을 거쳐 '사용자 요청'으로 뺀다."""
+    seen_instructions: list[str] = []
+
+    def assign(payload):
+        if "ids" in payload:
+            return AssignOutput(items=[])
+        return AssignOutput(
+            items=[
+                LineAssignment(id="m_1", slot_id="INSTRUCTION"),
+                LineAssignment(id="m_2", slot_id="DETAIL.ROLE"),
+                LineAssignment(id="it_1", slot_id="LEARNING.GROWTH"),
+                LineAssignment(id="it_2", slot_id="EXCLUDE", reason="사용자요청"),
+            ]
+        )
+
+    def verify(payload):
+        seen_instructions.append(payload.get("instructions", ""))
+        return _VerifyOutput(items=[{"id": "it_2", "keep": False}])
+
+    llm = _FakeLlm(DocumentGate(is_experience=True, doc_type="경험", reason="ok"), assign, verify)
+    monkeypatch.setattr(assign_module, "get_experience_map_llm", lambda **_: llm)
+
+    result = await assign_module.assign_lines(
+        ["데이터로 설득하는 법을 배웠다.", "2023년 축제 운영을 했다."],
+        await _catalog(),
+        ["배운 점만 정리해줘", "발표는 내가 맡았어"],
+    )
+
+    assert result.requested_excluded == ["2023년 축제 운영을 했다."]
+    assert result.excluded == []
+    assert set(result.assignments) == {"m_2", "it_1"}
+    assert seen_instructions == ["배운 점만 정리해줘"]
+
+
+@pytest.mark.asyncio
+async def test_tree_skips_lines_already_in_activity():
+    """같은 파일을 다시 올려도 이미 들어 있는 문장은 다시 넣지 않는다."""
+    catalog = await _catalog()
+    state = await _template_state()
+    state["activity_tree_text"] = state["activity_tree_text"].replace(
+        "(빈 블록 — 가이드: 전체 진행 기간은 언제부터 언제까지였나요?)",
+        "기간: 2023.03 ~ 2023.06",
+        1,
+    )
+    lines = {"it_1": "기간: 2023.03 ~ 2023.06", "it_2": "데이터로 설득하는 법을 배웠다."}
+    assignments = {
+        "it_1": {"slot_id": "DETAIL.PERIOD", "episode": None},
+        "it_2": {"slot_id": "LEARNING.GROWTH", "episode": None},
+    }
+
+    items = build_file_items(lines, assignments, state, catalog)
+
+    assert [item["text"] for item in items] == ["데이터로 설득하는 법을 배웠다."]
+
+
+@pytest.mark.asyncio
+async def test_section_scope_instruction_is_applied_by_code(monkeypatch, passthrough_prompts):
+    """'문제해결만 정리해줘'는 모델이 구획 목록만 답하고, 다른 구획 파일 줄은 코드가 뺀다."""
+
+    def assign(payload):
+        return AssignOutput(
+            items=[
+                LineAssignment(id="m_1", slot_id="INSTRUCTION"),
+                LineAssignment(id="it_1", slot_id="DETAIL.PERIOD"),
+                LineAssignment(id="it_2", slot_id="PROBLEM_SOLVING.SUMMARY", episode="it_2"),
+                LineAssignment(id="it_3", slot_id="PROBLEM_SOLVING.BASIC.PROBLEM", episode="it_2"),
+            ],
+            only_sections=["PROBLEM_SOLVING"],
+        )
+
+    llm = _FakeLlm(DocumentGate(is_experience=True, doc_type="경험", reason="ok"), assign)
+    monkeypatch.setattr(assign_module, "get_experience_map_llm", lambda **_: llm)
+
+    result = await assign_module.assign_lines(
+        ["기간: 2023.03 ~ 2023.06", "1) 타깃 문제", "- 상황: 메시지가 넓었다."],
+        await _catalog(),
+        ["문제해결 부분만 정리해줘"],
+    )
+
+    assert result.requested_excluded == ["기간: 2023.03 ~ 2023.06"]
+    assert set(result.assignments) == {"it_2", "it_3"}
+
+
+@pytest.mark.asyncio
+async def test_plain_request_message_does_not_trigger_requested_exclusion(
+    monkeypatch, passthrough_prompts
+):
+    """메시지가 '정리해줘'뿐이면 모델이 '사용자요청'으로 뺀 줄도 무관 확인으로 돌린다."""
+
+    def assign(payload):
+        if "ids" in payload:
+            return AssignOutput(items=[LineAssignment(id="it_1", slot_id="LEARNING.GROWTH")])
+        return AssignOutput(
+            items=[
+                LineAssignment(id="m_1", slot_id="INSTRUCTION"),
+                LineAssignment(id="it_1", slot_id="EXCLUDE", reason="사용자요청"),
+            ],
+            excluded_sections=["LEARNING"],
+        )
+
+    def verify(_payload):
+        return _VerifyOutput(items=[{"id": "it_1", "keep": True}])
+
+    llm = _FakeLlm(DocumentGate(is_experience=True, doc_type="경험", reason="ok"), assign, verify)
+    monkeypatch.setattr(assign_module, "get_experience_map_llm", lambda **_: llm)
+
+    result = await assign_module.assign_lines(
+        ["데이터로 설득하는 법을 배웠다."], await _catalog(), ["정리해줘"]
+    )
+
+    assert result.requested_excluded == []
+    assert result.assignments["it_1"]["slot_id"] == "LEARNING.GROWTH"
+
+
+@pytest.mark.asyncio
+async def test_tree_skips_refined_duplicate_of_existing_block():
+    """활동 블록은 정제된 문장이라 글자가 달라도, 원문 글자쌍이 대부분 남아 있으면 중복이다."""
+    catalog = await _catalog()
+    state = await _template_state()
+    state["activity_tree_text"] = state["activity_tree_text"].replace(
+        "(빈 블록 — 가이드: 이 경험을 통해 새롭게 배우거나 성장한 점은 무엇이며, 향후 어떻게 활용할 계획인가요?)",
+        "데이터에 기반해 논리를 전개하는 기획 역량이 성장했다.",
+        1,
+    )
+    lines = {"it_1": "- 성장한 부분: 데이터에 기반하여 논리를 전개하는 기획 역량이 성장했다"}
+    assignments = {"it_1": {"slot_id": "LEARNING.GROWTH", "episode": None}}
+
+    assert build_file_items(lines, assignments, state, catalog) == []

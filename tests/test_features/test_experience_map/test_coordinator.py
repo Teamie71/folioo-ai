@@ -472,3 +472,9 @@ def test_result_response_reports_excluded_file_lines():
     message = build_result_response(state() | {"file_excluded_count": 7}, result())
 
     assert message.endswith("첨부 파일에서 경험과 관련 없는 내용 7줄은 제외했어요.")
+
+
+def test_result_response_reports_user_requested_exclusions():
+    message = build_result_response(state() | {"file_requested_excluded_count": 3}, result())
+
+    assert message.endswith("요청하신 대로 첨부 파일 내용 3줄은 제외했어요.")

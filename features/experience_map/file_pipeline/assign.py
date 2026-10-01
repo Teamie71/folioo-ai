@@ -8,6 +8,7 @@ LLM에게 버리는 권한을 그대로 주면 실제 상세정보를 통째로 
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
@@ -18,15 +19,21 @@ from features.experience_map.file_pipeline.split import heading_like, is_section
 from features.experience_map.prompts.file_assign import (
     EXCLUDE_SLOT,
     HEADING_SLOT,
+    INSTRUCTION_SLOT,
+    REQUESTED_EXCLUDE_REASON,
     assign_prompt,
     document_gate_prompt,
     exclude_verify_prompt,
     reassign_prompt,
+    requested_exclude_verify_prompt,
 )
 from features.experience_map.prompts.structure import render_catalog
 from features.experience_map.templates import TemplateCatalog
 
 logger = logging.getLogger(__name__)
+
+MESSAGE_ID_PREFIX = "m_"
+"""채팅 메시지 줄 id 접두사. 파일 줄은 `it_`."""
 
 CHUNK_LINES = 40
 """한 번의 배정 호출에 맡기는 줄 수. 넘으면 제목 경계에서 나눠 병렬로 부른다."""
@@ -44,12 +51,20 @@ class LineAssignment(BaseModel):
         None, description="담당업무·문제해결이면 그 업무/에피소드의 첫 줄 id"
     )
     reason: str | None = Field(
-        None, description="EXCLUDE일 때만: 다른경험/자기소개/개인정보/문서메타/무관"
+        None, description="EXCLUDE일 때만: 사용자요청/다른경험/자기소개/개인정보/문서메타/무관"
     )
 
 
 class AssignOutput(BaseModel):
     items: list[LineAssignment]
+    only_sections: list[str] = Field(
+        default_factory=list,
+        description="메시지가 '문제해결만 정리해줘'처럼 일부 구획만 정리하라고 하면 그 section_id 목록",
+    )
+    excluded_sections: list[str] = Field(
+        default_factory=list,
+        description="메시지가 '배운 점은 빼줘'처럼 구획을 빼라고 하면 그 section_id 목록",
+    )
 
 
 class DocumentGate(BaseModel):
@@ -73,13 +88,15 @@ class _VerifyOutput(BaseModel):
 
 @dataclass
 class FileAssignment:
-    """배정 결과. `assignments`는 반영할 줄만, `excluded`는 무관해서 뺀 줄."""
+    """배정 결과. `assignments`는 반영할 줄만, `excluded`는 무관해서, `requested_excluded`는
+    사용자 지시로 뺀 줄."""
 
     is_experience: bool
     doc_type: str
     lines: dict[str, str]
     assignments: dict[str, dict] = field(default_factory=dict)
     excluded: list[str] = field(default_factory=list)
+    requested_excluded: list[str] = field(default_factory=list)
 
 
 def _chunks(line_ids: list[str], lines: dict[str, str]) -> list[list[str]]:
@@ -104,21 +121,42 @@ def _render(lines: dict[str, str], line_ids: list[str]) -> str:
 
 
 async def _assign_chunk(
-    llm, catalog: TemplateCatalog, lines: dict[str, str], chunk: list[str], context: list[str]
+    llm,
+    catalog: TemplateCatalog,
+    lines: dict[str, str],
+    chunk: list[str],
+    context: list[str],
+    message_context: list[str],
+    scope: dict,
 ) -> dict[str, LineAssignment]:
-    """한 청크를 배정하고, 빠지거나 잘못 배정된 줄만 한 번 더 요청한다."""
+    """한 청크를 배정하고, 빠지거나 잘못 배정된 줄만 한 번 더 요청한다.
+
+    `message_context`는 다른 청크에서 배정하는 채팅 메시지다. 이 청크에서도 메시지
+    지시("2번 프로젝트만")를 알아야 범위 밖 줄을 뺄 수 있어 문맥으로만 보여준다.
+    """
     rendered_catalog = render_catalog(catalog)
-    document = "".join(f"(앞 문맥 제목) {heading}\n" for heading in context) + _render(lines, chunk)
+    document = (
+        "".join(f"(앞 문맥 제목) {heading}\n" for heading in context)
+        + "".join(f"(사용자 메시지, 배정 대상 아님) {text}\n" for text in message_context)
+        + _render(lines, chunk)
+    )
     chain = assign_prompt | llm.with_structured_output(AssignOutput)
     output: AssignOutput = await chain.ainvoke({"catalog": rendered_catalog, "document": document})
     chunk_ids = set(chunk)
     by_id = {item.id: item for item in output.items if item.id in chunk_ids}
+    scope.update(
+        only=set(scope.get("only", set())) | set(output.only_sections),
+        excluded=set(scope.get("excluded", set())) | set(output.excluded_sections),
+    )
 
     def invalid(item: LineAssignment) -> bool:
+        if item.slot_id == INSTRUCTION_SLOT:
+            return not item.id.startswith(MESSAGE_ID_PREFIX)
         if item.slot_id == HEADING_SLOT:
             return not heading_like(lines[item.id])
         if item.slot_id == EXCLUDE_SLOT:
-            return False
+            # 채팅 메시지는 사용자가 직접 쓴 것이라 빼지 않는다 — 지시가 아니면 칸에 배정한다.
+            return item.id.startswith(MESSAGE_ID_PREFIX)
         return catalog.get_slot(item.slot_id) is None
 
     retry_ids = [line_id for line_id in chunk if line_id not in by_id or invalid(by_id[line_id])]
@@ -179,22 +217,36 @@ def _demote_headings(lines: dict[str, str], by_id: dict[str, LineAssignment]) ->
             item.slot_id = HEADING_SLOT
 
 
-async def assign_lines(lines: list[str], catalog: TemplateCatalog) -> FileAssignment:
-    """줄 목록을 칸에 배정한다. 문서 관문과 배정은 동시에 돈다.
+async def assign_lines(
+    lines: list[str], catalog: TemplateCatalog, message_lines: list[str] | None = None
+) -> FileAssignment:
+    """파일 줄(과 함께 온 채팅 메시지 줄)을 칸에 배정한다. 문서 관문과 배정은 동시에 돈다.
+
+    메시지 줄은 `m_N`, 파일 줄은 `it_N`으로 번호를 붙인다. 메시지 줄은 작업 지시면
+    INSTRUCTION, 경험 내용이면 파일 줄과 같이 칸에 배정한다. 지시로 범위 밖이 된 파일
+    줄은 "사용자요청" 사유로 제외 후보가 되고, 지시를 함께 보여주는 확인 호출을 거친다.
 
     Raises:
         Exception: LLM 호출 실패 — 호출하는 노드가 LlmError로 바꾼다
     """
-    line_map = {f"it_{index}": text for index, text in enumerate(lines, start=1)}
+    message_lines = message_lines or []
+    message_map = {f"{MESSAGE_ID_PREFIX}{i}": text for i, text in enumerate(message_lines, 1)}
+    file_map = {f"it_{index}": text for index, text in enumerate(lines, start=1)}
+    line_map = {**message_map, **file_map}
+    file_ids = list(file_map)
     line_ids = list(line_map)
     llm = get_experience_map_llm(timeout=get_settings().timeouts.llm)
 
-    chunks = _chunks(line_ids, line_map)
+    scope: dict = {}
+    chunks = _chunks(file_ids, file_map) if file_ids else [[]]
+    chunks[0] = list(message_map) + chunks[0]
     jobs = []
-    for chunk in chunks:
-        start = line_ids.index(chunk[0])
-        context = [line_map[i] for i in line_ids[:start] if heading_like(line_map[i])][-3:]
-        jobs.append(_assign_chunk(llm, catalog, line_map, chunk, context))
+    for index, chunk in enumerate(chunks):
+        file_part = [i for i in chunk if i in file_map]
+        start = file_ids.index(file_part[0]) if file_part else 0
+        context = [file_map[i] for i in file_ids[:start] if heading_like(file_map[i])][-3:]
+        message_context = [] if index == 0 else list(message_map.values())
+        jobs.append(_assign_chunk(llm, catalog, line_map, chunk, context, message_context, scope))
     gate_chain = document_gate_prompt | llm.with_structured_output(DocumentGate)
     # 관문과 배정을 동시에 시작하되 관문 결과를 먼저 기다린다. 경험 문서가 아니면
     # 아직 도는 배정 호출을 취소해 바로 끝낸다 — 6쪽 문제지에서 관문은 2초 안에
@@ -223,18 +275,28 @@ async def assign_lines(lines: list[str], catalog: TemplateCatalog) -> FileAssign
         by_id.update(result)
     _stitch_chunk_episodes(chunks, by_id)
 
-    excluded = await _verify_exclusions(llm, catalog, line_map, line_ids, by_id)
+    instructions = [line_map[i] for i, item in by_id.items() if item.slot_id == INSTRUCTION_SLOT]
+    if all(_is_plain_request(text) for text in instructions):
+        # "정리해줘"뿐이면 범위 지시가 없다. 모델이 '사용자요청'으로 뺀 줄은 무관 확인으로 돌린다.
+        instructions = []
+        scope = {}
+    excluded, requested = await _verify_exclusions(
+        llm, catalog, line_map, line_ids, by_id, instructions
+    )
     _demote_headings(line_map, by_id)
+    requested = requested + _scope_excluded(by_id, file_ids, scope, set(requested))
 
-    excluded_set = set(excluded)
+    dropped = set(excluded) | set(requested)
     assignments: dict[str, dict] = {}
     inherited = 0
     previous: dict | None = None
     for line_id in line_ids:
         item = by_id.get(line_id)
-        if item is not None and item.slot_id == HEADING_SLOT and heading_like(line_map[line_id]):
+        if line_id in dropped:
             continue
-        if line_id in excluded_set:
+        if item is not None and item.slot_id == INSTRUCTION_SLOT:
+            continue
+        if item is not None and item.slot_id == HEADING_SLOT and heading_like(line_map[line_id]):
             continue
         if item is not None and catalog.get_slot(item.slot_id) is not None:
             previous = {"slot_id": item.slot_id, "episode": item.episode}
@@ -251,7 +313,46 @@ async def assign_lines(lines: list[str], catalog: TemplateCatalog) -> FileAssign
         lines=line_map,
         assignments=assignments,
         excluded=[line_map[i] for i in excluded],
+        requested_excluded=[line_map[i] for i in requested],
     )
+
+
+_PLAIN_REQUEST = re.compile(
+    r"^[\s.!~]*(?:이\s*)?(?:경험|내용|파일)?\s*(?:을|를)?\s*정리\s*(?:해\s*(?:줘|주세요|주라)|부탁(?:해|드려요)?)[\s.!~]*$"
+)
+
+
+def _is_plain_request(text: str) -> bool:
+    """범위 없는 단순 정리 요청("정리해줘", "이 파일 정리해 주세요")인지 본다."""
+    return bool(_PLAIN_REQUEST.match(re.sub(r"^(?:이|아래|첨부한?|올린)\s*", "", text.strip())))
+
+
+def _scope_excluded(
+    by_id: dict[str, LineAssignment], file_ids: list[str], scope: dict, already: set[str]
+) -> list[str]:
+    """메시지의 구획 단위 지시("문제해결만", "배운 점은 빼고")를 코드로 적용한다.
+
+    대부분의 줄을 빼야 하는 "~만" 지시는 모델이 줄마다 EXCLUDE를 붙이지 못했다(로컬
+    재현). 모델은 구획 목록만 답하고, 실제 제외는 칸 배정 결과로 코드가 한다. 파일
+    줄에만 적용한다 — 사용자가 채팅으로 쓴 내용은 빼지 않는다.
+    """
+    only = set(scope.get("only", set()))
+    excluded = set(scope.get("excluded", set()))
+    if not only and not excluded:
+        return []
+    out: list[str] = []
+    for line_id in file_ids:
+        item = by_id.get(line_id)
+        if item is None or line_id in already or "." not in item.slot_id:
+            continue
+        section = item.slot_id.split(".")[0]
+        if (only and section not in only) or section in excluded:
+            out.append(line_id)
+    if out:
+        logger.info(
+            "file_assign: 구획 지시(only=%s, excluded=%s)로 %d줄 제외", only, excluded, len(out)
+        )
+    return out
 
 
 async def _verify_exclusions(
@@ -260,21 +361,49 @@ async def _verify_exclusions(
     lines: dict[str, str],
     line_ids: list[str],
     by_id: dict[str, LineAssignment],
-) -> list[str]:
-    """제외 후보를 한 번 더 확인한다. 남기기로 한 줄은 다시 배정한다."""
+    instructions: list[str],
+) -> tuple[list[str], list[str]]:
+    """제외 후보를 한 번 더 확인한다. 남기기로 한 줄은 다시 배정한다.
+
+    무관해서 뺀 후보는 "내용이 조금이라도 있으면 남긴다"로, 사용자 지시로 뺀 후보는
+    지시를 함께 보여주고 "지시상 빼야 하는 줄인가"로 확인한다 — 지시로 빼는 줄은 경험
+    내용이 있어도 빼는 게 맞기 때문이다. 두 확인은 동시에 돈다.
+
+    Returns:
+        (무관해서 제외 확정된 줄 id, 사용자 지시로 제외 확정된 줄 id)
+    """
     candidates = [line_id for line_id, item in by_id.items() if item.slot_id == EXCLUDE_SLOT]
     if not candidates:
-        return []
+        return [], []
+    requested_ids = [
+        i
+        for i in candidates
+        if instructions and REQUESTED_EXCLUDE_REASON in (by_id[i].reason or "")
+    ]
+    unrelated_ids = [i for i in candidates if i not in requested_ids]
     document = _render(lines, line_ids)
-    verify_chain = exclude_verify_prompt | llm.with_structured_output(_VerifyOutput)
-    verdicts: _VerifyOutput = await verify_chain.ainvoke(
-        {"document": document, "candidates": _render(lines, candidates)}
+
+    async def verify(prompt, ids: list[str], extra: dict) -> set[str]:
+        if not ids:
+            return set()
+        chain = prompt | llm.with_structured_output(_VerifyOutput)
+        verdicts: _VerifyOutput = await chain.ainvoke(
+            {"document": document, "candidates": _render(lines, ids), **extra}
+        )
+        answered = {verdict.id for verdict in verdicts.items}
+        return {verdict.id for verdict in verdicts.items if verdict.keep} | {
+            i for i in ids if i not in answered
+        }
+
+    keep_unrelated, keep_requested = await asyncio.gather(
+        verify(exclude_verify_prompt, unrelated_ids, {}),
+        verify(
+            requested_exclude_verify_prompt,
+            requested_ids,
+            {"instructions": "\n".join(instructions)},
+        ),
     )
-    answered = {verdict.id for verdict in verdicts.items}
-    keep = {verdict.id for verdict in verdicts.items if verdict.keep} | {
-        line_id for line_id in candidates if line_id not in answered
-    }
-    confirmed = [line_id for line_id in candidates if line_id not in keep]
+    keep = keep_unrelated | keep_requested
     if keep:
         retry_chain = reassign_prompt | llm.with_structured_output(AssignOutput)
         retry: AssignOutput = await retry_chain.ainvoke(
@@ -287,11 +416,18 @@ async def _verify_exclusions(
         for item in retry.items:
             if (
                 item.id in keep
-                and item.slot_id not in (HEADING_SLOT, EXCLUDE_SLOT)
+                and item.slot_id not in (HEADING_SLOT, EXCLUDE_SLOT, INSTRUCTION_SLOT)
                 and catalog.get_slot(item.slot_id) is not None
             ):
                 by_id[item.id] = item
-    for line_id in confirmed:
+    confirmed_unrelated = [i for i in unrelated_ids if i not in keep]
+    confirmed_requested = [i for i in requested_ids if i not in keep]
+    for line_id in confirmed_unrelated + confirmed_requested:
         by_id[line_id].slot_id = EXCLUDE_SLOT
-    logger.info("file_assign: 제외 후보 %d개 중 %d개 제외 확정", len(candidates), len(confirmed))
-    return confirmed
+    logger.info(
+        "file_assign: 제외 후보 %d개 중 무관 %d개·사용자 요청 %d개 제외 확정",
+        len(candidates),
+        len(confirmed_unrelated),
+        len(confirmed_requested),
+    )
+    return confirmed_unrelated, confirmed_requested
