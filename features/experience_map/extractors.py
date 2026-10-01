@@ -4,8 +4,11 @@
 
 | 처리 | 형식 |
 | --- | --- |
-| 파일 파서 | TXT, DOCX, PPTX |
-| OCR 모델 | 모든 PDF 페이지, PNG, JPG/JPEG |
+| 파일 파서 | TXT, DOCX, PPTX, PDF 텍스트 레이어 |
+| OCR 모델 | 텍스트 레이어가 없거나 깨진 PDF 페이지, PNG, JPG/JPEG |
+
+PDF는 텍스트 레이어를 먼저 쓰고 쓸 수 없는 페이지만 OCR한다(`_extract_pdf`).
+`EXPMAP_FILE_PIPELINE=0`이면 예전처럼 모든 페이지를 OCR한다.
 
 **두 실패를 구분하는 것이 이 모듈의 핵심이다.**
 
@@ -290,6 +293,106 @@ async def _ocr_image(llm, image: bytes, mime_type: str, instruction: str) -> str
     return _response_text(getattr(response, "content", ""))
 
 
+TEXT_LAYER_MIN_CHARS = 40
+"""텍스트 레이어로 믿고 쓸 페이지의 최소 글자 수(공백 제외). 이보다 적으면 스캔본으로 보고 OCR한다."""
+
+_TEXT_LAYER_GARBAGE = re.compile(r"[\ufffd\x00-\x08\x0b\x0c\x0e-\x1f]|\(cid:\d+\)")
+
+
+def _pdf_text_layer(data: bytes) -> list[str]:
+    """처리 상한 안의 페이지별 텍스트 레이어. 읽을 수 없는 페이지는 빈 문자열."""
+    import pypdfium2 as pdfium
+
+    pdf = _open_pdf(data)
+    try:
+        texts: list[str] = []
+        for index in range(_pdf_page_count(pdf)):
+            page = pdf[index]
+            try:
+                textpage = page.get_textpage()
+                texts.append(textpage.get_text_range().replace("\r\n", "\n").replace("\r", "\n"))
+                textpage.close()
+            except pdfium.PdfiumError:
+                texts.append("")
+            finally:
+                page.close()
+        return texts
+    finally:
+        pdf.close()
+
+
+def _usable_text_layer(text: str) -> bool:
+    """텍스트 레이어를 그대로 써도 되는지 본다. 글자가 적거나 깨진 글자가 많으면 OCR한다."""
+    compact = re.sub(r"\s", "", text)
+    if len(compact) < TEXT_LAYER_MIN_CHARS:
+        return False
+    return len(_TEXT_LAYER_GARBAGE.findall(text)) <= len(compact) * 0.02
+
+
+async def _extract_pdf(data: bytes) -> str:
+    """PDF는 텍스트 레이어를 먼저 쓰고, 쓸 수 없는 페이지만 OCR한다.
+
+    모든 페이지를 OCR하면 페이지당 수 초가 걸리고 OCR이 글자를 조금씩 바꿔 적었다.
+    텍스트 레이어가 있는 PDF(노션·워드·한글 내보내기)는 0.1초 안에 원문 그대로 읽힌다
+    (로컬 측정: 1쪽 OCR 6.1초 → 텍스트 레이어 0.08초, 내용 동일). 스캔본·이미지 PDF
+    페이지만 예전처럼 OCR한다.
+    """
+    if not get_settings().file_pipeline_enabled:
+        return await _extract_pdf_with_ocr(data)
+    layer = _pdf_text_layer(data)
+    ocr_indexes = [index for index, text in enumerate(layer) if not _usable_text_layer(text)]
+    logger.info(
+        "PDF 텍스트 레이어 %d쪽 사용, OCR %d쪽 (전체 처리 %d쪽)",
+        len(layer) - len(ocr_indexes),
+        len(ocr_indexes),
+        len(layer),
+    )
+    if ocr_indexes:
+        ocr_texts = await _ocr_pdf_pages(data, ocr_indexes)
+        for index, text in zip(ocr_indexes, ocr_texts, strict=True):
+            layer[index] = text
+    text = "\n\n".join(page for page in layer if page.strip()).strip()
+    if not text:
+        raise FileUnreadableError("파일에서 텍스트를 찾지 못했습니다.")
+    try:
+        total_pages = _pdf_total_page_count(data)
+    except FileUnreadableError:
+        total_pages = len(layer)
+    if total_pages > len(layer):
+        text += PAGE_TRUNCATION_NOTE.format(limit=len(layer), total=total_pages)
+    return _truncate(text)
+
+
+async def _ocr_pdf_pages(data: bytes, page_indexes: list[int]) -> list[str]:
+    """지정한 페이지만 렌더링해 동시에 OCR한다. 반환 순서는 `page_indexes`와 같다."""
+    images = _render_pdf_pages(data, page_indexes)
+    llm = get_file_processor_llm()
+    semaphore = asyncio.Semaphore(PDF_OCR_CONCURRENCY)
+
+    async def _run(index: int, image: bytes) -> str:
+        async with semaphore:
+            try:
+                return await asyncio.wait_for(
+                    _ocr_image(
+                        llm,
+                        image,
+                        "image/png",
+                        f"{OCR_INSTRUCTION}\n- PDF의 {index + 1}페이지입니다. "
+                        "이 페이지만 옮겨 적습니다.\n",
+                    ),
+                    timeout=get_settings().timeouts.file,
+                )
+            except Exception:
+                logger.exception("PDF %d페이지 OCR 실패 (image_bytes=%d)", index + 1, len(image))
+                raise
+
+    rounds = math.ceil(len(images) / PDF_OCR_CONCURRENCY) if images else 1
+    return await asyncio.wait_for(
+        asyncio.gather(*(_run(i, img) for i, img in zip(page_indexes, images, strict=True))),
+        timeout=get_settings().timeouts.file * rounds,
+    )
+
+
 async def _extract_pdf_with_ocr(data: bytes) -> str:
     """PDF의 텍스트 레이어를 사용하지 않고 모든 페이지를 이미지 OCR한다."""
     images = _render_pdf_pages(data)
@@ -379,7 +482,7 @@ async def extract_with_ocr(data: bytes, filename: str, content_type: str) -> str
         Exception: 시스템 오류 (타임아웃·API 실패) — 노드 실패로 올라간다
     """
     if content_type == "application/pdf":
-        return await _extract_pdf_with_ocr(data)
+        return await _extract_pdf(data)
 
     llm = get_file_processor_llm()
     text = await asyncio.wait_for(

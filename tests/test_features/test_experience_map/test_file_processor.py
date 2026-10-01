@@ -34,6 +34,14 @@ DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.docu
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 
+@pytest.fixture(autouse=True)
+def _all_page_ocr(monkeypatch):
+    """이 파일은 예전 경로(PDF 모든 페이지 OCR)를 검증한다. 텍스트 레이어 우선은 test_file_pipeline.py."""
+    from features.experience_map.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "file_pipeline_enabled", False)
+
+
 def reference(file_id: str, filename: str, content_type: str) -> dict:
     return {
         "file_id": file_id,
@@ -600,6 +608,7 @@ async def test_pdf_ocr_timeout_scales_with_concurrency_rounds(monkeypatch):
 
     class FakeSettings:
         timeouts = FakeTimeouts()
+        file_pipeline_enabled = False
 
     monkeypatch.setattr(extractors, "get_file_processor_llm", lambda: SlowLlm())
     monkeypatch.setattr(extractors, "get_settings", lambda: FakeSettings())

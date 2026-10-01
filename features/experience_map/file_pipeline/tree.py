@@ -1,0 +1,259 @@
+"""줄별 배정(slot·에피소드)으로 블록 operation을 만든다. LLM을 부르지 않는다.
+
+구획 → 활동의 기존 카테고리 → 에피소드(앵커) → 칸 순서로 놓는다. 메인 서버가 새
+활동에 미리 깔아 둔 빈 블록은 새로 만들지 않고 그 블록을 update로 채운다.
+"""
+
+from collections import Counter
+
+from features.experience_map.config import MAX_CONTENT_LENGTH
+from features.experience_map.nodes.structure import (
+    _EMPTY_SLOT_GUIDE_RE,
+    _parse_tree_lines,
+    _placeholder_to_slot_map,
+    _subtree_known_slots_with_parent,
+)
+from features.experience_map.schemas import SECTION_LABELS
+from features.experience_map.state import ExperienceMapState
+from features.experience_map.templates import TemplateCatalog
+
+_SECTION_BY_TITLE = {label.replace(" ", ""): section for section, label in SECTION_LABELS.items()}
+_SECTION_BY_TITLE.update({"성과": "ACHIEVEMENT", "문제해결": "PROBLEM_SOLVING"})
+
+
+def _join(texts: list[str]) -> list[str]:
+    """같은 칸에 간 줄을 원문 순서대로 합치되, 최대 글자 수를 넘으면 다음 블록으로 넘긴다."""
+    blocks: list[str] = []
+    for text in texts:
+        if blocks and len(blocks[-1]) + 1 + len(text) <= MAX_CONTENT_LENGTH:
+            blocks[-1] = f"{blocks[-1]}\n{text}"
+        else:
+            blocks.append(text[:MAX_CONTENT_LENGTH])
+    return blocks
+
+
+class _TreeBuilder:
+    def __init__(self, state: ExperienceMapState, catalog: TemplateCatalog) -> None:
+        self.state = state
+        self.catalog = catalog
+        self.target = state["target_experience_alias"]
+        self.metadata = state.get("alias_metadata", {})
+        self.tree = _parse_tree_lines(state.get("activity_tree_text") or "")
+        self.labels = {alias: label for _, alias, label in self.tree}
+        self.placeholder_to_slot = _placeholder_to_slot_map(catalog)
+        self.anchor_slots = {
+            section.section_id: slot.slot_id
+            for section in catalog.sections
+            for slot in section.slots
+            if slot.is_anchor
+        }
+        self.templates = {
+            f"{section.section_id}.{template.template_id}": [
+                slot.slot_id for slot in template.slots
+            ]
+            for section in catalog.sections
+            for template in section.templates
+        }
+        self.containers = self._existing_containers()
+        self.new_containers: dict[str, str] = {}
+        self.used_targets: set[str] = set()
+        self.items: list[dict] = []
+        self.counter = 0
+
+    def _existing_containers(self) -> dict[str, str]:
+        """활동 바로 아래 기존 카테고리 별칭. kind가 없으면 제목으로 알아본다."""
+        containers: dict[str, str] = {}
+        for alias, block in self.metadata.items():
+            if block.get("parent_alias") != self.target:
+                continue
+            kind = str(block.get("kind") or "")
+            section = kind.removeprefix("SECTION_") if kind.startswith("SECTION_") else None
+            if section is None:
+                title = self.labels.get(alias, "").replace(" ", "")
+                section = _SECTION_BY_TITLE.get(title)
+            if section:
+                containers.setdefault(section, alias)
+        return containers
+
+    def _next_id(self, prefix: str) -> str:
+        self.counter += 1
+        return f"file_{prefix}_{self.counter}"
+
+    def _is_empty(self, alias: str) -> bool:
+        return bool(_EMPTY_SLOT_GUIDE_RE.match(self.labels.get(alias, "")))
+
+    def _child_slots(self, alias: str) -> dict[str, str]:
+        return {
+            slot_id: child
+            for slot_id, child, parent in _subtree_known_slots_with_parent(
+                self.tree, alias, self.placeholder_to_slot
+            )
+            if parent == alias
+        }
+
+    def _parent_of_section(self, section: str) -> tuple[dict, str | None]:
+        """카테고리 부모 참조와 기존 별칭. 없으면 새 카테고리를 한 번만 만든다."""
+        if section in self.containers:
+            alias = self.containers[section]
+            return {"parent_ref": alias}, alias
+        if section not in self.new_containers:
+            item_id = self._next_id("category")
+            self.items.append(
+                {
+                    "item_id": item_id,
+                    "action": "add",
+                    "parent_ref": self.target,
+                    "section_kind": section,
+                }
+            )
+            self.new_containers[section] = item_id
+        return {"parent_item_id": self.new_containers[section]}, None
+
+    def _place(self, parent: dict, slot_id: str, texts: list[str], existing: dict[str, str]):
+        """칸 하나를 채운다. 기존 빈 블록이 있으면 update, 아니면 add."""
+        for index, text in enumerate(_join(texts)):
+            target = existing.get(slot_id) if index == 0 else None
+            if target and target not in self.used_targets and self._is_empty(target):
+                self.used_targets.add(target)
+                self.items.append(
+                    {
+                        "item_id": self._next_id("update"),
+                        "action": "update",
+                        "target_ref": target,
+                        "text": text,
+                    }
+                )
+            else:
+                self.items.append(
+                    {
+                        "item_id": self._next_id("block"),
+                        "action": "add",
+                        **parent,
+                        "slot_id": slot_id,
+                        "text": text,
+                    }
+                )
+
+    def _blank_anchor(self, container: str, anchor_slot: str, slots: set[str]) -> str | None:
+        """같은 템플릿 칸을 모두 가진, 아직 안 쓴 미리 깔린 빈 앵커."""
+        for slot_id, alias, parent in _subtree_known_slots_with_parent(
+            self.tree, container, self.placeholder_to_slot
+        ):
+            if parent != container or slot_id != anchor_slot or alias in self.used_targets:
+                continue
+            if not self._is_empty(alias):
+                continue
+            children = self._child_slots(alias)
+            if slots <= set(children) and all(self._is_empty(c) for c in children.values()):
+                return alias
+        return None
+
+    def _normalize_template(
+        self, slots: dict[str, list[str]], anchor_slot: str
+    ) -> tuple[dict[str, list[str]], list[str]]:
+        """한 에피소드는 가장 많이 쓴 템플릿 하나로 통일한다."""
+        child_slots = [slot for slot in slots if slot != anchor_slot]
+        counts = Counter(".".join(slot.split(".")[:2]) for slot in child_slots)
+        chosen = counts.most_common(1)[0][0] if counts else None
+        template_slots = self.templates.get(chosen or "", [])
+        normalized: dict[str, list[str]] = {}
+        for slot_id, texts in slots.items():
+            if slot_id != anchor_slot and chosen and not slot_id.startswith(f"{chosen}."):
+                suffix = slot_id.split(".")[-1]
+                slot_id = next(
+                    (s for s in template_slots if s.endswith(f".{suffix}")), template_slots[0]
+                )
+            normalized.setdefault(slot_id, []).extend(texts)
+        return normalized, template_slots
+
+    def _place_episode(self, section: str, slots: dict[str, list[str]]) -> None:
+        anchor_slot = self.anchor_slots[section]
+        normalized, template_slots = self._normalize_template(slots, anchor_slot)
+        anchor_texts = normalized.pop(anchor_slot, [])
+        if not anchor_texts and normalized:
+            # 대표 줄이 없으면 첫 내용 줄을 앵커로 올린다.
+            first_slot = next(iter(normalized))
+            anchor_texts = [normalized[first_slot].pop(0)]
+            if not normalized[first_slot]:
+                normalized.pop(first_slot)
+        anchor_text = "\n".join(anchor_texts)[:MAX_CONTENT_LENGTH]
+
+        parent, container = self._parent_of_section(section)
+        blank = self._blank_anchor(container, anchor_slot, set(normalized)) if container else None
+        if blank:
+            self.used_targets.add(blank)
+            self.items.append(
+                {
+                    "item_id": self._next_id("update"),
+                    "action": "update",
+                    "target_ref": blank,
+                    "text": anchor_text,
+                }
+            )
+            children = self._child_slots(blank)
+            for slot_id, texts in normalized.items():
+                self._place({"parent_ref": blank}, slot_id, texts, children)
+            return
+
+        anchor_id = self._next_id("anchor")
+        self.items.append(
+            {
+                "item_id": anchor_id,
+                "action": "add",
+                **parent,
+                "slot_id": anchor_slot,
+                "text": anchor_text,
+            }
+        )
+        for slot_id in template_slots or list(normalized):
+            texts = normalized.get(slot_id)
+            if texts:
+                self._place({"parent_item_id": anchor_id}, slot_id, texts, {})
+            else:
+                # 새 앵커는 템플릿 칸을 모두 펼친다(빈 칸은 가이드 문구로 보인다).
+                self.items.append(
+                    {
+                        "item_id": self._next_id("slot"),
+                        "action": "add",
+                        "parent_item_id": anchor_id,
+                        "slot_id": slot_id,
+                        "text": None,
+                    }
+                )
+        for slot_id, texts in normalized.items():
+            if template_slots and slot_id not in template_slots:
+                self._place({"parent_item_id": anchor_id}, slot_id, texts, {})
+
+    def build(self, lines: dict[str, str], assignments: dict[str, dict]) -> list[dict]:
+        flat: dict[str, dict[str, list[str]]] = {}
+        episodes: dict[tuple[str, str], dict[str, list[str]]] = {}
+        for line_id, text in lines.items():
+            assignment = assignments.get(line_id)
+            if assignment is None:
+                continue
+            slot_id = assignment["slot_id"]
+            section = slot_id.split(".")[0]
+            if section in self.anchor_slots:
+                key = (section, assignment.get("episode") or f"auto_{section}")
+                episodes.setdefault(key, {}).setdefault(slot_id, []).append(text)
+            else:
+                flat.setdefault(section, {}).setdefault(slot_id, []).append(text)
+
+        for section, slots in flat.items():
+            parent, container = self._parent_of_section(section)
+            existing = self._child_slots(container) if container else {}
+            for slot_id, texts in slots.items():
+                self._place(parent, slot_id, texts, existing)
+        for (section, _episode), slots in episodes.items():
+            self._place_episode(section, slots)
+        return self.items
+
+
+def build_file_items(
+    lines: dict[str, str],
+    assignments: dict[str, dict],
+    state: ExperienceMapState,
+    catalog: TemplateCatalog,
+) -> list[dict]:
+    """파일 줄 배정을 `structured_items`(StructuredItem dict 목록)로 바꾼다."""
+    return _TreeBuilder(state, catalog).build(lines, assignments)

@@ -120,6 +120,10 @@ class ExperienceMapState(TypedDict, total=False):
     gap_answer_items: list[dict[str, Any]]
     new_items: list[dict[str, Any]]
     excluded_reasons: list[str]
+    # 파일 전용 경로: 줄 id → 원문, 줄 id → {slot_id, episode}, 무관해서 뺀 줄 수
+    file_lines: dict[str, str]
+    file_assignments: dict[str, dict[str, Any]]
+    file_excluded_count: int
 
     # ===== 중간 산출 =====
     structured_items: list[dict[str, Any]]
@@ -170,6 +174,9 @@ TURN_FIELD_DEFAULTS: dict[str, Any] = {
     "gap_answer_items": [],
     "new_items": [],
     "excluded_reasons": [],
+    "file_lines": {},
+    "file_assignments": {},
+    "file_excluded_count": 0,
     "structured_items": [],
     "refined_items": [],
     "gap_update_item": None,
@@ -195,6 +202,8 @@ CLEANUP_FIELDS: tuple[str, ...] = (
     "extracted_files",
     "extracted_text",
     "outline",
+    "file_lines",
+    "file_assignments",
     "structured_items",
     "refined_items",
 )

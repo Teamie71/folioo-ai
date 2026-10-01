@@ -465,3 +465,10 @@ def test_result_response_uses_section_kind_for_prefilled_category():
         "- 상세정보 아래 1개의 블록 수정\n"
         "- 상세정보 아래 1개의 블록 생성"
     )
+
+
+def test_result_response_reports_excluded_file_lines():
+    """파일 전용 경로가 무관한 줄을 뺐으면 몇 줄인지 알린다."""
+    message = build_result_response(state() | {"file_excluded_count": 7}, result())
+
+    assert message.endswith("첨부 파일에서 경험과 관련 없는 내용 7줄은 제외했어요.")

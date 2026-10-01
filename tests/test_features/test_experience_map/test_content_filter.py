@@ -10,6 +10,15 @@ from features.experience_map.prompts.content_filter import build_gap_section
 from features.experience_map.schemas import ContentFilterOutput
 from features.experience_map.state import start_turn
 
+
+@pytest.fixture(autouse=True)
+def _legacy_file_path(monkeypatch):
+    """이 파일은 채팅 경로의 LLM 분류를 검증한다. 파일 전용 경로는 test_file_pipeline.py."""
+    from features.experience_map.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "file_pipeline_enabled", False)
+
+
 SESSION_ID = "d9428888-122b-11e1-b85c-61cd3cbb3210"
 REQUEST_ID = "550e8400-e29b-41d4-a716-446655440000"
 
