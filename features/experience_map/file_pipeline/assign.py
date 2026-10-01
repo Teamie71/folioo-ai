@@ -196,13 +196,27 @@ async def assign_lines(lines: list[str], catalog: TemplateCatalog) -> FileAssign
         context = [line_map[i] for i in line_ids[:start] if heading_like(line_map[i])][-3:]
         jobs.append(_assign_chunk(llm, catalog, line_map, chunk, context))
     gate_chain = document_gate_prompt | llm.with_structured_output(DocumentGate)
-    gate_job = gate_chain.ainvoke({"document": "\n".join(lines)[:GATE_MAX_CHARS]})
-    gate, *chunk_results = await asyncio.gather(gate_job, *jobs)
+    # 관문과 배정을 동시에 시작하되 관문 결과를 먼저 기다린다. 경험 문서가 아니면
+    # 아직 도는 배정 호출을 취소해 바로 끝낸다 — 6쪽 문제지에서 관문은 2초 안에
+    # 판정했는데 배정을 다 기다리느라 14초가 걸렸다(로컬 측정).
+    assign_tasks = [asyncio.create_task(job) for job in jobs]
+    try:
+        gate: DocumentGate = await gate_chain.ainvoke(
+            {"document": "\n".join(lines)[:GATE_MAX_CHARS]}
+        )
+    except BaseException:
+        for task in assign_tasks:
+            task.cancel()
+        raise
     logger.info(
         "file_assign: 문서 관문 %s (%s) — %s", gate.is_experience, gate.doc_type, gate.reason
     )
     if not gate.is_experience:
+        for task in assign_tasks:
+            task.cancel()
+        await asyncio.gather(*assign_tasks, return_exceptions=True)
         return FileAssignment(is_experience=False, doc_type=gate.doc_type, lines=line_map)
+    chunk_results = await asyncio.gather(*assign_tasks)
 
     by_id: dict[str, LineAssignment] = {}
     for result in chunk_results:
