@@ -14,6 +14,20 @@ _TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{2,}")
 _TERMINAL = re.compile(r"(?:[.!?。)）%|]|다|요|음|함|됨|임)\s*$")
 _MID_SENTENCE = re.compile(r"(?:[어고며서는은을를의에과와로이가및,·]|하여|하고|해서)\s*$")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+(?=\S)")
+_HEADING_PREV_JOIN = re.compile(r"(?:[을를의,]|에서|으로|하여|하며|해서|하고|[가-힣]는)\s*$")
+"""제목처럼 짧은 앞 줄도 이 어미로 끝나면 문장이 이어진다("…되어야 함을" + "배웠습니다.").
+"과·가·로"처럼 명사 끝("성과", "평가")과 겹치는 글자는 넣지 않는다."""
+_PARTICLE_START = re.compile(r"^(?:[을를은는이가의에와과로]|으로|에서)\s")
+"""조사로 시작하는 줄은 앞 줄에서 끊긴 것이다("클릭률(CTR)" + "을 높였습니다.")."""
+_CAPTION = re.compile(r"^\s*[▲▼△▽]")
+"""사진 설명. 앞뒤 줄과 잇지 않는다."""
+_TRAILING_PAREN = re.compile(r"\s*\([^()]*\)\s*$")
+_ENUMERATOR = re.compile(r"(?:^|\s)(?:[A-Za-z]{1,8}\s?)?\d{1,2}[.)]$")
+"""문장 나누기로 떨어진 번호 표시("P1.", "Project 2.", "3."). 다음 조각에 붙인다."""
+_PUNCTUATION_ONLY = re.compile(r"^[\W_]+$")
+"""PDF 목록 번호가 "1", ".", "Hook: …"으로 쪼개질 때 남는 문장부호만 있는 줄."""
+_SYSTEM_NOTE = re.compile(r"\[(?:페이지가 많아|내용이 길어)[^\]]*\]")
+"""파일처리 단계가 원문 뒤에 붙이는 잘림 안내문(extractors). 원문 내용이 아니다."""
 
 HEADING_MAX_CHARS = 30
 """제목으로 볼 수 있는 줄의 최대 길이. 이보다 길면 내용으로 본다."""
@@ -46,6 +60,21 @@ _REQUEST_PHRASE = re.compile(r"정리해\s*(?:주세요|줘|주라)|정리\s*부
 "2번 프로젝트만 정리해줘"처럼 지시가 함께 들어 있어 칸 배정 LLM이 지시로 읽어야 한다."""
 
 
+_PROJECT_TITLE = re.compile(
+    r"^\s*(?:P|Project|PROJECT|Part|PART|Case|CASE|프로젝트)\s?(\d{1,2})(?!\d)"
+)
+
+
+def project_number(line: str) -> int | None:
+    """ "P2. 굿즈 공동구매", "Project 2. 학과 굿즈 공동구매"처럼 프로젝트 번호로 시작하는 줄의 번호.
+
+    포트폴리오는 앞쪽 목차와 본문, 그리고 페이지마다 같은 프로젝트를 번호로 다시
+    적는다. 번호가 같으면 같은 프로젝트다.
+    """
+    match = _PROJECT_TITLE.match(line)
+    return int(match.group(1)) if match else None
+
+
 @dataclass(frozen=True)
 class SplitDocument:
     """나눈 결과. `lines`는 배정 대상, `noise`는 코드가 확실한 노이즈로 뺀 줄."""
@@ -59,8 +88,10 @@ def heading_like(line: str) -> bool:
     if _BULLET.match(line) and not _NUMBERED.match(line):
         return False
     body = re.sub(r"^\s*(?:\d+[.)]\s*|#+\s*)", "", line)
+    # "문제 진단 (Analysis)"처럼 끝의 괄호 설명은 문장 끝으로 보지 않는다.
+    stem = _TRAILING_PAREN.sub("", body) or body
     return len(body) <= HEADING_MAX_CHARS and (
-        not _TERMINAL.search(body) or body.rstrip().endswith("?")
+        not _TERMINAL.search(stem) or body.rstrip().endswith("?")
     )
 
 
@@ -110,15 +141,22 @@ def _expand_tables(lines: list[str]) -> list[str]:
 def _joins_previous(previous: str, line: str) -> bool:
     """PDF 줄바꿈으로 끊긴 문장의 다음 줄인지 본다.
 
-    앞 줄이 문장 끝으로 끝나지 않았고, 이번 줄이 불릿·구획 이름이 아니어야 한다.
+    앞 줄이 문장 끝으로 끝나지 않았고, 이번 줄이 불릿·구획 이름·사진 설명이 아니어야
+    한다. 조사로 시작하는 줄은 항상 잇는다.
     이번 줄이 제목처럼 짧으면 앞 줄이 연결 어미("…이끌어")로 끝날 때만 잇는다 —
     "…판단" 다음의 "배운 점"을 이어 붙이지 않기 위해서다.
     """
-    if _BULLET.match(line) or heading_like(previous) or _TERMINAL.search(previous):
+    if _BULLET.match(line) or _CAPTION.match(previous) or _CAPTION.match(line):
         return False
     if is_code_noise(previous) or is_code_noise(line):
         return False  # 쪽 번호("- 1 -") 뒤 본문이 이어 붙으면 본문까지 노이즈로 빠진다
     if ": " in line[:12] or is_section_name(line):
+        return False
+    if _PARTICLE_START.match(line):
+        return True
+    if _TERMINAL.search(previous):
+        return False
+    if heading_like(previous) and not _HEADING_PREV_JOIN.search(previous):
         return False
     return not heading_like(line) or bool(_MID_SENTENCE.search(previous))
 
@@ -126,11 +164,17 @@ def _joins_previous(previous: str, line: str) -> bool:
 def split_document(text: str, *, drop_request_phrases: bool = True) -> SplitDocument:
     """원문을 배정 단위로 나누고 확실한 노이즈를 뺀다.
 
-    여러 문장이 한 줄에 있으면 문장마다 나눈다("Q." 같은 두 글자 이하 조각은 다음
-    문장에 붙인다). 원문 문자는 고치지 않고 공백·줄 경계만 바꾼다.
+    여러 문장이 한 줄에 있으면 문장마다 나눈다("Q.", "P1." 같은 번호 조각은 다음
+    문장에 붙인다). 원문 문자는 고치지 않고 공백·줄 경계만 바꾼다. 파일처리 단계의
+    잘림 안내문과 문장부호만 있는 줄은 뺀다.
     """
+    text = _SYSTEM_NOTE.sub("", text)
     raw_lines = [line.strip() for line in text.splitlines()]
-    raw_lines = [line for line in raw_lines if line and not _TABLE_SEPARATOR.match(line)]
+    raw_lines = [
+        line
+        for line in raw_lines
+        if line and not _TABLE_SEPARATOR.match(line) and not _PUNCTUATION_ONLY.match(line)
+    ]
 
     units: list[str] = []
     for line in _expand_tables(raw_lines):
@@ -144,7 +188,7 @@ def split_document(text: str, *, drop_request_phrases: bool = True) -> SplitDocu
         parts = [part.strip() for part in _SENTENCE_BOUNDARY.split(unit) if part.strip()]
         merged: list[str] = []
         for part in parts:
-            if merged and len(merged[-1]) <= 2:
+            if merged and (len(merged[-1]) <= 2 or _ENUMERATOR.search(merged[-1])):
                 merged[-1] = f"{merged[-1]} {part}"
             else:
                 merged.append(part)

@@ -15,7 +15,11 @@ from pydantic import BaseModel, Field
 
 from common.llm import get_experience_map_llm
 from features.experience_map.config import get_settings
-from features.experience_map.file_pipeline.split import heading_like, is_section_name
+from features.experience_map.file_pipeline.split import (
+    heading_like,
+    is_section_name,
+    project_number,
+)
 from features.experience_map.prompts.file_assign import (
     EXCLUDE_SLOT,
     HEADING_SLOT,
@@ -37,6 +41,9 @@ MESSAGE_ID_PREFIX = "m_"
 
 CHUNK_LINES = 40
 """한 번의 배정 호출에 맡기는 줄 수. 넘으면 제목 경계에서 나눠 병렬로 부른다."""
+
+LISTING_GAP = 4
+"""프로젝트 제목 줄이 이 줄 수 안에 또 있으면 목차로 보고 그 사이에서 청크를 자르지 않는다."""
 
 GATE_MAX_CHARS = 12_000
 """문서 관문에 보내는 원문 길이 상한. 경험 문서인지 판단하는 데는 앞부분으로 충분하다."""
@@ -100,14 +107,32 @@ class FileAssignment:
 
 
 def _chunks(line_ids: list[str], lines: dict[str, str]) -> list[list[str]]:
-    """긴 문서를 제목 줄 경계에서 약 CHUNK_LINES줄씩 자른다."""
+    """긴 문서를 제목 줄 경계에서 약 CHUNK_LINES줄씩 자른다.
+
+    프로젝트 제목 줄("Project 3. …")이 있으면 그 앞에서 먼저 자른다. 프로젝트 중간에서
+    자르면 다음 청크가 소제목을 새 업무로 열었다(포트폴리오 PDF 로컬 재현). 프로젝트
+    제목이 몇 줄 간격으로 몰린 목차 안에서는 자르지 않는다 — 목차가 둘로 나뉘면 뒤쪽
+    목차 줄이 엉뚱한 프로젝트에 붙었다.
+    """
     if len(line_ids) <= CHUNK_LINES:
         return [line_ids]
+    project_rows = [i for i, line_id in enumerate(line_ids) if project_number(lines[line_id])]
+
+    def in_listing(index: int) -> bool:
+        return any(0 < abs(row - index) <= LISTING_GAP for row in project_rows)
+
     chunks: list[list[str]] = []
     current: list[str] = []
-    for line_id in line_ids:
-        at_heading = heading_like(lines[line_id])
-        if (len(current) >= CHUNK_LINES * 0.6 and at_heading) or len(current) >= CHUNK_LINES * 1.5:
+    for index, line_id in enumerate(line_ids):
+        text = lines[line_id]
+        listing = in_listing(index)
+        at_project = project_number(text) is not None and not listing
+        at_heading = heading_like(text) and not listing
+        if (
+            (len(current) >= CHUNK_LINES * 0.4 and at_project)
+            or (len(current) >= CHUNK_LINES * 0.6 and at_heading)
+            or len(current) >= CHUNK_LINES * 1.5
+        ):
             chunks.append(current)
             current = []
         current.append(line_id)
@@ -199,6 +224,33 @@ def _stitch_chunk_episodes(chunks: list[list[str]], by_id: dict[str, LineAssignm
                 item.episode = last.episode
 
 
+def _single_summary(line_ids: list[str], by_id: dict[str, LineAssignment]) -> None:
+    """에피소드마다 대표(SUMMARY) 줄을 첫 줄 하나만 남긴다.
+
+    모델이 프로젝트 안의 소제목("협상 전략 (Leverage)")에도 SUMMARY를 붙여, 업무 제목
+    블록에 소제목이 줄줄이 이어 붙었다(포트폴리오 PDF 로컬 재현). 나머지는 같은
+    에피소드의 바로 다음 내용 줄 칸으로 옮긴다(없으면 바로 앞 줄 칸).
+    """
+    seen: set[str] = set()
+    ordered = [i for i in line_ids if i in by_id]
+    for position, line_id in enumerate(ordered):
+        item = by_id[line_id]
+        if not item.slot_id.endswith(".SUMMARY") or not item.episode:
+            continue
+        if item.episode not in seen:
+            seen.add(item.episode)
+            continue
+        same = [
+            by_id[i]
+            for i in ordered[position + 1 :] + ordered[:position][::-1]
+            if by_id[i].episode == item.episode
+            and by_id[i].slot_id.split(".")[0] == item.slot_id.split(".")[0]
+            and not by_id[i].slot_id.endswith(".SUMMARY")
+        ]
+        if same:
+            item.slot_id = same[0].slot_id
+
+
 def _demote_headings(lines: dict[str, str], by_id: dict[str, LineAssignment]) -> None:
     """구획 이름 줄과, 혼자뿐인 제목 모양 SUMMARY를 제목으로 돌린다."""
     episode_size: dict[str, int] = {}
@@ -274,6 +326,7 @@ async def assign_lines(
     for result in chunk_results:
         by_id.update(result)
     _stitch_chunk_episodes(chunks, by_id)
+    _single_summary(line_ids, by_id)
 
     instructions = [line_map[i] for i, item in by_id.items() if item.slot_id == INSTRUCTION_SLOT]
     if all(_is_plain_request(text) for text in instructions):

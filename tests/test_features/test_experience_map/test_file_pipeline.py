@@ -12,6 +12,7 @@ from features.experience_map.file_pipeline.assign import (
     LineAssignment,
     _VerifyOutput,
 )
+from features.experience_map.file_pipeline.split import project_number
 from features.experience_map.map_context import MapBlockRow, build_map_snapshot
 from features.experience_map.nodes import content_filter as filter_node
 from features.experience_map.nodes import structure as structure_node
@@ -130,6 +131,55 @@ def test_split_removes_code_noise():
     assert len(document.noise) == 4
 
 
+def test_split_drops_system_truncation_note():
+    document = split_document(
+        "- 부스 40개를 배치했다\n\n[페이지가 많아 앞 10페이지만 사용했습니다. 전체 15페이지 중 일부입니다.]"
+    )
+
+    assert document.lines == ["- 부스 40개를 배치했다"]
+
+
+def test_split_keeps_portfolio_layout_pieces_together():
+    """포트폴리오 PDF에서 깨지던 모양: 번호 조각, 목록 번호, 사진 설명, 조사로 시작하는 줄."""
+    document = split_document(
+        "SALES (판매) P1. 축제 주점 MD\n"
+        "▲ 주점 운영 현장\n문제 진단 (Analysis)\n"
+        "1\n.\nHook: 호기심 자극\n"
+        "실제 착용샷을 배치하여 클릭률(CTR)\n을 높였습니다.\n"
+        "정보 전달자가 되어야 함을\n배웠습니다."
+    )
+
+    assert document.lines == [
+        "SALES (판매) P1. 축제 주점 MD",
+        "▲ 주점 운영 현장",
+        "문제 진단 (Analysis)",
+        "Hook: 호기심 자극",
+        "실제 착용샷을 배치하여 클릭률(CTR) 을 높였습니다.",
+        "정보 전달자가 되어야 함을 배웠습니다.",
+    ]
+
+
+def test_project_number_reads_roadmap_and_body_titles():
+    assert project_number("P2. 굿즈 공동구매") == 2
+    assert project_number("Project 2. 학과 굿즈 공동구매") == 2
+    assert project_number("Pain Point: 비싸다") is None
+    assert project_number("2023년 축제") is None
+
+
+def test_chunks_do_not_cut_inside_project_listing():
+    roadmap = [f"P{n}. 프로젝트 {n}" for n in range(1, 7)]
+    body = [f"내용 {i}." for i in range(30)]
+    texts = ["표지"] + [line for title in roadmap for line in (title, "한 줄 요약")]
+    texts += ["Project 1. 프로젝트 1"] + body + ["Project 2. 프로젝트 2"] + body
+    lines = {f"it_{i}": text for i, text in enumerate(texts, 1)}
+
+    chunks = assign_module._chunks(list(lines), lines)
+
+    starts = [lines[chunk[0]] for chunk in chunks]
+    assert not any(start.startswith("P") and "Project" not in start for start in starts[1:])
+    assert "Project 2. 프로젝트 2" in starts
+
+
 # ===== 트리 만들기 =====
 
 
@@ -196,6 +246,56 @@ async def test_tree_promotes_first_line_when_episode_has_no_summary():
         "text": "결제 지연이 반복됐다.",
     }
     assert any(item["text"] == "N+1 쿼리가 원인이었다." for item in items[1:])
+
+
+def test_episode_keeps_only_first_summary_line():
+    """프로젝트 안 소제목에 붙은 SUMMARY는 바로 다음 내용 줄 칸으로 옮긴다."""
+    by_id = {
+        "it_1": LineAssignment(id="it_1", slot_id="TASK.SUMMARY", episode="it_1"),
+        "it_2": LineAssignment(id="it_2", slot_id="TASK.BASIC.EXECUTION", episode="it_1"),
+        "it_3": LineAssignment(id="it_3", slot_id="TASK.SUMMARY", episode="it_1"),
+        "it_4": LineAssignment(id="it_4", slot_id="TASK.BASIC.RESULT", episode="it_1"),
+    }
+
+    assign_module._single_summary(list(by_id), by_id)
+
+    assert [item.slot_id for item in by_id.values()] == [
+        "TASK.SUMMARY",
+        "TASK.BASIC.EXECUTION",
+        "TASK.BASIC.RESULT",
+        "TASK.BASIC.RESULT",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tree_merges_same_project_from_roadmap_and_repeated_headers():
+    """목차("P2.")·본문("Project 2.")·반복 머리글로 갈라진 같은 프로젝트를 한 업무로 합친다."""
+    catalog = await _catalog()
+    state = await _template_state()
+    lines = {
+        "it_1": "P2. 굿즈 공동구매",
+        "it_2": "원가 절감",
+        "it_3": "Project 2. 학과 굿즈 공동구매",
+        "it_4": "- 업체 15곳을 비교했다",
+        "it_5": "Project 2. 학과 굿즈 공동구매",
+        "it_6": "- 물량을 늘려 단가를 낮췄다",
+    }
+    assignments = {
+        "it_1": {"slot_id": "TASK.SUMMARY", "episode": "it_1"},
+        "it_2": {"slot_id": "TASK.BASIC.PURPOSE", "episode": "it_1"},
+        "it_3": {"slot_id": "TASK.SUMMARY", "episode": "it_3"},
+        "it_4": {"slot_id": "TASK.BASIC.EXECUTION", "episode": "it_3"},
+        "it_5": {"slot_id": "TASK.SUMMARY", "episode": "it_5"},
+        "it_6": {"slot_id": "TASK.BASIC.EXECUTION", "episode": "it_5"},
+    }
+
+    items = build_file_items(lines, assignments, state, catalog)
+
+    texts = [item["text"] for item in items if item.get("text")]
+    assert texts.count("Project 2. 학과 굿즈 공동구매") == 1
+    assert "P2. 굿즈 공동구매" not in texts
+    assert "- 업체 15곳을 비교했다\n- 물량을 늘려 단가를 낮췄다" in texts
+    assert "원가 절감" in texts
 
 
 # ===== 칸 배정 =====

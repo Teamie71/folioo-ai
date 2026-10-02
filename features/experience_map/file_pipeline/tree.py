@@ -8,6 +8,7 @@ import re
 from collections import Counter
 
 from features.experience_map.config import MAX_CONTENT_LENGTH
+from features.experience_map.file_pipeline.split import project_number
 from features.experience_map.nodes.refine import _bigram_overlap_ratio
 from features.experience_map.nodes.structure import (
     _EMPTY_SLOT_GUIDE_RE,
@@ -262,6 +263,7 @@ class _TreeBuilder:
     def build(self, lines: dict[str, str], assignments: dict[str, dict]) -> list[dict]:
         flat: dict[str, dict[str, list[str]]] = {}
         episodes: dict[tuple[str, str], dict[str, list[str]]] = {}
+        pending: dict[tuple[str, str], list[str]] = {}
         existing = self._existing_texts()
         skipped = 0
         for line_id, text in lines.items():
@@ -274,8 +276,29 @@ class _TreeBuilder:
             slot_id = assignment["slot_id"]
             section = slot_id.split(".")[0]
             if section in self.anchor_slots:
-                key = (section, assignment.get("episode") or f"auto_{section}")
-                episodes.setdefault(key, {}).setdefault(slot_id, []).append(text)
+                episode = assignment.get("episode") or f"auto_{section}"
+                # 포트폴리오는 목차("P2. 굿즈 공동구매")와 본문("Project 2. 학과 굿즈
+                # 공동구매"), 페이지마다 반복되는 머리글로 같은 프로젝트를 여러 번 적는다.
+                # 모델이 그때마다 새 에피소드를 열어(로컬 재현) 첫 줄이 같거나 프로젝트
+                # 번호가 같은 에피소드는 합친다.
+                head = lines.get(episode, episode)
+                number = project_number(head)
+                key = (section, f"project:{number}" if number is not None else _normalize(head))
+                group = episodes.setdefault(key, {})
+                anchor_slot = self.anchor_slots[section]
+                if (
+                    slot_id == anchor_slot
+                    and group.get(anchor_slot)
+                    and project_number(text) is None
+                ):
+                    # 합쳐진 에피소드의 대표 줄은 소제목이다. 바로 다음 줄 칸으로 보낸다.
+                    pending.setdefault(key, []).append(text)
+                    continue
+                if slot_id != anchor_slot and pending.get(key):
+                    group.setdefault(slot_id, []).extend(pending.pop(key))
+                texts = group.setdefault(slot_id, [])
+                if text not in texts:
+                    texts.append(text)
             else:
                 flat.setdefault(section, {}).setdefault(slot_id, []).append(text)
 
@@ -284,7 +307,18 @@ class _TreeBuilder:
             existing = self._child_slots(container) if container else {}
             for slot_id, texts in slots.items():
                 self._place(parent, slot_id, texts, existing)
+        for key, texts in pending.items():
+            # 뒤에 내용 줄이 없던 소제목은 대표 칸에 남긴다(원문을 버리지 않는다).
+            episodes[key].setdefault(self.anchor_slots[key[0]], []).extend(texts)
         for (section, _episode), slots in episodes.items():
+            anchor_slot = self.anchor_slots[section]
+            titles = [t for t in slots.get(anchor_slot, []) if project_number(t) is not None]
+            if len(titles) > 1:
+                # 같은 프로젝트 제목이 여러 번이면 가장 자세한 하나만 앵커로 쓴다.
+                keep = max(titles, key=len)
+                slots[anchor_slot] = [
+                    t for t in slots[anchor_slot] if t == keep or project_number(t) is None
+                ]
             self._place_episode(section, slots)
         self.skipped_duplicates = skipped
         return self.items
