@@ -21,6 +21,12 @@ _PARTICLE_START = re.compile(r"^(?:[을를은는이가의에와과로]|으로|�
 """조사로 시작하는 줄은 앞 줄에서 끊긴 것이다("클릭률(CTR)" + "을 높였습니다.")."""
 _CAPTION = re.compile(r"^\s*[▲▼△▽]")
 """사진 설명. 앞뒤 줄과 잇지 않는다."""
+_FACT = re.compile(
+    r"\d[\d,.]*\s*(?:만\s?원|억|원|%|건|명|개|°C|배|점|회|시간|분|초|위|kg|위안|달러)"
+    r"|[\"“][^\"”]{2,}[\"”]"
+)
+"""수치("250만원", "99.9°C")나 인용("공부할 곳이 없어요")이 든 줄. 짧아도 제목이 아니다 —
+포트폴리오 PDF의 지표 카드가 한 줄씩 떨어져 제목으로 버려졌다(실제 포트폴리오 재현)."""
 _TRAILING_PAREN = re.compile(r"\s*\([^()]*\)\s*$")
 _ENUMERATOR = re.compile(r"(?:^|\s)(?:[A-Za-z]{1,8}\s?)?\d{1,2}[.)]$")
 """문장 나누기로 떨어진 번호 표시("P1.", "Project 2.", "3."). 다음 조각에 붙인다."""
@@ -86,6 +92,8 @@ class SplitDocument:
 def heading_like(line: str) -> bool:
     """짧고 문장이 끝나지 않은 줄(또는 짧은 질문)인지 본다. 불릿 줄은 제목이 아니다."""
     if _BULLET.match(line) and not _NUMBERED.match(line):
+        return False
+    if _FACT.search(line) and project_number(line) is None:
         return False
     body = re.sub(r"^\s*(?:\d+[.)]\s*|#+\s*)", "", line)
     # "문제 진단 (Analysis)"처럼 끝의 괄호 설명은 문장 끝으로 보지 않는다.

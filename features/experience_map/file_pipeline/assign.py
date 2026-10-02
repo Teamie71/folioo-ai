@@ -251,6 +251,55 @@ def _single_summary(line_ids: list[str], by_id: dict[str, LineAssignment]) -> No
             item.slot_id = same[0].slot_id
 
 
+def _attach_to_projects(
+    lines: dict[str, str], line_ids: list[str], by_id: dict[str, LineAssignment]
+) -> None:
+    """프로젝트 제목이 둘 이상인 문서는 프로젝트 제목만 담당업무 대표 줄로 인정한다.
+
+    포트폴리오에서 모델이 프로젝트 안의 "Key: 협상, 원가 절감", "[고객 등급 정의]"
+    같은 줄에도 새 업무를 열었다(실제 포트폴리오 5건 중 4건). 프로젝트 밖 담당업무
+    에피소드는 바로 앞 프로젝트의 에피소드로 옮기고, 대표 줄은 같은 에피소드 다음 줄의
+    칸을 따른다.
+    """
+    ordered = [i for i in line_ids if i in by_id]
+    project_episode: dict[int, str] = {}
+    for line_id in ordered:
+        item = by_id[line_id]
+        number = project_number(lines[line_id])
+        if number is not None and item.slot_id == "TASK.SUMMARY" and item.episode:
+            project_episode.setdefault(number, item.episode)
+    if len(project_episode) < 2:
+        return
+
+    projects = set(project_episode.values())
+    current: str | None = None
+    for position, line_id in enumerate(ordered):
+        item = by_id[line_id]
+        number = project_number(lines[line_id])
+        if number is not None:
+            current = project_episode.get(number, current)
+            continue
+        if current is None or not item.slot_id.startswith("TASK.") or item.episode in projects:
+            continue
+        # 프로젝트 밖 에피소드(대표 줄이 있든 없든)는 바로 앞 프로젝트에 붙인다.
+        old_episode = item.episode
+        if item.slot_id == "TASK.SUMMARY":
+            item.slot_id = next(
+                (
+                    by_id[i].slot_id
+                    for i in ordered[position + 1 :]
+                    if by_id[i].episode == old_episode
+                    and by_id[i].slot_id.startswith("TASK.")
+                    and by_id[i].slot_id != "TASK.SUMMARY"
+                ),
+                "TASK.BASIC.EXECUTION",
+            )
+        for other in by_id.values():
+            if old_episode and other.episode == old_episode:
+                other.episode = current
+        item.episode = current
+
+
 def _demote_headings(lines: dict[str, str], by_id: dict[str, LineAssignment]) -> None:
     """구획 이름 줄과, 혼자뿐인 제목 모양 SUMMARY를 제목으로 돌린다."""
     episode_size: dict[str, int] = {}
@@ -327,6 +376,7 @@ async def assign_lines(
         by_id.update(result)
     _stitch_chunk_episodes(chunks, by_id)
     _single_summary(line_ids, by_id)
+    _attach_to_projects(line_map, line_ids, by_id)
 
     instructions = [line_map[i] for i, item in by_id.items() if item.slot_id == INSTRUCTION_SLOT]
     if all(_is_plain_request(text) for text in instructions):

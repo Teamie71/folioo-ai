@@ -12,7 +12,7 @@ from features.experience_map.file_pipeline.assign import (
     LineAssignment,
     _VerifyOutput,
 )
-from features.experience_map.file_pipeline.split import project_number
+from features.experience_map.file_pipeline.split import heading_like, project_number
 from features.experience_map.map_context import MapBlockRow, build_map_snapshot
 from features.experience_map.nodes import content_filter as filter_node
 from features.experience_map.nodes import structure as structure_node
@@ -265,6 +265,41 @@ def test_episode_keeps_only_first_summary_line():
         "TASK.BASIC.RESULT",
         "TASK.BASIC.RESULT",
     ]
+
+
+def test_short_fact_lines_are_not_headings():
+    """지표 카드("250만원")·인용 줄은 짧아도 제목으로 버리지 않는다."""
+    assert not heading_like("250만원")
+    assert not heading_like("99.9°C")
+    assert not heading_like('Q 배경: "공부할 곳이 없어요"')
+    assert heading_like("총 매출")
+    assert heading_like("Project 2. 학과 굿즈 공동구매")
+
+
+def test_project_document_attaches_stray_task_episodes_to_previous_project():
+    """프로젝트 제목이 둘 이상이면 프로젝트 밖 담당업무 묶음은 바로 앞 프로젝트에 붙는다."""
+    lines = {
+        "it_1": "Project 1. 축제 주점",
+        "it_2": "Key: 회전율",
+        "it_3": "메뉴를 4종으로 줄였다.",
+        "it_4": "• Hook: 1초 만에 반응 유도.",
+        "it_5": "Project 2. 공동구매",
+        "it_6": "업체 15곳을 비교했다.",
+    }
+    by_id = {
+        "it_1": LineAssignment(id="it_1", slot_id="TASK.SUMMARY", episode="it_1"),
+        "it_2": LineAssignment(id="it_2", slot_id="TASK.SUMMARY", episode="it_2"),
+        "it_3": LineAssignment(id="it_3", slot_id="TASK.BASIC.EXECUTION", episode="it_2"),
+        "it_4": LineAssignment(id="it_4", slot_id="TASK.BASIC.PURPOSE", episode="it_4"),
+        "it_5": LineAssignment(id="it_5", slot_id="TASK.SUMMARY", episode="it_5"),
+        "it_6": LineAssignment(id="it_6", slot_id="TASK.BASIC.EXECUTION", episode="it_5"),
+    }
+
+    assign_module._attach_to_projects(lines, list(lines), by_id)
+
+    assert [by_id[i].episode for i in lines] == ["it_1"] * 4 + ["it_5"] * 2
+    assert by_id["it_2"].slot_id == "TASK.BASIC.EXECUTION"
+    assert [i for i in lines if by_id[i].slot_id == "TASK.SUMMARY"] == ["it_1", "it_5"]
 
 
 @pytest.mark.asyncio
