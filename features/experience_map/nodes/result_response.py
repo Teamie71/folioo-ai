@@ -40,7 +40,7 @@ def build_result_response(state: ExperienceMapState, result: CommitResult) -> st
     if context.dropped_count:
         message = f"{message}\n\n{context.dropped_count}개는 글자 수 제한(500자)을 넘어 넣지 못했어요. 나눠서 입력해 주세요."
     if state.get("file_excluded_count"):
-        # 파일 전용 경로가 쪽 번호·연락처·다른 경험·자기소개처럼 이 경험과 무관한 줄을
+        # 파일 전용 경로가 쪽 번호·연락처·자기소개처럼 경험 서술이 아닌 줄을
         # 뺐다. 조용히 빼지 않고 몇 줄인지 알린다.
         message = (
             f"{message}\n\n첨부 파일에서 경험과 관련 없는 내용 "

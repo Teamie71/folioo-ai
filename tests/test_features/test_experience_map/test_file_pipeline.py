@@ -423,6 +423,71 @@ async def test_assign_applies_message_instruction_with_verification(
 
 
 @pytest.mark.asyncio
+async def test_other_experience_is_kept_unless_user_asks(monkeypatch, passthrough_prompts):
+    """다른 경험 줄은 무관 확인에서 남는다. 확인 모델이 후보 밖 줄까지 답해도 무시한다."""
+
+    def assign(payload):
+        if "ids" in payload:
+            return AssignOutput(items=[LineAssignment(id="it_2", slot_id="TASK.BASIC.SUMMARY")])
+        return AssignOutput(
+            items=[
+                LineAssignment(id="it_1", slot_id="LEARNING.GROWTH"),
+                LineAssignment(id="it_2", slot_id="EXCLUDE", reason="다른경험"),
+            ]
+        )
+
+    def verify(payload):
+        return _VerifyOutput(items=[{"id": "it_1", "keep": False}, {"id": "it_2", "keep": True}])
+
+    llm = _FakeLlm(DocumentGate(is_experience=True, doc_type="경험", reason="ok"), assign, verify)
+    monkeypatch.setattr(assign_module, "get_experience_map_llm", lambda **_: llm)
+
+    result = await assign_module.assign_lines(
+        ["데이터로 설득하는 법을 배웠다.", "2022년에는 카페 아르바이트를 했다."], await _catalog()
+    )
+
+    assert result.excluded == []
+    assert result.requested_excluded == []
+    assert set(result.assignments) == {"it_1", "it_2"}
+
+
+@pytest.mark.asyncio
+async def test_instruction_excludes_candidate_tagged_with_other_reason(
+    monkeypatch, passthrough_prompts
+):
+    """지시가 있으면 이유가 '사용자요청'이 아닌 후보도 지시 확인을 받아 뺄 수 있다."""
+
+    def assign(payload):
+        if "ids" in payload:
+            return AssignOutput(items=[])
+        return AssignOutput(
+            items=[
+                LineAssignment(id="m_1", slot_id="INSTRUCTION"),
+                LineAssignment(id="it_1", slot_id="LEARNING.GROWTH"),
+                LineAssignment(id="it_2", slot_id="EXCLUDE", reason="다른경험"),
+            ]
+        )
+
+    def verify(payload):
+        if "instructions" in payload:
+            return _VerifyOutput(items=[{"id": "it_2", "keep": False}])
+        return _VerifyOutput(items=[{"id": "it_2", "keep": True}])
+
+    llm = _FakeLlm(DocumentGate(is_experience=True, doc_type="경험", reason="ok"), assign, verify)
+    monkeypatch.setattr(assign_module, "get_experience_map_llm", lambda **_: llm)
+
+    result = await assign_module.assign_lines(
+        ["데이터로 설득하는 법을 배웠다.", "2022년에는 카페 아르바이트를 했다."],
+        await _catalog(),
+        ["카페 얘기는 빼줘"],
+    )
+
+    assert result.requested_excluded == ["2022년에는 카페 아르바이트를 했다."]
+    assert result.excluded == []
+    assert set(result.assignments) == {"it_1"}
+
+
+@pytest.mark.asyncio
 async def test_tree_skips_lines_already_in_activity():
     """같은 파일을 다시 올려도 이미 들어 있는 문장은 다시 넣지 않는다."""
     catalog = await _catalog()

@@ -45,13 +45,13 @@ GATE_MAX_CHARS = 12_000
 class LineAssignment(BaseModel):
     id: str
     slot_id: str = Field(
-        ..., description="카탈로그 slot_id, 문서 제목이면 HEADING, 이 경험과 무관하면 EXCLUDE"
+        ..., description="카탈로그 slot_id, 문서 제목이면 HEADING, 경험 서술이 아니면 EXCLUDE"
     )
     episode: str | None = Field(
         None, description="담당업무·문제해결이면 그 업무/에피소드의 첫 줄 id"
     )
     reason: str | None = Field(
-        None, description="EXCLUDE일 때만: 사용자요청/다른경험/자기소개/개인정보/문서메타/무관"
+        None, description="EXCLUDE일 때만: 사용자요청/자기소개/개인정보/문서메타/무관"
     )
 
 
@@ -365,9 +365,13 @@ async def _verify_exclusions(
 ) -> tuple[list[str], list[str]]:
     """제외 후보를 한 번 더 확인한다. 남기기로 한 줄은 다시 배정한다.
 
-    무관해서 뺀 후보는 "내용이 조금이라도 있으면 남긴다"로, 사용자 지시로 뺀 후보는
+    무관해서 뺀 후보는 "경험 서술이 조금이라도 있으면 남긴다"로, 사용자 지시로 뺀 후보는
     지시를 함께 보여주고 "지시상 빼야 하는 줄인가"로 확인한다 — 지시로 빼는 줄은 경험
     내용이 있어도 빼는 게 맞기 때문이다. 두 확인은 동시에 돈다.
+
+    메시지에 지시가 있으면 무관 후보도 지시 확인을 함께 받는다. 다른 경험은 무관 확인에서
+    남기는데, 모델이 "빼줘"로 뺀 줄에 이유를 "다른경험"처럼 달면 지시가 있어도 남았다
+    (로컬 재현, 5번 중 2번).
 
     Returns:
         (무관해서 제외 확정된 줄 id, 사용자 지시로 제외 확정된 줄 id)
@@ -390,20 +394,25 @@ async def _verify_exclusions(
         verdicts: _VerifyOutput = await chain.ainvoke(
             {"document": document, "candidates": _render(lines, ids), **extra}
         )
-        answered = {verdict.id for verdict in verdicts.items}
-        return {verdict.id for verdict in verdicts.items if verdict.keep} | {
-            i for i in ids if i not in answered
-        }
+        # 모델이 후보가 아닌 줄까지 답하는 경우가 있다. 후보 밖 답이 다른 확인 결과를
+        # 덮어쓰지 않게 후보 id만 본다.
+        verdict_by_id = {v.id: v.keep for v in verdicts.items if v.id in ids}
+        return {i for i in ids if verdict_by_id.get(i, True)}
 
+    unrelated_check_ids = unrelated_ids if instructions else []
     keep_unrelated, keep_requested = await asyncio.gather(
         verify(exclude_verify_prompt, unrelated_ids, {}),
         verify(
             requested_exclude_verify_prompt,
-            requested_ids,
+            requested_ids + unrelated_check_ids,
             {"instructions": "\n".join(instructions)},
         ),
     )
-    keep = keep_unrelated | keep_requested
+    # 무관 후보는 무관 확인이 남기라고 했어도 지시 확인이 빼라고 하면 사용자 요청으로 뺀다.
+    by_request = [i for i in unrelated_check_ids if i in keep_unrelated and i not in keep_requested]
+    requested_ids += by_request
+    unrelated_ids = [i for i in unrelated_ids if i not in by_request]
+    keep = (keep_unrelated - set(by_request)) | (keep_requested & set(requested_ids))
     if keep:
         retry_chain = reassign_prompt | llm.with_structured_output(AssignOutput)
         retry: AssignOutput = await retry_chain.ainvoke(
