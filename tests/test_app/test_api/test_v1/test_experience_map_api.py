@@ -613,6 +613,25 @@ async def test_cancel_already_completed_request_is_404(client, session, api_user
 
 
 @pytest.mark.asyncio
+async def test_cancel_returns_204_without_body(client, session, service, monkeypatch):
+    """중지 성공 응답은 본문이 비어 있어야 한다("null"이 실리면 Content-Length와 어긋난다)."""
+    session_id, auth = session
+
+    async def cancel_request(user_id, request_id):
+        return None
+
+    monkeypatch.setattr(service, "cancel_request", cancel_request)
+
+    response = await client.post(
+        f"/api/v1/experience-map/sessions/{session_id}/requests/{uuid.uuid4()}/cancel",
+        headers={"Authorization": auth},
+    )
+
+    assert response.status_code == 204
+    assert response.content == b""
+
+
+@pytest.mark.asyncio
 async def test_cancel_rejects_other_session_ticket(client, session, api_user_id):
     session_id, _ = session
     other = f"Bearer {make_ticket(api_user_id, str(uuid.uuid4()))}"
