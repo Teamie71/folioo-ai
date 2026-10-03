@@ -1,0 +1,363 @@
+"""경험정리 수동 검증용 내부 테스트 UI.
+
+운영 프론트의 대체물이 아니다. 메인 서버가 아직 티켓을 발급하지 않는 개발 환경에서
+실제 LLM·SSE·DB 흐름을 확인하기 위한 도구이며,
+`EXPERIENCE_MAP_TEST_UI_ENABLED=true`일 때만 앱에 등록한다.
+"""
+
+import os
+import secrets
+import time
+import uuid
+
+import jwt
+from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+
+from app.schemas.experience_map import CreateSessionRequest
+from features.experience_map.service import get_service
+from features.experience_map.test_runtime import get_test_map_store
+
+router = APIRouter(prefix="/experience-map/test", tags=["experience-map-test"])
+
+_TICKET_TTL_SECONDS = 1800
+
+
+def _require_api_key(request: Request) -> None:
+    """테스트 세션 발급 요청의 API 키를 검증한다."""
+    expected = os.getenv("AI_SERVICE_API_KEY", "")
+    provided = request.headers.get("X-API-Key", "")
+    if not expected or not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+
+def _issue_test_ticket(
+    user_id: str,
+    session_id: str,
+    block_id: str,
+    *,
+    scope: str = "read",
+    request_id: str | None = None,
+) -> str:
+    """테스트 UI에서만 쓰는 짧은 티켓을 발급한다.
+
+    메인 서버 2026-09-27 변경(`scope`·`rid`) 반영 — `scope="turn"`인 티켓만
+    새 턴(chat/stream·retry/stream)을 실행할 수 있고, 그 턴의 request_id는
+    이 티켓의 `rid`를 그대로 쓴다. 세션 생성 시 내려주는 기본 티켓은
+    `scope="read"`(조회 전용)이고, 턴을 실행하려면 `/test/ticket`에서 그때
+    그때 turn 티켓을 새로 받아야 한다.
+    """
+    secret = os.getenv("EXPMAP_TICKET_SECRET", "")
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="EXPMAP_TICKET_SECRET is not configured",
+        )
+
+    now = int(time.time())
+    claims = {
+        "sub": user_id,
+        "sid": session_id,
+        "bid": block_id,
+        "scope": scope,
+        "iat": now,
+        "exp": now + _TICKET_TTL_SECONDS,
+    }
+    if scope == "turn":
+        claims["rid"] = request_id or str(uuid.uuid4())
+    return jwt.encode(claims, secret, algorithm="HS256")
+
+
+@router.get("", include_in_schema=False, response_class=HTMLResponse)
+async def test_page() -> HTMLResponse:
+    """브라우저에서 경험정리 흐름을 수동 검증하는 페이지를 반환한다.
+
+    API 키를 페이지 소스에 심지 않는다 — 이 페이지가 Tailscale Funnel 등으로
+    외부에 공개될 수 있는데, HTML에 실제 키를 박아 두면 누구나 페이지 소스로
+    키를 보고 인증 없이 실제 LLM API를 호출해 과금을 유발할 수 있다. 빈
+    입력란으로 두고, 키는 이 서버를 운영하는 사람이 직접 붙여넣는다.
+    """
+    html_page = TEST_PAGE_HTML.replace('value="demo-key"', 'value=""')
+    return HTMLResponse(html_page)
+
+
+@router.post("/session")
+async def create_test_session(payload: CreateSessionRequest, request: Request) -> dict:
+    """테스트 페이지 전용 세션과 조회용(scope=read) 티켓을 만든다.
+
+    턴 실행에는 이 티켓을 못 쓴다(`403 ticket_scope_forbidden`) — 턴마다
+    `/experience-map/test/ticket`에서 그 턴의 request_id를 실은 turn
+    티켓을 새로 받아야 한다 (메인 서버 2026-09-27 변경).
+    """
+    _require_api_key(request)
+    await get_test_map_store().reset(payload.user_id)
+    session_id, session_status = await get_service().create_session(
+        payload.user_id, payload.block_id
+    )
+    return {
+        "session_id": session_id,
+        "status": session_status,
+        "ticket": _issue_test_ticket(payload.user_id, session_id, payload.block_id, scope="read"),
+        "expires_in_seconds": str(_TICKET_TTL_SECONDS),
+    }
+
+
+class _TurnTicketRequest(BaseModel):
+    user_id: str
+    session_id: str
+    block_id: str
+    request_id: str | None = None
+
+
+@router.post("/ticket")
+async def create_test_turn_ticket(payload: _TurnTicketRequest, request: Request) -> dict:
+    """새 턴(chat/stream·retry/stream) 하나를 실행할 turn 티켓을 발급한다.
+
+    `request_id`를 생략하면 새로 만들고, 실패한 턴을 재시도할 때는 그 턴의
+    request_id를 그대로 넘긴다 — retry/stream도 티켓의 rid로 request_id를
+    판단하므로 재시도 대상과 rid가 일치해야 한다.
+    """
+    _require_api_key(request)
+    request_id = payload.request_id or str(uuid.uuid4())
+    return {
+        "ticket": _issue_test_ticket(
+            payload.user_id,
+            payload.session_id,
+            payload.block_id,
+            scope="turn",
+            request_id=request_id,
+        ),
+        "request_id": request_id,
+        "expires_in_seconds": str(_TICKET_TTL_SECONDS),
+    }
+
+
+@router.get("/map/{user_id}")
+async def get_test_map(user_id: str, request: Request) -> dict:
+    """테스트 UI가 수정 대상 블록을 고를 수 있게 메모리 맵을 반환한다."""
+    _require_api_key(request)
+    if not user_id.isdecimal():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid user_id"
+        )
+    return await get_test_map_store().display_map(user_id)
+
+
+TEST_PAGE_HTML = r"""<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>경험정리 테스트 콘솔</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; background: #101218; color: #edf0f7; }
+    main { width: min(1680px, 100%); box-sizing: border-box; margin: 0 auto; padding: 24px 22px 40px; }
+    h1 { font-size: 24px; margin: 0 0 8px; } p { color: #abb4c5; line-height: 1.55; }
+    .workspace { display: grid; grid-template-columns: minmax(620px, 1.55fr) minmax(420px, .85fr); gap: 18px; align-items: start; }
+    section { box-sizing: border-box; background: #191d27; border: 1px solid #30384a; border-radius: 12px; padding: 18px; }
+    h2 { font-size: 16px; margin: 0 0 14px; }
+    label { display: grid; gap: 6px; font-size: 13px; color: #c7cedb; margin: 10px 0; }
+    input, textarea, select { box-sizing: border-box; width: 100%; border: 1px solid #475168; border-radius: 8px; background: #10131a; color: #eef2ff; padding: 10px; font: inherit; }
+    textarea { min-height: 104px; resize: vertical; }
+    button { border: 0; border-radius: 8px; padding: 10px 13px; margin: 5px 6px 0 0; background: #6e8cff; color: #09132c; font-weight: 700; cursor: pointer; }
+    button.secondary { background: #30394c; color: #e6ebf7; } button:disabled { opacity: .45; cursor: wait; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    #session { color: #8fe6b0; overflow-wrap: anywhere; font-size: 13px; }
+    .chat-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .chat-header h2 { margin: 0; } .status-dot { color: #8fe6b0; font-size: 12px; }
+    #chatHistory { height: 360px; overflow: auto; padding: 14px 4px; display: flex; flex-direction: column; gap: 10px; }
+    .bubble { max-width: 82%; border-radius: 14px; padding: 11px 13px; white-space: pre-wrap; line-height: 1.5; font-size: 14px; }
+    .bubble.user { align-self: flex-end; background: #526ed4; color: #fff; border-bottom-right-radius: 3px; }
+    .bubble.assistant { align-self: flex-start; background: #293044; border-bottom-left-radius: 3px; }
+    .bubble.system { align-self: center; background: transparent; color: #9eabc2; font-size: 12px; padding: 4px; text-align: center; }
+    .bubble.error { align-self: flex-start; background: #482a35; color: #ffb6bd; }
+    .composer { border-top: 1px solid #30384a; padding-top: 12px; }
+    .composer textarea { min-height: 90px; }
+    #events { min-height: 180px; max-height: 340px; overflow: auto; white-space: pre-wrap; background: #0b0d12; border: 1px solid #30384a; border-radius: 10px; padding: 14px; line-height: 1.45; font-size: 12px; }
+    #mapTree { box-sizing: border-box; height: max(620px, calc(100vh - 300px)); min-height: 620px; overflow: auto; white-space: pre-wrap; background: #0b0d12; border: 1px solid #30384a; border-radius: 10px; padding: 20px; line-height: 1.8; font-size: 14px; }
+    .runtime { border-left: 4px solid #6e8cff; background: #171c2a; border-radius: 8px; margin: 14px 0; padding: 11px 13px; font-size: 14px; }
+    .note { font-size: 13px; } .error { color: #ff9a9a; } .ok { color: #8fe6b0; }
+    summary { cursor: pointer; color: #c7cedb; margin-top: 12px; } details[open] summary { margin-bottom: 8px; }
+    @media (max-width: 1050px) { .workspace { grid-template-columns: 1fr; } #mapTree { height: 520px; min-height: 520px; } #chatHistory { height: 400px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>경험정리 테스트 콘솔</h1>
+  <p>테스트 전용 화면입니다. 세션·티켓은 브라우저 메모리에만 보관되며 페이지를 새로고침하면 사라집니다.</p>
+  <div id="runtime" class="runtime">서버 연결 상태를 확인하는 중입니다.</div>
+  <div class="workspace">
+    <section>
+      <h2>경험 맵</h2>
+      <p class="note">새 테스트 세션마다 내용 없는 맵에서 시작합니다. 에이전트가 정리한 결과는 이 메모리 맵에만 반영됩니다.</p>
+      <pre id="mapTree">세션을 시작하면 빈 경험 맵을 불러옵니다.</pre>
+      <details><summary>테스트 세션 설정</summary>
+        <label>AI 서비스 API 키<input id="apiKey" type="password" value="demo-key" autocomplete="off"></label>
+        <label>사용자 ID<input id="userId" value="9000001" inputmode="numeric"></label>
+        <label>화면<select id="view"><option value="list">list</option><option value="map">map</option></select></label>
+        <button id="createSession">새 테스트 세션</button>
+        <p id="session" class="note">세션을 시작하세요.</p>
+      </details>
+    </section>
+    <section>
+      <div class="chat-header"><h2>경험정리 에이전트</h2><span id="chatStatus" class="status-dot">● 세션 시작 전</span></div>
+      <div id="chatHistory"></div>
+      <div class="composer">
+        <label>연결할 활동<select id="block" disabled><option>세션을 시작하면 빈 맵을 불러옵니다.</option></select></label>
+        <label>경험 사실<textarea id="message" placeholder="정리할 경험의 사실을 처음부터 입력하세요."></textarea></label>
+        <p class="note">경험의 사실을 입력하세요 · Enter로 전송 · Shift+Enter로 줄바꿈</p>
+        <label>첨부 파일 (선택, 최대 1개)<input id="files" type="file"></label>
+        <button id="send" disabled>보내기</button><button id="retry" class="secondary" disabled>재시도</button><button id="state" class="secondary" disabled>상태</button>
+      </div>
+      <details><summary>디버그 SSE 이벤트 보기</summary><pre id="events">대기 중</pre></details>
+    </section>
+  </div>
+</main>
+<script>
+const state = { sessionId: null, ticket: null, requestId: null };
+const output = document.querySelector('#events');
+const runtime = document.querySelector('#runtime');
+const blockSelect = document.querySelector('#block');
+const mapTree = document.querySelector('#mapTree');
+const chatHistory = document.querySelector('#chatHistory');
+const chatStatus = document.querySelector('#chatStatus');
+const buttons = ['send', 'retry', 'state'].map(id => document.querySelector('#' + id));
+const log = (value, className = '') => {
+  const line = document.createElement('div'); line.textContent = value;
+  if (className) line.className = className; output.append(line); output.scrollTop = output.scrollHeight;
+};
+const addMessage = (role, value) => { const bubble = document.createElement('div'); bubble.className = `bubble ${role}`; bubble.textContent = value; chatHistory.append(bubble); chatHistory.scrollTop = chatHistory.scrollHeight; };
+const setChatStatus = value => { chatStatus.textContent = `● ${value}`; };
+const setBusy = busy => buttons.forEach(button => { button.disabled = busy || !state.sessionId; });
+const authHeaders = () => ({ Authorization: `Bearer ${state.ticket}` });
+// 턴(chat/stream·retry/stream)마다 그 턴의 request_id를 실은 turn 티켓을 새로
+// 받는다 (메인 서버 2026-09-27 변경) — 세션 생성 때 받은 티켓은 조회 전용
+// (scope=read)이라 턴 실행에 못 쓴다.
+async function mintTurnTicket(requestId) {
+  const response = await fetch('/experience-map/test/ticket', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': document.querySelector('#apiKey').value },
+    body: JSON.stringify({ user_id: document.querySelector('#userId').value, session_id: state.sessionId, block_id: state.blockId, request_id: requestId }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+const setRuntime = (message, className = '') => { runtime.textContent = message; runtime.className = `runtime ${className}`; };
+
+async function refreshMap() {
+  const response = await fetch(`/experience-map/test/map/${document.querySelector('#userId').value}`, { headers: { 'X-API-Key': document.querySelector('#apiKey').value } });
+  if (!response.ok) throw new Error(await response.text());
+  const map = await response.json(); blockSelect.textContent = ''; let tree = `map_version: ${map.map_version}\n`;
+  for (const activity of map.activities) {
+    tree += `\n${activity.tree}\n`;
+    // context_experience_id는 레벨2 활동 ID만 받는다 (설계 문서 3.4 target_activity —
+    // "이번 요청이 수정할 level 2 활동 하나를 고른다"). 하위 블록(b_1, b_2 ...)은
+    // 서버가 문장 내용을 보고 알아서 배정하므로, 여기서 하위 블록별로 옵션을
+    // 나누면 "이 슬롯을 채운다"는 오해를 유발한다 — 활동 단위로만 고른다.
+    const option = document.createElement('option'); option.textContent = activity.title;
+    option.dataset.activityId = activity.id; blockSelect.append(option);
+  }
+  blockSelect.disabled = false; mapTree.textContent = tree;
+}
+
+async function checkHealth() {
+  try {
+    const response = await fetch('/health');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const health = await response.json();
+    setRuntime(`서버 연결됨 · DB ${health.experience_map_db} · Checkpointer ${health.checkpointer} · 세션을 시작하세요.`, 'ok');
+  } catch (error) { setRuntime(`서버 연결 실패: ${error.message}`, 'error'); log(`서버 상태 조회 오류: ${error.message}`, 'error'); }
+}
+
+async function readSse(response) {
+  if (!response.ok) throw new Error(await response.text());
+  const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let terminalEvent = null;
+  while (true) {
+    const { value, done } = await reader.read(); if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split(/\r?\n\r?\n/); buffer = blocks.pop();
+    for (const block of blocks) {
+      const event = block.match(/^event:\s*(.+)$/m)?.[1] || 'message';
+      const data = block.match(/^data:\s*(.+)$/m)?.[1];
+      if (!data) continue;
+      let payload;
+      try { payload = JSON.parse(data); }
+      catch { log(`[${event}] ${data}`); continue; }
+      log(`[${event}] ${JSON.stringify(payload, null, 2)}`);
+      if (event === 'message_complete') addMessage('assistant', payload.message.ai_response);
+      if (event === 'node_status') setChatStatus(`${payload.node} ${payload.status}`);
+      if (event === 'processing_complete') terminalEvent = 'processing_complete';
+      if (event === 'error') {
+        terminalEvent = 'error'; addMessage('error', `요청 실패: ${payload.error.message}`);
+        await reader.cancel(); throw new Error(payload.error.message);
+      }
+    }
+  }
+  if (terminalEvent !== 'processing_complete') throw new Error('SSE 스트림이 완료 이벤트 없이 종료되었습니다.');
+}
+
+document.querySelector('#createSession').onclick = async () => {
+  const button = document.querySelector('#createSession'); button.disabled = true;
+  setRuntime('테스트 세션을 생성하는 중입니다.'); setChatStatus('세션 생성 중'); log('세션 생성 요청 전송');
+  try {
+    const response = await fetch('/experience-map/test/session', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': document.querySelector('#apiKey').value },
+      body: JSON.stringify({ user_id: document.querySelector('#userId').value, block_id: '200' })
+    });
+    if (!response.ok) throw new Error(await response.text());
+    const data = await response.json(); state.sessionId = data.session_id; state.ticket = data.ticket; state.blockId = '200'; state.requestId = null;
+    chatHistory.textContent = ''; document.querySelector('#message').value = ''; document.querySelector('#files').value = '';
+    await refreshMap();
+    document.querySelector('#session').textContent = `세션 준비됨: ${data.session_id} (티켓 ${data.expires_in_seconds}초)`;
+    document.querySelector('#session').className = 'note ok'; output.textContent = ''; log('빈 테스트 세션 생성 완료', 'ok'); setBusy(false); setChatStatus('대화 준비됨');
+    setRuntime('세션 준비 완료 · 실제 LLM으로 정리 버튼을 누르면 SSE 이벤트가 여기에 표시됩니다.', 'ok');
+  } catch (error) { document.querySelector('#session').textContent = `세션 생성 실패: ${error.message}`; document.querySelector('#session').className = 'note error'; setRuntime(`세션 생성 실패: ${error.message}`, 'error'); }
+  finally { button.disabled = false; }
+};
+
+document.querySelector('#send').onclick = async () => {
+  setBusy(true); setChatStatus('턴 티켓 발급 중');
+  let streamSucceeded = false;
+  try {
+    const turn = await mintTurnTicket(null); state.requestId = turn.request_id;
+    setChatStatus('에이전트가 생각 중'); setRuntime(`실제 LLM 요청 진행 중 · request_id: ${state.requestId}`); log(`요청 시작: ${state.requestId}`, 'ok');
+    const selected = blockSelect.selectedOptions[0];
+    const prompt = document.querySelector('#message').value;
+    addMessage('user', prompt); const form = new FormData(); form.append('request', JSON.stringify({ user_message: prompt, context_experience_id: selected?.dataset.activityId, view: document.querySelector('#view').value }));
+    for (const file of document.querySelector('#files').files) form.append('files', file);
+    await readSse(await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/chat/stream`, { method: 'POST', headers: { Authorization: `Bearer ${turn.ticket}` }, body: form }));
+    streamSucceeded = true;
+  } catch (error) { log(`오류: ${error.message}`, 'error'); addMessage('error', `요청 실패: ${error.message}`); setChatStatus('오류 발생'); setRuntime(`LLM 요청 실패: ${error.message}`, 'error'); }
+  finally { setBusy(false); if (streamSucceeded) { await refreshMap(); setChatStatus('대화 준비됨'); setRuntime(`요청 스트림 종료 · request_id: ${state.requestId} · 경험 맵을 갱신했습니다.`, 'ok'); } }
+};
+
+document.querySelector('#message').addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  if (!document.querySelector('#send').disabled) document.querySelector('#send').click();
+});
+
+document.querySelector('#retry').onclick = async () => {
+  if (!state.requestId) return log('재시도할 요청이 없습니다.', 'error'); setBusy(true); log(`재시도: ${state.requestId}`, 'ok');
+  try {
+    // 재시도 대상 턴과 같은 request_id를 rid로 실은 turn 티켓이 있어야 한다 —
+    // retry/stream도 이제 그 rid로 재시도 대상을 판단한다.
+    const turn = await mintTurnTicket(state.requestId);
+    await readSse(await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/retry/stream`, { method: 'POST', headers: { Authorization: `Bearer ${turn.ticket}` } }));
+  }
+  catch (error) { log(`오류: ${error.message}`, 'error'); } finally { setBusy(false); }
+};
+
+document.querySelector('#state').onclick = async () => {
+  try { const response = await fetch(`/api/v1/experience-map/sessions/${state.sessionId}/state`, { headers: authHeaders() }); if (!response.ok) throw new Error(await response.text()); const data = await response.json(); log(`[session_state] ${JSON.stringify(data, null, 2)}`, 'ok'); setRuntime(`세션 상태: ${data.status}${data.active_request_id ? ` · 실행 중 요청: ${data.active_request_id}` : ''}`, 'ok'); }
+  catch (error) { log(`상태 조회 오류: ${error.message}`, 'error'); }
+};
+
+log('테스트 콘솔 준비 완료 · 세션 시작 후 실제 LLM으로 정리를 실행하세요.');
+checkHealth();
+</script>
+</body>
+</html>"""
+
+__all__ = ["router"]

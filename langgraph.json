@@ -1,7 +1,8 @@
 {
     "dependencies": ["."],
     "graphs": {
-        "interview-agent": "features.interview.agents.graph:graph"
+        "interview-agent": "features.interview.agents.graph:graph",
+        "experience-map-agent": "features.experience_map.graph:graph"
     },
     "env": ".env"
 }
