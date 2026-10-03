@@ -6,6 +6,7 @@ LLM이 원문을 다시 옮겨 적게 하면 한 글자만 달라도 원문 대�
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 _BULLET = re.compile(r"^\s*(?:[-•·*▪◦▶]\s|\d+[.)]\s|\[[^\[\]]{1,60}\]\s*$|\||A[.:]\s)")
@@ -71,6 +72,31 @@ _REQUEST_PHRASE = re.compile(r"정리해\s*(?:주세요|줘|주라)|정리\s*부
 _PROJECT_TITLE = re.compile(
     r"^\s*(?:P|Project|PROJECT|Part|PART|Case|CASE|프로젝트)\s?(\d{1,2})(?!\d)"
 )
+
+
+_MARKER_CHARS = frozenset("•·∙◦▪▫■□●○◆◇▶▷►▸‣⁃▲▼△▽→➔⇒✓✔✅☑※*")
+
+
+def strip_markers(line: str) -> str:
+    """줄 앞의 불릿·사진 설명·이모지 같은 장식 기호를 뗀다.
+
+    원문 줄을 그대로 블록에 넣으므로 "• 매출 300만원", "▲ 운영 현장"처럼 기호가 화면에
+    남았다(dev 제보). 문장 다듬기가 실패해 원문을 유지한 블록에서 특히 보였다. 숫자 앞
+    마이너스("-15%"), 번호("1."), 따옴표·괄호는 내용이라 남긴다.
+    """
+    index = 0
+    while index < len(line):
+        char = line[index]
+        nxt = line[index + 1] if index + 1 < len(line) else ""
+        if char.isspace() or char in _MARKER_CHARS or unicodedata.category(char) == "So":
+            index += 1
+        elif char in "-–—" and not nxt.isdigit():
+            index += 1
+        elif unicodedata.category(char) == "Mn" and index > 0:
+            index += 1  # 이모지 변형 선택자(U+FE0F)
+        else:
+            break
+    return line[index:]
 
 
 def project_number(line: str) -> int | None:
