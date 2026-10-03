@@ -8,7 +8,7 @@ import re
 from collections import Counter
 
 from features.experience_map.config import MAX_CONTENT_LENGTH
-from features.experience_map.file_pipeline.split import project_number
+from features.experience_map.file_pipeline.split import project_number, strip_markers
 from features.experience_map.nodes.refine import _bigram_overlap_ratio
 from features.experience_map.nodes.structure import (
     _EMPTY_SLOT_GUIDE_RE,
@@ -272,6 +272,9 @@ class _TreeBuilder:
                 continue
             if self._duplicate(text, existing):
                 skipped += 1
+                continue
+            text = strip_markers(text)
+            if not text:
                 continue
             slot_id = assignment["slot_id"]
             section = slot_id.split(".")[0]
