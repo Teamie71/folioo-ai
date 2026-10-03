@@ -8,7 +8,11 @@ import re
 from collections import Counter
 
 from features.experience_map.config import MAX_CONTENT_LENGTH
-from features.experience_map.file_pipeline.split import project_number, strip_markers
+from features.experience_map.file_pipeline.split import (
+    is_subheading,
+    project_number,
+    strip_markers,
+)
 from features.experience_map.nodes.refine import _bigram_overlap_ratio
 from features.experience_map.nodes.structure import (
     _EMPTY_SLOT_GUIDE_RE,
@@ -34,11 +38,24 @@ def _normalize(text: str) -> str:
 
 
 def _join(texts: list[str]) -> list[str]:
-    """같은 칸에 간 줄을 원문 순서대로 합치되, 최대 글자 수를 넘으면 다음 블록으로 넘긴다."""
-    blocks: list[str] = []
+    """같은 칸에 간 줄을 원문 순서대로 한 문단으로 합친다. 넘치면 다음 블록으로 넘긴다.
+
+    줄바꿈으로 이으면 문장 다듬기가 적용되지 않은 블록에 목록처럼 끊긴 줄이 그대로
+    보였다(dev 제보). 띄어쓰기로 잇고, 소제목 줄은 바로 다음 내용 앞에 "소제목: 내용"
+    으로 붙인다.
+    """
+    merged: list[str] = []
     for text in texts:
+        previous = merged[-1] if merged else ""
+        if previous and is_subheading(previous) and not is_subheading(text):
+            separator = " " if previous.rstrip().endswith((":", "：")) else ": "
+            merged[-1] = f"{previous.rstrip()}{separator}{text}"
+        else:
+            merged.append(text)
+    blocks: list[str] = []
+    for text in merged:
         if blocks and len(blocks[-1]) + 1 + len(text) <= MAX_CONTENT_LENGTH:
-            blocks[-1] = f"{blocks[-1]}\n{text}"
+            blocks[-1] = f"{blocks[-1]} {text}"
         else:
             blocks.append(text[:MAX_CONTENT_LENGTH])
     return blocks
@@ -188,7 +205,7 @@ class _TreeBuilder:
             anchor_texts = [normalized[first_slot].pop(0)]
             if not normalized[first_slot]:
                 normalized.pop(first_slot)
-        anchor_text = "\n".join(anchor_texts)[:MAX_CONTENT_LENGTH]
+        anchor_text = " ".join(anchor_texts)[:MAX_CONTENT_LENGTH]
 
         parent, container = self._parent_of_section(section)
         blank = self._blank_anchor(container, anchor_slot, set(normalized)) if container else None

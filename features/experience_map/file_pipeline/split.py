@@ -131,6 +131,14 @@ def heading_like(line: str) -> bool:
     )
 
 
+def is_subheading(line: str) -> bool:
+    """내용 없이 아래 내용의 머리말 역할만 하는 소제목인지 본다.
+
+    "기간: 2023.03 ~ 2023.06"처럼 콜론 뒤에 값이 있으면 짧아도 내용이다.
+    """
+    return heading_like(line) and not re.search(r"[:：]\s*\S", line)
+
+
 def is_section_name(line: str) -> bool:
     """ "## 문제 해결", "3. 주요 성과"처럼 구획 이름만 있는 줄인지 본다."""
     return re.sub(r"[^가-힣]", "", re.sub(r"^[\s#\d.)]*", "", line)) in SECTION_NAMES
