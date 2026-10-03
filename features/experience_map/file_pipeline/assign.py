@@ -20,6 +20,7 @@ from features.experience_map.file_pipeline.split import (
     is_section_name,
     project_number,
 )
+from features.experience_map.nodes.refine import _bigram_overlap_ratio
 from features.experience_map.prompts.file_assign import (
     EXCLUDE_SLOT,
     HEADING_SLOT,
@@ -46,6 +47,8 @@ LISTING_GAP = 4
 """프로젝트 제목 줄이 이 줄 수 안에 또 있으면 목차로 보고 그 사이에서 청크를 자르지 않는다."""
 
 GATE_MAX_CHARS = 12_000
+_PROBLEM_SENTENCE = re.compile(r"(?:시오|것은|의 값|\?)[\s.!]*$")
+"""문제지의 문제·지시문. 경험의 근거 문장으로 인정하지 않는다."""
 """문서 관문에 보내는 원문 길이 상한. 경험 문서인지 판단하는 데는 앞부분으로 충분하다."""
 
 
@@ -75,8 +78,13 @@ class AssignOutput(BaseModel):
 
 
 class DocumentGate(BaseModel):
+    evidence: list[str] = Field(
+        default_factory=list,
+        description="작성자가 직접 한 일·맡은 역할·배운 점을 서술한 원문 문장을 최대 3개 그대로 "
+        "인용. 문제·지문·공고·설명 문장은 넣지 않는다. 없으면 빈 목록",
+    )
     is_experience: bool = Field(
-        ..., description="작성자 본인이 직접 수행한 활동·프로젝트·업무·학습 경험을 서술하면 true"
+        ..., description="작성자 본인이 직접 수행한 활동·프로젝트·업무 경험을 서술하면 true"
     )
     doc_type: str = Field(
         ..., description="경험 정리/이력서/포트폴리오/시험지/채용공고/강의자료 등"
@@ -104,6 +112,24 @@ class FileAssignment:
     assignments: dict[str, dict] = field(default_factory=dict)
     excluded: list[str] = field(default_factory=list)
     requested_excluded: list[str] = field(default_factory=list)
+
+
+def _grounded(evidence: list[str], lines: list[str]) -> bool:
+    """관문이 든 근거 문장 중 하나라도 원문에 실제로 있고 문제·지시문이 아닌지 본다.
+
+    모델이 인용하며 불릿·문장부호를 바꾸는 일이 잦아, 원문 줄과 글자쌍이 80% 이상
+    겹치면 있는 것으로 본다.
+    """
+    document = re.sub(r"\s+", "", "\n".join(lines))
+    for quote in evidence:
+        body = re.sub(r"^[\s\-•·*\d.)]+|[\s.。!]+$", "", quote)
+        if len(re.sub(r"\s+", "", body)) < 8 or _PROBLEM_SENTENCE.search(quote.strip()):
+            continue
+        if re.sub(r"\s+", "", body) in document or any(
+            _bigram_overlap_ratio(body, line) >= 0.8 for line in lines
+        ):
+            return True
+    return False
 
 
 def _chunks(line_ids: list[str], lines: dict[str, str]) -> list[list[str]]:
@@ -364,6 +390,11 @@ async def assign_lines(
     logger.info(
         "file_assign: 문서 관문 %s (%s) — %s", gate.is_experience, gate.doc_type, gate.reason
     )
+    if gate.is_experience and not _grounded(gate.evidence, lines):
+        # "중간고사 대비 문제집이니 학습 경험"처럼 통과시킨 적이 있다(실제 문제지 재현).
+        # 작성자가 한 일을 쓴 문장을 원문에서 인용하지 못하면 경험 문서가 아니다.
+        logger.info("file_assign: 문서 관문 근거 문장 없음 %s", gate.evidence[:3])
+        gate.is_experience = False
     if not gate.is_experience:
         for task in assign_tasks:
             task.cancel()
