@@ -11,6 +11,7 @@ from app.schemas.experience_map import (
     ErrorEvent,
     ErrorEventPayload,
     MessageCompleteEvent,
+    NodeStatusEvent,
 )
 from features.experience_map.errors import (
     IdempotencyKeyReusedError,
@@ -59,11 +60,20 @@ class FakeRepository:
 class FakeExperience:
     """`prepare_chat`·`execute` 만 흉내 낸다."""
 
-    def __init__(self, user_id: str, *, events=None, busy_times: int = 0, hang: bool = False):
+    def __init__(
+        self,
+        user_id: str,
+        *,
+        events=None,
+        busy_times: int = 0,
+        hang: bool = False,
+        hang_after_events: bool = False,
+    ):
         self.repository = FakeRepository(user_id)
         self.events = events or []
         self.busy_times = busy_times
         self.hang = hang
+        self.hang_after_events = hang_after_events
         self.prepare_calls: list[dict] = []
         self.execute_calls = 0
         self.main_client = None
@@ -88,6 +98,8 @@ class FakeExperience:
             await asyncio.sleep(60)
         for event in self.events:
             yield event
+        if self.hang_after_events:
+            await asyncio.sleep(60)
 
 
 class FakeMainClient:
@@ -309,6 +321,52 @@ async def test_usage_failure_still_attempts_turn_complete(clean_db, user_id):
     assert h.journal == ["callback", "usage", "complete"]
     assert row.usage_reported is False  # 실패한 호출은 재시도 대상으로 남는다
     assert row.complete_notified is True
+
+
+@pytest.mark.asyncio
+async def test_failed_usage_report_is_retried_until_success(clean_db, user_id):
+    h = Harness(clean_db, user_id, events=[error_event()])
+    h.notifier.usage_ok = False
+    row = await h.accept_and_run(h.request())
+    assert row.usage_reported is False and row.complete_notified is True
+
+    h.notifier.usage_ok = True
+    await h.service.recover_once()
+
+    assert (await h.store.get(row.request_id)).usage_reported is True
+    assert h.notifier.usage_calls == 2
+    assert len(h.sent) == 1  # 정리 재시도가 콜백을 다시 보내지 않는다
+    await h.service.recover_once()
+    assert h.notifier.usage_calls == 2  # 성공한 뒤에는 더 부르지 않는다
+
+
+@pytest.mark.asyncio
+async def test_deadline_during_commit_is_commit_unknown_without_refund(clean_db, user_id):
+    h = Harness(
+        clean_db,
+        user_id,
+        events=[NodeStatusEvent(node="commit", status="running")],
+        hang_after_events=True,
+    )
+    h.main_client.result = False  # 지금 조회하면 아직 반영 전이라 false 로 보일 수 있다
+
+    row = await h.accept_and_run(h.request(expires_in=5.3))
+
+    assert row.state == "COMMIT_UNKNOWN"
+    assert h.notifier.usage_calls == 0
+    assert h.main_client.calls == 0  # 진행 중인 커밋을 바로 조회해 단정하지 않는다
+
+
+@pytest.mark.asyncio
+async def test_expired_recovery_checks_commit_of_dead_worker(clean_db, user_id):
+    h = Harness(clean_db, user_id, events=[result_event("완료")])
+    h.main_client.result = True  # 죽은 worker 가 기한 전에 커밋을 끝냈다
+
+    row = await h.accept_and_run(h.request(expires_in=-1))
+
+    assert row.state == "SUCCEEDED"
+    assert h.notifier.usage_calls == 0
+    assert h.experience.prepare_calls == []
 
 
 @pytest.mark.asyncio

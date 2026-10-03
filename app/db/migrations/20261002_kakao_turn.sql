@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS ai_kakao_turn (
 -- 미완료 턴 복구 스캔용
 CREATE INDEX IF NOT EXISTS idx_ai_kakao_turn_pending
   ON ai_kakao_turn(updated_at)
-  WHERE state IN ('ACCEPTED', 'RUNNING', 'COMMIT_UNKNOWN') OR complete_notified = false;
+  WHERE state IN ('ACCEPTED', 'RUNNING', 'COMMIT_UNKNOWN') OR complete_notified = false
+     OR (outcome IN ('FAILED', 'EXPIRED') AND usage_reported = false);
 
 -- 웹·카톡 메시지 구분. 기존 행은 모두 웹이다.
 ALTER TABLE ai_experience_message

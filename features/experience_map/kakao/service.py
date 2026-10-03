@@ -17,7 +17,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.schemas.experience_map import ErrorEvent, MessageCompleteEvent
+from app.schemas.experience_map import ErrorEvent, MessageCompleteEvent, NodeStatusEvent
 from features.experience_map.errors import (
     ExperienceMapError,
     InvalidRequestError,
@@ -223,22 +223,31 @@ class KakaoTurnService:
 
         remaining = (self._deadline(row) - self._now()).total_seconds()
         if remaining <= 0:
-            return "EXPIRED", failure  # 기한 뒤에는 새 실행을 시작하지 않는다.
+            # 기한 뒤에는 새 실행을 시작하지 않는다. 다만 죽은 worker 가 이미 커밋했을 수
+            # 있으므로(재시작 복구) 커밋 여부는 확인한 뒤 확정한다.
+            return await self._after_unsuccessful(row, "EXPIRED", web_url)
 
         prepared = None
         texts: list[str] = []
         error_code: str | None = None
+        commit_in_flight = False
         try:
             async with asyncio.timeout(remaining):
                 prepared = await self._claim_session(row)
                 async for event in self.experience.execute(prepared):
-                    if isinstance(event, MessageCompleteEvent):
+                    if isinstance(event, NodeStatusEvent) and event.node == "commit":
+                        commit_in_flight = event.status == "running"
+                    elif isinstance(event, MessageCompleteEvent):
                         texts.append(event.message.ai_response)
                     elif isinstance(event, ErrorEvent):
                         error_code = event.error.code
         except TimeoutError:
             logger.warning("카톡 턴 실행 기한 초과 (request_id=%s)", row.request_id)
             await self._release_request(row, prepared)
+            if commit_in_flight:
+                # 커밋 호출은 shield 되어 취소 뒤에도 계속 돈다. 지금 조회하면 아직 반영 전이라
+                # committed=false 가 나올 수 있어 환불하면 안 된다. 복구 루프가 나중에 확정한다.
+                return "COMMIT_UNKNOWN", kakao_callback.build_unknown_payload(web_url)
             return await self._after_unsuccessful(row, "EXPIRED", web_url)
         except ExperienceMapError as exc:
             logger.warning("카톡 턴 접수 실패 (request_id=%s, code=%s)", row.request_id, exc.code)

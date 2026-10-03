@@ -169,7 +169,8 @@ class KakaoTurnStore:
                    worker_lease_expires_at = now() + make_interval(secs => $3),
                    updated_at = now()
              WHERE request_id = $1
-               AND (state IN ('ACCEPTED', 'RUNNING', 'COMMIT_UNKNOWN') OR complete_notified = false)
+               AND (state IN ('ACCEPTED', 'RUNNING', 'COMMIT_UNKNOWN') OR complete_notified = false
+                    OR (outcome IN ('FAILED', 'EXPIRED') AND usage_reported = false))
                AND (worker_lease_expires_at IS NULL OR worker_lease_expires_at < now())
          RETURNING {TURN_COLUMNS}
             """,
@@ -319,13 +320,14 @@ class KakaoTurnStore:
     async def list_recoverable(self, limit: int = 20) -> list[str]:
         """이어받아야 할 턴의 request_id.
 
-        worker 실행권이 없거나 만료된 미종결 턴, 종결됐지만 완료 통지·한도 정리가 남은
-        턴이다. COMMIT_UNKNOWN 도 결과 확인을 위해 포함한다.
+        worker 실행권이 없거나 만료된 미종결 턴, 종결됐지만 완료 통지나 실패 한도 복구가
+        남은 턴이다 (두 호출 모두 성공할 때까지 재시도한다). COMMIT_UNKNOWN 도 결과 확인을 위해 포함한다.
         """
         records = await self._pool.fetch(
             """
             SELECT request_id FROM ai_kakao_turn
-             WHERE (state IN ('ACCEPTED', 'RUNNING', 'COMMIT_UNKNOWN') OR complete_notified = false)
+             WHERE (state IN ('ACCEPTED', 'RUNNING', 'COMMIT_UNKNOWN') OR complete_notified = false
+                    OR (outcome IN ('FAILED', 'EXPIRED') AND usage_reported = false))
                AND (worker_lease_expires_at IS NULL OR worker_lease_expires_at < now())
              ORDER BY updated_at
              LIMIT $1

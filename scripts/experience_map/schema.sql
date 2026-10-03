@@ -231,7 +231,8 @@ CREATE TABLE IF NOT EXISTS ai_kakao_turn (
 
 CREATE INDEX IF NOT EXISTS idx_ai_kakao_turn_pending
   ON ai_kakao_turn(updated_at)
-  WHERE state IN ('ACCEPTED', 'RUNNING', 'COMMIT_UNKNOWN') OR complete_notified = false;
+  WHERE state IN ('ACCEPTED', 'RUNNING', 'COMMIT_UNKNOWN') OR complete_notified = false
+     OR (outcome IN ('FAILED', 'EXPIRED') AND usage_reported = false);
 
 
 COMMIT;
