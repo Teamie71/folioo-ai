@@ -212,6 +212,19 @@ async def test_accept_rejects_disallowed_callback_host_before_creating_work(h):
 
 
 @pytest.mark.asyncio
+async def test_accept_rejects_with_4xx_when_web_url_missing(h, monkeypatch):
+    monkeypatch.delenv("KAKAO_WEB_EXPERIENCE_URL")
+    request = h.request()
+
+    with pytest.raises(kakao_service.KakaoNotConfiguredError) as exc_info:
+        await h.service.accept(SESSION_ID, request)
+
+    # 5xx 면 메인 서버가 접수 불명으로 보고 잠금·한도를 유지한다. 확정 거절이어야 한다.
+    assert exc_info.value.status_code in {400, 401, 403, 404, 422}
+    assert await h.store.get(request.request_id) is None
+
+
+@pytest.mark.asyncio
 async def test_accept_rejects_unknown_session_and_block_mismatch(h):
     with pytest.raises(SessionNotFoundError):
         await h.service.accept(str(uuid.uuid4()), h.request())

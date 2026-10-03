@@ -51,6 +51,14 @@ _RUNNING: set[asyncio.Task[None]] = set()
 CallbackSender = Callable[[str, dict[str, Any]], Awaitable[str]]
 
 
+class KakaoNotConfiguredError(ExperienceMapError):
+    """카톡 답변에 필요한 설정이 없음. 메인 서버가 확정 거절로 보고 보상하도록 4xx 로 응답한다."""
+
+    status_code = 400
+    code = "kakao_not_configured"
+    message = "카카오톡 대화 설정이 완료되지 않았습니다."
+
+
 def compute_request_hash(session_id: str, request: KakaoTurnRequest) -> str:
     """멱등성 판정용 해시. 세션과 모든 본문 필드를 포함한다. 비교 오류에 본문을 싣지 않는다."""
     payload = json.dumps(
@@ -120,7 +128,13 @@ class KakaoTurnService:
             kakao_callback.validate_callback_url(request.callback_url)
         except ValueError as exc:
             raise InvalidRequestError(str(exc)) from exc
-        get_web_experience_url()  # 미설정이면 확정 답변을 못 만든다. 접수 전에 드러낸다.
+        try:
+            # 미설정이면 확정 답변을 못 만든다. 5xx 는 메인 서버가 '접수 불명'으로 보고 잠금·한도를
+            # 붙잡아 두므로, 작업을 만들기 전에 명시적으로 거절해 바로 보상받게 한다.
+            get_web_experience_url()
+        except ValueError as exc:
+            logger.error("카톡 턴 접수 거절 - %s", exc)
+            raise KakaoNotConfiguredError() from exc
 
         session = await self.experience.repository.get_session(request.user_id, session_id)
         if session is None:

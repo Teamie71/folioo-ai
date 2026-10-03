@@ -181,6 +181,12 @@ async def lifespan(app: FastAPI):
             from features.experience_map.kakao.store import init_store as init_kakao_store
 
             init_kakao_store(pool)
+            try:
+                from features.experience_map.kakao.config import get_web_experience_url
+
+                get_web_experience_url()
+            except ValueError as exc:
+                logger.error("카톡 턴 접수가 모두 거절됩니다 - %s", exc)
             # 재시작·worker 사망으로 끊긴 카톡 턴과 남은 한도 정리·완료 통지를 이어받는다.
             kakao_recovery_task = asyncio.create_task(get_kakao_service().recovery_loop())
             logger.info("카톡 턴 복구 루프 시작")
