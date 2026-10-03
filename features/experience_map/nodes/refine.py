@@ -108,10 +108,29 @@ async def refine_text(state: ExperienceMapState) -> ExperienceMapState:
                     for chunk in chunks
                 )
             )
+            failed: list[dict] = []
             for chunk, result in zip(chunks, results, strict=True):
-                refined_content.update(
-                    {item.item_id: item for item in _validate_output(result.items, chunk)}
-                )
+                validated, failed_ids = _validate_output(result.items, chunk)
+                refined_content.update({item.item_id: item for item in validated})
+                failed.extend(item for item in chunk if item["item_id"] in failed_ids)
+            if failed:
+                # 모델이 item을 빠뜨리거나 검사에 걸린 결과를 내면 원문을 그대로 써서
+                # "~했습니다"가 "~함" 사이에 섞였다(dev 제보: 55개 중 14개, 대부분 누락).
+                # 실패한 item만 한 번 더 보낸다.
+                logger.info("refine: 실패한 %d개 item 재요청", len(failed))
+                try:
+                    retry: RefinementOutput = await chain.ainvoke(
+                        {
+                            "activity_tree": state["activity_tree_text"],
+                            "items": render_refinement_items(failed),
+                        }
+                    )
+                    retry_items = retry.items
+                except Exception:
+                    logger.warning("refine: 재요청 실패, 원문 어미만 맞춥니다", exc_info=True)
+                    retry_items = []
+                validated, _ = _validate_output(retry_items, failed)
+                refined_content.update({item.item_id: item for item in validated})
         # 빈 템플릿 슬롯은 LLM에 보내지 않는다. 모델이 null 자리를 임의로
         # 채우는 실패를 원천 차단하면서 validate 단계가 요구하는 전체 item
         # 집합은 코드가 결정론적으로 복원한다. 재사용 가능한 item은 지난
@@ -222,8 +241,14 @@ def _build_gap_update(state: ExperienceMapState) -> dict | None:
     }
 
 
-def _validate_output(output: list[RefinedItem], candidates: list[dict]) -> list[RefinedItem]:
-    """정제 결과를 원문에 대조하고 잘못된 item은 원문으로 안전하게 복구한다."""
+def _validate_output(
+    output: list[RefinedItem], candidates: list[dict]
+) -> tuple[list[RefinedItem], set[str]]:
+    """정제 결과를 원문에 대조하고 잘못된 item은 원문으로 안전하게 복구한다.
+
+    Returns:
+        (검증된 결과, 원문으로 복구한 item_id 집합)
+    """
     expected = {item["item_id"]: item["text"] for item in candidates}
     grouped: dict[str, list[RefinedItem]] = {}
     for item in output:
@@ -231,6 +256,7 @@ def _validate_output(output: list[RefinedItem], candidates: list[dict]) -> list[
             grouped.setdefault(item.item_id, []).append(item)
 
     validated: list[RefinedItem] = []
+    failed_ids: set[str] = set()
     for item_id, source_text in expected.items():
         matches = grouped.get(item_id, [])
         refined = matches[0].refined_text if len(matches) == 1 else None
@@ -273,8 +299,75 @@ def _validate_output(output: list[RefinedItem], candidates: list[dict]) -> list[
         if fallback_reason is not None:
             logger.warning("refine: %s은 원문을 유지합니다 (%s)", item_id, fallback_reason)
             refined = source_text
-        validated.append(RefinedItem(item_id=item_id, refined_text=refined))
-    return validated
+            failed_ids.add(item_id)
+        # 모델이 "~하였습니다"로 답하거나 원문("~했습니다")으로 돌아간 블록이 "~함"과
+        # 섞였다(dev 제보). 어미만 명사 종결로 맞춘다 — 내용 단어는 바꾸지 않는다.
+        validated.append(RefinedItem(item_id=item_id, refined_text=to_noun_ending(refined)))
+    return validated, failed_ids
+
+
+_HANGUL_BASE = 0xAC00
+_FINAL_COUNT = 28
+_FINAL_NONE, _FINAL_NIEUN, _FINAL_MIEUM, _FINAL_BIEUP = 0, 4, 16, 17
+_PAST_NOUN_ENDING = re.compile(r"(하였음|되었음|했음|됐음)(?=[.!]?(?:\s|$))")
+_SENTENCE_END = re.compile(r"(습니다|니다|다)(?=[.!]?(?:\s|$))")
+
+
+def _set_final(syllable: str, final: int) -> str:
+    code = ord(syllable) - _HANGUL_BASE
+    return chr(_HANGUL_BASE + code - code % _FINAL_COUNT + final)
+
+
+def _final_of(syllable: str) -> int | None:
+    code = ord(syllable) - _HANGUL_BASE
+    return code % _FINAL_COUNT if 0 <= code < 11172 else None
+
+
+def to_noun_ending(text: str) -> str:
+    """문장 끝 "~했습니다/~합니다/~했다/~한다"를 명사 종결("~했음/~함/~했음/~함")로 바꾼다.
+
+    정제를 끝내 못 한 원문만 이렇게 바꾼다. 어미만 바꾸고 내용 단어는 건드리지
+    않는다. 규칙에 맞지 않는 끝("크다", "좋다")은 그대로 둔다.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        start = match.start()
+        if start == 0:
+            return match.group(0)
+        stem = text[start - 1]
+        final = _final_of(stem)
+        if final is None:
+            return match.group(0)
+        ending = match.group(1)
+        if ending == "습니다":
+            return "음"  # 했습니다 → 했음, 있었습니다 → 있었음
+        if ending == "니다" and final == _FINAL_BIEUP:
+            return "\0"  # 합니다 → 함 (받침은 아래에서 바꾼다)
+        if ending == "다" and final == _FINAL_NIEUN:
+            return "\0"  # 한다 → 함
+        if ending == "다" and stem == "이":
+            return "\0"  # 이다 → 임
+        if ending == "다" and final in (20, 18):  # ㅆ, ㅄ
+            return "음"  # 했다 → 했음, 없다 → 없음
+        return match.group(0)
+
+    out: list[str] = []
+    last = 0
+    for match in _SENTENCE_END.finditer(text):
+        piece = replace(match)
+        if piece == match.group(0):
+            continue
+        prefix = text[last : match.start()]
+        if piece == "\0":
+            prefix = prefix[:-1] + _set_final(prefix[-1], _FINAL_MIEUM)
+            piece = ""
+        out.append(prefix + piece)
+        last = match.end()
+    out.append(text[last:])
+    return _PAST_NOUN_ENDING.sub(
+        lambda m: {"하였음": "함", "되었음": "됨", "했음": "함", "됐음": "됨"}[m.group(1)],
+        "".join(out),
+    )
 
 
 def next_node(state: ExperienceMapState) -> str:
