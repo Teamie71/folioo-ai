@@ -344,9 +344,16 @@ class _FakeLlm:
         self.assign = assign
         self.verify = verify
 
+    def _gate(self, payload):
+        # 경험 문서라고 답할 때는 실제 모델처럼 원문 문장을 근거로 든다.
+        if self.gate.is_experience and not self.gate.evidence:
+            longest = max(payload["document"].splitlines(), key=len)
+            return self.gate.model_copy(update={"evidence": [longest]})
+        return self.gate
+
     def with_structured_output(self, schema):
         if schema is DocumentGate:
-            return RunnableLambda(lambda _payload: self.gate)
+            return RunnableLambda(self._gate)
         if schema is _VerifyOutput:
             return RunnableLambda(self.verify)
         return RunnableLambda(self.assign)
@@ -377,6 +384,31 @@ async def test_assign_stops_when_document_is_not_an_experience(monkeypatch, pass
     assert result.is_experience is False
     assert result.doc_type == "시험지"
     assert result.assignments == {}
+
+
+@pytest.mark.asyncio
+async def test_gate_without_grounded_evidence_is_not_experience(monkeypatch, passthrough_prompts):
+    """관문이 경험이라고 해도 작성자가 한 일을 쓴 원문 문장을 못 대면 경험 문서가 아니다."""
+    gate = DocumentGate(
+        evidence=["5. lim x→∞ f(x)의 값을 구하시오."],
+        is_experience=True,
+        doc_type="문제집",
+        reason="중간고사 대비 학습",
+    )
+    llm = _FakeLlm(gate, lambda _payload: AssignOutput(items=[]))
+    monkeypatch.setattr(assign_module, "get_experience_map_llm", lambda **_: llm)
+
+    result = await assign_module.assign_lines(
+        ["2026년 2학기 중간고사 대비", "5. lim x→∞ f(x)의 값을 구하시오."], await _catalog()
+    )
+
+    assert result.is_experience is False
+
+
+def test_split_drops_private_use_math_glyphs():
+    document = split_document("함수 \ue044\ue045 의 값은?")
+
+    assert document.lines == ["함수  의 값은?"]
 
 
 @pytest.mark.asyncio
