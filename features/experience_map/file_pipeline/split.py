@@ -6,6 +6,7 @@ LLM이 원문을 다시 옮겨 적게 하면 한 글자만 달라도 원문 대�
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 _BULLET = re.compile(r"^\s*(?:[-•·*▪◦▶]\s|\d+[.)]\s|\[[^\[\]]{1,60}\]\s*$|\||A[.:]\s)")
@@ -73,6 +74,31 @@ _PROJECT_TITLE = re.compile(
 )
 
 
+_MARKER_CHARS = frozenset("•·∙◦▪▫■□●○◆◇▶▷►▸‣⁃▲▼△▽→➔⇒✓✔✅☑※*")
+
+
+def strip_markers(line: str) -> str:
+    """줄 앞의 불릿·사진 설명·이모지 같은 장식 기호를 뗀다.
+
+    원문 줄을 그대로 블록에 넣으므로 "• 매출 300만원", "▲ 운영 현장"처럼 기호가 화면에
+    남았다(dev 제보). 문장 다듬기가 실패해 원문을 유지한 블록에서 특히 보였다. 숫자 앞
+    마이너스("-15%"), 번호("1."), 따옴표·괄호는 내용이라 남긴다.
+    """
+    index = 0
+    while index < len(line):
+        char = line[index]
+        nxt = line[index + 1] if index + 1 < len(line) else ""
+        if char.isspace() or char in _MARKER_CHARS or unicodedata.category(char) == "So":
+            index += 1
+        elif char in "-–—" and not nxt.isdigit():
+            index += 1
+        elif unicodedata.category(char) == "Mn" and index > 0:
+            index += 1  # 이모지 변형 선택자(U+FE0F)
+        else:
+            break
+    return line[index:]
+
+
 def project_number(line: str) -> int | None:
     """ "P2. 굿즈 공동구매", "Project 2. 학과 굿즈 공동구매"처럼 프로젝트 번호로 시작하는 줄의 번호.
 
@@ -103,6 +129,14 @@ def heading_like(line: str) -> bool:
     return len(body) <= HEADING_MAX_CHARS and (
         not _TERMINAL.search(stem) or body.rstrip().endswith("?")
     )
+
+
+def is_subheading(line: str) -> bool:
+    """내용 없이 아래 내용의 머리말 역할만 하는 소제목인지 본다.
+
+    "기간: 2023.03 ~ 2023.06"처럼 콜론 뒤에 값이 있으면 짧아도 내용이다.
+    """
+    return heading_like(line) and not re.search(r"[:：]\s*\S", line)
 
 
 def is_section_name(line: str) -> bool:

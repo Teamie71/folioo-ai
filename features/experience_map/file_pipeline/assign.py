@@ -18,6 +18,7 @@ from features.experience_map.config import get_settings
 from features.experience_map.file_pipeline.split import (
     heading_like,
     is_section_name,
+    is_subheading,
     project_number,
 )
 from features.experience_map.nodes.refine import _bigram_overlap_ratio
@@ -326,6 +327,35 @@ def _attach_to_projects(
         item.episode = current
 
 
+def _heading_follows_content(
+    lines: dict[str, str], line_ids: list[str], by_id: dict[str, LineAssignment]
+) -> None:
+    """칸에 배정된 소제목 줄을 바로 아래 내용 줄과 같은 칸·에피소드로 옮긴다.
+
+    모델이 "클릭을 부르는 썸네일", "매너온도" 같은 소제목을 아래 내용과 다른 칸에
+    넣어, 소제목끼리만 모인 블록이 생겼다(dev 제보). 소제목은 아래 내용의 머리말이다.
+    """
+    ordered = [i for i in line_ids if i in by_id and not i.startswith(MESSAGE_ID_PREFIX)]
+    for position, line_id in enumerate(ordered):
+        item = by_id[line_id]
+        text = lines[line_id]
+        if (
+            "." not in item.slot_id
+            or item.slot_id.endswith(".SUMMARY")
+            or not is_subheading(text)
+            or project_number(text) is not None
+        ):
+            continue
+        for next_id in ordered[position + 1 : position + 4]:
+            following = by_id[next_id]
+            if "." not in following.slot_id or is_subheading(lines[next_id]):
+                continue
+            if not following.slot_id.endswith(".SUMMARY"):
+                item.slot_id = following.slot_id
+                item.episode = following.episode
+            break
+
+
 def _demote_headings(lines: dict[str, str], by_id: dict[str, LineAssignment]) -> None:
     """구획 이름 줄과, 혼자뿐인 제목 모양 SUMMARY를 제목으로 돌린다."""
     episode_size: dict[str, int] = {}
@@ -418,6 +448,7 @@ async def assign_lines(
         llm, catalog, line_map, line_ids, by_id, instructions
     )
     _demote_headings(line_map, by_id)
+    _heading_follows_content(line_map, line_ids, by_id)
     requested = requested + _scope_excluded(by_id, file_ids, scope, set(requested))
 
     dropped = set(excluded) | set(requested)

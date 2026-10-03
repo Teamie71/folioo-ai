@@ -12,7 +12,11 @@ from features.experience_map.file_pipeline.assign import (
     LineAssignment,
     _VerifyOutput,
 )
-from features.experience_map.file_pipeline.split import heading_like, project_number
+from features.experience_map.file_pipeline.split import (
+    heading_like,
+    project_number,
+    strip_markers,
+)
 from features.experience_map.map_context import MapBlockRow, build_map_snapshot
 from features.experience_map.nodes import content_filter as filter_node
 from features.experience_map.nodes import structure as structure_node
@@ -159,6 +163,37 @@ def test_split_keeps_portfolio_layout_pieces_together():
     ]
 
 
+def test_strip_markers_removes_decorations_but_keeps_content():
+    assert strip_markers("• 매출 달성: 300만원") == "매출 달성: 300만원"
+    assert strip_markers("▲ 2일차 저녁 8시") == "2일차 저녁 8시"
+    assert strip_markers("💡 해결: Win-Win") == "해결: Win-Win"
+    assert strip_markers("-15%") == "-15%"
+    assert strip_markers("1. 제안") == "1. 제안"
+    assert strip_markers('"소싱의 핵심"') == '"소싱의 핵심"'
+
+
+def test_join_makes_one_paragraph_with_subheading_prefix():
+    """같은 칸 줄은 줄바꿈 없이 한 문단으로, 소제목은 다음 내용의 머리말로 붙인다."""
+    from features.experience_map.file_pipeline.tree import _join
+
+    assert _join(["매너온도", "99.9°C 상위 1% 셀러 인증", "불신 해소에 집중했습니다."]) == [
+        "매너온도: 99.9°C 상위 1% 셀러 인증 불신 해소에 집중했습니다."
+    ]
+    assert _join(["기간: 2023.03", "4인 팀"]) == ["기간: 2023.03 4인 팀"]
+
+
+def test_subheading_moves_to_slot_of_following_content():
+    lines = {"it_1": "클릭을 부르는 썸네일", "it_2": "착용샷을 1번 이미지로 배치했다."}
+    by_id = {
+        "it_1": LineAssignment(id="it_1", slot_id="TASK.BASIC.PURPOSE", episode="e"),
+        "it_2": LineAssignment(id="it_2", slot_id="TASK.BASIC.EXECUTION", episode="e"),
+    }
+
+    assign_module._heading_follows_content(lines, list(lines), by_id)
+
+    assert by_id["it_1"].slot_id == "TASK.BASIC.EXECUTION"
+
+
 def test_project_number_reads_roadmap_and_body_titles():
     assert project_number("P2. 굿즈 공동구매") == 2
     assert project_number("Project 2. 학과 굿즈 공동구매") == 2
@@ -201,7 +236,7 @@ async def test_tree_fills_prefilled_blank_blocks_with_updates():
     assert [item["text"] for item in items] == [
         "기간: 2023.03 ~ 2023.06",
         "[시장 조사]",
-        "- 설문 수행",
+        "설문 수행",
     ]
 
 
@@ -224,7 +259,7 @@ async def test_tree_adds_second_episode_with_full_template():
     assert new_anchor["text"] == "[B 업무]"
     children = [item for item in items if item.get("parent_item_id") == new_anchor["item_id"]]
     assert len(children) == 4  # TASK.BASIC 템플릿 칸 4개를 모두 펼친다
-    assert [child["text"] for child in children if child["text"]] == ["- B 실행"]
+    assert [child["text"] for child in children if child["text"]] == ["B 실행"]
 
 
 @pytest.mark.asyncio
@@ -329,7 +364,7 @@ async def test_tree_merges_same_project_from_roadmap_and_repeated_headers():
     texts = [item["text"] for item in items if item.get("text")]
     assert texts.count("Project 2. 학과 굿즈 공동구매") == 1
     assert "P2. 굿즈 공동구매" not in texts
-    assert "- 업체 15곳을 비교했다\n- 물량을 늘려 단가를 낮췄다" in texts
+    assert "업체 15곳을 비교했다 물량을 늘려 단가를 낮췄다" in texts
     assert "원가 절감" in texts
 
 
