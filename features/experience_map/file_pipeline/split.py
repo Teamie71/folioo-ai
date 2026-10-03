@@ -27,6 +27,8 @@ _FACT = re.compile(
 )
 """수치("250만원", "99.9°C")나 인용("공부할 곳이 없어요")이 든 줄. 짧아도 제목이 아니다 —
 포트폴리오 PDF의 지표 카드가 한 줄씩 떨어져 제목으로 버려졌다(실제 포트폴리오 재현)."""
+_PRIVATE_USE = re.compile(r"[\ue000-\uf8ff]")
+"""수식 폰트 전용 글자(사용자 정의 영역). 어디서도 읽을 수 없어 화면에 "ā˜q"처럼 깨진다."""
 _TRAILING_PAREN = re.compile(r"\s*\([^()]*\)\s*$")
 _ENUMERATOR = re.compile(r"(?:^|\s)(?:[A-Za-z]{1,8}\s?)?\d{1,2}[.)]$")
 """문장 나누기로 떨어진 번호 표시("P1.", "Project 2.", "3."). 다음 조각에 붙인다."""
@@ -176,7 +178,7 @@ def split_document(text: str, *, drop_request_phrases: bool = True) -> SplitDocu
     문장에 붙인다). 원문 문자는 고치지 않고 공백·줄 경계만 바꾼다. 파일처리 단계의
     잘림 안내문과 문장부호만 있는 줄은 뺀다.
     """
-    text = _SYSTEM_NOTE.sub("", text)
+    text = _PRIVATE_USE.sub("", _SYSTEM_NOTE.sub("", text))
     raw_lines = [line.strip() for line in text.splitlines()]
     raw_lines = [
         line
