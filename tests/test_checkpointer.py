@@ -9,6 +9,7 @@ from common.checkpointer import factory
 
 class DummyPool:
     """테스트용 연결 풀 더블"""
+
     pass
 
 
@@ -68,18 +69,37 @@ async def test_get_checkpointer_singleton(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_checkpointer_uses_database_url_fallback(monkeypatch):
-    """전용 URL이 없으면 DATABASE_URL을 재사용한다."""
+async def test_setup_checkpointer_does_not_fall_back_to_database_url(monkeypatch):
+    """DATABASE_URL이 있어도 checkpoint DB로 재사용하지 않는다.
+
+    fallback이 남아 있으면 경험 맵 DB에 LangGraph checkpoint 테이블이 생성된다.
+    """
     captured: dict[str, object] = {}
     monkeypatch.delenv("CHECKPOINT_DATABASE_URL", raising=False)
-    monkeypatch.setenv("DATABASE_URL", "postgresql://shared-db")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://experience-map-db")
+    monkeypatch.setattr(factory, "AsyncConnectionPool", _mock_pool(captured))
+    monkeypatch.setattr(factory, "AsyncPostgresSaver", _mock_saver(captured))
+
+    with pytest.raises(ValueError, match="CHECKPOINT_DATABASE_URL"):
+        async with factory.setup_checkpointer():
+            pass
+
+    assert "conninfo" not in captured
+
+
+@pytest.mark.asyncio
+async def test_setup_checkpointer_uses_dedicated_url(monkeypatch):
+    """DATABASE_URL과 별개로 CHECKPOINT_DATABASE_URL을 사용한다."""
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("DATABASE_URL", "postgresql://experience-map-db")
+    monkeypatch.setenv("CHECKPOINT_DATABASE_URL", "postgresql://checkpoint-db")
     monkeypatch.setattr(factory, "AsyncConnectionPool", _mock_pool(captured))
     monkeypatch.setattr(factory, "AsyncPostgresSaver", _mock_saver(captured))
 
     async with factory.setup_checkpointer():
         assert factory.get_checkpointer() is captured["checkpointer"]
 
-    assert captured["conninfo"] == "postgresql://shared-db"
+    assert captured["conninfo"] == "postgresql://checkpoint-db"
 
 
 @pytest.mark.asyncio
@@ -120,7 +140,7 @@ async def test_setup_checkpointer_requires_database_url(monkeypatch):
     monkeypatch.delenv("CHECKPOINT_DATABASE_URL", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
-    with pytest.raises(ValueError, match="CHECKPOINT_DATABASE_URL 또는 DATABASE_URL"):
+    with pytest.raises(ValueError, match="CHECKPOINT_DATABASE_URL 환경변수"):
         async with factory.setup_checkpointer():
             pass
 
