@@ -150,6 +150,8 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         return updated  # type: ignore[return-value]
     if not (state.get("activity_tree_text") or "").strip():
         raise LlmError("선택한 활동의 상세 구조를 불러오지 못했습니다.", failed_node="structure")
+    if state.get("file_assignments"):
+        return await _structure_file(updated, state)
 
     try:
         catalog = await get_template_catalog_client().get_catalog()
@@ -465,6 +467,31 @@ async def structure_blocks(state: ExperienceMapState) -> ExperienceMapState:
         len(source_items),
         len(validated),
         sum(1 for item in validated if len(item.source_item_ids) > 1),
+    )
+    return updated  # type: ignore[return-value]
+
+
+async def _structure_file(updated: dict, state: ExperienceMapState) -> ExperienceMapState:
+    """파일 전용 경로: content_filter가 정한 줄별 칸 배정을 코드로 트리로 만든다.
+
+    LLM을 부르지 않으므로 같은 배정이면 항상 같은 결과가 나온다. 검증이 구조 문제로
+    되돌려 보내도 다시 만들면 같으니, 그 경우는 validate의 재시도 한도에서 끝난다.
+    """
+    from features.experience_map.file_pipeline import build_file_items
+
+    try:
+        catalog = await get_template_catalog_client().get_catalog()
+    except Exception as exc:
+        logger.exception("structure: 카탈로그 조회 실패")
+        raise LlmError("템플릿 카탈로그를 불러오지 못했습니다.", failed_node="structure") from exc
+    items = build_file_items(
+        state.get("file_lines", {}), state.get("file_assignments", {}), state, catalog
+    )
+    updated["structured_items"] = items
+    logger.info(
+        "structure: 파일 줄 %d개를 블록 operation %d개로 배치",
+        len(state.get("file_assignments", {})),
+        len(items),
     )
     return updated  # type: ignore[return-value]
 

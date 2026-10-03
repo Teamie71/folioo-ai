@@ -32,7 +32,9 @@ SECTION_LABELS: dict[str, str] = {
 Intent = Literal["file_input", "chat_input", "out_of_scope"]
 GapType = Literal["extend_block", "new_child_block"]
 ItemAction = Literal["add", "update"]
-FallbackReason = Literal["out_of_scope", "file_unreadable", "nothing_to_apply", "ambiguous_target"]
+FallbackReason = Literal[
+    "out_of_scope", "file_unreadable", "nothing_to_apply", "ambiguous_target", "not_experience_file"
+]
 NodeName = Literal[
     "router",
     "file_processor",

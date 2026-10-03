@@ -194,6 +194,13 @@ class ExperienceMapSettings(BaseModel):
         False,
         description="내부 수동 테스트 UI 노출 여부 (EXPERIENCE_MAP_TEST_UI_ENABLED)",
     )
+    file_pipeline_enabled: bool = Field(
+        True,
+        description=(
+            "첨부 파일을 파일 전용 경로(줄 나누기 → 칸 배정 → 코드 트리)로 처리 "
+            "(EXPMAP_FILE_PIPELINE, 0이면 예전 채팅 경로)"
+        ),
+    )
 
     @property
     def ticket_secret_is_distinct(self) -> bool:
@@ -243,6 +250,8 @@ def load_settings() -> ExperienceMapSettings:
         demo_mode=os.getenv("EXPERIENCE_MAP_DEMO_MODE", "").strip().lower() in {"1", "true", "yes"},
         test_ui_enabled=os.getenv("EXPERIENCE_MAP_TEST_UI_ENABLED", "").strip().lower()
         in {"1", "true", "yes"},
+        file_pipeline_enabled=os.getenv("EXPMAP_FILE_PIPELINE", "1").strip().lower()
+        not in {"0", "false", "no"},
     )
 
 

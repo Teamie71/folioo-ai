@@ -433,3 +433,36 @@ async def test_llm_failure_is_retryable(fake_llm):
 def test_next_node_uses_validate_only_with_result():
     assert next_node({"refined_items": [{"item_id": "it_1"}]}) == "validate"
     assert next_node({"refined_items": []}) == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_many_items_are_refined_in_parallel_chunks(monkeypatch):
+    """블록이 많으면 REFINE_CHUNK_SIZE씩 나눠 따로 호출하고 결과를 합친다."""
+    monkeypatch.setattr(refine_node, "REFINE_CHUNK_SIZE", 2)
+    texts = [f"{index}번 업무를 수행했다." for index in range(1, 6)]
+    state = make_state(
+        structured_items=[
+            {"item_id": f"it_{index}", "action": "add", "parent_ref": "b_1", "text": text}
+            for index, text in enumerate(texts, start=1)
+        ]
+    )
+    calls: list[list[str]] = []
+
+    async def _handle(prompt_value) -> RefinementOutput:
+        rendered = prompt_value.to_string()
+        ids = [f"it_{index}" for index in range(1, 6) if f"[it_{index}]" in rendered]
+        calls.append(ids)
+        return RefinementOutput(
+            items=[RefinedItem(item_id=i, refined_text=texts[int(i[3:]) - 1]) for i in ids]
+        )
+
+    class _FakeLlm:
+        def with_structured_output(self, schema):
+            return RunnableLambda(_handle)
+
+    monkeypatch.setattr(refine_node, "get_experience_map_llm", lambda **kw: _FakeLlm())
+
+    result = await refine_text(state)
+
+    assert sorted(len(ids) for ids in calls) == [1, 2, 2]
+    assert [item["item_id"] for item in result["refined_items"]] == [f"it_{i}" for i in range(1, 6)]

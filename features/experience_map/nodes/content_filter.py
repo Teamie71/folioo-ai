@@ -365,6 +365,8 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
     """
     updated = dict(state)
     updated["current_node"] = "content_filter"
+    if state.get("extracted_text") and get_settings().file_pipeline_enabled:
+        return await _filter_file_content(updated)
 
     active_gap = state.get("active_gap")
     user_message = state.get("user_message")
@@ -444,6 +446,71 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
         len(new_items),
         len(result.excluded_reasons),
         dropped + dropped_headings,
+    )
+    return updated  # type: ignore[return-value]
+
+
+async def _filter_file_content(updated: dict) -> ExperienceMapState:
+    """첨부 파일이 있으면 파일 전용 경로로 줄을 나누고 칸을 배정한다.
+
+    채팅 경로처럼 LLM이 원문을 다시 옮겨 적게 하면, 긴 문서에서 한 글자 차이로 원문
+    대조에 실패해 내용이 통째로 사라지거나 수백 조각으로 불어났고, 시험지 같은 무관한
+    문서도 걸러내지 못했다(dev 재현, 2026-09-30). 여기서는 코드가 줄 단위로 나누고,
+    LLM은 문서 관문(경험 문서인가)과 줄 번호별 칸 배정만 한다. 배정 결과는 structure
+    노드가 LLM 없이 트리로 만든다.
+    """
+    from features.experience_map.file_pipeline import assign_lines, split_document
+    from features.experience_map.templates import get_template_catalog_client
+
+    # 채팅 메시지는 파일과 따로 나눈다. "2번 프로젝트만 정리해줘" 같은 지시가 요청
+    # 문구 노이즈로 지워지지 않게 하고, 칸 배정 LLM이 지시·내용을 구분하게 한다.
+    message = split_document(updated.get("user_message") or "", drop_request_phrases=False)
+    document = split_document(updated.get("extracted_text") or "")
+    if not document.lines:
+        updated["new_items"] = []
+        updated["fallback_reason"] = "nothing_to_apply"
+        return updated  # type: ignore[return-value]
+
+    try:
+        catalog = await get_template_catalog_client().get_catalog()
+        result = await assign_lines(document.lines, catalog, message.lines)
+    except Exception as exc:
+        logger.exception("content_filter: 파일 줄 배정 실패")
+        raise LlmError("파일 내용을 분류하지 못했습니다.", failed_node="content_filter") from exc
+
+    if not result.is_experience:
+        logger.info("content_filter: 경험 문서가 아님 (%s)", result.doc_type)
+        updated["new_items"] = []
+        updated["excluded_reasons"] = [f"경험 문서가 아님({result.doc_type})"]
+        updated["fallback_reason"] = "not_experience_file"
+        return updated  # type: ignore[return-value]
+
+    updated["file_lines"] = result.lines
+    updated["file_assignments"] = result.assignments
+    updated["file_excluded_count"] = len(result.excluded) + len(document.noise)
+    updated["file_requested_excluded_count"] = len(result.requested_excluded)
+    updated["new_items"] = [
+        FilteredItem(
+            item_id=line_id,
+            text=result.lines[line_id],
+            source="message" if line_id.startswith("m_") else "file",
+        ).model_dump()
+        for line_id in result.assignments
+    ]
+    updated["gap_answer_items"] = []
+    updated["excluded_reasons"] = (
+        ["경험과 관련 없는 내용"] if result.excluded or document.noise else []
+    ) + (["사용자가 제외를 요청한 내용"] if result.requested_excluded else [])
+    if not updated["new_items"]:
+        updated["fallback_reason"] = "nothing_to_apply"
+    logger.info(
+        "content_filter: 파일 줄 %d개·메시지 줄 %d개 중 %d개 배정 · 노이즈 %d · 제외 %d · 요청 제외 %d",
+        len(document.lines),
+        len(message.lines),
+        len(result.assignments),
+        len(document.noise),
+        len(result.excluded),
+        len(result.requested_excluded),
     )
     return updated  # type: ignore[return-value]
 
