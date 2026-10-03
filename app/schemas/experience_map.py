@@ -198,6 +198,9 @@ class MessageItem(BaseModel):
             "되돌렸는지는 메인 서버(POST /revert)만 알아 여기서 추적하지 않는다."
         ),
     )
+    channel: Literal["WEB", "KAKAO"] = Field(
+        "WEB", description="메시지를 남긴 채널. 카톡 메시지의 AI 응답은 카톡으로 보낸 요약이다."
+    )
     created_at: str
 
 
