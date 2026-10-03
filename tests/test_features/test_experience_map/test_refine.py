@@ -5,7 +5,7 @@ from langchain_core.runnables import RunnableLambda
 
 from features.experience_map.errors import LlmError
 from features.experience_map.nodes import refine as refine_node
-from features.experience_map.nodes.refine import next_node, refine_text
+from features.experience_map.nodes.refine import next_node, refine_text, to_noun_ending
 from features.experience_map.schemas import RefinedItem, RefinementOutput
 from features.experience_map.state import start_turn
 
@@ -48,14 +48,16 @@ def make_state(**overrides):
 def fake_llm(monkeypatch):
     """LLM 대역과 렌더된 활동 단위 프롬프트를 제공한다."""
 
-    def _set(result: RefinementOutput | Exception) -> list[str]:
+    def _set(result: RefinementOutput | Exception | list) -> list[str]:
         prompts: list[str] = []
+        queue = list(result) if isinstance(result, list) else None
 
         async def _handle(prompt_value) -> RefinementOutput:
             prompts.append(prompt_value.to_string())
-            if isinstance(result, Exception):
-                raise result
-            return result
+            current = (queue.pop(0) if len(queue) > 1 else queue[0]) if queue else result
+            if isinstance(current, Exception):
+                raise current
+            return current
 
         class _FakeLlm:
             def with_structured_output(self, schema):
@@ -248,7 +250,7 @@ async def test_missing_or_extra_item_ids_fall_back_to_source(fake_llm):
 
     assert result["refined_items"][0] == {
         "item_id": "it_1",
-        "refined_text": "APM으로 병목을 확인해 결제 오류를 해결했다.",
+        "refined_text": "APM으로 병목을 확인해 결제 오류를 해결함.",
     }
 
 
@@ -266,7 +268,7 @@ async def test_number_not_grounded_in_source_falls_back_to_source(fake_llm):
     result = await refine_text(make_state())
 
     assert result["refined_items"][0]["refined_text"] == (
-        "APM으로 병목을 확인해 결제 오류를 해결했다."
+        "APM으로 병목을 확인해 결제 오류를 해결함."
     )
 
 
@@ -308,7 +310,7 @@ async def test_source_number_deleted_by_refine_falls_back_to_source(fake_llm):
     result = await refine_text(state)
 
     assert result["refined_items"][0]["refined_text"] == (
-        "알림 시간을 8분에서 3초로 단축하고 2,400건을 처리했다."
+        "알림 시간을 8분에서 3초로 단축하고 2,400건을 처리함."
     )
 
 
@@ -349,7 +351,7 @@ async def test_fabricated_korean_method_falls_back_to_source(fake_llm):
 
     result = await refine_text(state)
 
-    assert result["refined_items"][0]["refined_text"] == "로그 분석을 통해 결제 오류를 해결했다."
+    assert result["refined_items"][0]["refined_text"] == "로그 분석을 통해 결제 오류를 해결함."
 
 
 @pytest.mark.asyncio
@@ -366,7 +368,7 @@ async def test_new_proper_noun_not_grounded_in_source_falls_back_to_source(fake_
     result = await refine_text(make_state())
 
     assert result["refined_items"][0]["refined_text"] == (
-        "APM으로 병목을 확인해 결제 오류를 해결했다."
+        "APM으로 병목을 확인해 결제 오류를 해결함."
     )
 
 
@@ -466,3 +468,50 @@ async def test_many_items_are_refined_in_parallel_chunks(monkeypatch):
 
     assert sorted(len(ids) for ids in calls) == [1, 2, 2]
     assert [item["item_id"] for item in result["refined_items"]] == [f"it_{i}" for i in range(1, 6)]
+
+
+@pytest.mark.asyncio
+async def test_failed_items_are_retried_once(fake_llm):
+    """첫 응답에서 빠진 item은 한 번 더 요청해 정제 결과를 쓴다."""
+    prompts = fake_llm(
+        [
+            RefinementOutput(items=[]),
+            RefinementOutput(
+                items=[
+                    RefinedItem(item_id="it_1", refined_text="APM으로 병목을 확인해 결제 오류 해결")
+                ]
+            ),
+        ]
+    )
+
+    result = await refine_text(make_state())
+
+    assert len(prompts) == 2
+    assert result["refined_items"][0]["refined_text"] == "APM으로 병목을 확인해 결제 오류 해결"
+
+
+@pytest.mark.asyncio
+async def test_retry_error_keeps_source_with_noun_ending(fake_llm):
+    fake_llm([RefinementOutput(items=[]), RuntimeError("timeout")])
+
+    result = await refine_text(make_state())
+
+    assert result["refined_items"][0]["refined_text"] == "APM으로 병목을 확인해 결제 오류를 해결함."
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("불신 해소에 집중했습니다.", "불신 해소에 집중함."),
+        ("메뉴판을 재설계했다. 완판이 됐습니다.", "메뉴판을 재설계함. 완판이 됨."),
+        ("배운 점을 정리합니다.", "배운 점을 정리함."),
+        ("효율을 개선한다.", "효율을 개선함."),
+        ("중요한 수단이다.", "중요한 수단임."),
+        ("타겟을 좁혔습니다.", "타겟을 좁혔음."),
+        ("결과가 없다.", "결과가 없음."),
+        ("가격이 싸다.", "가격이 싸다."),
+        ("반품률 0% 유지.", "반품률 0% 유지."),
+    ],
+)
+def test_to_noun_ending_changes_only_sentence_endings(source, expected):
+    assert to_noun_ending(source) == expected
