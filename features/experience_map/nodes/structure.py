@@ -20,6 +20,7 @@ from features.experience_map.prompts.structure import (
     structure_prompt,
 )
 from features.experience_map.schemas import (
+    SECTION_LABELS,
     EpisodeMatchOutput,
     ExistingCategoryClassification,
     StructureLlmItem,
@@ -1166,9 +1167,12 @@ def _apply_structuring_fixups(
         _fix_new_section_parent(dereffed, state), catalog, state
     )
     reported_containers = _reported_container_sections(existing_categories or [], state)
+    # 같은 구획 새 카테고리 합치기에는 활동의 실제 카테고리(블록 kind)도 쓴다. 모델이
+    # 신고하지 않은 기존 구획을 새로 만들면 메인 서버가 커밋을 409("이미 존재하는
+    # 카테고리")로 거절했고, 재시도도 같은 판단을 반복해 요청이 끝내 실패했다(운영 재현).
     normalized_hierarchy = _merge_new_sections_into_reported_containers(
         _normalize_new_hierarchy(rerooted, catalog, state, reported_containers),
-        reported_containers,
+        {**_actual_container_sections(state), **reported_containers},
     )
     continued = continued_anchors or {}
     reparented = _reparent_orphan_level5_items(
@@ -1195,7 +1199,12 @@ def _apply_structuring_fixups(
     # 다른 제목 그룹으로 갈라놔야 할 앵커가 위의 배치 간 병합 단계들에서 다시
     # 합쳐질 수 있으므로(같은 부모·같은 슬롯이면 "같은 에피소드"로 보고 합친다는
     # 일반 규칙과 충돌한다), 이 함수의 가장 마지막에 한 번 더 갈라놓는다.
-    return _separate_group_label_anchors(redirected, group_labels or {})
+    separated = _separate_group_label_anchors(redirected, group_labels or {})
+    # 위 보정들이 기존 구획 카테고리를 다시 새로 끼워 넣었을 수 있어 마지막에 한 번 더
+    # 실제 카테고리로 합친다. 남으면 커밋 전체가 409로 실패한다.
+    return _merge_new_sections_into_reported_containers(
+        separated, {**_actual_container_sections(state), **reported_containers}
+    )
 
 
 def _merge_new_sections_into_reported_containers(
@@ -2549,6 +2558,32 @@ def _mark_episode_anchors(state: ExperienceMapState, catalog: TemplateCatalog) -
             line = f"{indent}[{alias}] {ANCHOR_MARK} {label}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def _actual_container_sections(state: ExperienceMapState) -> dict[str, str]:
+    """선택 활동 바로 아래 실제 카테고리 별칭 → section.
+
+    메인 서버가 카테고리 블록에 붙이는 kind(`SECTION_TASK` 등)로 알아본다. kind가 없으면
+    제목(구획 이름)으로 알아본다.
+    """
+    target_alias = state.get("target_experience_alias")
+    if not target_alias:
+        return {}
+    titles = {
+        alias: label for _, alias, label in _parse_tree_lines(state.get("activity_tree_text") or "")
+    }
+    by_title = {label.replace(" ", ""): section for section, label in SECTION_LABELS.items()}
+    containers: dict[str, str] = {}
+    for alias, block in (state.get("alias_metadata") or {}).items():
+        if block.get("parent_alias") != target_alias:
+            continue
+        kind = str(block.get("kind") or "")
+        section = kind.removeprefix("SECTION_") if kind.startswith("SECTION_") else None
+        if section is None:
+            section = by_title.get(titles.get(alias, "").replace(" ", ""))
+        if section and section not in containers.values():
+            containers[alias] = section
+    return containers
 
 
 def _reported_container_sections(
