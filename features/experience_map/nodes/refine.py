@@ -297,7 +297,13 @@ def _validate_output(
             # 잡았다.
             fallback_reason = "원문과 핵심 단어가 다른 정제 결과"
         if fallback_reason is not None:
-            logger.warning("refine: %s은 원문을 유지합니다 (%s)", item_id, fallback_reason)
+            # 검사가 지나치게 엄격한지 판단할 수 있게 모델이 낸 문장도 남긴다.
+            logger.warning(
+                "refine: %s은 원문을 유지합니다 (%s) 정제 결과=%r",
+                item_id,
+                fallback_reason,
+                (refined or "")[:120],
+            )
             refined = source_text
             failed_ids.add(item_id)
         # 모델이 "~하였습니다"로 답하거나 원문("~했습니다")으로 돌아간 블록이 "~함"과
@@ -309,8 +315,22 @@ def _validate_output(
 _HANGUL_BASE = 0xAC00
 _FINAL_COUNT = 28
 _FINAL_NONE, _FINAL_NIEUN, _FINAL_MIEUM, _FINAL_BIEUP = 0, 4, 16, 17
-_PAST_NOUN_ENDING = re.compile(r"(하였음|되었음|했음|됐음)(?=[.!]?(?:\s|$))")
-_SENTENCE_END = re.compile(r"(습니다|니다|다)(?=[.!]?(?:\s|$))")
+_FINAL_SSANGSIOT, _FINAL_BIEUPSIOT = 20, 18
+_PAST_NOUN_ENDING = re.compile(r"(하였음|되었음|했음|됐음)(?=[.!~]*(?:\s|$))")
+# 긴 어미부터 맞춘다. 문장 끝(문장부호·공백·끝) 앞에서만 바꾼다.
+_SENTENCE_END = re.compile(
+    r"(습니다|니다|어요|아요|해요|에요|예요|이야|다|어|아|해)(?=[.!~]*(?:\s|$))"
+)
+_NOT_VERB_HAE = frozenset({"올해", "매해", "새해", "해"})
+"""'해'로 끝나지만 동사가 아닌 낱말. "올해." → "올함"이 되지 않게 한다."""
+
+_CASUAL_ENDINGS = frozenset({"어", "아", "해", "이야", "어요", "아요", "해요", "에요", "예요"})
+"""반말·해요체 어미. "분석해 타깃을…"처럼 문장 중간 연결어미와 모양이 같아서, 뒤에
+문장부호가 오거나 글이 끝날 때만 바꾼다."""
+_CASUAL_END_FOLLOW = re.compile(r"[.!~]|\s*$")
+
+_KEEP = object()
+_TO_MIEUM = object()  # 앞 글자 받침을 ㅁ으로 바꾸고 어미는 지운다 (합니다 → 함)
 
 
 def _set_final(syllable: str, final: int) -> str:
@@ -323,45 +343,61 @@ def _final_of(syllable: str) -> int | None:
     return code % _FINAL_COUNT if 0 <= code < 11172 else None
 
 
+def _ending_replacement(text: str, start: int, ending: str):
+    """어미 하나를 무엇으로 바꿀지 정한다. `_KEEP`이면 그대로 둔다."""
+    if ending == "해":
+        word = re.split(r"\s", text[: start + 1])[-1]
+        return _KEEP if word in _NOT_VERB_HAE else "함"  # 정리해 → 정리함
+    if ending == "해요":
+        return "함"  # 정리해요 → 정리함
+    if start == 0:
+        return _KEEP
+    stem = text[start - 1]
+    final = _final_of(stem)
+    if final is None:
+        return _KEEP
+    past_or_exist = final in (_FINAL_SSANGSIOT, _FINAL_BIEUPSIOT)
+    if ending == "습니다":
+        return "음"  # 했습니다 → 했음, 있었습니다 → 있었음
+    if ending == "니다":
+        return _TO_MIEUM if final == _FINAL_BIEUP else _KEEP  # 합니다 → 함
+    if ending == "다":
+        if final == _FINAL_NIEUN or stem == "이":
+            return _TO_MIEUM  # 한다 → 함, 이다 → 임
+        return "음" if past_or_exist else _KEEP  # 했다 → 했음, 없다 → 없음
+    if ending in ("어", "아", "어요", "아요"):
+        return "음" if past_or_exist else _KEEP  # 좁혔어 → 좁혔음, 있어요 → 있음
+    if ending == "이야":
+        return "임"  # 팀장이야 → 팀장임
+    if ending == "에요" and stem == "이":
+        return _TO_MIEUM  # 팀장이에요 → 팀장임
+    if ending == "예요" and final == _FINAL_NONE:
+        return "임"  # 리더예요 → 리더임
+    return _KEEP
+
+
 def to_noun_ending(text: str) -> str:
-    """문장 끝 "~했습니다/~합니다/~했다/~한다"를 명사 종결("~했음/~함/~했음/~함")로 바꾼다.
+    """문장 끝 어미를 명사 종결("~함", "~음", "~임")로 맞춘다.
 
-    정제를 끝내 못 한 원문만 이렇게 바꾼다. 어미만 바꾸고 내용 단어는 건드리지
-    않는다. 규칙에 맞지 않는 끝("크다", "좋다")은 그대로 둔다.
+    문어체("~했습니다", "~합니다", "~했다", "~한다")와 채팅 반말·해요체("~했어",
+    "~좁혔어", "~해", "~있어요", "~이야")를 모두 다룬다. 채팅은 다듬기가 검사에
+    걸려 원문이 그대로 들어가면 "~좁혔어"처럼 반말이 블록에 남았다(운영 확인).
+    어미만 바꾸고 내용 단어는 건드리지 않는다. 규칙에 없는 끝("싸다", "맞아")은 둔다.
     """
-
-    def replace(match: re.Match[str]) -> str:
-        start = match.start()
-        if start == 0:
-            return match.group(0)
-        stem = text[start - 1]
-        final = _final_of(stem)
-        if final is None:
-            return match.group(0)
-        ending = match.group(1)
-        if ending == "습니다":
-            return "음"  # 했습니다 → 했음, 있었습니다 → 있었음
-        if ending == "니다" and final == _FINAL_BIEUP:
-            return "\0"  # 합니다 → 함 (받침은 아래에서 바꾼다)
-        if ending == "다" and final == _FINAL_NIEUN:
-            return "\0"  # 한다 → 함
-        if ending == "다" and stem == "이":
-            return "\0"  # 이다 → 임
-        if ending == "다" and final in (20, 18):  # ㅆ, ㅄ
-            return "음"  # 했다 → 했음, 없다 → 없음
-        return match.group(0)
-
     out: list[str] = []
     last = 0
     for match in _SENTENCE_END.finditer(text):
-        piece = replace(match)
-        if piece == match.group(0):
+        ending = match.group(1)
+        if ending in _CASUAL_ENDINGS and not _CASUAL_END_FOLLOW.match(text, match.end()):
+            continue
+        replacement = _ending_replacement(text, match.start(), ending)
+        if replacement is _KEEP:
             continue
         prefix = text[last : match.start()]
-        if piece == "\0":
+        if replacement is _TO_MIEUM:
             prefix = prefix[:-1] + _set_final(prefix[-1], _FINAL_MIEUM)
-            piece = ""
-        out.append(prefix + piece)
+            replacement = ""
+        out.append(prefix + replacement)
         last = match.end()
     out.append(text[last:])
     return _PAST_NOUN_ENDING.sub(
