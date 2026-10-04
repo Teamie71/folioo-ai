@@ -1,0 +1,649 @@
+"""반영 내용 필터링 노드 테스트 (에이전트 문서 5-3)"""
+
+import pytest
+from langchain_core.runnables import RunnableLambda
+
+from features.experience_map.errors import LlmError
+from features.experience_map.nodes import content_filter as filter_node
+from features.experience_map.nodes.content_filter import filter_content, next_node
+from features.experience_map.prompts.content_filter import build_gap_section
+from features.experience_map.schemas import ContentFilterOutput
+from features.experience_map.state import start_turn
+
+
+@pytest.fixture(autouse=True)
+def _legacy_file_path(monkeypatch):
+    """이 파일은 채팅 경로의 LLM 분류를 검증한다. 파일 전용 경로는 test_file_pipeline.py."""
+    from features.experience_map.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "file_pipeline_enabled", False)
+
+
+SESSION_ID = "d9428888-122b-11e1-b85c-61cd3cbb3210"
+REQUEST_ID = "550e8400-e29b-41d4-a716-446655440000"
+
+MESSAGE = (
+    "결제 모듈 타임아웃으로 주문 실패율이 12%까지 올랐다. "
+    "APM 으로 병목을 찾아 쿼리 캐싱을 넣었다. "
+    "이 내용을 정리해줘."
+)
+
+
+def make_state(**overrides):
+    state = start_turn(
+        {"user_id": "1", "session_id": SESSION_ID},
+        request_id=REQUEST_ID,
+        request_hash="a" * 64,
+        user_message=overrides.pop("user_message", MESSAGE),
+    )
+    state.update(overrides)
+    return state
+
+
+def item(item_id: str, text: str, source: str = "message") -> dict:
+    return {"item_id": item_id, "text": text, "source": source}
+
+
+@pytest.fixture
+def fake_llm(monkeypatch):
+    """LLM 대역. 렌더된 프롬프트를 수집한다."""
+
+    def _set(result: ContentFilterOutput | Exception) -> list[str]:
+        prompts: list[str] = []
+
+        async def _handle(prompt_value):
+            prompts.append(prompt_value.to_string())
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        class _FakeLlm:
+            def with_structured_output(self, schema):
+                return RunnableLambda(_handle)
+
+        monkeypatch.setattr(filter_node, "get_experience_map_llm", lambda **kw: _FakeLlm())
+        return prompts
+
+    return _set
+
+
+ACTIVE_GAP = {
+    "gap_id": REQUEST_ID,
+    "gap_type": "extend_block",
+    "anchor_block_id": "3055",
+    "message": "그 해결 방법을 고른 기준이 무엇이었나요?",
+    "created_request_id": REQUEST_ID,
+}
+
+
+# ===== 분류 =====
+
+
+@pytest.mark.asyncio
+async def test_classifies_three_buckets(fake_llm):
+    fake_llm(
+        ContentFilterOutput(
+            gap_answer_items=[],
+            new_items=[
+                item("it_1", "결제 모듈 타임아웃으로 주문 실패율이 12%까지 올랐다."),
+                item("it_2", "APM 으로 병목을 찾아 쿼리 캐싱을 넣었다."),
+            ],
+            excluded_reasons=["요구사항 텍스트"],
+        )
+    )
+
+    result = await filter_content(make_state())
+
+    assert len(result["new_items"]) == 2
+    assert result["gap_answer_items"] == []
+    assert result["excluded_reasons"] == ["요구사항 텍스트"]
+    assert result["current_node"] == "content_filter"
+
+
+@pytest.mark.asyncio
+async def test_gap_answer_is_kept_when_gap_active(fake_llm):
+    fake_llm(
+        ContentFilterOutput(
+            gap_answer_items=[item("it_1", "APM 으로 병목을 찾아 쿼리 캐싱을 넣었다.")],
+            new_items=[],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
+        )
+    )
+
+    result = await filter_content(make_state(active_gap=ACTIVE_GAP))
+
+    assert len(result["gap_answer_items"]) == 1
+    assert result["new_items"] == []
+
+
+@pytest.mark.asyncio
+async def test_gap_answer_moves_to_new_when_no_active_gap(fake_llm):
+    """활성 gap 이 없으면 gap 답변으로 분류되지 않는다.
+
+    사용자 입력인 것은 맞으므로 버리지 않고 새 내용으로 옮긴다.
+    """
+    fake_llm(
+        ContentFilterOutput(
+            gap_answer_items=[item("it_1", "APM 으로 병목을 찾아 쿼리 캐싱을 넣었다.")],
+            new_items=[],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
+        )
+    )
+
+    result = await filter_content(make_state())
+
+    assert result["gap_answer_items"] == []
+    assert len(result["new_items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_gap_message_counts_as_no_gap(fake_llm):
+    fake_llm(
+        ContentFilterOutput(
+            gap_answer_items=[item("it_1", "APM 으로 병목을 찾아 쿼리 캐싱을 넣었다.")],
+            new_items=[],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
+        )
+    )
+
+    result = await filter_content(make_state(active_gap={**ACTIVE_GAP, "message": "  "}))
+
+    assert result["gap_answer_items"] == []
+    assert len(result["new_items"]) == 1
+
+
+# ===== 원문 역추적 (hallucination 방어) =====
+
+
+@pytest.mark.asyncio
+async def test_untraceable_item_is_dropped(fake_llm):
+    """입력에 없는 문장은 버린다. 지어낸 수치가 통과하면 이후 노드가 사실로 다룬다."""
+    fake_llm(
+        ContentFilterOutput(
+            new_items=[
+                item("it_1", "결제 모듈 타임아웃으로 주문 실패율이 12%까지 올랐다."),
+                item("it_2", "전환율을 45% 개선했고 팀을 이끌었다."),  # 입력에 없음
+            ],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
+        )
+    )
+
+    result = await filter_content(make_state())
+
+    texts = [i["text"] for i in result["new_items"]]
+    assert len(texts) == 1
+    assert "45%" not in texts[0]
+
+
+@pytest.mark.asyncio
+async def test_whitespace_differences_are_tolerated(fake_llm):
+    """줄바꿈·들여쓰기 차이로 멀쩡한 조각을 버리면 안 된다."""
+    fake_llm(
+        ContentFilterOutput(
+            new_items=[item("it_1", "결제 모듈  타임아웃으로\n주문 실패율이 12%까지 올랐다.")],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
+        )
+    )
+
+    result = await filter_content(make_state())
+
+    assert len(result["new_items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_short_multi_sentence_item_is_split_at_sentence_boundaries(fake_llm):
+    """LLM이 원인·해결 문장을 한 item으로 합쳐도 구조화 전에 다시 나눈다."""
+    text = "같은 큐를 사용한 것이 원인이었습니다. 알림 전용 큐를 분리했습니다."
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", text)]))
+
+    result = await filter_content(make_state(user_message=text))
+
+    assert [entry["text"] for entry in result["new_items"]] == [
+        "같은 큐를 사용한 것이 원인이었습니다.",
+        "알림 전용 큐를 분리했습니다.",
+    ]
+    assert [entry["item_id"] for entry in result["new_items"]] == ["it_1_1", "it_1_2"]
+
+
+@pytest.mark.asyncio
+async def test_file_text_is_traceable(fake_llm):
+    """파일에서 추출한 텍스트도 원문으로 인정한다."""
+    fake_llm(
+        ContentFilterOutput(
+            new_items=[item("it_1", "DAU 150% 증가", source="file")],
+        )
+    )
+
+    result = await filter_content(
+        make_state(user_message=None, extracted_text="성과: DAU 150% 증가")
+    )
+
+    assert len(result["new_items"]) == 1
+    assert result["new_items"][0]["source"] == "file"
+
+
+@pytest.mark.asyncio
+async def test_short_fragment_of_long_unpunctuated_sentence_is_still_flagged_missing(fake_llm):
+    """구두점 없는 긴 문장의 일부만 담겨도 부분 문자열이라는 이유만으로
+    문장 전체가 커버됐다고 오판하지 않는다.
+
+    문장부호가 없으면 `_split_into_sentences`가 전체를 하나의 '문장'으로
+    묶는다. 그중 짧은 조각 하나가 우연히 부분 문자열이라는 이유만으로 문장
+    전체(뒤에 이어지는 다른 내용까지)가 커버됐다고 보면, `_uncovered_sentences`가
+    원래 잡으려던 "LLM이 원문 일부를 통째로 빠뜨리는" 사고를 놓친다.
+    """
+    text = (
+        "저는 백엔드 개발자로 결제 시스템을 담당했고 트래픽이 급증했을 때 발생한 "
+        "성능 저하 문제를 캐싱 도입으로 해결했습니다"
+    )
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", "결제 시스템을 담당했고")]))
+
+    with pytest.raises(LlmError):
+        await filter_content(make_state(user_message=text, extracted_text=None))
+
+
+@pytest.mark.asyncio
+async def test_file_structural_headings_are_dropped_but_episode_summary_is_kept(fake_llm):
+    """PDF 구획 제목은 블록이 아니지만 구체적인 에피소드 제목은 요약으로 남긴다."""
+    text = (
+        "경력 정리 메모 — 백엔드 개발자\n"
+        "1. 담당 업무\n"
+        "2. 문제 해결 경험 — 결제 승인 API 응답 지연\n"
+        "상황\n"
+        "결제 승인 API가 4초 이상 지연됐다.\n"
+        "원인 분석\n"
+        "해결 과정\n"
+        "결과\n"
+        "3. 주요 성과\n"
+        "4. 배운 점"
+    )
+    candidates = [
+        item("it_1", "경력 정리 메모 — 백엔드 개발자", source="file"),
+        item("it_2", "1. 담당 업무", source="file"),
+        item("it_3", "2. 문제 해결 경험 — 결제 승인 API 응답 지연", source="file"),
+        item("it_4", "상황", source="file"),
+        item("it_5", "결제 승인 API가 4초 이상 지연됐다.", source="file"),
+        item("it_6", "원인 분석", source="file"),
+        item("it_7", "해결 과정", source="file"),
+        item("it_8", "결과", source="file"),
+        item("it_9", "3. 주요 성과", source="file"),
+        item("it_10", "4. 배운 점", source="file"),
+    ]
+    fake_llm(ContentFilterOutput(new_items=candidates))
+
+    result = await filter_content(make_state(user_message=None, extracted_text=text))
+
+    assert [entry["item_id"] for entry in result["new_items"]] == ["it_3", "it_5"]
+    assert "문서 제목·구획 제목" in result["excluded_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_specific_episode_summary_is_restored_when_llm_drops_heading(fake_llm):
+    """분류 모델이 제목 전체를 빼도 구분자 뒤의 구체적 요약은 복구한다."""
+    text = "2. 문제 해결 경험 — 결제 승인 API 응답 지연\n상황\n결제 승인 API가 4초 이상 지연됐다."
+    fake_llm(
+        ContentFilterOutput(
+            new_items=[item("it_1", "결제 승인 API가 4초 이상 지연됐다.", source="file")],
+            excluded_reasons=["문서 제목"],
+        )
+    )
+
+    result = await filter_content(make_state(user_message=None, extracted_text=text))
+
+    assert [entry["text"] for entry in result["new_items"]] == [
+        "결제 승인 API가 4초 이상 지연됐다.",
+        "결제 승인 API 응답 지연",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_long_file_item_is_split_without_rewriting(fake_llm, monkeypatch):
+    """PDF 한 페이지가 한 item으로 와도 구조화에는 작은 원문 조각으로 넘긴다."""
+    monkeypatch.setattr(filter_node, "MAX_SOURCE_ITEM_CHARS", 30)
+    text = "첫 번째 문장에서 프로젝트 배경을 설명했다. 두 번째 문장에서 맡은 역할을 설명했다."
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", text, source="file")]))
+
+    result = await filter_content(make_state(user_message=None, extracted_text=text))
+
+    chunks = result["new_items"]
+    assert len(chunks) > 1
+    assert all(len(chunk["text"]) <= 30 for chunk in chunks)
+    assert all(chunk["source"] == "file" for chunk in chunks)
+    assert len({chunk["item_id"] for chunk in chunks}) == len(chunks)
+    assert " ".join(chunk["text"] for chunk in chunks) == text
+
+
+@pytest.mark.asyncio
+async def test_long_unbroken_file_item_uses_hard_limit(fake_llm, monkeypatch):
+    """OCR 결과에 경계가 없어도 구조화 한도를 넘기지 않는다."""
+    monkeypatch.setattr(filter_node, "MAX_SOURCE_ITEM_CHARS", 10)
+    text = "가나다라마바사아자차카타파하가나다라마바사"
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", text, source="file")]))
+
+    result = await filter_content(make_state(user_message=None, extracted_text=text))
+
+    chunks = result["new_items"]
+    assert all(len(chunk["text"]) <= 10 for chunk in chunks)
+    assert "".join(chunk["text"] for chunk in chunks) == text
+
+
+@pytest.mark.asyncio
+async def test_duplicate_item_is_dropped(fake_llm):
+    """같은 문장이 두 목록에 들어오면 하나만 남긴다."""
+    text = "APM 으로 병목을 찾아 쿼리 캐싱을 넣었다."
+    fake_llm(
+        ContentFilterOutput(
+            gap_answer_items=[item("it_1", text)],
+            new_items=[item("it_2", text)],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
+        )
+    )
+
+    result = await filter_content(make_state(active_gap=ACTIVE_GAP))
+
+    assert len(result["gap_answer_items"]) == 1
+    assert result["new_items"] == []
+
+
+@pytest.mark.asyncio
+async def test_empty_text_is_dropped(fake_llm):
+    fake_llm(
+        ContentFilterOutput(
+            new_items=[item("it_1", "   ")],
+            excluded_reasons=["나머지는 이 테스트와 무관"],
+        )
+    )
+
+    result = await filter_content(make_state())
+
+    assert result["new_items"] == []
+
+
+# ===== 반영할 것이 없을 때 =====
+
+
+@pytest.mark.asyncio
+async def test_all_excluded_sets_fallback_reason(fake_llm):
+    fake_llm(ContentFilterOutput(excluded_reasons=["일반 지식 나열", "무관한 내용"]))
+
+    result = await filter_content(make_state())
+
+    assert result["fallback_reason"] == "nothing_to_apply"
+    assert next_node(result) == "fallback"
+
+
+# ===== 원문 전체 coverage 검증 =====
+
+
+@pytest.mark.asyncio
+async def test_dropped_sentence_with_no_excluded_reason_is_rejected(fake_llm):
+    """LLM이 문장 하나를 통째로 빠뜨리고 제외 사유도 안 남기면 실패로 처리한다.
+
+    실제로 재현된 경우다. "첫 문장입니다. 둘째 문장입니다."를 입력했는데
+    LLM이 첫 문장만 반환하고 `excluded_reasons`도 비웠다 — `_traceable`은
+    반환된 조각이 원문에 있는지만 보고 원문 전체가 빠짐없이 분류됐는지는
+    보지 않아서, 둘째 문장이 흔적도 없이 사라진 채 `dropped=0`으로 정상
+    통과했다.
+    """
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", "첫 문장입니다.")]))
+
+    with pytest.raises(LlmError) as exc_info:
+        await filter_content(make_state(user_message="첫 문장입니다. 둘째 문장입니다."))
+
+    assert exc_info.value.failed_node == "content_filter"
+
+
+@pytest.mark.asyncio
+async def test_dropped_request_phrase_with_no_excluded_reason_is_tolerated(fake_llm):
+    """ "~정리해 주세요" 같은 요구사항 텍스트를 빠뜨려도 실패시키지 않는다.
+
+    QA 3차 #1 재현: LLM이 사실 문장은 올바르게 `new_items`로 분류하고
+    작업 요청 문장("이 경험을 정리해 주세요.")은 올바르게 제외했지만
+    `excluded_reasons`에 그 사실을 적는 걸 잊었다. 이 경우는 진짜 누락이
+    아니므로 `llm_error`로 실패시키지 않고, 요구사항 텍스트가 제외됐다는
+    사유를 자동으로 보강한다.
+    """
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", "카드뉴스 6개를 제작했습니다.")]))
+
+    result = await filter_content(
+        make_state(user_message="카드뉴스 6개를 제작했습니다. 이 경험을 정리해 주세요.")
+    )
+
+    assert [entry["text"] for entry in result["new_items"]] == ["카드뉴스 6개를 제작했습니다."]
+    assert "요구사항 텍스트" in result["excluded_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_dropped_meta_note_with_no_excluded_reason_is_tolerated(fake_llm):
+    """ "[작성자 주: ...]" 같은 문서 작성 메모를 빠뜨려도 실패시키지 않는다.
+
+    QA 3차 #2 재현: PDF에서 추출된 텍스트에 "이 부분은 예시입니다" 같은
+    주석이 섞여 있고, LLM이 이를 올바르게 제외하고도 `excluded_reasons`에
+    적는 걸 잊었다.
+    """
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", "설문 200건을 분석했습니다.")]))
+
+    result = await filter_content(
+        make_state(user_message=("[작성자 주: 아래는 예시입니다.] 설문 200건을 분석했습니다."))
+    )
+
+    assert [entry["text"] for entry in result["new_items"]] == ["설문 200건을 분석했습니다."]
+    assert "문서 작성 메모" in result["excluded_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_dropped_non_request_sentence_still_rejected_alongside_request_phrase(fake_llm):
+    """요구사항 문장 말고 진짜 누락된 사실 문장이 섞여 있으면 여전히 실패시킨다."""
+    fake_llm(ContentFilterOutput(new_items=[item("it_1", "첫 문장입니다.")]))
+
+    with pytest.raises(LlmError):
+        await filter_content(
+            make_state(user_message="첫 문장입니다. 둘째 문장입니다. 이 내용을 정리해 주세요.")
+        )
+
+
+@pytest.mark.asyncio
+async def test_excluded_reason_present_skips_coverage_check(fake_llm):
+    """LLM이 제외를 신고했으면 나머지 원문을 못 찾아도 통과시킨다(오탐 방지).
+
+    `excluded_reasons`가 비어 있지 않다는 건 LLM이 "이건 의도적으로
+    뺐다"고 스스로 밝힌 것이므로, 그 사유를 문장 단위로 대조할 방법이
+    없는 이상 신뢰한다 — 그렇지 않으면 정상적인 제외(일반 지식, 무관한
+    내용 등)까지 전부 실패로 막힌다.
+    """
+    fake_llm(
+        ContentFilterOutput(
+            new_items=[item("it_1", "첫 문장입니다.")],
+            excluded_reasons=["둘째 문장은 일반 지식이라 제외"],
+        )
+    )
+
+    result = await filter_content(make_state(user_message="첫 문장입니다. 둘째 문장입니다."))
+
+    assert [entry["text"] for entry in result["new_items"]] == ["첫 문장입니다."]
+
+
+# ===== 프롬프트 구성 =====
+
+
+@pytest.mark.asyncio
+async def test_prompt_states_when_gap_is_absent(fake_llm):
+    """gap 이 없으면 없다고 명시한다. 없는데 있는 척하면 아무 문장이나 분류된다."""
+    prompts = fake_llm(
+        ContentFilterOutput(new_items=[], excluded_reasons=["프롬프트 렌더링 테스트, 분류 무관"])
+    )
+
+    await filter_content(make_state())
+
+    assert "활성 gap이 없습니다" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_prompt_carries_gap_and_inputs(fake_llm):
+    prompts = fake_llm(
+        ContentFilterOutput(new_items=[], excluded_reasons=["프롬프트 렌더링 테스트, 분류 무관"])
+    )
+
+    await filter_content(make_state(active_gap=ACTIVE_GAP, extracted_text="첨부 내용입니다"))
+
+    assert "그 해결 방법을 고른 기준" in prompts[0]
+    assert "결제 모듈 타임아웃" in prompts[0]
+    assert "첨부 내용입니다" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_prompt_carries_existing_activity_when_comparison_is_requested(fake_llm):
+    """기존 내용 제외 요청에는 현재 활동 블록을 비교 근거로 제공한다."""
+    prompts = fake_llm(
+        ContentFilterOutput(new_items=[], excluded_reasons=["프롬프트 렌더링 테스트, 분류 무관"])
+    )
+
+    await filter_content(
+        make_state(
+            user_message="이미 정리한 내용은 제외하고 새 내용만 반영해줘",
+            activity_tree_text="[exp_1] 커머스 개선\n  [b_1] 결제 오류 분석",
+        )
+    )
+
+    assert "현재 활동에 이미 저장된 경험정리 블록" in prompts[0]
+    assert "결제 오류 분석" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_regular_input_does_not_include_existing_map(fake_llm):
+    """일반 입력에는 큰 기존 맵을 불필요하게 싣지 않는다."""
+    prompts = fake_llm(
+        ContentFilterOutput(new_items=[], excluded_reasons=["프롬프트 렌더링 테스트, 분류 무관"])
+    )
+
+    await filter_content(
+        make_state(activity_tree_text="[exp_1] 커머스 개선\n  [b_1] 기존 비밀 내용")
+    )
+
+    assert "기존 비밀 내용" not in prompts[0]
+
+
+def test_gap_section_without_gap():
+    assert "활성 gap이 없습니다" in build_gap_section(None)
+    assert "활성 gap이 없습니다" in build_gap_section({})
+
+
+# ===== 실패 =====
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_raises(fake_llm):
+    fake_llm(RuntimeError("upstream 500"))
+
+    with pytest.raises(LlmError) as exc_info:
+        await filter_content(make_state())
+
+    assert exc_info.value.failed_node == "content_filter"
+
+
+@pytest.mark.asyncio
+async def test_input_text_not_in_exception(fake_llm):
+    fake_llm(RuntimeError("boom"))
+    secret = "주민등록번호 900101-1234567"
+
+    with pytest.raises(LlmError) as exc_info:
+        await filter_content(make_state(user_message=secret))
+
+    assert secret not in str(exc_info.value)
+
+
+# ===== 후속 노드 분기 5가지 (5-3) =====
+
+
+def test_next_node_new_items_only():
+    assert next_node({"new_items": [item("it_1", "x")], "gap_answer_items": []}) == "structure"
+
+
+def test_next_node_gap_only_extend_block():
+    """`extend_block` 은 기존 블록에 합치므로 정제로 간다."""
+    state = {
+        "gap_answer_items": [item("it_1", "x")],
+        "new_items": [],
+        "active_gap": {"gap_type": "extend_block"},
+    }
+    assert next_node(state) == "refine"
+
+
+def test_next_node_gap_only_new_child_block():
+    """`new_child_block` 은 하위 블록을 만들어야 하므로 구조화로 간다."""
+    state = {
+        "gap_answer_items": [item("it_1", "x")],
+        "new_items": [],
+        "active_gap": {"gap_type": "new_child_block"},
+    }
+    assert next_node(state) == "structure"
+
+
+def test_next_node_structure_gap_plus_new():
+    """구조화가 필요한 gap 답변 + 새 내용 → 둘 다 구조화."""
+    state = {
+        "gap_answer_items": [item("it_1", "x")],
+        "new_items": [item("it_2", "y")],
+        "active_gap": {"gap_type": "new_child_block"},
+    }
+    assert next_node(state) == "structure"
+
+
+def test_next_node_refine_gap_plus_new():
+    """정제가 필요한 gap 답변 + 새 내용 → 새 내용을 먼저 구조화한다.
+
+    구조화 결과와 gap 답변은 그 뒤 정제 노드가 함께 다룬다.
+    """
+    state = {
+        "gap_answer_items": [item("it_1", "x")],
+        "new_items": [item("it_2", "y")],
+        "active_gap": {"gap_type": "extend_block"},
+    }
+    assert next_node(state) == "structure"
+
+
+def test_next_node_nothing_to_apply():
+    assert next_node({"gap_answer_items": [], "new_items": []}) == "fallback"
+
+
+def test_untraceable_multiline_chunk_keeps_verbatim_lines():
+    """여러 줄 조각이 원문과 한 글자라도 다르면, 원문 그대로인 줄은 살린다."""
+    extracted = (
+        "담당업무\n- 설문조사 수행\n- 데이터 분석 결과 정리\n\n배운 점\n- 설득 역량이 성장했다"
+    )
+    result = ContentFilterOutput.model_validate(
+        {
+            "new_items": [
+                {
+                    "item_id": "it_1",
+                    # 마지막 줄을 모델이 살짝 바꿨다.
+                    "text": "- 설문조사 수행\n- 데이터 분석 결과 정리\n- 설득 역량이 크게 성장했다",
+                    "source": "file",
+                }
+            ]
+        }
+    )
+
+    _, new_items, dropped = filter_node._sanitize(
+        result, active_gap=None, user_message=None, extracted_text=extracted
+    )
+
+    assert [item.text for item in new_items] == ["- 설문조사 수행", "- 데이터 분석 결과 정리"]
+    assert dropped == 0
+
+
+def test_file_bullet_chunk_is_split_per_bullet():
+    """파일 불릿 여러 줄이 한 조각으로 오면 불릿마다 나누고, 감싼 줄은 앞 불릿에 붙인다."""
+    item = filter_node.FilteredItem(
+        item_id="it_1",
+        text="- 진행 기간: 2023.03 ~ 2023.06\n- 대상: 20대 대학생\n- 근거: 합의를 이끌어\n내는 데 효과적",
+        source="file",
+    )
+
+    parts = filter_node._split_long_item(item)
+
+    assert [part.text for part in parts] == [
+        "- 진행 기간: 2023.03 ~ 2023.06",
+        "- 대상: 20대 대학생",
+        "- 근거: 합의를 이끌어\n내는 데 효과적",
+    ]

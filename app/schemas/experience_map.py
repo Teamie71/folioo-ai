@@ -1,0 +1,301 @@
+"""경험정리 API 스키마 정의
+
+경로와 payload는 API 명세 5절(AI 서버 API)과 6절(SSE 이벤트)을 따른다.
+"""
+
+import re
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field, RootModel, field_validator
+
+from features.experience_map.schemas import (
+    CommitResult,
+    GapType,
+    NodeName,
+)
+
+DECIMAL_ID_PATTERN = re.compile(r"^[1-9][0-9]*$")
+
+SessionStatus = Literal["ready", "running", "failed"]
+RequestStatus = Literal["running", "completed", "failed"]
+ResponseKind = Literal["result", "suggestion", "fallback"]
+ViewKind = Literal["map", "list"]
+
+MAX_USER_MESSAGE_LENGTH = 500
+"""프론트 요청(2026-09-20)으로 추가된 채팅 입력 상한. 블록 content 상한
+(`MAX_CONTENT_LENGTH`, 정제된 결과물 기준)과는 별개 개념이라 따로 둔다."""
+
+
+def _require_decimal_id(value: str, field: str) -> str:
+    if not DECIMAL_ID_PATTERN.match(value):
+        raise ValueError(f"{field}는 십진 문자열 ID여야 합니다.")
+    return value
+
+
+# ===== POST /sessions =====
+
+
+class CreateSessionRequest(BaseModel):
+    """메인 서버가 티켓 발급 과정에서 호출한다.
+
+    세션은 활동(`block_id`) 단위다 — 같은 사용자라도 활동마다 별도 세션을
+    가진다. 메인 서버 변경사항(2026-09-20)으로 `block_id`가 추가됐다.
+    """
+
+    user_id: str = Field(..., description="십진 문자열 사용자 ID")
+    block_id: str = Field(..., description="십진 문자열 활동(level 2) block ID")
+
+    @field_validator("user_id")
+    @classmethod
+    def _check_user_id(cls, v: str) -> str:
+        return _require_decimal_id(v, "user_id")
+
+    @field_validator("block_id")
+    @classmethod
+    def _check_block_id(cls, v: str) -> str:
+        return _require_decimal_id(v, "block_id")
+
+
+class CreateSessionResponse(BaseModel):
+    session_id: str
+    status: SessionStatus
+
+
+# ===== GET /sessions/{session_id}/state =====
+
+
+class SessionStateResponse(BaseModel):
+    """화면 새로고침·재접속 시 조회한다."""
+
+    session_id: str
+    status: SessionStatus
+    active_request_id: str | None = None
+    retryable: bool = False
+    failed_node: NodeName | None = None
+
+
+# ===== POST /sessions/{session_id}/chat/stream =====
+
+
+class ChatStreamRequest(BaseModel):
+    """multipart의 `request` part에 담기는 JSON
+
+    `request_id`는 더 이상 여기 없다 — 메인 서버 2026-09-27 변경으로 턴의
+    request_id는 항상 티켓의 `rid` claim을 쓰고, 클라이언트가 보낸 값은
+    신뢰하지 않는다(스푸핑 방지). 실제 request_id는
+    `request.state.experience_map_request_id`(티켓 미들웨어가 채움)에서
+    읽는다.
+    """
+
+    user_message: str | None = Field(None, description="파일이 없으면 필수")
+    context_experience_id: str | None = Field(
+        None, description="현재 보고 있는 level 2 활동 block ID"
+    )
+    view: ViewKind | None = None
+
+    @field_validator("context_experience_id")
+    @classmethod
+    def _check_experience_id(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return _require_decimal_id(v, "context_experience_id")
+
+    @field_validator("user_message")
+    @classmethod
+    def _check_message_length(cls, v: str | None) -> str | None:
+        """메시지는 최대 500자다 (프론트 요청, 2026-09-20)."""
+        if v is not None and len(v) > MAX_USER_MESSAGE_LENGTH:
+            raise ValueError(f"user_message는 최대 {MAX_USER_MESSAGE_LENGTH}자여야 합니다.")
+        return v
+
+    def require_message_or_files(self, file_count: int) -> None:
+        """메시지와 파일 중 하나 이상이 있어야 한다.
+
+        파일 개수는 multipart 파싱 뒤에야 알 수 있어 모델 검증과 분리한다.
+        """
+        if file_count == 0 and not (self.user_message or "").strip():
+            raise ValueError("메시지와 파일 중 하나 이상이 필요합니다.")
+
+
+# ===== GET /sessions/{session_id}/requests/{request_id} =====
+
+
+class RequestErrorInfo(BaseModel):
+    code: str
+    failed_node: NodeName | None = None
+    retryable: bool = False
+    message: str
+
+
+class SuggestionGap(BaseModel):
+    """제안 gap. **`path`가 붙는 점이 `ActiveGap`과 다르다.**
+
+    `ActiveGap`은 다음 턴을 위해 세션에 저장하는 형태고, 이쪽은 사용자에게 보내는
+    형태다. 화면에 "어디에 대한 제안인지"를 보여주려면 경로가 필요하다.
+    """
+
+    gap_id: str
+    gap_type: GapType
+    anchor_block_id: str
+    path: str
+    message: str
+
+
+class SuggestionInfo(BaseModel):
+    """저장된 gap 제안. gap이 없으면 gap 필드만 null이다.
+
+    SSE `suggestion_ready`로 보냈던 것과 같은 형태여야 한다. 단절 뒤 복구가
+    스트림으로 받았을 내용과 달라지면 안 된다.
+    """
+
+    gap: SuggestionGap | None = None
+    message: str
+
+
+class RequestStateResponse(BaseModel):
+    """SSE 단절 뒤 요청 상태와 저장 결과를 복구한다."""
+
+    request_id: str
+    status: RequestStatus
+    result: CommitResult | None = None
+    suggestion: SuggestionInfo | None = None
+    error: RequestErrorInfo | None = None
+
+
+# ===== GET /sessions/{session_id}/messages =====
+
+
+class MessageAttachment(BaseModel):
+    """대화 히스토리에 남기는 첨부파일 메타데이터 (프론트 요청, 2026-09-20).
+
+    파일 본문은 TTL 뒤 지워지므로 이름·형식만 남긴다.
+    """
+
+    filename: str
+    content_type: str
+
+
+class MessageItem(BaseModel):
+    """대화 메시지 한 턴.
+
+    `ai_responses`는 한 턴에서 나온 `message_complete` 텍스트를 순서대로
+    담는다 — 커밋 결과와 gap 제안이 함께 오면 2개, fallback이면 1개다.
+
+    `attachments`·`status`·`can_revert`는 프론트 요청(2026-09-20)으로
+    추가됐다. `status`가 `failed`면 실패한 턴이라는 뜻이고, 그때는
+    `ai_responses`가 사용자에게 보였던 오류 문구 하나만 담는다.
+    """
+
+    request_id: str
+    user_message: str | None = None
+    ai_responses: list[str] = Field(default_factory=list)
+    attachments: list[MessageAttachment] = Field(default_factory=list)
+    status: Literal["completed", "failed"] = "completed"
+    can_revert: bool | None = Field(
+        None,
+        description=(
+            "커밋 시점에 되돌리기가 가능했는지. 실패한 턴은 null. 그 뒤 실제로 "
+            "되돌렸는지는 메인 서버(POST /revert)만 알아 여기서 추적하지 않는다."
+        ),
+    )
+    created_at: str
+
+
+class MessagesResponse(BaseModel):
+    """재접속 시 지난 대화를 이어서 보여줄 때 조회한다."""
+
+    messages: list[MessageItem]
+    next_cursor: str | None = None
+
+
+# ===== SSE 이벤트 (API 명세 6절) =====
+
+
+class ProcessingStartedEvent(BaseModel):
+    type: Literal["processing_started"] = "processing_started"
+    request_id: str
+
+
+class NodeStatusEvent(BaseModel):
+    type: Literal["node_status"] = "node_status"
+    node: NodeName
+    status: Literal["running", "completed", "failed"]
+    phrase: str | None = Field(
+        None, description="에이전트 문서 4절 노드별 고정 문구. running 상태에만 채운다."
+    )
+
+
+class CommitResultEvent(BaseModel):
+    type: Literal["commit_result"] = "commit_result"
+    result: CommitResult
+
+
+class CompletedMessage(BaseModel):
+    """`message_complete`의 message 필드"""
+
+    request_id: str
+    session_id: str
+    response_kind: ResponseKind
+    ai_response: str
+    committed: bool
+    map_version: int | None = None
+    can_revert: bool = False
+
+
+class MessageCompleteEvent(BaseModel):
+    """**메시지 단위 종료**이지 스트림 종료가 아니다."""
+
+    type: Literal["message_complete"] = "message_complete"
+    message: CompletedMessage
+
+
+class SuggestionReadyEvent(BaseModel):
+    """gap이 없어도 분석에 성공했으면 `gap: null`로 전송한다."""
+
+    type: Literal["suggestion_ready"] = "suggestion_ready"
+    gap: SuggestionGap | None = None
+
+
+class ProcessingCompleteEvent(BaseModel):
+    type: Literal["processing_complete"] = "processing_complete"
+    request_id: str
+    status: RequestStatus
+
+
+class ErrorEventPayload(BaseModel):
+    code: str
+    failed_node: NodeName | None = None
+    retryable: bool = False
+    message: str
+
+
+class ErrorEvent(BaseModel):
+    type: Literal["error"] = "error"
+    error: ErrorEventPayload
+
+
+class PingEvent(BaseModel):
+    type: Literal["ping"] = "ping"
+
+
+ExperienceMapEvent = (
+    ProcessingStartedEvent
+    | NodeStatusEvent
+    | CommitResultEvent
+    | MessageCompleteEvent
+    | SuggestionReadyEvent
+    | ProcessingCompleteEvent
+    | ErrorEvent
+    | PingEvent
+)
+
+
+class ExperienceMapStreamEvent(
+    RootModel[Annotated[ExperienceMapEvent, Field(discriminator="type")]]
+):
+    """SSE `data:` 한 줄에 실리는 JSON. `type`으로 이벤트 종류를 구분한다.
+
+    스트림 엔드포인트는 `text/event-stream`이라 FastAPI가 응답 스키마를 만들지 않았고,
+    그 결과 프론트 orval 생성 모델에 이벤트 타입(`NodeStatusEvent` 등)이 하나도 없었다.
+    OpenAPI 문서화 전용이다 — 실제 전송은 각 이벤트 모델을 그대로 직렬화한다.
+    """

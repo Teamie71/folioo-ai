@@ -1,0 +1,192 @@
+"""커밋 결과를 사용자용 완료 문구로 바꾸는 결정적 템플릿 (에이전트 문서 3-8)."""
+
+from dataclasses import dataclass, field
+
+from features.experience_map.schemas import SECTION_LABELS, CommitResult
+from features.experience_map.state import ExperienceMapState
+
+
+@dataclass(frozen=True)
+class CategorySummary:
+    """카테고리별 추가·수정 개수."""
+
+    label: str
+    added_count: int = 0
+    updated_count: int = 0
+
+
+@dataclass(frozen=True)
+class ResultResponseContext:
+    """결과 템플릿이 쓰는 변수를 분리한 표현 모델."""
+
+    experience_name: str
+    categories: tuple[CategorySummary, ...]
+    dropped_count: int
+    new_categories: frozenset[str] = field(default_factory=frozenset)
+
+
+def build_result_response(state: ExperienceMapState, result: CommitResult) -> str:
+    """LLM 없이 커밋 결과에서 문서 3-8 템플릿 그대로 완료 문구를 만든다."""
+    context = build_result_context(state, result)
+    lines = ["내용을 분석하여 경험을 정리했어요."]
+    for category in context.categories:
+        if category.label in context.new_categories:
+            lines.append(f"- {category.label} 생성")
+        if category.updated_count:
+            lines.append(f"- {category.label} 아래 {category.updated_count}개의 블록 수정")
+        if category.added_count:
+            lines.append(f"- {category.label} 아래 {category.added_count}개의 블록 생성")
+    message = "\n".join(lines)
+    if context.dropped_count:
+        message = f"{message}\n\n{context.dropped_count}개는 글자 수 제한(500자)을 넘어 넣지 못했어요. 나눠서 입력해 주세요."
+    if state.get("file_excluded_count"):
+        # 파일 전용 경로가 쪽 번호·연락처·자기소개처럼 경험 서술이 아닌 줄을
+        # 뺐다. 조용히 빼지 않고 몇 줄인지 알린다.
+        message = (
+            f"{message}\n\n첨부 파일에서 경험과 관련 없는 내용 "
+            f"{state['file_excluded_count']}줄은 제외했어요."
+        )
+    if state.get("file_requested_excluded_count"):
+        message = (
+            f"{message}\n\n요청하신 대로 첨부 파일 내용 "
+            f"{state['file_requested_excluded_count']}줄은 제외했어요."
+        )
+    if state.get("file_content_truncated"):
+        # 페이지 수(MAX_PDF_PAGES)나 전체 글자 수 상한으로 파일 내용 일부를
+        # 조용히 버렸을 수 있다 — 로그에만 남기지 않고 사용자에게도 알린다.
+        message = (
+            f"{message}\n\n첨부 파일 내용이 많아 일부만 반영됐어요. "
+            "나머지가 중요하다면 나눠서 다시 올려 주세요."
+        )
+    return message
+
+
+def build_result_context(state: ExperienceMapState, result: CommitResult) -> ResultResponseContext:
+    """커밋된 item의 path·action으로 결과 문구 변수를 계산한다.
+
+    새로 만든 3단계 카테고리 컨테이너는 내용이 없어(명세 2-4-3) `path`에 자기
+    라벨이 실리지 않는다 — 컨테이너 자신도 `applied`에는 있지만 path는 그
+    부모(활동)까지만 담는다. 그래서 카테고리가 이번에 새로 만들어졌는지는
+    `path` 대신 `commit_items`의 `section_kind`로 판단하고, 그 라벨은
+    `SECTION_LABELS`에서 가져온다.
+    """
+    commit_items = state.get("commit_items", [])
+    items_by_id = {item.get("item_id"): item for item in commit_items}
+    action_by_item = {item_id: item.get("action") for item_id, item in items_by_id.items()}
+    new_container_labels = {
+        item_id: SECTION_LABELS[item["section_kind"]]
+        for item_id, item in items_by_id.items()
+        if item.get("section_kind")
+    }
+
+    def new_category_label(item_id: str | None) -> str | None:
+        """item_id의 부모 체인을 따라가 이번에 새로 만든 카테고리 컨테이너를 찾는다."""
+        seen: set[str] = set()
+        current_id = item_id
+        while current_id is not None and current_id in items_by_id and current_id not in seen:
+            seen.add(current_id)
+            if current_id in new_container_labels:
+                return new_container_labels[current_id]
+            current_id = items_by_id[current_id].get("parent_item_id")
+        return None
+
+    alias_metadata = state.get("alias_metadata", {})
+
+    def existing_category_label(item_id: str | None) -> str | None:
+        """기존 블록 아래에 붙은 item이면 그 카테고리의 section 라벨을 찾는다.
+
+        메인 서버가 새 활동에 미리 깔아 두는 카테고리는 내용 칸에 안내 문구
+        ("내용을 입력해 주세요")가 있어, path로는 "내용을 입력해 주세요 아래 12개의
+        블록 수정"처럼 안내 문구가 카테고리 이름 자리에 떴다(로컬 재현). 블록 kind
+        (`SECTION_DETAIL` 등)로 정확한 라벨을 알 수 있다.
+        """
+        seen: set[str] = set()
+        current_id = item_id
+        alias: str | None = None
+        while current_id is not None and current_id in items_by_id and current_id not in seen:
+            seen.add(current_id)
+            item = items_by_id[current_id]
+            alias = item.get("parent_ref") or item.get("target_ref")
+            if alias:
+                break
+            current_id = item.get("parent_item_id")
+        visited: set[str] = set()
+        while alias and alias not in visited:
+            visited.add(alias)
+            block = alias_metadata.get(alias) or {}
+            kind = str(block.get("kind") or "")
+            section = kind.removeprefix("SECTION_") if kind.startswith("SECTION_") else None
+            if section in SECTION_LABELS:
+                return SECTION_LABELS[section]
+            alias = block.get("parent_alias")
+        return None
+
+    grouped: dict[str, CategorySummary] = {}
+    new_categories: set[str] = set()
+    experience_name = "경험"
+    for applied in result.applied:
+        activity, path_category = _path_parts(applied.path)
+        experience_name = activity
+
+        if applied.item_id in new_container_labels:
+            # 컨테이너 자신은 블록 수·생성 수에 세지 않는다 — "카테고리 생성" 표시만 한다.
+            label = new_container_labels[applied.item_id]
+            grouped.setdefault(label, CategorySummary(label=label))
+            new_categories.add(label)
+            continue
+
+        label = (
+            new_category_label(applied.item_id)
+            or existing_category_label(applied.item_id)
+            or path_category
+        )
+        if label in new_container_labels.values():
+            new_categories.add(label)
+
+        current = grouped.get(label, CategorySummary(label=label))
+        if action_by_item.get(applied.item_id) == "update":
+            grouped[label] = CategorySummary(label, current.added_count, current.updated_count + 1)
+        else:
+            grouped[label] = CategorySummary(label, current.added_count + 1, current.updated_count)
+
+    return ResultResponseContext(
+        experience_name=experience_name,
+        categories=tuple(grouped.values()),
+        dropped_count=len(result.dropped),
+        new_categories=frozenset(new_categories),
+    )
+
+
+def _path_parts(path: str) -> tuple[str, str]:
+    """메인 서버가 돌려준 path에서 활동명과 3단계 카테고리를 읽는다.
+
+    서버 path는 현재 블록을 제외한 부모 체인이므로 level 5 블록이면
+    `활동 > 카테고리 > 앵커`가 된다. 마지막 조각을 쓰면 앵커 문구로 잘못
+    그룹화되므로 항상 활동 바로 아래 조각을 카테고리로 사용한다.
+
+    **빈 조각을 걸러내지 않는다.** 3단계 카테고리 컨테이너는 설계상 항상
+    `content`가 없으므로(다른 곳 여러 번 확인됨), 재사용된 기존 카테고리
+    밑에 블록을 추가하면 서버가 돌려준 path의 카테고리 자리가 빈 문자열일
+    수 있다. 예전에는 `if part.strip()`로 빈 조각을 걸러내서 그 뒤(레벨
+    5·앵커 텍스트)가 인덱스 하나씩 앞으로 밀려 카테고리 라벨 자리에 들어가
+    버렸다 — 실제로 QA에서 "카테고리명 대신 4단계 블록 텍스트가 뜬다"로
+    재현됐다. 카테고리 자리가 비어 있으면(재사용된 기존 카테고리의 진짜
+    라벨은 이 함수가 알 방법이 없다 — `structure` 노드가 그 턴에만 판단하고
+    `state`에 남기지 않는다) 다른 블록의 텍스트를 잘못 끌어오는 대신
+    `"정리 항목"`으로 안전하게 대체한다.
+    """
+    raw_parts = [part.strip() for part in path.split(">")]
+    if not raw_parts or not raw_parts[0]:
+        return "경험", "정리 항목"
+    activity = raw_parts[0]
+    if len(raw_parts) < 2 or not raw_parts[1]:
+        return activity, "정리 항목"
+    return activity, raw_parts[1]
+
+
+__all__ = [
+    "CategorySummary",
+    "ResultResponseContext",
+    "build_result_context",
+    "build_result_response",
+]
