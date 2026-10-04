@@ -190,4 +190,49 @@ ALTER TABLE ai_experience_session
 ALTER TABLE ai_experience_session
   ADD CONSTRAINT ai_experience_session_pkey PRIMARY KEY (user_id, block_id);
 
+-- ===== 3-6. 카카오톡 턴 =====
+-- 운영 반영 SQL 은 app/db/migrations/20261002_kakao_turn.sql 과 같다. 테스트 DB 를 맞춘다.
+ALTER TABLE ai_experience_message
+  ADD COLUMN IF NOT EXISTS channel varchar(8) NOT NULL DEFAULT 'WEB';
+
+ALTER TABLE ai_experience_message
+  DROP CONSTRAINT IF EXISTS ai_experience_message_channel_check;
+
+ALTER TABLE ai_experience_message
+  ADD CONSTRAINT ai_experience_message_channel_check CHECK (channel IN ('WEB', 'KAKAO'));
+
+CREATE TABLE IF NOT EXISTS ai_kakao_turn (
+  request_id       uuid PRIMARY KEY,
+  user_id          bigint NOT NULL,
+  session_id       uuid NOT NULL,
+  block_id         text NOT NULL,
+  request_hash     varchar(64) NOT NULL,
+  utterance        text NOT NULL,
+  callback_url     text,
+  expires_at       timestamptz NOT NULL,
+  state            varchar(16) NOT NULL DEFAULT 'ACCEPTED',
+  outcome          varchar(16),
+  delivery_status  varchar(16) NOT NULL DEFAULT 'NOT_ATTEMPTED',
+  reply_payload    jsonb,
+  delivery_claimed_at timestamptz,
+  usage_reported   boolean NOT NULL DEFAULT false,
+  complete_notified boolean NOT NULL DEFAULT false,
+  worker_lease_expires_at timestamptz,
+  worker_token     uuid,
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT ai_kakao_turn_state_check CHECK (
+    state IN ('ACCEPTED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'EXPIRED', 'COMMIT_UNKNOWN')
+  ),
+  CONSTRAINT ai_kakao_turn_delivery_check CHECK (
+    delivery_status IN ('SUCCESS', 'FAIL', 'UNKNOWN', 'NOT_ATTEMPTED')
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_kakao_turn_pending
+  ON ai_kakao_turn(updated_at)
+  WHERE state IN ('ACCEPTED', 'RUNNING', 'COMMIT_UNKNOWN') OR complete_notified = false
+     OR (outcome IN ('FAILED', 'EXPIRED') AND usage_reported = false);
+
+
 COMMIT;

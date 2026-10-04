@@ -118,6 +118,9 @@ class PreparedRequest:
     owner_token: str | None = None
     """이 요청의 실행권 표식. 상태를 바꿀 때마다 함께 보낸다."""
 
+    channel: str = "WEB"
+    """요청이 들어온 채널. `KAKAO` 면 실패 한도 복구를 카톡 턴 서비스가 맡는다."""
+
     active_gap: dict[str, Any] | None = None
     """직전 턴에 에이전트가 물은 제안. 세션에 저장돼 있던 값이다.
 
@@ -247,6 +250,7 @@ class ExperienceMapService:
                     attachments=row.attachments,
                     status=row.status,
                     can_revert=row.can_revert,
+                    channel=row.channel,
                     created_at=row.created_at.isoformat(),
                 )
                 for row in rows
@@ -266,6 +270,7 @@ class ExperienceMapService:
         context_experience_id: str | None,
         view: str | None,
         stored_files: list[StoredFile],
+        channel: str = "WEB",
     ) -> PreparedRequest:
         """요청을 claim 한다. 여기서 실패하면 SSE 를 열지 않는다.
 
@@ -305,6 +310,7 @@ class ExperienceMapService:
             context_experience_id=context_experience_id,
             view=view,
             stored_files=stored_files,
+            channel=channel,
             active_gap=session.active_gap,
         )
 
@@ -413,6 +419,19 @@ class ExperienceMapService:
         task.add_done_callback(_on_turn_done)
 
         while (event := await queue.get()) is not _STREAM_END:
+            yield event
+
+    async def execute(self, prepared: PreparedRequest) -> AsyncIterator[ExperienceMapEvent]:
+        """SSE 연결 없이 요청을 실행하며 이벤트를 낸다 (카톡 턴용).
+
+        `stream()` 과 달리 실행을 별도 task 로 떼지 않는다. 호출자 task 가 취소되면
+        실행도 함께 멈춘다 — 기한이 지난 뒤 새 커밋을 시작하지 않기 위해서다.
+        """
+        if prepared.is_replay:
+            async for event in self._replay(prepared.replay_of):
+                yield event
+            return
+        async for event in self._execute(prepared):
             yield event
 
     async def _execute_into(self, prepared: PreparedRequest, queue: asyncio.Queue[Any]) -> None:
@@ -590,6 +609,12 @@ class ExperienceMapService:
             )
             if text
         ]
+        if prepared.channel == "KAKAO":
+            # 카톡에는 요약만 보내므로 히스토리에도 보낸 요약만 남긴다. 웹의 상세 답변은
+            # 요청 결과(`ai_experience_request.result`)에 그대로 남아 있다.
+            from features.experience_map.kakao.callback import FAILURE_TEXT, build_summary
+
+            ai_responses = [FAILURE_TEXT if status == "failed" else build_summary(*ai_responses)]
         try:
             await self.repository.save_message(
                 prepared.user_id,
@@ -600,6 +625,7 @@ class ExperienceMapService:
                 attachments=self._attachments_of(prepared),
                 status=status,
                 can_revert=can_revert,
+                channel=prepared.channel,
             )
         except Exception:
             logger.exception("대화 메시지 저장 실패 (request_id=%s)", prepared.request_id)
@@ -626,9 +652,12 @@ class ExperienceMapService:
         )
         if failed is not None:
             await self._save_message(prepared, None, None, payload.message, status="failed")
-            await self.main_client.report_failed_usage(
-                user_id=prepared.user_id, request_id=prepared.request_id
-            )
+            if prepared.channel != "KAKAO":
+                # 카톡은 커밋 결과가 불명일 수 있어 환불을 여기서 하지 않는다. 카톡 턴
+                # 서비스가 커밋 여부를 확인한 뒤 확정 실패에서만 환불한다.
+                await self.main_client.report_failed_usage(
+                    user_id=prepared.user_id, request_id=prepared.request_id
+                )
         return ErrorEvent(error=payload.model_dump())
 
     async def _reconcile_stale_requests(self, session_id: str | None = None) -> None:

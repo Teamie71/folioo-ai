@@ -1,7 +1,8 @@
 """FastAPI 애플리케이션 설정"""
 
+import asyncio
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI
@@ -167,12 +168,28 @@ async def lifespan(app: FastAPI):
 
     logger = logging.getLogger(__name__)
 
+    kakao_recovery_task: asyncio.Task | None = None
+
     # ===== 경험 맵 DB 커넥션 풀과 Repository 초기화 =====
     # checkpoint DB와 분리된 풀이다. 미설정이어도 기동은 막지 않고 /health로 드러낸다.
     try:
         pool = await create_pool()
         init_experience_map_repository(pool)
         logger.info("경험 맵 DB 커넥션 풀 초기화 완료")
+        if get_experience_map_settings().enabled:
+            from features.experience_map.kakao import get_kakao_service
+            from features.experience_map.kakao.store import init_store as init_kakao_store
+
+            init_kakao_store(pool)
+            try:
+                from features.experience_map.kakao.config import get_web_experience_url
+
+                get_web_experience_url()
+            except ValueError as exc:
+                logger.error("카톡 턴 접수가 모두 거절됩니다 - %s", exc)
+            # 재시작·worker 사망으로 끊긴 카톡 턴과 남은 한도 정리·완료 통지를 이어받는다.
+            kakao_recovery_task = asyncio.create_task(get_kakao_service().recovery_loop())
+            logger.info("카톡 턴 복구 루프 시작")
         if get_experience_map_settings().test_ui_enabled:
             from features.experience_map.graph_runner import set_graph_runner
             from features.experience_map.templates import set_template_catalog_client
@@ -251,7 +268,14 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.exception("포트폴리오 클라이언트 정리 실패")
 
+        if kakao_recovery_task is not None:
+            kakao_recovery_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await kakao_recovery_task
         try:
+            from features.experience_map.kakao.store import set_store as set_kakao_store
+
+            set_kakao_store(None)
             # 풀이 닫힌 뒤 Repository 가 남아 있으면 죽은 커넥션을 쓰게 된다.
             set_experience_map_repository(None)
             if get_experience_map_settings().test_ui_enabled:
@@ -316,6 +340,10 @@ def create_app() -> FastAPI:
         from app.api.v1.experience_map import compatibility_router
 
         app.include_router(compatibility_router)
+
+        from app.api.v1.kakao import kakao_router
+
+        app.include_router(kakao_router)
 
     # 메인 서버 티켓 발급 전 실제 LLM·SSE를 점검하는 내부 페이지다. 테스트 환경에서만
     # 명시적으로 켜며, 기본값은 비노출이다.
