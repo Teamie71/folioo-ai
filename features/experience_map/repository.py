@@ -169,6 +169,9 @@ class MessageRow:
 
     created_at: datetime
 
+    channel: str = "WEB"
+    """메시지를 남긴 채널. `WEB` 또는 `KAKAO`."""
+
     @classmethod
     def from_record(cls, record: asyncpg.Record) -> "MessageRow":
         return cls(
@@ -180,6 +183,7 @@ class MessageRow:
             status=record["status"],
             can_revert=record["can_revert"],
             created_at=record["created_at"],
+            channel=record["channel"],
         )
 
 
@@ -651,6 +655,7 @@ class ExperienceMapRepository:
         attachments: list[dict[str, Any]] | None = None,
         status: str = "completed",
         can_revert: bool | None = None,
+        channel: str = "WEB",
     ) -> None:
         """대화 메시지 한 턴을 남긴다.
 
@@ -667,8 +672,8 @@ class ExperienceMapRepository:
             """
             INSERT INTO ai_experience_message
                 (user_id, session_id, request_id, user_message, ai_responses,
-                 attachments, status, can_revert)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8)
+                 attachments, status, can_revert, channel)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9)
             """,
             int(user_id),
             uuid.UUID(session_id),
@@ -678,6 +683,7 @@ class ExperienceMapRepository:
             json.dumps(attachments or [], ensure_ascii=False),
             status,
             can_revert,
+            channel,
         )
 
     async def list_messages(
@@ -700,7 +706,7 @@ class ExperienceMapRepository:
         records = await self._pool.fetch(
             """
             SELECT id, request_id, user_message, ai_responses,
-                   attachments, status, can_revert, created_at
+                   attachments, status, can_revert, channel, created_at
               FROM ai_experience_message
              WHERE user_id = $1 AND session_id = $2
                AND ($3::bigint IS NULL OR id > $3)
