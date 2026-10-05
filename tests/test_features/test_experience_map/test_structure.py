@@ -4310,3 +4310,38 @@ def test_anchors_from_different_groups_are_not_merged_across_batches():
     )
 
     assert [item.item_id for item in result] == ["blk_1", "batch2_blk_1"]
+
+
+def test_unreported_new_section_is_merged_into_actual_existing_category():
+    """모델이 신고하지 않아도 활동에 실제로 있는 구획 카테고리는 새로 만들지 않는다.
+
+    운영에서 채팅 요청이 기존 담당업무를 새 카테고리로 보내 메인 서버가 커밋을
+    409("이미 존재하는 카테고리")로 거절했다.
+    """
+    state = {
+        "target_experience_alias": "exp_1",
+        "activity_tree_text": "[exp_1] 새 경험\n  [b_1] 상세정보\n  [b_10] 담당업무\n",
+        "alias_metadata": {
+            "b_1": {"parent_alias": "exp_1", "kind": "SECTION_DETAIL", "level": 3},
+            "b_10": {"parent_alias": "exp_1", "kind": "", "level": 3},
+        },
+    }
+    assert structure_node._actual_container_sections(state) == {"b_1": "DETAIL", "b_10": "TASK"}
+
+    items = [
+        StructureLlmItem(item_id="blk_1", action="add", parent_ref="exp_1", section_kind="TASK"),
+        StructureLlmItem(
+            item_id="blk_2",
+            action="add",
+            parent_item_id="blk_1",
+            slot_id="TASK.SUMMARY",
+            text="설문조사 설계",
+            source_item_ids=["it_1"],
+        ),
+    ]
+    result = structure_node._merge_new_sections_into_reported_containers(
+        items, structure_node._actual_container_sections(state)
+    )
+
+    assert [item.item_id for item in result] == ["blk_2"]
+    assert result[0].parent_ref == "b_10"
