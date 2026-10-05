@@ -286,7 +286,10 @@ class KakaoTurnService:
                     row.session_id,
                     row.request_id,
                     user_message=row.utterance,
-                    context_experience_id=None,
+                    # 카톡은 화면이 없으므로 접수 때 검증한 세션 활동을 대상 활동으로 쓴다.
+                    # None으로 넘기면 대상 활동을 메시지 내용으로만 고르다가 매번
+                    # "어떤 경험에 정리할지 알려주세요"로 끝났다(운영 QA 재현).
+                    context_experience_id=row.block_id,
                     view=None,
                     stored_files=[],
                     channel="KAKAO",
