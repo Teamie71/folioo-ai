@@ -281,6 +281,8 @@ async def test_success_flow(h):
     assert h.notifier.complete_calls == [{"outcome": "SUCCEEDED", "delivery_status": "SUCCESS"}]
     assert h.experience.prepare_calls[0]["channel"] == "KAKAO"
     assert h.experience.prepare_calls[0]["user_message"] == request.utterance
+    # 카톡은 화면 context가 없으므로 세션 활동이 대상 활동이 된다.
+    assert h.experience.prepare_calls[0]["context_experience_id"] == request.block_id
     outputs = h.sent[0]["payload"]["template"]["outputs"]
     assert "축제 부스 운영 경험을 정리했어요." in outputs[0]["simpleText"]["text"]
     assert h.sent[0]["url"] == CALLBACK_URL
