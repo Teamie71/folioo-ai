@@ -152,9 +152,22 @@ def _is_sentence_covered(normalized: str, accepted_texts: list[str]) -> bool:
     return coverage_ratio >= _MIN_SENTENCE_COVERAGE_RATIO
 
 
-_REQUEST_PHRASE = re.compile(
-    r"(정리|저장|기록|작성|반영|추가|생성)[^.!?]{0,20}(해\s*주(세요|십시오|시겠)?|해\s*줘)[.!?]?$"
+_REQUEST_VERBS = r"(?:정리|저장|기록|작성|반영|추가|생성|수정|고쳐|바꿔|변경|업데이트|넣어|빼|삭제|지워|다듬어|보완)"
+_REQUEST_ENDINGS = (
+    r"(?:해\s*주(?:세요|십시오|시겠|라)?|해\s*줘|해\s*줄래|주세요|줘|줄래"
+    r"|부탁(?:해요|해|합니다|드려요|드립니다|함)?|하셈|해라|ㄱㄱ)"
 )
+_REQUEST_PHRASE = re.compile(rf"{_REQUEST_VERBS}[^.!?]{{0,20}}{_REQUEST_ENDINGS}[.!?~]*$")
+_REQUEST_TAIL = re.compile(
+    rf"[\s,]+(?:이거|이것|이건|이 내용|위 내용|해당 내용|여기|요거)?\s*"
+    rf"{_REQUEST_VERBS}[^.!?]{{0,12}}{_REQUEST_ENDINGS}[.!?~]*$"
+)
+"""문장 끝에 붙은 작업 요청("…그만뒀는데 이거 수정 부탁함"). 앞부분은 경험 내용이다."""
+_REQUEST_OBJECT_END = re.compile(r"(?:을|를|으로|로|에|에게|도|좀|은|는)$")
+_REQUEST_SENTENCE = re.compile(
+    rf"^[^.!?]{{0,15}}?{_REQUEST_VERBS}[^.!?]{{0,20}}{_REQUEST_ENDINGS}[.!?~]*$"
+)
+"""문장 전체가 작업 요청("이거 정리해줘", "이 경험을 블록으로 정리해 주세요")."""
 _META_NOTE = re.compile(r"^[\[(].{0,120}[\])]$|^[※\*]\s*(참고|예시|주|팁|tip)\s*[:：]")
 
 
@@ -168,6 +181,43 @@ def _is_request_phrase(sentence: str) -> bool:
     실패시키지 않도록 여기서 미리 걸러낸다(QA 3차 #1).
     """
     return bool(_REQUEST_PHRASE.search(_normalize(sentence)))
+
+
+def _strip_request_text(items: list[FilteredItem]) -> tuple[list[FilteredItem], int]:
+    """item에서 에이전트에게 보낸 작업 요청 문장("수정 부탁함", "이거 정리해줘")을 뗀다.
+
+    운영에서 "…이거 수정 부탁함" 같은 지시가 블록 내용으로 그대로 들어갔다. 프롬프트로
+    빼라고 해도 모델이 내용 문장에 붙여 내는 경우가 있어, 코드로 확실한 요청 문장만
+    뗀다. 끝에 붙은 요청 문장·구절만 떼므로 남는 글은 여전히 원문 그대로다. item 전체가
+    요청이면 버린다.
+
+    Returns:
+        (정리된 item 목록, 요청을 떼거나 버린 item 수)
+    """
+    cleaned: list[FilteredItem] = []
+    touched = 0
+    for item in items:
+        text = item.text.rstrip()
+        while True:
+            tail = _REQUEST_TAIL.search(text)
+            head = text[: tail.start()].rstrip(" ,") if tail else ""
+            # 떼고 남은 앞부분이 "이 경험을 블록으로"처럼 조사로 끝나면 요청의 목적어라
+            # 문장 전체가 요청이다. 아래 문장 단위 판정에 맡긴다.
+            if tail and len(_normalize(head)) >= 6 and not _REQUEST_OBJECT_END.search(head):
+                text = head
+                continue
+            sentences = _split_into_sentences(text)
+            if sentences and _REQUEST_SENTENCE.match(_normalize(sentences[-1])):
+                text = text[: text.rfind(sentences[-1].strip())].rstrip(" ,")
+                continue
+            break
+        if text != item.text.rstrip():
+            touched += 1
+        if _normalize(text) and not _REQUEST_SENTENCE.match(_normalize(text)):
+            cleaned.append(
+                item if text == item.text.rstrip() else item.model_copy(update={"text": text})
+            )
+    return cleaned, touched
 
 
 def _is_meta_note(sentence: str) -> bool:
@@ -420,6 +470,10 @@ async def filter_content(state: ExperienceMapState) -> ExperienceMapState:
             )
             raise LlmError("입력 내용 일부를 분류하지 못했습니다.", failed_node="content_filter")
 
+    gap_items, stripped_gap_requests = _strip_request_text(gap_items)
+    new_items, stripped_new_requests = _strip_request_text(new_items)
+    if stripped_gap_requests or stripped_new_requests:
+        found_request_phrase = True
     gap_items, dropped_gap_headings = _drop_structural_headings(gap_items)
     new_items, dropped_new_headings = _drop_structural_headings(new_items)
     new_items = _restore_meaningful_heading_summaries(new_items, extracted_text)
