@@ -7,7 +7,7 @@ from features.experience_map.errors import LlmError
 from features.experience_map.nodes import content_filter as filter_node
 from features.experience_map.nodes.content_filter import filter_content, next_node
 from features.experience_map.prompts.content_filter import build_gap_section
-from features.experience_map.schemas import ContentFilterOutput
+from features.experience_map.schemas import ContentFilterOutput, FilteredItem
 from features.experience_map.state import start_turn
 
 
@@ -647,3 +647,39 @@ def test_file_bullet_chunk_is_split_per_bullet():
         "- 대상: 20대 대학생",
         "- 근거: 합의를 이끌어\n내는 데 효과적",
     ]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 끝에 붙은 작업 요청은 떼고 경험 부분만 남긴다 (운영 카톡 QA)
+        (
+            "운영 정체기를 못 넘기고 결국 그만뒀어. 이거 수정 부탁함",
+            "운영 정체기를 못 넘기고 결국 그만뒀어.",
+        ),
+        (
+            "운영 정체기를 못 넘기고 그만뒀는데 이거 수정 부탁함",
+            "운영 정체기를 못 넘기고 그만뒀는데",
+        ),
+        ("가입률이 30% 올랐어 반영해줘", "가입률이 30% 올랐어"),
+        # 문장 전체가 요청이면 item을 버린다
+        ("이거 정리해줘", None),
+        ("이 경험을 블록으로 정리해 주세요.", None),
+        # 경험을 말하는 문장은 그대로 둔다
+        ("팀원에게 자료 정리를 부탁했다.", "팀원에게 자료 정리를 부탁했다."),
+        ("피드백을 받아 세 번 수정했음.", "피드백을 받아 세 번 수정했음."),
+        ("고객 요청을 반영해 줬다.", "고객 요청을 반영해 줬다."),
+        ("정리해 주신 내용을 바탕으로 발표했다.", "정리해 주신 내용을 바탕으로 발표했다."),
+    ],
+)
+def test_strip_request_text_removes_only_agent_requests(text, expected):
+    item = FilteredItem(item_id="it_1", text=text, source="message")
+
+    cleaned, touched = filter_node._strip_request_text([item])
+
+    if expected is None:
+        assert cleaned == []
+        assert touched == 1
+    else:
+        assert [i.text for i in cleaned] == [expected]
+        assert touched == (0 if expected == text else 1)
